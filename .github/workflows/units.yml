@@ -1,0 +1,33 @@
+Name: Unit Tests
+
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  unit_test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: Update repo
+        run: |
+          sudo apt-get update
+
+      - name: Install check
+        run: |
+          sudo apt-get -y install check
+
+      - name: Build unit tests
+        run: |
+          make unit
+
+      - name: Run unit tests
+        run: |
+          build/test/unit

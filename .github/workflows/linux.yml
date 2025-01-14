@@ -1,0 +1,33 @@
+Name: Linux interop tests
+
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  unit_test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: Update repo
+        run: |
+          sudo apt-get update
+          sudo modprobe tun
+
+      - name: Build linux tests
+        run: |
+          mkdir -p build/port
+          make
+
+#      - name: Run interop tests
+#        run: |
+#          sudo build/test
+#
+#

@@ -1,0 +1,14 @@
+*.o
+*.a
+*.pcap
+*.so
+*.dis
+*.uf2
+*.bin
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+CMakeTmp
+build/*
+test/unit/unit
+tags
