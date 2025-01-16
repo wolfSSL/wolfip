@@ -1,4 +1,4 @@
-## wolfTCP demo on raspberry pi pico
+## wolfIP demo on raspberry pi pico
 
 ### Instructions
 

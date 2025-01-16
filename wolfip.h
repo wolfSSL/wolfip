@@ -1,9 +1,9 @@
-#ifndef WOLFTCP_H
-#define WOLFTCP_H
+#ifndef WOLFIP_H
+#define WOLFIP_H
 #include <stdint.h>
 
 /* Types */
-struct ipstack;
+struct wolfIP;
 typedef uint32_t ip4;
 
 /* Macros, compiler specific. */
@@ -52,12 +52,12 @@ struct ipconf {
 #define IPSTACK_SOCK_DGRAM 2
 
 
-struct ipstack_sockaddr_in {
+struct wolfIP_sockaddr_in {
     uint16_t sin_family;
     uint16_t sin_port;
     struct sin_addr { uint32_t s_addr; } sin_addr;
 };
-struct ipstack_sockaddr { uint16_t sa_family; };
+struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
 #ifndef AF_INET
 #define AF_INET 2
@@ -67,51 +67,51 @@ typedef uint32_t socklen_t;
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#define ipstack_sockaddr_in sockaddr_in
-#define ipstack_sockaddr sockaddr
+#define wolfIP_sockaddr_in sockaddr_in
+#define wolfIP_sockaddr sockaddr
 #endif
 
-int ft_socket(struct ipstack *s, int domain, int type, int protocol);
-int ft_bind(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *addr, socklen_t addrlen);
-int ft_listen(struct ipstack *s, int sockfd, int backlog);
-int ft_accept(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, socklen_t *addrlen);
-int ft_connect(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *addr, socklen_t addrlen);
-int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int flags, const struct ipstack_sockaddr *dest_addr, socklen_t addrlen);
-int ft_send(struct ipstack *s, int sockfd, const void *buf, size_t len, int flags);
-int ft_write(struct ipstack *s, int sockfd, const void *buf, size_t len);
-int ft_recvfrom(struct ipstack *s, int sockfd, void *buf, size_t len, int flags, struct ipstack_sockaddr *src_addr, socklen_t *addrlen);
-int ft_recv(struct ipstack *s, int sockfd, void *buf, size_t len, int flags);
-int ft_read(struct ipstack *s, int sockfd, void *buf, size_t len);
-int ft_close(struct ipstack *s, int sockfd);
-int ft_getpeername(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, socklen_t *addrlen);
-int ft_getsockname(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, socklen_t *addrlen);
+int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol);
+int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen);
+int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog);
+int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen);
+int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen);
+int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags, const struct wolfIP_sockaddr *dest_addr, socklen_t addrlen);
+int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags);
+int wolfIP_sock_write(struct wolfIP *s, int sockfd, const void *buf, size_t len);
+int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags, struct wolfIP_sockaddr *src_addr, socklen_t *addrlen);
+int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags);
+int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len);
+int wolfIP_sock_close(struct wolfIP *s, int sockfd);
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen);
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen);
 
-int dhcp_client_init(struct ipstack *s);
-int dhcp_bound(struct ipstack *s);
+int dhcp_client_init(struct wolfIP *s);
+int dhcp_bound(struct wolfIP *s);
 
 /* DNS client */
 
-int nslookup(struct ipstack *s, const char *name, uint16_t *id, void (*lookup_cb)(uint32_t ip));
+int nslookup(struct wolfIP *s, const char *name, uint16_t *id, void (*lookup_cb)(uint32_t ip));
 
 /* IP stack interface */
-void ipstack_init(struct ipstack *s);
-void ipstack_init_static(struct ipstack **s);
-int ipstack_poll(struct ipstack *s, uint64_t now);
-void ipstack_recv(struct ipstack *s, void *buf, uint32_t len);
-void ipstack_ipconfig_set(struct ipstack *s, ip4 ip, ip4 mask, ip4 gw);
-void ipstack_ipconfig_get(struct ipstack *s, ip4 *ip, ip4 *mask, ip4 *gw);
+void wolfIP_init(struct wolfIP *s);
+void wolfIP_init_static(struct wolfIP **s);
+int wolfIP_poll(struct wolfIP *s, uint64_t now);
+void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
+void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
+void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw);
 
-struct ll *ipstack_getdev(struct ipstack *s);
+struct ll *wolfIP_getdev(struct wolfIP *s);
 
 /* Callback flags */
 #define CB_EVENT_READABLE 0x01 /* Accepted connection or data available */
 #define CB_EVENT_TIMEOUT 0x02  /* Timeout */
 #define CB_EVENT_WRITABLE 0x04 /* Connected or space available to send */
 #define CB_EVENT_CLOSED 0x10   /* Connection closed by peer */
-void ipstack_register_callback(struct ipstack *s, int sock_fd, void (*cb)(int sock_fd, uint16_t events, void *arg), void *arg);
+void wolfIP_register_callback(struct wolfIP *s, int sock_fd, void (*cb)(int sock_fd, uint16_t events, void *arg), void *arg);
 
 /* External requirements */
-uint32_t ipstack_getrandom(void);
+uint32_t wolfIP_getrandom(void);
 
 /* Inline utility functions */
 static inline uint32_t atou(const char *s)
@@ -152,7 +152,7 @@ static inline void iptoa(ip4 ip, char *buf)
     buf[j] = 0;
 }
 
-#ifdef WOLFSSL_WOLFTCP
+#ifdef WOLFSSL_WOLFIP
 #ifdef WOLFSSL_USER_SETTINGS
 #include "user_settings.h"
 #else
@@ -162,7 +162,7 @@ static inline void iptoa(ip4 ip, char *buf)
 #include <wolfssl/ssl.h>
 /* Defined in wolfssl_io.c */
 int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct ipstack *s);
+int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 #endif
 
 #endif

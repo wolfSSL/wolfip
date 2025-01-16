@@ -1,3 +1,23 @@
+/* linux_tap.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include <net/if.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -8,7 +28,7 @@
 #include <unistd.h>
 #include <sys/poll.h>
 #include <string.h>
-#include "wolftcp.h"
+#include "wolfip.h"
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -132,7 +152,7 @@ int tap_init(struct ll *ll, const char *ifname, uint32_t host_ip)
 }
 
 #include <sys/random.h>
-uint32_t ipstack_getrandom(void)
+uint32_t wolfIP_getrandom(void)
 {
     uint32_t ret;
     getrandom(&ret, sizeof(ret), 0);

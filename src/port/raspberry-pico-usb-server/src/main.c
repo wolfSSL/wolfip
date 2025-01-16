@@ -1,14 +1,15 @@
-/* wolfTCP: Raspberry-pi pico port + example
+/* main.c
  *
- * This file is part of wolfTCP
- * (c) 2024 Daniele Lacamera <root@danielinux.net>
+ * Copyright (C) 2024 wolfSSL Inc.
  *
- * wolfTCP is free software; you can redistribute it and/or modify
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
  * (at your option) any later version.
  *
- * wolfTCP is distributed in the hope that it will be useful,
+ * wolfIP is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -16,7 +17,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
- *
  * *****
  *
  * Based on LwIP drivers for TinyUSB,
@@ -42,12 +42,12 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 #include "config.h"
-#include "wolftcp.h"
+#include "wolfip.h"
 
 extern char MOTD[];
 
 /* Our globals */
-static struct ipstack *IPStack = NULL;
+static struct wolfIP *IPStack = NULL;
 
 /* Two static buffers for RX frames from USB host */
 uint8_t tusb_net_rxbuf[LINK_MTU][2];
@@ -62,11 +62,11 @@ uint16_t tusb_net_txbuf_sz[2] = {0, 0};
  */
 uint8_t tud_network_mac_address[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x00};
 
-/* ipstack_getrandom is a frontend to the ADC-based random number generator.
+/* wolfIP_getrandom is a frontend to the ADC-based random number generator.
  * See rand.c for more details.
  */
 extern int custom_random_seed(unsigned char *seed, unsigned int size);
-uint32_t ipstack_getrandom(void)
+uint32_t wolfIP_getrandom(void)
 {
     uint32_t seed;
     custom_random_seed((unsigned char *)&seed, 4);
@@ -74,7 +74,7 @@ uint32_t ipstack_getrandom(void)
 }
 
 /* ll_usb_send is the function that sends a frame to the USB host.
- * It is called by the wolfTCP stack when a frame is ready to be sent.
+ * It is called by the wolfIP stack when a frame is ready to be sent.
  * It will return the number of bytes sent, or 0 if the USB host is not ready.
  */
 static int ll_usb_send(struct ll *dev, void *frame, uint32_t sz) {
@@ -145,8 +145,8 @@ bool tud_network_recv_cb(const uint8_t *src, uint16_t size) {
     return true;
 }
 
-/* This is the poll function of the wolfTCP device driver.
- * It is called by the wolfTCP stack when it is ready to receive a frame.
+/* This is the poll function of the wolfIP device driver.
+ * It is called by the wolfIP stack when it is ready to receive a frame.
  * It will return the number of bytes received, or 0 if no frame is available.
  *
  * Frames copied in tusb_net_push_rx are processed here and sent to the stack.
@@ -177,31 +177,31 @@ static int tel_c = -1;
 
 static void telnet_cb(int fd, uint16_t event, void *arg)
 {
-    struct ipstack_sockaddr_in addr;
+    struct wolfIP_sockaddr_in addr;
     uint32_t socklen = sizeof(addr);
     (void)arg;
     if ((fd == tel_s) && (event & CB_EVENT_READABLE) && (tel_c == -1)) {
         char ipaddr[16];
         char welcome_msg[32];
-        tel_c = ft_accept(IPStack, tel_s, (struct ipstack_sockaddr*)&addr, &socklen);
+        tel_c = wolfIP_sock_accept(IPStack, tel_s, (struct wolfIP_sockaddr*)&addr, &socklen);
         if (tel_c > 0) {
             iptoa(ee32(addr.sin_addr.s_addr), ipaddr);
             snprintf(welcome_msg, sizeof(welcome_msg), "Welcome %s!\n", ipaddr);
-            ft_write(IPStack, tel_c, MOTD, strlen(MOTD));
-            ft_write(IPStack, tel_c, welcome_msg, strlen(welcome_msg));
+            wolfIP_sock_write(IPStack, tel_c, MOTD, strlen(MOTD));
+            wolfIP_sock_write(IPStack, tel_c, welcome_msg, strlen(welcome_msg));
         }
     }
 #if 0
     else if ((fd == tel_c) && (event & CB_EVENT_READABLE  )) {
         int ret;
-        ret = ft_recv((struct ipstack *)arg, tel_c, buf, sizeof(buf), 0);
+        ret = wolfIP_sock_recv((struct wolfIP *)arg, tel_c, buf, sizeof(buf), 0);
         if (ret != -11) {
             if (ret < 0) {
                 printf("Recv error: %d\n", ret);
-                ft_close((struct ipstack *)arg, tel_c);
+                wolfIP_sock_close((struct wolfIP *)arg, tel_c);
             } else if (ret == 0) {
                 printf("Client side closed the connection.\n");
-                ft_close((struct ipstack *)arg, tel_c);
+                wolfIP_sock_close((struct wolfIP *)arg, tel_c);
                 printf("Server: Exiting.\n");
                 exit_ok = 1;
             } else if (ret > 0) {
@@ -216,17 +216,17 @@ static void telnet_cb(int fd, uint16_t event, void *arg)
 
 static void telnetd_init(void)
 {
-    struct ipstack_sockaddr_in addr;
+    struct wolfIP_sockaddr_in addr;
     if (tel_s < 0)
-        tel_s = ft_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
-    ipstack_register_callback(IPStack, tel_s, telnet_cb, NULL);
+        tel_s = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    wolfIP_register_callback(IPStack, tel_s, telnet_cb, NULL);
 
     addr.sin_family = AF_INET;
     addr.sin_port = ee16(23);
     addr.sin_addr.s_addr = 0;
 
-    ft_bind(IPStack, tel_s, (struct ipstack_sockaddr *)&addr, sizeof(addr));
-    ft_listen(IPStack, tel_s, 1);
+    wolfIP_sock_bind(IPStack, tel_s, (struct wolfIP_sockaddr *)&addr, sizeof(addr));
+    wolfIP_sock_listen(IPStack, tel_s, 1);
 }
 
 int main(void)
@@ -244,8 +244,8 @@ int main(void)
 
     board_led_on();
 
-    ipstack_init_static(&IPStack);
-    tusb_netdev = ipstack_getdev(IPStack);
+    wolfIP_init_static(&IPStack);
+    tusb_netdev = wolfIP_getdev(IPStack);
     memcpy(tusb_netdev->mac, tud_network_mac_address, 6);
     strcpy(tusb_netdev->ifname, "tusb");
     tusb_netdev->poll = ll_usb_poll;
@@ -253,7 +253,7 @@ int main(void)
 
     /* set the IP address, netmask, and gateway */
     /* 192.168.7.2/24, gateway 192.168.7.1 */
-    ipstack_ipconfig_set(IPStack, atoip4("192.168.7.2"),
+    wolfIP_ipconfig_set(IPStack, atoip4("192.168.7.2"),
             atoip4("255.255.255.0"), atoip4("192.168.7.1"));
 
     telnetd_init();
@@ -261,7 +261,7 @@ int main(void)
     board_led_off();
     while (1) {
         tud_task();
-        ipstack_poll(IPStack, board_millis());
+        wolfIP_poll(IPStack, board_millis());
     }
     return 0;
 }

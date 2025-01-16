@@ -46,7 +46,7 @@ struct http_request {
 struct http_client {
     struct httpd *httpd;
     int client_sd;
-    struct ipstack_sockaddr_in addr;
+    struct wolfIP_sockaddr_in addr;
     WOLFSSL *ssl;   /* NULL if not using SSL */
 };
 
@@ -59,13 +59,13 @@ struct http_url {
 struct httpd {
     struct http_url urls[HTTPD_MAX_URLS];
     struct http_client clients[HTTPD_MAX_CLIENTS];
-    struct ipstack *ipstack;
+    struct wolfIP *ipstack;
     int listen_sd;
     uint16_t port;
     WOLFSSL_CTX *ssl_ctx;
 };
 
-int httpd_init(struct httpd *httpd, struct ipstack *s, uint16_t port, void *ssl_ctx);
+int httpd_init(struct httpd *httpd, struct wolfIP *s, uint16_t port, void *ssl_ctx);
 int httpd_register_handler(struct httpd *httpd, const char *path, int (*handler)(struct httpd *httpd, struct http_client *hc, struct http_request *req));
 int httpd_register_static_page(struct httpd *httpd, const char *path, const char *content);
 int httpd_get_request_arg(struct http_request *req, const char *name, char *value, size_t value_len);

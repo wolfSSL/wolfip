@@ -1,3 +1,23 @@
+/* test_httpd.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include <stdio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -8,7 +28,7 @@
 #include <string.h>
 #include <errno.h>
 #include "config.h"
-#include "wolftcp.h"
+#include "wolfip.h"
 #include "httpd.h"
 
 #define TEST_SIZE (8 * 1024)
@@ -17,26 +37,26 @@
 
 static int exit_ok = 0, exit_count = 0;
 static int tot_sent = 0;
-static int wolftcp_closing = 0;
+static int wolfIP_closing = 0;
 static int closed = 0;
 
 
 
 
-/* wolfTCP side: main loop of the stack under test. */
-static int test_loop(struct ipstack *s, int active_close)
+/* wolfIP side: main loop of the stack under test. */
+static int test_loop(struct wolfIP *s, int active_close)
 {
     exit_ok = 0;
     exit_count = 0;
     tot_sent = 0;
-    wolftcp_closing = active_close;
+    wolfIP_closing = active_close;
     closed = 0;
 
     while(1) {
         uint32_t ms_next;
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        ms_next = ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(ms_next * 1000);
         if (exit_ok > 0) {
             if (exit_count++ < 10)
@@ -61,7 +81,7 @@ extern const unsigned char server_key_der[];
 extern const unsigned long server_key_der_len;
 
 
-static void test_httpd(struct ipstack *s)
+static void test_httpd(struct wolfIP *s)
 {
     int ret;
     struct httpd httpd;
@@ -105,7 +125,7 @@ static void test_httpd(struct ipstack *s)
 /* Main test function. */
 int main(int argc, char **argv)
 {
-    struct ipstack *s;
+    struct wolfIP *s;
     struct ll *tapdev;
     struct timeval tv;
     struct in_addr linux_ip;
@@ -121,8 +141,8 @@ int main(int argc, char **argv)
     (void)nm;
     (void)gw;
     (void)tv;
-    ipstack_init_static(&s);
-    tapdev = ipstack_getdev(s);
+    wolfIP_init_static(&s);
+    tapdev = wolfIP_getdev(s);
     if (!tapdev)
         return 1;
     inet_aton(LINUX_IP, &linux_ip);
@@ -134,22 +154,22 @@ int main(int argc, char **argv)
 
 #ifdef DHCP
     gettimeofday(&tv, NULL);
-    ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+    wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
     dhcp_client_init(s);
     do {
         gettimeofday(&tv, NULL);
-        ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(1000);
-        ipstack_ipconfig_get(s, &ip, &nm, &gw);
+        wolfIP_ipconfig_get(s, &ip, &nm, &gw);
     } while (!dhcp_bound(s));
     printf("DHCP: obtained IP address.\n");
-    ipstack_ipconfig_get(s, &ip, &nm, &gw);
+    wolfIP_ipconfig_get(s, &ip, &nm, &gw);
     srv_ip = htonl(ip);
 #else
-    ipstack_ipconfig_set(s, atoip4(WOLFTCP_IP), atoip4("255.255.255.0"),
+    wolfIP_ipconfig_set(s, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(LINUX_IP));
     printf("IP: manually configured\n");
-    inet_pton(AF_INET, WOLFTCP_IP, &srv_ip);
+    inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
 #endif
 
     /* Server side test */

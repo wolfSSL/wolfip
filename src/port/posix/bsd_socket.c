@@ -1,4 +1,24 @@
-/* POSIX socket calls wrapper for wolfTCP */
+/* bsd_socket.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
+/* POSIX socket calls wrapper for wolfIP */
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,11 +33,11 @@
 #include <string.h>
 #define WOLF_POSIX
 #include "config.h"
-#include "wolftcp.h"
+#include "wolfip.h"
 
 static __thread int in_the_stack = 1;
-static struct ipstack *IPSTACK = NULL;
-pthread_mutex_t ipstack_mutex;
+static struct wolfIP *IPSTACK = NULL;
+pthread_mutex_t wolfIP_mutex;
 
 /* host_ functions are the original functions from the libc */
 static int (*host_socket  ) (int domain, int type, int protocol) = NULL;
@@ -47,7 +67,7 @@ static int (*host_fcntl) (int fd, int cmd, ...);
     if (host_##call == NULL) { \
         *(void **)(&host_##call) = dlsym(RTLD_NEXT, name); \
         if ((msg = dlerror()) != NULL) \
-        fprintf (stderr, "%s: dlsym(%s): %s\n", "wolfTCP", name, msg); \
+        fprintf (stderr, "%s: dlsym(%s): %s\n", "wolfIP", name, msg); \
     } \
 }
 
@@ -56,18 +76,18 @@ static int (*host_fcntl) (int fd, int cmd, ...);
     if(in_the_stack) { \
         return host_##call(fd, ## __VA_ARGS__); \
     } else { \
-        pthread_mutex_lock(&ipstack_mutex); \
+        pthread_mutex_lock(&wolfIP_mutex); \
         if ((fd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET)) != 0) { \
-            int __wolftcp_retval = ft_##call(IPSTACK, fd, ## __VA_ARGS__); \
-            if (__wolftcp_retval < 0) { \
-                errno = __wolftcp_retval; \
-                pthread_mutex_unlock(&ipstack_mutex); \
+            int __wolfip_retval = wolfIP_sock_##call(IPSTACK, fd, ## __VA_ARGS__); \
+            if (__wolfip_retval < 0) { \
+                errno = __wolfip_retval; \
+                pthread_mutex_unlock(&wolfIP_mutex); \
                 return -1; \
             } \
-            pthread_mutex_unlock(&ipstack_mutex); \
-            return __wolftcp_retval; \
+            pthread_mutex_unlock(&wolfIP_mutex); \
+            return __wolfip_retval; \
         }else { \
-            pthread_mutex_unlock(&ipstack_mutex); \
+            pthread_mutex_unlock(&wolfIP_mutex); \
             return host_##call(fd, ## __VA_ARGS__); \
         } \
     }
@@ -76,30 +96,30 @@ static int (*host_fcntl) (int fd, int cmd, ...);
     if(in_the_stack) { \
         return host_##call(fd, ## __VA_ARGS__); \
     } else { \
-        pthread_mutex_lock(&ipstack_mutex); \
+        pthread_mutex_lock(&wolfIP_mutex); \
         if ((fd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET)) != 0) { \
-            int __wolftcp_retval; \
+            int __wolfip_retval; \
             do { \
-                __wolftcp_retval = ft_##call(IPSTACK, fd, ## __VA_ARGS__); \
-                if (__wolftcp_retval == -11) { \
+                __wolfip_retval = wolfIP_sock_##call(IPSTACK, fd, ## __VA_ARGS__); \
+                if (__wolfip_retval == -11) { \
                     usleep(1000); \
                 } \
-            } while (__wolftcp_retval == -11); \
-            if (__wolftcp_retval < 0) { \
-                errno = __wolftcp_retval; \
-                pthread_mutex_unlock(&ipstack_mutex); \
+            } while (__wolfip_retval == -11); \
+            if (__wolfip_retval < 0) { \
+                errno = __wolfip_retval; \
+                pthread_mutex_unlock(&wolfIP_mutex); \
                 return -1; \
             } \
-            pthread_mutex_unlock(&ipstack_mutex); \
-            return __wolftcp_retval; \
+            pthread_mutex_unlock(&wolfIP_mutex); \
+            return __wolfip_retval; \
         }else { \
-            pthread_mutex_unlock(&ipstack_mutex); \
+            pthread_mutex_unlock(&wolfIP_mutex); \
             return host_##call(fd, ## __VA_ARGS__); \
         } \
     }
 
 
-int ft_setsockopt(struct ipstack *ipstack, int fd, int level, int optname, const void *optval, socklen_t optlen) {
+int wolfIP_sock_setsockopt(struct wolfIP *ipstack, int fd, int level, int optname, const void *optval, socklen_t optlen) {
     printf("Intercepted setsockopt\n");
     (void)ipstack;
     (void)fd;
@@ -110,7 +130,7 @@ int ft_setsockopt(struct ipstack *ipstack, int fd, int level, int optname, const
     return 0;
 }
 
-int ft_getsockopt(struct ipstack *ipstack, int fd, int level, int optname, void *optval, socklen_t *optlen) {
+int wolfIP_sock_getsockopt(struct wolfIP *ipstack, int fd, int level, int optname, void *optval, socklen_t *optlen) {
     printf("Intercepted getsockopt\n");
     (void)ipstack;
     (void)fd;
@@ -121,7 +141,7 @@ int ft_getsockopt(struct ipstack *ipstack, int fd, int level, int optname, void 
     return 0;
 }
 
-int ft_fcntl(struct ipstack *ipstack, int fd, int cmd, int arg) {
+int wolfIP_sock_fcntl(struct wolfIP *ipstack, int fd, int cmd, int arg) {
     printf("Intercepted fcntl\n");
     (void)ipstack;
     (void)fd;
@@ -140,9 +160,9 @@ int fcntl(int fd, int cmd, ...) {
     if (in_the_stack) {
         return host_fcntl(fd, cmd, arg);
     } else {
-        pthread_mutex_lock(&ipstack_mutex);
-        ret = ft_fcntl(IPSTACK, fd, cmd, arg);
-        pthread_mutex_unlock(&ipstack_mutex);
+        pthread_mutex_lock(&wolfIP_mutex);
+        ret = wolfIP_sock_fcntl(IPSTACK, fd, cmd, arg);
+        pthread_mutex_unlock(&wolfIP_mutex);
         return ret;
     }
 }
@@ -182,7 +202,7 @@ void poller_callback(int fd, uint16_t event, void *arg)
     write(poller->pipefds[1], &c, 1);
 }
 
-int ft_poll(struct ipstack *ipstack, struct pollfd *fds, nfds_t nfds, int timeout) {
+int wolfIP_sock_poll(struct wolfIP *ipstack, struct pollfd *fds, nfds_t nfds, int timeout) {
     nfds_t i;
     int fd;
     int ret;
@@ -213,14 +233,14 @@ int ft_poll(struct ipstack *ipstack, struct pollfd *fds, nfds_t nfds, int timeou
         fds[i].events = POLLIN;
         fds[i].revents = 0;
         /* Assign the callback */
-        ipstack_register_callback(ipstack, fd, poller_callback, ipstack);
+        wolfIP_register_callback(ipstack, fd, poller_callback, ipstack);
     }
     /* Call the original poll */
 repeat:
     miss = 0;
-    pthread_mutex_unlock(&ipstack_mutex);
+    pthread_mutex_unlock(&wolfIP_mutex);
     ret = host_poll(fds, nfds, timeout);
-    pthread_mutex_lock(&ipstack_mutex);
+    pthread_mutex_lock(&wolfIP_mutex);
     if (ret <= 0)
         return ret;
     for (i = 0; i < nfds; i++) {
@@ -278,7 +298,7 @@ repeat:
             host_close(poller->pipefds[0]);
             host_close(poller->pipefds[1]);
             poller->fd = 0;
-            ipstack_register_callback(ipstack, poller->fd, NULL, NULL);
+            wolfIP_register_callback(ipstack, poller->fd, NULL, NULL);
         }
     }
     if ((miss != 0) && (ret == 0))
@@ -286,7 +306,7 @@ repeat:
     return ret;
 }
 
-int ft_select(struct ipstack *ipstack, int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) {
+int wolfIP_sock_select(struct wolfIP *ipstack, int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) {
     int i;
     int maxfd;
     int ret;
@@ -316,7 +336,7 @@ int ft_select(struct ipstack *ipstack, int nfds, fd_set *readfds, fd_set *writef
                 return -1;
             tcp_pollers[tcp_pos].fd = i;
             tcp_pollers[tcp_pos].events = 0;
-            ipstack_register_callback(ipstack, i, poller_callback, ipstack);
+            wolfIP_register_callback(ipstack, i, poller_callback, ipstack);
             if (readfds && (FD_ISSET(i, readfds))) {
                 tcp_pollers[tcp_pos].events |= POLLIN;
                 FD_CLR(i, readfds);
@@ -344,7 +364,7 @@ int ft_select(struct ipstack *ipstack, int nfds, fd_set *readfds, fd_set *writef
             pipe(udp_pollers[udp_pos].pipefds);
             udp_pollers[udp_pos].fd = i;
             udp_pollers[udp_pos].events = 0;
-            ipstack_register_callback(ipstack, i, poller_callback, ipstack);
+            wolfIP_register_callback(ipstack, i, poller_callback, ipstack);
             if (readfds && FD_ISSET(i, readfds)) {
                 udp_pollers[udp_pos].events |= POLLIN;
                 FD_CLR(i, readfds);
@@ -366,9 +386,9 @@ int ft_select(struct ipstack *ipstack, int nfds, fd_set *readfds, fd_set *writef
         }
     }
     /* Call the original select */
-    pthread_mutex_unlock(&ipstack_mutex);
+    pthread_mutex_unlock(&wolfIP_mutex);
     ret = host_select(maxfd + 1, readfds, writefds, exceptfds, timeout);
-    pthread_mutex_lock(&ipstack_mutex);
+    pthread_mutex_lock(&wolfIP_mutex);
     if (ret <= 0) {
         return ret;
     }
@@ -388,7 +408,7 @@ int ft_select(struct ipstack *ipstack, int nfds, fd_set *readfds, fd_set *writef
                 FD_SET(tcp_pollers[i].fd, exceptfds);
             }
         }
-        ipstack_register_callback(ipstack, tcp_pollers[i].fd, NULL, NULL);
+        wolfIP_register_callback(ipstack, tcp_pollers[i].fd, NULL, NULL);
         host_close(tcp_pollers[i].pipefds[0]);
         host_close(tcp_pollers[i].pipefds[1]);
         tcp_pollers[i].fd = 0;
@@ -410,7 +430,7 @@ int ft_select(struct ipstack *ipstack, int nfds, fd_set *readfds, fd_set *writef
         }
         host_close(udp_pollers[i].pipefds[0]);
         host_close(udp_pollers[i].pipefds[1]);
-        ipstack_register_callback(ipstack, tcp_pollers[i].fd, NULL, NULL);
+        wolfIP_register_callback(ipstack, tcp_pollers[i].fd, NULL, NULL);
         udp_pollers[i].fd = 0;
     }
     return ret;
@@ -421,9 +441,9 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struc
     if (in_the_stack) {
         return host_select(nfds, readfds, writefds, exceptfds, timeout);
     } else {
-        pthread_mutex_lock(&ipstack_mutex);
-        ret = ft_select(IPSTACK, nfds, readfds, writefds, exceptfds, timeout);
-        pthread_mutex_unlock(&ipstack_mutex);
+        pthread_mutex_lock(&wolfIP_mutex);
+        ret = wolfIP_sock_select(IPSTACK, nfds, readfds, writefds, exceptfds, timeout);
+        pthread_mutex_unlock(&wolfIP_mutex);
         return ret;
     }
 }
@@ -432,7 +452,7 @@ int socket(int domain, int type, int protocol) {
     if (in_the_stack) {
         return host_socket(domain, type, protocol);
     } else {
-        return ft_socket(IPSTACK, domain, type, protocol);
+        return wolfIP_sock_socket(IPSTACK, domain, type, protocol);
     }
 }
 
@@ -502,9 +522,9 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     if (in_the_stack) {
         return host_poll(fds, nfds, timeout);
     } else {
-        pthread_mutex_lock(&ipstack_mutex);
-        ret = ft_poll(IPSTACK, fds, nfds, timeout);
-        pthread_mutex_unlock(&ipstack_mutex);
+        pthread_mutex_lock(&wolfIP_mutex);
+        ret = wolfIP_sock_poll(IPSTACK, fds, nfds, timeout);
+        pthread_mutex_unlock(&wolfIP_mutex);
         return ret;
     }
 }
@@ -516,25 +536,25 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
  * */
 extern int tap_init(struct ll *dev, const char *name, uint32_t host_ip);
 
-void *ft_posix_ip_loop(void *arg) {
-    struct ipstack *ipstack = (struct ipstack *)arg;
+void *wolfIP_sock_posix_ip_loop(void *arg) {
+    struct wolfIP *ipstack = (struct wolfIP *)arg;
     uint32_t ms_next;
     struct timeval tv;
     while (1) {
-        pthread_mutex_lock(&ipstack_mutex);
+        pthread_mutex_lock(&wolfIP_mutex);
         gettimeofday(&tv, NULL);
-        ms_next = ipstack_poll(ipstack, tv.tv_sec * 1000 + tv.tv_usec / 1000);
-        pthread_mutex_unlock(&ipstack_mutex);
+        ms_next = wolfIP_poll(ipstack, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        pthread_mutex_unlock(&wolfIP_mutex);
         usleep(ms_next * 1000);
         in_the_stack = 1;
     }
     return NULL;
 }
 
-void __attribute__((constructor)) init_wolftcp_posix() {
+void __attribute__((constructor)) init_wolfip_posix() {
     struct in_addr linux_ip; 
     struct ll *tapdev;
-    pthread_t ipstack_thread;
+    pthread_t wolfIP_thread;
     if (IPSTACK)
         return;
     inet_aton(LINUX_IP, &linux_ip);
@@ -558,17 +578,17 @@ void __attribute__((constructor)) init_wolftcp_posix() {
     swap_socketcall(select, "select");
     swap_socketcall(fcntl, "fcntl");
 
-    pthread_mutex_init(&ipstack_mutex, NULL);
-    ipstack_init_static(&IPSTACK);
-    tapdev = ipstack_getdev(IPSTACK);
+    pthread_mutex_init(&wolfIP_mutex, NULL);
+    wolfIP_init_static(&IPSTACK);
+    tapdev = wolfIP_getdev(IPSTACK);
     if (tap_init(tapdev, "wtcp0", linux_ip.s_addr) < 0) {
         perror("tap init");
     }
-    ipstack_ipconfig_set(IPSTACK, atoip4(WOLFTCP_IP), atoip4("255.255.255.0"),
+    wolfIP_ipconfig_set(IPSTACK, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(LINUX_IP));
-    printf("IP: manually configured - %s\n", WOLFTCP_IP);
+    printf("IP: manually configured - %s\n", WOLFIP_IP);
     sleep(1);
-    pthread_create(&ipstack_thread, NULL, ft_posix_ip_loop, IPSTACK);
+    pthread_create(&wolfIP_thread, NULL, wolfIP_sock_posix_ip_loop, IPSTACK);
     in_the_stack = 0;
 }
 

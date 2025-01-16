@@ -1,10 +1,30 @@
+/* unit.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include "check.h"
-#include "../../wolftcp.c"
+#include "../../wolfip.c"
 #include <stdlib.h> /* for random() */
 
 /* MOCKS */
 /* pseudo random number generator to mock the random number generator */
-uint32_t ipstack_getrandom(void)
+uint32_t wolfIP_getrandom(void)
 {
     unsigned int seed = 0xDAC0FFEE;
     srandom(seed);
@@ -35,7 +55,7 @@ static int mock_poll(struct ll *dev, void *frame, uint32_t len)
 }
 
 
-void mock_link_init(struct ipstack *s)
+void mock_link_init(struct wolfIP *s)
 {
     struct ll *ll = &s->ll_dev;
     strncpy((char *)ll->ifname, ifname, sizeof(ll->ifname) - 1);
@@ -76,7 +96,7 @@ START_TEST(test_fifo_push_and_pop) {
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
     desc2 = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc2);
     ck_assert_ptr_eq(desc, desc2);
@@ -88,7 +108,7 @@ START_TEST(test_fifo_push_and_pop) {
     ck_assert_int_eq(fifo_space(&f), memsz);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
     ck_assert_int_eq(fifo_len(&f), 0);
 }
 END_TEST
@@ -111,12 +131,12 @@ START_TEST(test_fifo_push_and_pop_multiple) {
     struct pkt_desc *desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 
     desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data2));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data2, sizeof(data2));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data2, sizeof(data2));
 }
 END_TEST
 
@@ -129,7 +149,7 @@ START_TEST(test_fifo_pop_success) {
     struct pkt_desc *desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc); // Ensure we got a valid descriptor
     ck_assert_int_eq(desc->len, sizeof(data)); // Check length
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data)); // Check data
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data)); // Check data
 }
 
 START_TEST(test_fifo_pop_empty) {
@@ -168,7 +188,7 @@ START_TEST(test_fifo_push_wrap) {
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 }
 END_TEST
 
@@ -188,7 +208,7 @@ START_TEST(test_fifo_push_wrap_multiple) {
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 
     // Push more data to wrap around the buffer
     ret = fifo_push(&f, data2, sizeof(data2));
@@ -301,7 +321,7 @@ START_TEST(test_queue_insert_empty) {
     ck_assert_int_eq(res, 0);
     ck_assert_int_eq(queue_len(&q), sizeof(data));
     ck_assert_int_eq(q.head, sizeof(data));
-    ck_assert_mem_eq(q.data, data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)q.data, data, sizeof(data));
 }
 END_TEST
 
@@ -316,8 +336,8 @@ START_TEST(test_queue_insert_sequential) {
     ck_assert_int_eq(res1, 0);
     ck_assert_int_eq(res2, 0);
     ck_assert_int_eq(queue_len(&q), sizeof(data1) + sizeof(data2));
-    ck_assert_mem_eq(q.data, data1, sizeof(data1));
-    ck_assert_mem_eq(q.data + 2, data2, sizeof(data2));
+    ck_assert_mem_eq((const uint8_t *)q.data, data1, sizeof(data1));
+    ck_assert_mem_eq((uint8_t *)q.data + 2, data2, sizeof(data2));
 }
 END_TEST
 
@@ -357,9 +377,9 @@ END_TEST
 START_TEST(test_insert_timer) {
     reset_heap();
 
-    struct ipstack_timer tmr1 = { .expires = 100 };
-    struct ipstack_timer tmr2 = { .expires = 50 };
-    struct ipstack_timer tmr3 = { .expires = 200 };
+    struct wolfIP_timer tmr1 = { .expires = 100 };
+    struct wolfIP_timer tmr2 = { .expires = 50 };
+    struct wolfIP_timer tmr3 = { .expires = 200 };
 
     int id1 = timers_binheap_insert(&heap, tmr1);
     int id2 = timers_binheap_insert(&heap, tmr2);
@@ -376,15 +396,15 @@ END_TEST
 START_TEST(test_pop_timer) {
     reset_heap();
 
-    struct ipstack_timer tmr1 = { .expires = 300 };
-    struct ipstack_timer tmr2 = { .expires = 100 };
-    struct ipstack_timer tmr3 = { .expires = 200 };
+    struct wolfIP_timer tmr1 = { .expires = 300 };
+    struct wolfIP_timer tmr2 = { .expires = 100 };
+    struct wolfIP_timer tmr3 = { .expires = 200 };
 
     timers_binheap_insert(&heap, tmr1);
     timers_binheap_insert(&heap, tmr2);
     timers_binheap_insert(&heap, tmr3);
 
-    struct ipstack_timer popped = timers_binheap_pop(&heap);
+    struct wolfIP_timer popped = timers_binheap_pop(&heap);
     ck_assert_int_eq(popped.expires, 100);
     ck_assert_int_eq(heap.size, 2);
     ck_assert_int_lt(heap.timers[0].expires, heap.timers[1].expires);
@@ -394,7 +414,7 @@ END_TEST
 START_TEST(test_is_timer_expired) {
     reset_heap();
 
-    struct ipstack_timer tmr = { .expires = 150 };
+    struct wolfIP_timer tmr = { .expires = 150 };
     timers_binheap_insert(&heap, tmr);
 
     ck_assert_int_eq(is_timer_expired(&heap, 100), 0);
@@ -406,8 +426,8 @@ END_TEST
 START_TEST(test_cancel_timer) {
     reset_heap();
 
-    struct ipstack_timer tmr1 = { .expires = 100 };
-    struct ipstack_timer tmr2 = { .expires = 200 };
+    struct wolfIP_timer tmr1 = { .expires = 100 };
+    struct wolfIP_timer tmr2 = { .expires = 200 };
 
     int id1 = timers_binheap_insert(&heap, tmr1);
     int id2 = timers_binheap_insert(&heap, tmr2);
@@ -416,7 +436,7 @@ START_TEST(test_cancel_timer) {
     timer_binheap_cancel(&heap, id1);
     ck_assert_int_eq(heap.timers[0].expires, 0);  // tmr1 canceled
 
-    struct ipstack_timer popped = timers_binheap_pop(&heap);
+    struct wolfIP_timer popped = timers_binheap_pop(&heap);
     ck_assert_int_eq(popped.expires, 200);  // Only tmr2 should remain
     ck_assert_int_eq(heap.size, 0);
 }
@@ -426,9 +446,9 @@ END_TEST
 /* Arp suite */
 START_TEST(test_arp_request_basic)
 {
-    struct ipstack s;
+    struct wolfIP s;
     struct arp_packet *arp;
-    ipstack_init(&s);
+    wolfIP_init(&s);
     uint32_t target_ip = 0xC0A80002; /* 192.168.0.2 */
     mock_link_init(&s);
     s.last_tick = 1000;
@@ -452,8 +472,8 @@ END_TEST
 
 START_TEST(test_arp_request_throttle)
 {
-    struct ipstack s;
-    ipstack_init(&s);
+    struct wolfIP s;
+    wolfIP_init(&s);
     uint32_t target_ip = 0xC0A80002; /*192.168.0.2*/
     mock_link_init(&s);
     s.last_tick = 1000;
@@ -466,8 +486,8 @@ END_TEST
 
 START_TEST(test_arp_request_target_ip) {
     uint32_t target_ip = 0xC0A80002;
-    struct ipstack s;
-    ipstack_init(&s);
+    struct wolfIP s;
+    wolfIP_init(&s);
     mock_link_init(&s);
     s.last_tick = 1000;
     arp_request(&s, target_ip);
@@ -483,8 +503,8 @@ START_TEST(test_arp_request_handling) {
     uint32_t device_ip = 0xC0A80001; // 192.168.0.1
     uint8_t req_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     //uint8_t mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
-    struct ipstack s;
-    ipstack_init(&s);
+    struct wolfIP s;
+    wolfIP_init(&s);
     mock_link_init(&s);
     s.ipconf.ip = device_ip;
 
@@ -496,9 +516,9 @@ START_TEST(test_arp_request_handling) {
 
     /* Call arp_recv with the ARP request */
     arp_recv(&s, &arp_req, sizeof(arp_req));
-    ipstack_poll(&s, 1000);
-    ipstack_poll(&s, 1001);
-    ipstack_poll(&s, 1002);
+    wolfIP_poll(&s, 1000);
+    wolfIP_poll(&s, 1001);
+    wolfIP_poll(&s, 1002);
 
     /* Check if ARP table updated with requester's MAC and IP */
     /* TODO */
@@ -521,8 +541,8 @@ START_TEST(test_arp_reply_handling) {
     memset(&arp_reply, 0, sizeof(arp_reply));
     uint32_t reply_ip = 0xC0A80003; // 192.168.0.3
     uint8_t reply_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
-    struct ipstack s;
-    ipstack_init(&s);
+    struct wolfIP s;
+    wolfIP_init(&s);
     mock_link_init(&s);
 
     /* Prepare ARP reply */
@@ -551,8 +571,8 @@ START_TEST(test_arp_lookup_success) {
     uint8_t found_mac[6];
     uint32_t ip = 0xC0A80002;
     const uint8_t mock_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
-    struct ipstack s;
-    ipstack_init(&s);
+    struct wolfIP s;
+    wolfIP_init(&s);
     mock_link_init(&s);
 
     /* Add a known IP-MAC pair */
@@ -569,8 +589,8 @@ END_TEST
 START_TEST(test_arp_lookup_failure) {
     uint8_t found_mac[6];
     uint32_t ip = 0xC0A80004;
-    struct ipstack s;
-    ipstack_init(&s);
+    struct wolfIP s;
+    wolfIP_init(&s);
     mock_link_init(&s);
 
     /* Ensure arp_lookup fails for unknown IP */
@@ -585,7 +605,7 @@ END_TEST
 // Test for `transport_checksum` calculation
 START_TEST(test_transport_checksum) {
     union transport_pseudo_header ph;
-    struct ipstack_tcp_seg tcp_data;
+    struct wolfIP_tcp_seg tcp_data;
     memset(&ph, 0, sizeof(ph));
     memset(&tcp_data, 0, sizeof(tcp_data));
 
@@ -611,7 +631,7 @@ END_TEST
 
 // Test for `iphdr_set_checksum` calculation
 START_TEST(test_iphdr_set_checksum) {
-    struct ipstack_ip_packet ip;
+    struct wolfIP_ip_packet ip;
     memset(&ip, 0, sizeof(ip));
 
     ip.ver_ihl = 0x45;
@@ -631,8 +651,8 @@ END_TEST
 
 // Test for `eth_output_add_header` to add Ethernet headers
 START_TEST(test_eth_output_add_header) {
-    struct ipstack_eth_frame eth_frame;
-    struct ipstack S;
+    struct wolfIP_eth_frame eth_frame;
+    struct wolfIP S;
     memset(&S, 0, sizeof(S));
     memset(&eth_frame, 0, sizeof(eth_frame));
 
@@ -650,8 +670,8 @@ END_TEST
 // Test for `ip_output_add_header` to set up IP headers and calculate checksums
 START_TEST(test_ip_output_add_header) {
     struct tsocket t;
-    struct ipstack_ip_packet ip;
-    struct ipstack S;
+    struct wolfIP_ip_packet ip;
+    struct wolfIP S;
     memset(&t, 0, sizeof(t));
     memset(&ip, 0, sizeof(ip));
     memset(&S, 0, sizeof(S));
@@ -674,7 +694,7 @@ START_TEST(test_ip_output_add_header) {
     ck_assert_msg(ip.csum != 0, "IP header checksum should not be zero");
 
     // Check the pseudo-header checksum calculation for TCP segment
-    struct ipstack_tcp_seg *tcp = (struct ipstack_tcp_seg *)&ip;
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)&ip;
     ck_assert_msg(tcp->csum != 0, "TCP checksum should not be zero");
 }
 END_TEST
@@ -686,7 +706,7 @@ Suite *wolf_suite(void)
     Suite *s;
     TCase *tc_core, *tc_proto, *tc_utils;
 
-    s = suite_create("wolfTCP");
+    s = suite_create("wolfIP");
     tc_core = tcase_create("Core");
     tc_utils = tcase_create("Utils");
     tc_proto = tcase_create("Protocols");
