@@ -8,7 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include "config.h"
-#include "wolftcp.h"
+#include "wolfip.h"
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
@@ -22,11 +22,11 @@ static int exit_ok = 0, exit_count = 0;
 static uint8_t buf[TEST_SIZE];
 static int tot_sent = 0;
 static int tot_recv = 0;
-static int wolftcp_closing = 0;
+static int wolfIP_closing = 0;
 static int closed = 0;
 static const uint8_t test_pattern[16] = "Test pattern - -";
 
-static WOLFSSL_CTX *server_ctx = NULL; /* Used by wolfTCP */
+static WOLFSSL_CTX *server_ctx = NULL; /* Used by wolfIP */
 static WOLFSSL_CTX *client_ctx = NULL; /* Used by Linux */
 static WOLFSSL *client_ssl = NULL;
 static WOLFSSL *server_ssl = NULL;
@@ -34,14 +34,14 @@ static WOLFSSL *server_ssl = NULL;
 
 /* Defined in wolfssl_io.c */
 int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct ipstack *s);
+int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 
-/* wolfTCP: server side callback. */
+/* wolfIP: server side callback. */
 static void server_cb(int fd, uint16_t event, void *arg)
 {
     int ret = 0;
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) && (client_fd == -1)) {
-        client_fd = ft_accept((struct ipstack *)arg, listen_fd, NULL, NULL);
+        client_fd = wolfIP_sock_accept((struct wolfIP *)arg, listen_fd, NULL, NULL);
         if (client_fd > 0) {
             printf("accept: Client FD is 0x%04x\n", client_fd);
             /* Create the wolfSSL object */
@@ -62,11 +62,11 @@ static void server_cb(int fd, uint16_t event, void *arg)
             ret = wolfSSL_get_error(server_ssl, 0);
             if (ret != WOLFSSL_ERROR_WANT_READ) {
                 printf("Recv error: %d\n", ret);
-                ft_close((struct ipstack *)arg, client_fd);
+                wolfIP_sock_close((struct wolfIP *)arg, client_fd);
             }
         } else if (ret == 0) {
             printf("Client side closed the connection.\n");
-            ft_close((struct ipstack *)arg, client_fd);
+            wolfIP_sock_close((struct wolfIP *)arg, client_fd);
             printf("Server: Exiting.\n");
             exit_ok = 1;
         } else if (ret > 0) {
@@ -76,8 +76,8 @@ static void server_cb(int fd, uint16_t event, void *arg)
     }
     if ((event & CB_EVENT_WRITABLE) || ((ret > 0) && !closed)) {
         int snd_ret;
-        if ((tot_sent >= 4096) && wolftcp_closing) {
-            ft_close((struct ipstack *)arg, client_fd);
+        if ((tot_sent >= 4096) && wolfIP_closing) {
+            wolfIP_sock_close((struct wolfIP *)arg, client_fd);
             printf("Server: I closed the connection.\n");
             closed = 1;
             exit_ok = 1;
@@ -88,7 +88,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
                 if (snd_ret < 0) {
                     printf("Send error: %d\n", snd_ret);
                     wolfSSL_free(server_ssl);
-                    ft_close((struct ipstack *)arg, client_fd);
+                    wolfIP_sock_close((struct wolfIP *)arg, client_fd);
                 } else {
                     tot_sent += snd_ret;
                     printf("sent %d bytes\n", snd_ret);
@@ -108,7 +108,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
     if ((fd == client_fd) && (event & CB_EVENT_CLOSED)) {
         printf("Client side closed the connection (EVENT_CLOSED)\n");
         wolfSSL_free(server_ssl);
-        ft_close((struct ipstack *)arg, client_fd);
+        wolfIP_sock_close((struct wolfIP *)arg, client_fd);
         client_fd = -1;
         printf("Server: Exiting.\n");
         exit_ok = 1;
@@ -116,20 +116,20 @@ static void server_cb(int fd, uint16_t event, void *arg)
 }
 
 
-/* wolfTCP side: main loop of the stack under test. */
-static int test_loop(struct ipstack *s, int active_close)
+/* wolfIP side: main loop of the stack under test. */
+static int test_loop(struct wolfIP *s, int active_close)
 {
     exit_ok = 0;
     exit_count = 0;
     tot_sent = 0;
-    wolftcp_closing = active_close;
+    wolfIP_closing = active_close;
     closed = 0;
 
     while(1) {
         uint32_t ms_next;
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        ms_next = ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(ms_next * 1000);
         if (exit_ok > 0) {
             if (exit_count++ < 10)
@@ -210,7 +210,7 @@ void *pt_echoclient(void *arg)
         }
         if (ret == 0) {
             printf("test client read: server has closed the connection.\n");
-            if (wolftcp_closing)
+            if (wolfIP_closing)
                 return (void *)0;
             else
                 return (void *)-1;
@@ -247,11 +247,11 @@ extern const unsigned char server_key_der[];
 extern const unsigned long server_key_der_len;
 
 
-void test_wolftcp_echoserver(struct ipstack *s, uint32_t srv_ip)
+void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
 {
     int ret, test_ret = 0;
     pthread_t pt;
-    struct ipstack_sockaddr_in local_sock = {
+    struct wolfIP_sockaddr_in local_sock = {
         .sin_family = AF_INET,
         .sin_port = ee16(8), /* Echo */
         .sin_addr.s_addr = 0
@@ -264,7 +264,7 @@ void test_wolftcp_echoserver(struct ipstack *s, uint32_t srv_ip)
         printf("Failed to create server context\n");
         return;
     }
-    printf("Associating server context with wolfTCP\n");
+    printf("Associating server context with wolfIP\n");
     wolfSSL_SetIO_FT_CTX(server_ctx, s);
     
     printf("Importing server certificate\n");
@@ -282,15 +282,15 @@ void test_wolftcp_echoserver(struct ipstack *s, uint32_t srv_ip)
         return;
     }
 
-    listen_fd = ft_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    listen_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     printf("socket: %04x\n", listen_fd);
-    ipstack_register_callback(s, listen_fd, server_cb, s);
+    wolfIP_register_callback(s, listen_fd, server_cb, s);
 
     pthread_create(&pt, NULL, pt_echoclient, &srv_ip);
     printf("Starting test: echo server close-wait\n");
-    ret = ft_bind(s, listen_fd, (struct ipstack_sockaddr *)&local_sock, sizeof(local_sock));
+    ret = wolfIP_sock_bind(s, listen_fd, (struct wolfIP_sockaddr *)&local_sock, sizeof(local_sock));
     printf("bind: %d\n", ret);
-    ret = ft_listen(s, listen_fd, 1);
+    ret = wolfIP_sock_listen(s, listen_fd, 1);
     printf("listen: %d\n", ret);
     ret = test_loop(s, 0);
     pthread_join(pt, (void **)&test_ret);
@@ -306,13 +306,13 @@ void test_wolftcp_echoserver(struct ipstack *s, uint32_t srv_ip)
     printf("Test linux client: %d\n", test_ret);
     sleep(1);
 
-    ft_close(s, listen_fd);
+    wolfIP_sock_close(s, listen_fd);
 }
 
 /* Main test function. */
 int main(int argc, char **argv)
 {
-    struct ipstack *s;
+    struct wolfIP *s;
     struct ll *tapdev;
     struct timeval tv;
     struct in_addr linux_ip;
@@ -328,8 +328,8 @@ int main(int argc, char **argv)
     (void)nm;
     (void)gw;
     (void)tv;
-    ipstack_init_static(&s);
-    tapdev = ipstack_getdev(s);
+    wolfIP_init_static(&s);
+    tapdev = wolfIP_getdev(s);
     if (!tapdev)
         return 1;
     inet_aton(LINUX_IP, &linux_ip);
@@ -341,26 +341,26 @@ int main(int argc, char **argv)
 
 #ifdef DHCP
     gettimeofday(&tv, NULL);
-    ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+    wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
     dhcp_client_init(s);
     do {
         gettimeofday(&tv, NULL);
-        ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(1000);
-        ipstack_ipconfig_get(s, &ip, &nm, &gw);
+        wolfIP_ipconfig_get(s, &ip, &nm, &gw);
     } while (!dhcp_bound(s));
     printf("DHCP: obtained IP address.\n");
-    ipstack_ipconfig_get(s, &ip, &nm, &gw);
+    wolfIP_ipconfig_get(s, &ip, &nm, &gw);
     srv_ip = htonl(ip);
 #else
-    ipstack_ipconfig_set(s, atoip4(WOLFTCP_IP), atoip4("255.255.255.0"),
+    wolfIP_ipconfig_set(s, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(LINUX_IP));
     printf("IP: manually configured\n");
-    inet_pton(AF_INET, WOLFTCP_IP, &srv_ip);
+    inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
 #endif
 
     /* Server side test */
-    test_wolftcp_echoserver(s, srv_ip);
+    test_wolfip_echoserver(s, srv_ip);
     sleep(2);
     sync();
     system("killall tcpdump");

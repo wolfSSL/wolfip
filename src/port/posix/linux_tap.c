@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <sys/poll.h>
 #include <string.h>
-#include "wolftcp.h"
+#include "wolfip.h"
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -132,7 +132,7 @@ int tap_init(struct ll *ll, const char *ifname, uint32_t host_ip)
 }
 
 #include <sys/random.h>
-uint32_t ipstack_getrandom(void)
+uint32_t wolfIP_getrandom(void)
 {
     uint32_t ret;
     getrandom(&ret, sizeof(ret), 0);

@@ -8,7 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include "config.h"
-#include "wolftcp.h"
+#include "wolfip.h"
 
 #define TEST_SIZE (8 * 1024)
 
@@ -19,7 +19,7 @@ static int exit_ok = 0, exit_count = 0;
 static uint8_t buf[TEST_SIZE];
 static int tot_sent = 0;
 static int tot_recv = 0;
-static int wolftcp_closing = 0;
+static int wolfIP_closing = 0;
 static int closed = 0;
 static int conn_fd = -1;
 static int client_connected = 0;
@@ -27,24 +27,24 @@ static const uint8_t test_pattern[16] = "Test pattern - -";
 
 
 
-/* wolfTCP: server side callback. */
+/* wolfIP: server side callback. */
 static void server_cb(int fd, uint16_t event, void *arg)
 {
     int ret = 0;
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) && (client_fd == -1)) {
-        client_fd = ft_accept((struct ipstack *)arg, listen_fd, NULL, NULL);
+        client_fd = wolfIP_sock_accept((struct wolfIP *)arg, listen_fd, NULL, NULL);
         if (client_fd > 0) {
             printf("accept: %04x\n", client_fd);
         }
     } else if ((fd == client_fd) && (event & CB_EVENT_READABLE  )) {
-        ret = ft_recvfrom((struct ipstack *)arg, client_fd, buf, sizeof(buf), 0, NULL, NULL);
+        ret = wolfIP_sock_recvfrom((struct wolfIP *)arg, client_fd, buf, sizeof(buf), 0, NULL, NULL);
         if (ret != -11) {
             if (ret < 0) {
                 printf("Recv error: %d\n", ret);
-                ft_close((struct ipstack *)arg, client_fd);
+                wolfIP_sock_close((struct wolfIP *)arg, client_fd);
             } else if (ret == 0) {
                 printf("Client side closed the connection.\n");
-                ft_close((struct ipstack *)arg, client_fd);
+                wolfIP_sock_close((struct wolfIP *)arg, client_fd);
                 printf("Server: Exiting.\n");
                 exit_ok = 1;
             } else if (ret > 0) {
@@ -55,18 +55,18 @@ static void server_cb(int fd, uint16_t event, void *arg)
     }
     if ((event & CB_EVENT_WRITABLE) || ((ret > 0) && !closed)) {
         int snd_ret;
-        if ((tot_sent >= 4096) && wolftcp_closing) {
-            ft_close((struct ipstack *)arg, client_fd);
+        if ((tot_sent >= 4096) && wolfIP_closing) {
+            wolfIP_sock_close((struct wolfIP *)arg, client_fd);
             printf("Server: I closed the connection.\n");
             closed = 1;
             exit_ok = 1;
         }
         if ((!closed) && (tot_sent < tot_recv)) {
-            snd_ret = ft_sendto((struct ipstack *)arg, client_fd, buf + tot_sent, tot_recv - tot_sent, 0, NULL, 0);
+            snd_ret = wolfIP_sock_sendto((struct wolfIP *)arg, client_fd, buf + tot_sent, tot_recv - tot_sent, 0, NULL, 0);
             if (snd_ret != -11) {
                 if (snd_ret < 0) {
                     printf("Send error: %d\n", snd_ret);
-                    ft_close((struct ipstack *)arg, client_fd);
+                    wolfIP_sock_close((struct wolfIP *)arg, client_fd);
                 } else {
                     tot_sent += snd_ret;
                     printf("sent %d bytes\n", snd_ret);
@@ -83,7 +83,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
     }
     if ((fd == client_fd) && (event & CB_EVENT_CLOSED)) {
         printf("Client side closed the connection (EVENT_CLOSED)\n");
-        ft_close((struct ipstack *)arg, client_fd);
+        wolfIP_sock_close((struct wolfIP *)arg, client_fd);
         client_fd = -1;
         printf("Server: Exiting.\n");
         exit_ok = 1;
@@ -94,7 +94,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
 /* Client-side callback. */
 static void client_cb(int fd, uint16_t event, void *arg)
 {
-    struct ipstack *s = (struct ipstack *)arg;
+    struct wolfIP *s = (struct wolfIP *)arg;
     uint32_t i;
     int ret;
     static unsigned int total_r = 0, total_w = 0;
@@ -110,7 +110,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
         }
     }
     if (client_connected && (event & CB_EVENT_WRITABLE) && (total_w < sizeof(buf))) {
-        ret = ft_sendto(s, fd, buf + total_w, sizeof(buf) - total_w, 0, NULL, 0);
+        ret = wolfIP_sock_sendto(s, fd, buf + total_w, sizeof(buf) - total_w, 0, NULL, 0);
         if (ret <= 0) {
             printf("Test client write: %d\n", ret);
             return;
@@ -119,7 +119,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
     }
 
     while ((total_r < total_w) && (event & CB_EVENT_READABLE)) {
-        ret = ft_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
+        ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
         if (ret < 0){
             if (ret != -11) {
                 printf("Client read: %d\n", ret);
@@ -144,8 +144,8 @@ static void client_cb(int fd, uint16_t event, void *arg)
                 return;
             }
         }
-        if (wolftcp_closing) {
-            ft_close(s, fd);
+        if (wolfIP_closing) {
+            wolfIP_sock_close(s, fd);
             conn_fd = -1;
         }
         printf("Test client: success\n");
@@ -153,20 +153,20 @@ static void client_cb(int fd, uint16_t event, void *arg)
 }
 
 
-/* wolfTCP side: main loop of the stack under test. */
-static int test_loop(struct ipstack *s, int active_close)
+/* wolfIP side: main loop of the stack under test. */
+static int test_loop(struct wolfIP *s, int active_close)
 {
     exit_ok = 0;
     exit_count = 0;
     tot_sent = 0;
-    wolftcp_closing = active_close;
+    wolfIP_closing = active_close;
     closed = 0;
 
     while(1) {
         uint32_t ms_next;
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        ms_next = ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(ms_next * 1000);
         if (exit_ok > 0) {
             if (exit_count++ < 10)
@@ -222,7 +222,7 @@ void *pt_echoclient(void *arg)
         }
         if (ret == 0) {
             printf("test client read: server has closed the connection.\n");
-            if (wolftcp_closing)
+            if (wolfIP_closing)
                 return (void *)0;
             else
                 return (void *)-1;
@@ -256,7 +256,7 @@ static void *pt_echoserver(void *arg)
         .sin_port = ntohs(8), /* Echo */
         .sin_addr.s_addr = 0
     };
-    wolftcp_closing = (uintptr_t)arg;
+    wolfIP_closing = (uintptr_t)arg;
     fd = socket(AF_INET, IPSTACK_SOCK_STREAM, 0);
     if (fd < 0) {
         printf("test server socket: %d\n", fd);
@@ -290,7 +290,7 @@ static void *pt_echoserver(void *arg)
         }
         if (ret == 0) {
             printf("test server read: client has closed the connection.\n");
-            if (wolftcp_closing)
+            if (wolfIP_closing)
                 return (void *)0;
             else
                 return (void *)-1;
@@ -308,26 +308,26 @@ extern int tap_init(struct ll *dev, const char *name, uint32_t host_ip);
 
 /* Test cases */
 
-void test_wolftcp_echoserver(struct ipstack *s, uint32_t srv_ip)
+void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
 {
     int ret, test_ret = 0;
     pthread_t pt;
-    struct ipstack_sockaddr_in local_sock = {
+    struct wolfIP_sockaddr_in local_sock = {
         .sin_family = AF_INET,
         .sin_port = ee16(8), /* Echo */
         .sin_addr.s_addr = 0
     };
     printf("TCP server tests\n");
 
-    listen_fd = ft_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    listen_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     printf("socket: %04x\n", listen_fd);
-    ipstack_register_callback(s, listen_fd, server_cb, s);
+    wolfIP_register_callback(s, listen_fd, server_cb, s);
 
     pthread_create(&pt, NULL, pt_echoclient, &srv_ip);
     printf("Starting test: echo server close-wait\n");
-    ret = ft_bind(s, listen_fd, (struct ipstack_sockaddr *)&local_sock, sizeof(local_sock));
+    ret = wolfIP_sock_bind(s, listen_fd, (struct wolfIP_sockaddr *)&local_sock, sizeof(local_sock));
     printf("bind: %d\n", ret);
-    ret = ft_listen(s, listen_fd, 1);
+    ret = wolfIP_sock_listen(s, listen_fd, 1);
     printf("listen: %d\n", ret);
     ret = test_loop(s, 0);
     pthread_join(pt, (void **)&test_ret);
@@ -343,24 +343,24 @@ void test_wolftcp_echoserver(struct ipstack *s, uint32_t srv_ip)
     printf("Test linux client: %d\n", test_ret);
     sleep(1);
 
-    ft_close(s, listen_fd);
+    wolfIP_sock_close(s, listen_fd);
 }
 
-void test_wolftcp_echoclient(struct ipstack *s)
+void test_wolfip_echoclient(struct wolfIP *s)
 {
     int ret, test_ret = 0;
     pthread_t pt;
-    struct ipstack_sockaddr_in remote_sock;
+    struct wolfIP_sockaddr_in remote_sock;
     /* Client side test: client is closing the connection */
     remote_sock.sin_family = AF_INET;
     remote_sock.sin_port = ee16(8);
     remote_sock.sin_addr.s_addr = inet_addr(LINUX_IP);
     printf("TCP client tests\n");
-    conn_fd = ft_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    conn_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     printf("client socket: %04x\n", conn_fd);
-    ipstack_register_callback(s, conn_fd, client_cb, s);
+    wolfIP_register_callback(s, conn_fd, client_cb, s);
     printf("Connecting to %s:8\n", LINUX_IP);
-    ft_connect(s, conn_fd, (struct ipstack_sockaddr *)&remote_sock, sizeof(remote_sock));
+    wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock, sizeof(remote_sock));
     pthread_create(&pt, NULL, pt_echoserver, (void*)1);
     printf("Starting test: echo client active close\n");
     ret = test_loop(s, 1);
@@ -369,21 +369,21 @@ void test_wolftcp_echoclient(struct ipstack *s)
     printf("Test linux server: %d\n", test_ret);
 
     if (conn_fd >= 0) {
-        ft_close(s, conn_fd);
+        wolfIP_sock_close(s, conn_fd);
         conn_fd = -1;
     }
 
     /* Client side test: server is closing the connection */
     /* Excluded for now as linux cannot bind twice on port 8 */
 #if 0
-    conn_fd = ft_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    conn_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     if (conn_fd < 0) {
         printf("cannot create socket: %d\n", conn_fd);
     }
     printf("client socket: %04x\n", conn_fd);
-    ipstack_register_callback(s, conn_fd, client_cb, s);
+    wolfIP_register_callback(s, conn_fd, client_cb, s);
     printf("Connecting to %s:8\n", LINUX_IP);
-    ft_connect(s, conn_fd, (struct ipstack_sockaddr *)&remote_sock, sizeof(remote_sock));
+    wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock, sizeof(remote_sock));
     pthread_create(&pt, NULL, pt_echoserver, (void*)0);
     printf("Starting test: echo client passive close\n");
     ret = test_loop(s, 0);
@@ -399,7 +399,7 @@ void test_wolftcp_echoclient(struct ipstack *s)
 /* Main test function. */
 int main(int argc, char **argv)
 {
-    struct ipstack *s;
+    struct wolfIP *s;
     struct ll *tapdev;
     struct timeval tv;
     struct in_addr linux_ip;
@@ -412,8 +412,8 @@ int main(int argc, char **argv)
     (void)nm;
     (void)gw;
     (void)tv;
-    ipstack_init_static(&s);
-    tapdev = ipstack_getdev(s);
+    wolfIP_init_static(&s);
+    tapdev = wolfIP_getdev(s);
     if (!tapdev)
         return 1;
     inet_aton(LINUX_IP, &linux_ip);
@@ -425,29 +425,29 @@ int main(int argc, char **argv)
 
 #ifdef DHCP
     gettimeofday(&tv, NULL);
-    ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+    wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
     dhcp_client_init(s);
     do {
         gettimeofday(&tv, NULL);
-        ipstack_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(1000);
-        ipstack_ipconfig_get(s, &ip, &nm, &gw);
+        wolfIP_ipconfig_get(s, &ip, &nm, &gw);
     } while (!dhcp_bound(s));
     printf("DHCP: obtained IP address.\n");
-    ipstack_ipconfig_get(s, &ip, &nm, &gw);
+    wolfIP_ipconfig_get(s, &ip, &nm, &gw);
     srv_ip = htonl(ip);
 #else
-    ipstack_ipconfig_set(s, atoip4(WOLFTCP_IP), atoip4("255.255.255.0"),
+    wolfIP_ipconfig_set(s, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(LINUX_IP));
     printf("IP: manually configured\n");
-    inet_pton(AF_INET, WOLFTCP_IP, &srv_ip);
+    inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
 #endif
 
     /* Server side test */
-    test_wolftcp_echoserver(s, srv_ip);
+    test_wolfip_echoserver(s, srv_ip);
 
     /* Client side test */
-    test_wolftcp_echoclient(s);
+    test_wolfip_echoclient(s);
 
     system("killall tcpdump");
     return 0;

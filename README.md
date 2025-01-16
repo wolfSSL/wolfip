@@ -1,13 +1,13 @@
-# wolfTCP
+# wolfIP
 
 The smallest TCP/IP stack on the planet
 
 ## Description and project goals
 
-wolfTCP is a TCP/IP stack with no dynamic memory allocations, designed to be 
+wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be 
 used in resource-constrained embedded systems.
 
-Endpoint only mode is supported, which means that wolftcp can be used to 
+Endpoint only mode is supported, which means that wolfip can be used to 
 establish network connections but it does not route traffic between different
 network interfaces.
 
@@ -31,6 +31,6 @@ A single network interface can be associated with the device.
 
 ## Copyright and License
 
-wolfTCP is licensed under the GPLv3 license. See the LICENSE file for details.
+wolfIP is licensed under the GPLv3 license. See the LICENSE file for details.
 Copyright (c) 2025 wolfSSL Inc.
 

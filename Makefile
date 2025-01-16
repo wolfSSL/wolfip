@@ -3,12 +3,12 @@ CFLAGS:=-Wall -Werror -Wextra -I.
 CFLAGS+=-g -ggdb
 LDFLAGS+=-pthread
 
-OBJ=build/wolftcp.o \
+OBJ=build/wolfip.o \
 	build/port/posix/linux_tap.o
 
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns
-LIB=libwolftcp.so
+LIB=libwolfip.so
 
 PREFIX=/usr/local
 
@@ -24,8 +24,8 @@ static: libtcpip.a
 libtcpip.a: $(OBJ)
 	@ar rcs $@ $^
 
-libwolftcp.so:CFLAGS+=-fPIC
-libwolftcp.so:  build/pie/port/posix/bsd_socket.o build/pie/wolftcp.o \
+libwolfip.so:CFLAGS+=-fPIC
+libwolfip.so:  build/pie/port/posix/bsd_socket.o build/pie/wolfip.o \
 	build/pie/port/posix/linux_tap.o
 	@mkdir -p `dirname $@` || true
 	@echo "[LD] $@"
@@ -65,8 +65,8 @@ build/tcp_netcat_select: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_net
 	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ -Wl,--start-group $(^) -Wl,--end-group
 
 
-build/test-wolfssl:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFTCP
-build/test-httpd:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFTCP -Isrc/http
+build/test-wolfssl:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP
+build/test-httpd:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -Isrc/http
 
 
 build/test-wolfssl: $(OBJ) build/test/test_native_wolfssl.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
@@ -126,7 +126,7 @@ build/test/unit:
 # Install dynamic library to re-link linux applications
 #
 install:
-	install libwolftcp.so $(PREFIX)/lib
+	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
 .PHONY: clean all static

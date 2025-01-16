@@ -20,7 +20,7 @@ target_sources(${PROJECT} PUBLIC
   ${CMAKE_CURRENT_LIST_DIR}/src/rand.c
   ${CMAKE_CURRENT_LIST_DIR}/src/motd.c
   ${CMAKE_CURRENT_LIST_DIR}/src/usb_descriptors.c
-  ${CMAKE_CURRENT_LIST_DIR}/../../wolftcp.c
+  ${CMAKE_CURRENT_LIST_DIR}/../../wolfip.c
   )
 
 # Example include

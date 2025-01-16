@@ -2,7 +2,7 @@
  * (c) Danielinux 2024 <root@danielinux.net>
  * This code is licensed under the GPLv3 license.
  */
-#include "wolftcp.h"
+#include "wolfip.h"
 #include "httpd.h"
 
 static const char *http_status_text(int status_code) {
@@ -90,7 +90,7 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
     if (hc->ssl) {
         wolfSSL_write(hc->ssl, txt_response, strlen(txt_response));
     } else {
-        ft_send(hc->httpd->ipstack, hc->client_sd, txt_response, strlen(txt_response), 0);
+        wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, txt_response, strlen(txt_response), 0);
     }
 }
 
@@ -99,7 +99,7 @@ void http_send_response_body(struct http_client *hc, const void *body, size_t le
     if (hc->ssl) {
         wolfSSL_write(hc->ssl, body, len);
     } else {
-        ft_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
+        wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
     }
 }
 
@@ -113,10 +113,10 @@ void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t 
         wolfSSL_write(hc->ssl, chunk, len);
         wolfSSL_write(hc->ssl, "\r\n", 2);
     } else {
-        struct ipstack *s = hc->httpd->ipstack;
-        ft_send(s, hc->client_sd, txt_chunk, strlen(txt_chunk), 0);
-        ft_send(s, hc->client_sd, chunk, len, 0);
-        ft_send(s, hc->client_sd, "\r\n", 2, 0);
+        struct wolfIP *s = hc->httpd->ipstack;
+        wolfIP_sock_send(s, hc->client_sd, txt_chunk, strlen(txt_chunk), 0);
+        wolfIP_sock_send(s, hc->client_sd, chunk, len, 0);
+        wolfIP_sock_send(s, hc->client_sd, "\r\n", 2, 0);
     }
 }
 
@@ -125,7 +125,7 @@ void http_send_response_chunk_end(struct http_client *hc) {
     if (hc->ssl) {
         wolfSSL_write(hc->ssl, "0\r\n\r\n", 5);
     } else {
-        ft_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0);
+        wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0);
     }
 }
 
@@ -289,7 +289,7 @@ static void http_recv_cb(int sd, uint16_t event, void *arg) {
             }
         }
     } else {
-        ret = ft_recv(hc->httpd->ipstack, sd, buf, sizeof(buf), 0);
+        ret = wolfIP_sock_recv(hc->httpd->ipstack, sd, buf, sizeof(buf), 0);
         if (ret == -11)
             return;
     }
@@ -306,15 +306,15 @@ fail_close:
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
     }
-    ft_close(hc->httpd->ipstack, sd);
+    wolfIP_sock_close(hc->httpd->ipstack, sd);
     hc->client_sd = 0;
 }
 
 static void http_accept_cb(int sd, uint16_t event, void *arg) {
     struct httpd *httpd = (struct httpd *) arg;
-    struct ipstack_sockaddr_in addr;
-    socklen_t addr_len = sizeof(struct ipstack_sockaddr_in);
-    int client_sd = ft_accept(httpd->ipstack, sd, (struct ipstack_sockaddr *) &addr, &addr_len);
+    struct wolfIP_sockaddr_in addr;
+    socklen_t addr_len = sizeof(struct wolfIP_sockaddr_in);
+    int client_sd = wolfIP_sock_accept(httpd->ipstack, sd, (struct wolfIP_sockaddr *) &addr, &addr_len);
     if (client_sd < 0) {
         return;
     }
@@ -330,12 +330,12 @@ static void http_accept_cb(int sd, uint16_t event, void *arg) {
                     wolfSSL_SetIO_FT(httpd->clients[i].ssl, client_sd);
                 } else {
                     /* Failed to create SSL object */
-                    ft_close(httpd->ipstack, client_sd);
+                    wolfIP_sock_close(httpd->ipstack, client_sd);
                     httpd->clients[i].client_sd = 0;
                     return;
                 }
             }
-            ipstack_register_callback(httpd->ipstack, client_sd, http_recv_cb, &httpd->clients[i]);
+            wolfIP_register_callback(httpd->ipstack, client_sd, http_recv_cb, &httpd->clients[i]);
             break;
         }
     }
@@ -377,8 +377,8 @@ int httpd_get_request_arg(struct http_request *req, const char *name, char *valu
     return -1; // Key not found
 }
 
-int httpd_init(struct httpd *httpd, struct ipstack *s, uint16_t port, void *ssl_ctx) {
-    struct ipstack_sockaddr_in addr;
+int httpd_init(struct httpd *httpd, struct wolfIP *s, uint16_t port, void *ssl_ctx) {
+    struct wolfIP_sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -388,21 +388,21 @@ int httpd_init(struct httpd *httpd, struct ipstack *s, uint16_t port, void *ssl_
     memset(httpd, 0, sizeof(struct httpd));
     httpd->ipstack = s;
     httpd->port = port;
-    httpd->listen_sd = ft_socket(s, AF_INET, SOCK_STREAM, 0);
+    httpd->listen_sd = wolfIP_sock_socket(s, AF_INET, SOCK_STREAM, 0);
     if (httpd->listen_sd < 0) {
         return -1;
     }
-    if (ft_bind(s, httpd->listen_sd, (struct ipstack_sockaddr *) &addr, sizeof(addr)) < 0) {
+    if (wolfIP_sock_bind(s, httpd->listen_sd, (struct wolfIP_sockaddr *) &addr, sizeof(addr)) < 0) {
         return -1;
     }
-    if (ft_listen(s, httpd->listen_sd, 5) < 0) {
+    if (wolfIP_sock_listen(s, httpd->listen_sd, 5) < 0) {
         return -1;
     }
     if (ssl_ctx) {
         httpd->ssl_ctx = (WOLFSSL_CTX *) ssl_ctx;
         wolfSSL_SetIO_FT_CTX(httpd->ssl_ctx, httpd->ipstack);
     }
-    ipstack_register_callback(s, httpd->listen_sd, http_accept_cb, httpd);
+    wolfIP_register_callback(s, httpd->listen_sd, http_accept_cb, httpd);
     return 0;
 }
 

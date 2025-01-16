@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 #include <string.h>
-#include "wolftcp.h"
+#include "wolfip.h"
 #include "config.h"
 
 /* Fixed size binary heap: each element is a timer. */
@@ -66,7 +66,7 @@
 
 
 /* Random number generator, provided by the user */
-//extern uint32_t ipstack_getrandom(void);
+//extern uint32_t wolfIP_getrandom(void);
 
 struct PACKED pkt_desc {
     uint32_t pos, len;
@@ -316,7 +316,7 @@ static int queue_pop(struct queue *q, void *data, uint32_t len)
 
 #ifdef ETHERNET
 /* Struct to contain an ethernet frame with its header */
-struct PACKED ipstack_eth_frame {
+struct PACKED wolfIP_eth_frame {
     uint8_t dst[6];
     uint8_t src[6];
     uint16_t type;
@@ -325,9 +325,9 @@ struct PACKED ipstack_eth_frame {
 #endif
 
 /* Struct to contain a IPv4 packet with its header */
-struct PACKED ipstack_ip_packet {
+struct PACKED wolfIP_ip_packet {
 #ifdef ETHERNET
-    struct ipstack_eth_frame eth;
+    struct wolfIP_eth_frame eth;
 #endif
     uint8_t ver_ihl, tos;
     uint16_t len, id, flags_fo;
@@ -338,8 +338,8 @@ struct PACKED ipstack_ip_packet {
 };
 
 /* Describe a TCP segment down to the datalink layer */
-struct PACKED ipstack_tcp_seg {
-    struct ipstack_ip_packet ip;
+struct PACKED wolfIP_tcp_seg {
+    struct wolfIP_ip_packet ip;
     uint16_t src_port, dst_port;
     uint32_t seq, ack;
     uint8_t hlen, flags;
@@ -361,8 +361,8 @@ struct PACKED tcp_opt_mss {
 };
 
 /* UDP datagram */
-struct PACKED ipstack_udp_datagram {
-    struct ipstack_ip_packet ip;
+struct PACKED wolfIP_udp_datagram {
+    struct wolfIP_ip_packet ip;
     uint16_t src_port, dst_port, len, csum;
     uint8_t data[0];
 };
@@ -378,8 +378,8 @@ union transport_pseudo_header {
 };
 
 /* ICMP */
-struct PACKED ipstack_icmp_packet {
-    struct ipstack_ip_packet ip;
+struct PACKED wolfIP_icmp_packet {
+    struct wolfIP_ip_packet ip;
     uint8_t type, code;
     uint16_t csum;
     uint8_t data[0];
@@ -475,7 +475,7 @@ struct tsocket {
     uint16_t proto, events;
     ip4 local_ip, remote_ip;
     uint16_t src_port, dst_port;
-    struct ipstack *S;
+    struct wolfIP *S;
 #ifdef ETHERNET
     uint8_t nexthop_mac[6];
 #endif
@@ -488,7 +488,7 @@ static void close_socket(struct tsocket *ts);
 
 #ifdef ETHERNET
 struct PACKED arp_packet {
-    struct ipstack_eth_frame eth;
+    struct wolfIP_eth_frame eth;
     uint16_t htype, ptype;
     uint8_t hlen, plen;
     uint16_t opcode;
@@ -504,9 +504,9 @@ struct arp_neighbor {
 
 #endif
 
-struct ipstack;
+struct wolfIP;
 
-struct ipstack_timer {
+struct wolfIP_timer {
     uint32_t id;
     uint64_t expires;
     void *arg;
@@ -515,11 +515,11 @@ struct ipstack_timer {
 
 /* Timer binary heap */
 struct timers_binheap {
-    struct ipstack_timer timers[MAX_TIMERS];
+    struct wolfIP_timer timers[MAX_TIMERS];
     uint32_t size;
 };
 
-struct ipstack
+struct wolfIP
 {
     struct ll ll_dev;
     struct ipconf ipconf;
@@ -540,7 +540,7 @@ struct ipstack
     uint16_t ipcounter;
     uint64_t last_tick;
 #ifdef ETHERNET
-    struct ipstack_arp {
+    struct wolfIP_arp {
         uint64_t last_arp;
         struct arp_neighbor neighbors[MAX_NEIGHBORS];
     } arp;
@@ -551,7 +551,7 @@ struct ipstack
 /* Implementation */
 
 /* User Callbacks */
-void ipstack_register_callback(struct ipstack *s, int sock_fd, void (*cb)(int sock_fd, uint16_t events, void *arg), void *arg)
+void wolfIP_register_callback(struct wolfIP *s, int sock_fd, void (*cb)(int sock_fd, uint16_t events, void *arg), void *arg)
 {
     struct tsocket *t;
     if (sock_fd < 0)
@@ -572,16 +572,16 @@ void ipstack_register_callback(struct ipstack *s, int sock_fd, void (*cb)(int so
 }
 
 /* Timers */
-static struct ipstack_timer timers_binheap_pop(struct timers_binheap *heap)
+static struct wolfIP_timer timers_binheap_pop(struct timers_binheap *heap)
 {
     uint32_t i = 0;
-    struct ipstack_timer tmr = {0};
+    struct wolfIP_timer tmr = {0};
     do {
         tmr = heap->timers[0];
         heap->size--;
         heap->timers[0] = heap->timers[heap->size];
         while (2*i+1 < heap->size) {
-            struct ipstack_timer tmp;
+            struct wolfIP_timer tmp;
             uint32_t j = 2*i+1;
             if (j+1 < heap->size && heap->timers[j+1].expires < heap->timers[j].expires) {
                 j++;
@@ -598,7 +598,7 @@ static struct ipstack_timer timers_binheap_pop(struct timers_binheap *heap)
     return tmr;
 }
 
-static int timers_binheap_insert(struct timers_binheap *heap, struct ipstack_timer tmr)
+static int timers_binheap_insert(struct timers_binheap *heap, struct wolfIP_timer tmr)
 {
     static uint32_t timer_id = 1;
     if (timer_id == 0)
@@ -611,7 +611,7 @@ static int timers_binheap_insert(struct timers_binheap *heap, struct ipstack_tim
     heap->size++;
     int i = heap->size - 1;
     while (i > 0 && heap->timers[i].expires < heap->timers[(i-1)/2].expires) {
-        struct ipstack_timer tmp = heap->timers[i];
+        struct wolfIP_timer tmp = heap->timers[i];
         heap->timers[i] = heap->timers[(i-1)/2];
         heap->timers[(i-1)/2] = tmp;
         i = (i-1)/2;
@@ -642,7 +642,7 @@ static void timer_binheap_cancel(struct timers_binheap *heap, uint32_t id)
 }
 
 /* UDP */
-static struct tsocket *udp_new_socket(struct ipstack *s)
+static struct tsocket *udp_new_socket(struct wolfIP *s)
 {
     struct tsocket *t;
 
@@ -660,7 +660,7 @@ static struct tsocket *udp_new_socket(struct ipstack *s)
     return NULL;
 }
 
-static void udp_try_recv(struct ipstack *s, struct ipstack_udp_datagram *udp, uint32_t frame_len)
+static void udp_try_recv(struct wolfIP *s, struct wolfIP_udp_datagram *udp, uint32_t frame_len)
 {
     for (int i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
@@ -679,7 +679,7 @@ static void udp_try_recv(struct ipstack *s, struct ipstack_udp_datagram *udp, ui
 }
 
 /* TCP */
-static struct tsocket *tcp_new_socket(struct ipstack *s)
+static struct tsocket *tcp_new_socket(struct wolfIP *s)
 {
     struct tsocket *t;
     for (int i = 0; i < MAX_TCPSOCKETS; i++) {
@@ -704,10 +704,10 @@ static struct tsocket *tcp_new_socket(struct ipstack *s)
 
 static void tcp_send_empty(struct tsocket *t, uint8_t flags)
 {
-    struct ipstack_tcp_seg *tcp;
+    struct wolfIP_tcp_seg *tcp;
     struct tcp_opt_ts *ts;
-    uint8_t buffer[sizeof(struct ipstack_tcp_seg) + TCP_OPTIONS_LEN];
-    tcp = (struct ipstack_tcp_seg *)buffer;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
     tcp->src_port = ee16(t->src_port);
     tcp->dst_port = ee16(t->dst_port);
@@ -725,7 +725,7 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
     ts->ecr = t->sock.tcp.last_ts;
     ts->pad = 0x01;
     ts->eoo = 0x00;
-    fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct ipstack_tcp_seg) + \
+    fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + \
             TCP_OPTIONS_LEN);
 }
 
@@ -742,11 +742,11 @@ static void tcp_send_finack(struct tsocket *t)
 
 static void tcp_send_syn(struct tsocket *t, uint8_t flags)
 {
-    struct ipstack_tcp_seg *tcp;
+    struct wolfIP_tcp_seg *tcp;
     struct tcp_opt_ts *ts;
     struct tcp_opt_mss *mss;
-    uint8_t buffer[sizeof(struct ipstack_tcp_seg) + TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN];
-    tcp = (struct ipstack_tcp_seg *)buffer;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN];
+    tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
     tcp->src_port = ee16(t->src_port);
     tcp->dst_port = ee16(t->dst_port);
@@ -768,7 +768,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     mss->opt = TCP_OPTION_MSS;
     mss->len = TCP_OPTION_MSS_LEN;
     mss->mss = ee16(TCP_MSS);
-    fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct ipstack_tcp_seg) + \
+    fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + \
             TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN);
 }
 
@@ -778,7 +778,7 @@ static void tcp_send_synack(struct tsocket *t)
 }
 
 /* Add a segment to the rx buffer for the application to consume */
-static void tcp_recv(struct tsocket *t, struct ipstack_tcp_seg *seg)
+static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
 {
     uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
     uint32_t seq = ee32(seg->seq);
@@ -826,7 +826,7 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
     return ~sum;
 }
 
-static uint16_t icmp_checksum(struct ipstack_icmp_packet *icmp)
+static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
@@ -840,7 +840,7 @@ static uint16_t icmp_checksum(struct ipstack_icmp_packet *icmp)
     return ~sum;
 }
 
-static void iphdr_set_checksum(struct ipstack_ip_packet *ip)
+static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
@@ -855,7 +855,7 @@ static void iphdr_set_checksum(struct ipstack_ip_packet *ip)
 }
 
 #ifdef ETHERNET
-static int eth_output_add_header(struct ipstack *S, const uint8_t *dst, struct ipstack_eth_frame *eth,
+static int eth_output_add_header(struct wolfIP *S, const uint8_t *dst, struct wolfIP_eth_frame *eth,
         uint16_t type)
 {
     if (!dst) {
@@ -871,11 +871,11 @@ static int eth_output_add_header(struct ipstack *S, const uint8_t *dst, struct i
 }
 #endif
 
-static int ip_output_add_header(struct tsocket *t, struct ipstack_ip_packet *ip, uint8_t proto, uint16_t len)
+static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, uint8_t proto, uint16_t len)
 {
     union transport_pseudo_header ph;
     memset(&ph, 0, sizeof(ph));
-    memset(ip, 0, sizeof(struct ipstack_ip_packet));
+    memset(ip, 0, sizeof(struct wolfIP_ip_packet));
     ip->src = ee32(t->local_ip);
     ip->dst = ee32(t->remote_ip);
     ip->ver_ihl = 0x45;
@@ -894,22 +894,22 @@ static int ip_output_add_header(struct tsocket *t, struct ipstack_ip_packet *ip,
     ph.ph.proto = proto;
     ph.ph.len = ee16(len - IP_HEADER_LEN);
     if (proto == FT_IPPROTO_TCP) {
-        struct ipstack_tcp_seg *tcp = (struct ipstack_tcp_seg *)ip;
+        struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)ip;
         tcp->csum = 0;
         tcp->csum = ee16(transport_checksum(&ph, &tcp->src_port));
     } else if (proto == FT_IPPROTO_UDP) {
-        struct ipstack_udp_datagram *udp = (struct ipstack_udp_datagram *)ip;
+        struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
         udp->csum = 0;
         udp->csum = ee16(transport_checksum(&ph, &udp->src_port));
     }
 #ifdef ETHERNET
-    eth_output_add_header(t->S, t->nexthop_mac, (struct ipstack_eth_frame *)ip, ETH_TYPE_IP);
+    eth_output_add_header(t->S, t->nexthop_mac, (struct wolfIP_eth_frame *)ip, ETH_TYPE_IP);
 #endif
     return 0;
 }
 
 /* Process timestamp option, calculate RTT */
-static int tcp_process_ts(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
+static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 {
     const struct tcp_opt_ts *ts;
     const uint8_t *opt = tcp->data;
@@ -942,14 +942,14 @@ static int tcp_process_ts(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
 
 /* Receive an ack */
-static void tcp_ack(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
+static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 {
     uint32_t ack = ee32(tcp->ack);
     struct pkt_desc *desc;
     int ack_count = 0;
     desc = fifo_peek(&t->sock.tcp.txbuf);
     while ((desc) && (desc->flags & PKT_FLAG_SENT)) {
-        struct ipstack_tcp_seg *seg = (struct ipstack_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
+        struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
         if (seg_len == 0) {
             desc = fifo_pop(&t->sock.tcp.txbuf);
@@ -973,7 +973,7 @@ static void tcp_ack(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
     }
     if (ack_count > 0) {
         struct pkt_desc *fresh_desc = NULL;
-        struct ipstack_tcp_seg *tcp;
+        struct wolfIP_tcp_seg *tcp;
         /* This ACK ackwnowledged some data. */
         desc = fifo_peek(&t->sock.tcp.txbuf);
         while (desc && (desc->flags & PKT_FLAG_ACKED)) {
@@ -981,7 +981,7 @@ static void tcp_ack(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
             desc = fifo_peek(&t->sock.tcp.txbuf);
         }
         if (fresh_desc) {
-            tcp = (struct ipstack_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
+            tcp = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
             /* Update rtt */
             if (tcp_process_ts(t, tcp) < 0) {
                 /* No timestamp option, use coarse RTT estimation */
@@ -1016,7 +1016,7 @@ static void tcp_ack(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
         t->sock.tcp.cwnd_count = 0;
         desc = fifo_peek(&t->sock.tcp.txbuf);
         while (desc && (desc->flags & PKT_FLAG_SENT)) {
-            struct ipstack_tcp_seg *seg = (struct ipstack_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
+            struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
             uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
             if (seg_len == 0) {
                 desc = fifo_pop(&t->sock.tcp.txbuf);
@@ -1033,7 +1033,7 @@ static void tcp_ack(struct tsocket *t, const struct ipstack_tcp_seg *tcp)
 }
 
 /* Preselect socket, parse options, manage handshakes, pass to application */
-static void tcp_input(struct ipstack *S, struct ipstack_tcp_seg *tcp, uint32_t frame_len)
+static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
 {
     for (int i = 0; i < MAX_TCPSOCKETS; i++) {
         uint32_t tcplen;
@@ -1043,7 +1043,7 @@ static void tcp_input(struct ipstack *S, struct ipstack_tcp_seg *tcp, uint32_t f
                 t->local_ip == ee32(tcp->ip.dst) && t->remote_ip != S->ipconf.ip) {
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
-            if (iplen > frame_len - sizeof(struct ipstack_eth_frame)) {
+            if (iplen > frame_len - sizeof(struct wolfIP_eth_frame)) {
                 return; /* discard */
             }
 
@@ -1056,7 +1056,7 @@ static void tcp_input(struct ipstack *S, struct ipstack_tcp_seg *tcp, uint32_t f
             /* Check IP ttl */
             if (tcp->ip.ttl == 0) {
                 /* Send ICMP TTL exceeded */
-                struct ipstack_icmp_packet icmp;
+                struct wolfIP_icmp_packet icmp;
                 memset(&icmp, 0, sizeof(icmp));
                 icmp.type = ICMP_TTL_EXCEEDED;
                 icmp.csum = ee16(icmp_checksum(&icmp));
@@ -1067,7 +1067,7 @@ static void tcp_input(struct ipstack *S, struct ipstack_tcp_seg *tcp, uint32_t f
                 icmp.ip.csum = 0;
                 iphdr_set_checksum(&icmp.ip);
                 eth_output_add_header(S, icmp.ip.eth.src, &icmp.ip.eth, ETH_TYPE_IP);
-                S->ll_dev.send(&S->ll_dev, &icmp, sizeof(struct ipstack_icmp_packet));
+                S->ll_dev.send(&S->ll_dev, &icmp, sizeof(struct wolfIP_icmp_packet));
                 return;
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
@@ -1096,7 +1096,7 @@ static void tcp_input(struct ipstack *S, struct ipstack_tcp_seg *tcp, uint32_t f
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     t->sock.tcp.state = TCP_SYN_RCVD;
                     t->sock.tcp.ack = ee32(tcp->seq) + 1;
-                    t->sock.tcp.seq = ipstack_getrandom();
+                    t->sock.tcp.seq = wolfIP_getrandom();
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
@@ -1160,8 +1160,8 @@ static void tcp_rto_cb(void *arg)
 {
     struct tsocket *ts = (struct tsocket *)arg;
     struct pkt_desc *desc;
-    struct ipstack_timer tmr = { };
-    struct ipstack_timer *ptmr = NULL;
+    struct wolfIP_timer tmr = { };
+    struct wolfIP_timer *ptmr = NULL;
     int pending = 0;
     if ((ts->proto != FT_IPPROTO_TCP) || (ts->sock.tcp.state != TCP_ESTABLISHED))
         return;
@@ -1199,7 +1199,7 @@ static void close_socket(struct tsocket *ts)
 }
 
 
-int ft_socket(struct ipstack *s, int domain, int type, int protocol)
+int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 {
     struct tsocket *ts;
     if (domain != AF_INET)
@@ -1219,10 +1219,10 @@ int ft_socket(struct ipstack *s, int domain, int type, int protocol)
     return -1;
 }
 
-int ft_connect(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *addr, socklen_t addrlen)
+int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen)
 {
     struct tsocket *ts;
-    const struct ipstack_sockaddr_in *sin = (const struct ipstack_sockaddr_in *)addr;
+    const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)addr;
     if (!addr)
         return -2;
     if (sockfd & MARK_UDP_SOCKET) {
@@ -1238,14 +1238,14 @@ int ft_connect(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *add
         return 0;
     if (ts->sock.tcp.state == TCP_SYN_SENT)
         return -11; /* Call again */
-    if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct ipstack_sockaddr_in)))
+    if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
         return -2;
     if (ts->sock.tcp.state == TCP_CLOSED) {
         ts->sock.tcp.state = TCP_SYN_SENT;
         ts->local_ip = s->ipconf.ip;
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
         if (!ts->src_port)
-            ts->src_port = (uint16_t)(ipstack_getrandom() & 0xFFFF);
+            ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
         if (ts->src_port < 1024)
             ts->src_port += 1024;
         ts->dst_port = ee16(sin->sin_port);
@@ -1255,17 +1255,17 @@ int ft_connect(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *add
     return -2;
 }
 
-int ft_accept(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts;
-    struct ipstack_sockaddr_in *sin = (struct ipstack_sockaddr_in *)addr;
+    struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
     struct tsocket *newts;
 
-    if ((addr) && (!(addrlen) || (*addrlen < sizeof(struct ipstack_sockaddr_in))))
+    if ((addr) && (!(addrlen) || (*addrlen < sizeof(struct wolfIP_sockaddr_in))))
         return -1;
 
     if (addr && addrlen)
-        *addrlen = sizeof(struct ipstack_sockaddr_in);
+        *addrlen = sizeof(struct wolfIP_sockaddr_in);
 
     if (sockfd & MARK_TCP_SOCKET) {
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
@@ -1294,7 +1294,7 @@ int ft_accept(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, sock
                 sin->sin_addr.s_addr = ee32(ts->remote_ip);
             }
             ts->sock.tcp.state = TCP_LISTEN;
-            ts->sock.tcp.seq = ipstack_getrandom();
+            ts->sock.tcp.seq = wolfIP_getrandom();
             return (newts - s->tcpsockets) | MARK_TCP_SOCKET;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
             return -11;
@@ -1303,13 +1303,13 @@ int ft_accept(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, sock
     return -1;;
 }
 
-int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int flags,
-        const struct ipstack_sockaddr *dest_addr, socklen_t addrlen)
+int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags,
+        const struct wolfIP_sockaddr *dest_addr, socklen_t addrlen)
 {
     uint8_t frame[LINK_MTU];
     struct tsocket *ts;
-    struct ipstack_tcp_seg *tcp = (struct ipstack_tcp_seg *)frame;
-    struct ipstack_udp_datagram *udp = (struct ipstack_udp_datagram *)frame;
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)frame;
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)frame;
 
     (void)flags;
 
@@ -1328,7 +1328,7 @@ int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int fl
             if (fifo_space(&ts->sock.tcp.txbuf) < payload_len + sizeof(struct pkt_desc) + IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN) {
                 break;
             }
-            memset(tcp, 0, sizeof(struct ipstack_tcp_seg));
+            memset(tcp, 0, sizeof(struct wolfIP_tcp_seg));
             tcp->src_port = ee16(ts->src_port);
             tcp->dst_port = ee16(ts->dst_port);
             tcp->seq = ee32(ts->sock.tcp.seq);
@@ -1345,7 +1345,7 @@ int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int fl
             tsopt->pad = 0x01;
             tsopt->eoo = 0x00;
             memcpy(tcp->data + TCP_OPTIONS_LEN, buf + sent, payload_len);
-            fifo_push(&ts->sock.tcp.txbuf, tcp, sizeof(struct ipstack_tcp_seg) + TCP_OPTIONS_LEN + payload_len);
+            fifo_push(&ts->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + payload_len);
             sent += payload_len;
             ts->sock.tcp.seq += payload_len;
         }
@@ -1354,13 +1354,13 @@ int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int fl
         else
             return sent;
     } else if (sockfd & MARK_UDP_SOCKET) {
-        const struct ipstack_sockaddr_in *sin = (const struct ipstack_sockaddr_in *)dest_addr;
+        const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)dest_addr;
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         if ((ts->dst_port == 0) && (dest_addr == NULL))
             return -1;
-        memset(udp, 0, sizeof(struct ipstack_udp_datagram));
+        memset(udp, 0, sizeof(struct wolfIP_udp_datagram));
         if (sin) {
-            if (addrlen < sizeof(struct ipstack_sockaddr_in))
+            if (addrlen < sizeof(struct wolfIP_sockaddr_in))
                 return -1;
             ts->dst_port = ee16(sin->sin_port);
             ts->remote_ip = ee32(sin->sin_addr.s_addr);
@@ -1372,7 +1372,7 @@ int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int fl
         if (fifo_space(&ts->sock.udp.txbuf) < len)
             return -11;
         if (ts->src_port == 0) {
-            ts->src_port = (uint16_t)(ipstack_getrandom() & 0xFFFF);
+            ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
             if (ts->src_port < 1024)
                 ts->src_port += 1024;
         }
@@ -1384,27 +1384,27 @@ int ft_sendto(struct ipstack *s, int sockfd, const void *buf, size_t len, int fl
         udp->len = ee16(len + UDP_HEADER_LEN);
         udp->csum = 0;
         memcpy(udp->data, buf, len);
-        fifo_push(&ts->sock.udp.txbuf, udp, sizeof(struct ipstack_udp_datagram) + len);
+        fifo_push(&ts->sock.udp.txbuf, udp, sizeof(struct wolfIP_udp_datagram) + len);
         return len;
     } else return -1;
 }
 
-int ft_send(struct ipstack *s, int sockfd, const void *buf, size_t len, int flags)
+int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags)
 {
-    return ft_sendto(s, sockfd, buf, len, flags, NULL, 0);
+    return wolfIP_sock_sendto(s, sockfd, buf, len, flags, NULL, 0);
 } 
 
-int ft_write(struct ipstack *s, int sockfd, const void *buf, size_t len)
+int wolfIP_sock_write(struct wolfIP *s, int sockfd, const void *buf, size_t len)
 {
-    return ft_sendto(s, sockfd, buf, len, 0, NULL, 0);
+    return wolfIP_sock_sendto(s, sockfd, buf, len, 0, NULL, 0);
 }
 
-int ft_recvfrom(struct ipstack *s, int sockfd, void *buf, size_t len, int flags,
-        struct ipstack_sockaddr *src_addr, socklen_t *addrlen)
+int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags,
+        struct wolfIP_sockaddr *src_addr, socklen_t *addrlen)
 {
     uint32_t seg_len;
     struct pkt_desc *desc;
-    struct ipstack_udp_datagram *udp;
+    struct wolfIP_udp_datagram *udp;
     struct tsocket *ts;
     (void)flags;
 
@@ -1425,15 +1425,15 @@ int ft_recvfrom(struct ipstack *s, int sockfd, void *buf, size_t len, int flags,
             return -1;
         }
     } else if (sockfd & MARK_UDP_SOCKET) {
-        struct ipstack_sockaddr_in *sin = (struct ipstack_sockaddr_in *)src_addr;
+        struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)src_addr;
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
-        if (sin && *addrlen < sizeof(struct ipstack_sockaddr_in))
+        if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -1;
-        if (addrlen) *addrlen = sizeof(struct ipstack_sockaddr_in);
+        if (addrlen) *addrlen = sizeof(struct wolfIP_sockaddr_in);
         if (fifo_len(&ts->sock.udp.rxbuf) == 0)
             return -11;
         desc = fifo_peek(&ts->sock.udp.rxbuf);
-        udp = (struct ipstack_udp_datagram *)(ts->rxmem + desc->pos + sizeof(*desc));
+        udp = (struct wolfIP_udp_datagram *)(ts->rxmem + desc->pos + sizeof(*desc));
         if (sin) {
             sin->sin_family = AF_INET;
             sin->sin_port = ee16(udp->src_port);
@@ -1448,17 +1448,17 @@ int ft_recvfrom(struct ipstack *s, int sockfd, void *buf, size_t len, int flags,
     } else return -1;
 }
 
-int ft_recv(struct ipstack *s, int sockfd, void *buf, size_t len, int flags)
+int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags)
 {
-    return ft_recvfrom(s, sockfd, buf, len, flags, NULL, 0);
+    return wolfIP_sock_recvfrom(s, sockfd, buf, len, flags, NULL, 0);
 }
 
-int ft_read(struct ipstack *s, int sockfd, void *buf, size_t len)
+int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len)
 {
-    return ft_recvfrom(s, sockfd, buf, len, 0, NULL, 0);
+    return wolfIP_sock_recvfrom(s, sockfd, buf, len, 0, NULL, 0);
 }
 
-int ft_close(struct ipstack *s, int sockfd)
+int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 {
     if (sockfd & MARK_TCP_SOCKET) {
         struct tsocket *ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
@@ -1492,11 +1492,11 @@ int ft_close(struct ipstack *s, int sockfd)
     return 0;
 }
 
-int ft_getsockname(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
-    struct ipstack_sockaddr_in *sin = (struct ipstack_sockaddr_in *)addr;
-    if (!sin || *addrlen < sizeof(struct ipstack_sockaddr_in))
+    struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+    if (!sin || *addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
     sin->sin_family = AF_INET;
     sin->sin_port = ts->src_port;
@@ -1504,18 +1504,18 @@ int ft_getsockname(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr,
     return 0;
 }
 
-int ft_bind(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *addr, socklen_t addrlen)
+int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen)
 {
     struct tsocket *ts;
-    const struct ipstack_sockaddr_in *sin = (const struct ipstack_sockaddr_in *)addr;
-    if (!sin || addrlen < sizeof(struct ipstack_sockaddr_in))
+    const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)addr;
+    if (!sin || addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
 
     if (sockfd & MARK_TCP_SOCKET) {
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
         if (ts->sock.tcp.state != TCP_CLOSED)
             return -1;
-        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct ipstack_sockaddr_in)))
+        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
             return -1;
         ts->local_ip = s->ipconf.ip;
         ts->src_port = ee16(sin->sin_port);
@@ -1524,7 +1524,7 @@ int ft_bind(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *addr, 
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         if (ts->src_port != 0)
             return -1;
-        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct ipstack_sockaddr_in)))
+        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
             return -1;
         ts->src_port = ee16(sin->sin_port);
         return 0;
@@ -1532,7 +1532,7 @@ int ft_bind(struct ipstack *s, int sockfd, const struct ipstack_sockaddr *addr, 
 
 }
 
-int ft_listen(struct ipstack *s, int sockfd, int backlog)
+int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
 {
     struct tsocket *ts;
     (void)backlog;
@@ -1545,11 +1545,11 @@ int ft_listen(struct ipstack *s, int sockfd, int backlog)
     return 0;
 }
 
-int ft_getpeername(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
-    struct ipstack_sockaddr_in *sin = (struct ipstack_sockaddr_in *)addr;
-    if (!sin || *addrlen < sizeof(struct ipstack_sockaddr_in))
+    struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+    if (!sin || *addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
     sin->sin_family = AF_INET;
     sin->sin_port = ee16(ts->dst_port);
@@ -1559,9 +1559,9 @@ int ft_getpeername(struct ipstack *s, int sockfd, struct ipstack_sockaddr *addr,
 
 
 /* Reply to ICecho requests */
-static void icmp_input(struct ipstack *s, struct ipstack_ip_packet *ip, uint32_t len)
+static void icmp_input(struct wolfIP *s, struct wolfIP_ip_packet *ip, uint32_t len)
 {
-    struct ipstack_icmp_packet *icmp = (struct ipstack_icmp_packet *)ip;
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)ip;
     uint32_t tmp;
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         icmp->type = ICMP_ECHO_REPLY;
@@ -1577,11 +1577,11 @@ static void icmp_input(struct ipstack *s, struct ipstack_ip_packet *ip, uint32_t
     }
 }
 
-static int dhcp_send_discover(struct ipstack *s);
-static int dhcp_send_request(struct ipstack *s);
+static int dhcp_send_discover(struct wolfIP *s);
+static int dhcp_send_request(struct wolfIP *s);
 static void dhcp_timer_cb(void *arg)
 {
-    struct ipstack *s = (struct ipstack *)arg;
+    struct wolfIP *s = (struct wolfIP *)arg;
     LOG("dhcp timeout\n");
     if (!s)
         return;
@@ -1605,7 +1605,7 @@ static void dhcp_timer_cb(void *arg)
     }
 }
 
-static void dhcp_cancel_timer(struct ipstack *s)
+static void dhcp_cancel_timer(struct wolfIP *s)
 {
     if (s->dhcp_timer != NO_TIMER) {
         timer_binheap_cancel(&s->timers, s->dhcp_timer);
@@ -1614,7 +1614,7 @@ static void dhcp_cancel_timer(struct ipstack *s)
     }
 }
 
-static int dhcp_parse_offer(struct ipstack *s, struct dhcp_msg *msg)
+static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg)
 {
     struct dhcp_option *opt = (struct dhcp_option *)(msg->options);
     uint32_t ip;
@@ -1653,7 +1653,7 @@ static int dhcp_parse_offer(struct ipstack *s, struct dhcp_msg *msg)
 }
 
 
-static int dhcp_parse_ack(struct ipstack *s, struct dhcp_msg *msg)
+static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg)
 {
     struct dhcp_option *opt = (struct dhcp_option *)(msg->options);
     while (opt->code != 0xFF) {
@@ -1686,14 +1686,14 @@ static int dhcp_parse_ack(struct ipstack *s, struct dhcp_msg *msg)
     return -1;
 }
 
-static int dhcp_poll(struct ipstack *s)
+static int dhcp_poll(struct wolfIP *s)
 {
-    struct ipstack_sockaddr_in sin;
-    socklen_t sl = sizeof(struct ipstack_sockaddr_in);
+    struct wolfIP_sockaddr_in sin;
+    socklen_t sl = sizeof(struct wolfIP_sockaddr_in);
     struct dhcp_msg msg;
     int len;
     memset(&msg, 0xBB, sizeof(msg));
-    len = ft_recvfrom(s, s->dhcp_udp_sd, &msg, sizeof(struct dhcp_msg), 0, (struct ipstack_sockaddr *)&sin, &sl);
+    len = wolfIP_sock_recvfrom(s, s->dhcp_udp_sd, &msg, sizeof(struct dhcp_msg), 0, (struct wolfIP_sockaddr *)&sin, &sl);
     if (len < 0)
         return -1;
     if ((s->dhcp_state == DHCP_DISCOVER_SENT) && (dhcp_parse_offer(s, &msg) == 0))
@@ -1709,12 +1709,12 @@ static int dhcp_poll(struct ipstack *s)
     return 0;
 }
 
-static int dhcp_send_request(struct ipstack *s)
+static int dhcp_send_request(struct wolfIP *s)
 {
     struct dhcp_msg req;
     struct dhcp_option *opt = (struct dhcp_option *)(req.options);
-    struct ipstack_timer tmr = { };
-    struct ipstack_sockaddr_in sin;
+    struct wolfIP_timer tmr = { };
+    struct wolfIP_sockaddr_in sin;
     uint32_t opt_sz = 0;
     /* Prepare DHCP request */
     memset(&req, 0, sizeof(struct dhcp_msg));
@@ -1757,13 +1757,13 @@ static int dhcp_send_request(struct ipstack *s)
     opt_sz += 6;
 
     opt_sz++;
-    memset(&sin, 0, sizeof(struct ipstack_sockaddr_in));
+    memset(&sin, 0, sizeof(struct wolfIP_sockaddr_in));
     sin.sin_port = ee16(DHCP_SERVER_PORT);
     sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
-    ft_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
-            (struct ipstack_sockaddr *)&sin, sizeof(struct ipstack_sockaddr_in));
-    tmr.expires = s->last_tick + DHCP_REQUEST_TIMEOUT + (ipstack_getrandom() % 200);
+    wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
+    tmr.expires = s->last_tick + DHCP_REQUEST_TIMEOUT + (wolfIP_getrandom() % 200);
     tmr.arg = s;
     tmr.cb = dhcp_timer_cb;
     s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
@@ -1772,7 +1772,7 @@ static int dhcp_send_request(struct ipstack *s)
 
 static void dhcp_callback(int sockfd, uint16_t ev, void *arg)
 {
-    struct ipstack *s = (struct ipstack *)arg;
+    struct wolfIP *s = (struct wolfIP *)arg;
     (void)sockfd;
     (void)ev;
     if (!s)
@@ -1780,12 +1780,12 @@ static void dhcp_callback(int sockfd, uint16_t ev, void *arg)
     dhcp_poll(s);
 }
 
-static int dhcp_send_discover(struct ipstack *s)
+static int dhcp_send_discover(struct wolfIP *s)
 {
     struct dhcp_msg disc;
     struct dhcp_option *opt = (struct dhcp_option *)(disc.options);
-    struct ipstack_timer tmr = { };
-    struct ipstack_sockaddr_in sin;
+    struct wolfIP_timer tmr = { };
+    struct wolfIP_sockaddr_in sin;
     uint32_t opt_sz = 0;
     /* Prepare DHCP discover */
     memset(&disc, 0, sizeof(struct dhcp_msg));
@@ -1811,13 +1811,13 @@ static int dhcp_send_discover(struct ipstack *s)
     opt_sz += 5;
     opt_sz ++;
 
-    memset(&sin, 0, sizeof(struct ipstack_sockaddr_in));
+    memset(&sin, 0, sizeof(struct wolfIP_sockaddr_in));
     sin.sin_port = ee16(DHCP_SERVER_PORT);
     sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
-    ft_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
-            (struct ipstack_sockaddr *)&sin, sizeof(struct ipstack_sockaddr_in));
-    tmr.expires = s->last_tick + DHCP_DISCOVER_TIMEOUT + (ipstack_getrandom() % 200);
+    wolfIP_sock_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
+    tmr.expires = s->last_tick + DHCP_DISCOVER_TIMEOUT + (wolfIP_getrandom() % 200);
     tmr.arg = s;
     tmr.cb = dhcp_timer_cb;
     s->dhcp_state = DHCP_DISCOVER_SENT;
@@ -1826,42 +1826,42 @@ static int dhcp_send_discover(struct ipstack *s)
     return 0;
 }
 
-int dhcp_bound(struct ipstack *s)
+int dhcp_bound(struct wolfIP *s)
 {
     return (s->dhcp_state == DHCP_BOUND);
 }
 
-int dhcp_client_init(struct ipstack *s)
+int dhcp_client_init(struct wolfIP *s)
 {
-    struct ipstack_sockaddr_in sin;
+    struct wolfIP_sockaddr_in sin;
     if (s->dhcp_state != DHCP_OFF)
         return -1;
-    s->dhcp_xid = ipstack_getrandom();
+    s->dhcp_xid = wolfIP_getrandom();
 
     if (s->dhcp_udp_sd > 0) {
-        ft_close(s, s->dhcp_udp_sd);
+        wolfIP_sock_close(s, s->dhcp_udp_sd);
     }
 
-    s->dhcp_udp_sd = ft_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, FT_IPPROTO_UDP);
+    s->dhcp_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, FT_IPPROTO_UDP);
     if (s->dhcp_udp_sd < 0) {
         s->dhcp_state = DHCP_OFF;
         return -1;
     }
-    memset(&sin, 0, sizeof(struct ipstack_sockaddr_in));
+    memset(&sin, 0, sizeof(struct wolfIP_sockaddr_in));
     sin.sin_family = AF_INET;
     sin.sin_port = ee16(DHCP_CLIENT_PORT);
-    if (ft_bind(s, s->dhcp_udp_sd, (struct ipstack_sockaddr *)&sin, sizeof(struct ipstack_sockaddr_in)) < 0) {
+    if (wolfIP_sock_bind(s, s->dhcp_udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in)) < 0) {
         s->dhcp_state = DHCP_OFF;
         return -1;
     }
-    ipstack_register_callback(s, s->dhcp_udp_sd, dhcp_callback, s);
+    wolfIP_register_callback(s, s->dhcp_udp_sd, dhcp_callback, s);
     return dhcp_send_discover(s);
 }
 
 /* ARP */
 #ifdef ETHERNET
 
-static void arp_request(struct ipstack *s, ip4 tip)
+static void arp_request(struct wolfIP *s, ip4 tip)
 {
     struct arp_packet arp;
     if (s->arp.last_arp + 1000 > s->last_tick) {
@@ -1885,7 +1885,7 @@ static void arp_request(struct ipstack *s, ip4 tip)
     s->ll_dev.send(&s->ll_dev, &arp, sizeof(struct arp_packet));
 }
 
-static void arp_recv(struct ipstack *s, void *buf, int len)
+static void arp_recv(struct wolfIP *s, void *buf, int len)
 {
     struct arp_packet *arp = (struct arp_packet *)buf;
     if (arp->opcode == ee16(ARP_REQUEST) && arp->tip == ee32(s->ipconf.ip)) {
@@ -1923,7 +1923,7 @@ static void arp_recv(struct ipstack *s, void *buf, int len)
     }
 }
 
-static int arp_lookup(struct ipstack *s, ip4 ip, uint8_t *mac)
+static int arp_lookup(struct wolfIP *s, ip4 ip, uint8_t *mac)
 {
     memset(mac, 0, 6);
     for (int i = 0; i < MAX_NEIGHBORS; i++) {
@@ -1938,34 +1938,34 @@ static int arp_lookup(struct ipstack *s, ip4 ip, uint8_t *mac)
 #endif
 
 /* Initialize the IP stack */
-void ipstack_init(struct ipstack *s)
+void wolfIP_init(struct wolfIP *s)
 {
-    memset(s, 0, sizeof(struct ipstack));
+    memset(s, 0, sizeof(struct wolfIP));
 }
 
-struct ll *ipstack_getdev(struct ipstack *s)
+struct ll *wolfIP_getdev(struct wolfIP *s)
 {
     return &s->ll_dev;
 }
 
-static struct ipstack ipstack_static;
-void ipstack_init_static(struct ipstack **s)
+static struct wolfIP wolfIP_static;
+void wolfIP_init_static(struct wolfIP **s)
 {
     if (!s)
         return;
-    ipstack_init(&ipstack_static);
-    *s = &ipstack_static;
+    wolfIP_init(&wolfIP_static);
+    *s = &wolfIP_static;
 }
 
-static inline void ip_recv(struct ipstack *s, struct ipstack_ip_packet *ip,
+static inline void ip_recv(struct wolfIP *s, struct wolfIP_ip_packet *ip,
         uint32_t len)
 {
     if (ip->ver_ihl == 0x45 && ip->proto == 0x06) {
-        struct ipstack_tcp_seg *tcp = (struct ipstack_tcp_seg *)ip;
+        struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)ip;
         tcp_input(s, tcp, len);
     }
     else if (ip->ver_ihl == 0x45 && ip->proto == 0x11) {
-        struct ipstack_udp_datagram *udp = (struct ipstack_udp_datagram *)ip;
+        struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
         udp_try_recv(s, udp, len);
     } else if (ip->ver_ihl == 0x45 && ip->proto == 0x01) {
         icmp_input(s, ip, len);
@@ -1977,12 +1977,12 @@ static inline void ip_recv(struct ipstack *s, struct ipstack_ip_packet *ip,
  * This function is called either after polling the device driver
  * in the loop, or in the device driver dsr callback.
  */
-void ipstack_recv(struct ipstack *s, void *buf, uint32_t len)
+void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len)
 {
 #ifdef ETHERNET
-    struct ipstack_eth_frame *eth = (struct ipstack_eth_frame *)buf;
+    struct wolfIP_eth_frame *eth = (struct wolfIP_eth_frame *)buf;
     if (eth->type == ee16(0x0800)) {
-        struct ipstack_ip_packet *ip = (struct ipstack_ip_packet *)eth;
+        struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)eth;
         if ((memcmp(eth->dst, s->ll_dev.mac, 6) != 0) && (memcmp(eth->dst, "\xff\xff\xff\xff\xff\xff", 6) != 0)) {
             return; /* Not for us */
         }
@@ -1992,7 +1992,7 @@ void ipstack_recv(struct ipstack *s, void *buf, uint32_t len)
     }
 #else
     /* No ethernet, assume IP */
-    struct ipstack_ip_packet *ip = (struct ipstack_ip_packet *)buf;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
     ip_recv(s, ip, len);
 #endif
     /* No default action required: the buffer is in stack and will be discarded on return */
@@ -2022,7 +2022,7 @@ struct PACKED dns_question {
 
 void dns_callback(int dns_sd, uint16_t ev, void *arg)
 {
-    struct ipstack *s = (struct ipstack *)arg;
+    struct wolfIP *s = (struct wolfIP *)arg;
     char buf[MAX_DNS_RESPONSE];
     struct dns_header *hdr = (struct dns_header *)buf;
     struct dns_question *q;
@@ -2030,9 +2030,9 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
     if (!s)
         return;
     if (ev & CB_EVENT_READABLE) {
-        dns_len = ft_recvfrom(s, dns_sd, buf, MAX_DNS_RESPONSE, 0, NULL, 0);
+        dns_len = wolfIP_sock_recvfrom(s, dns_sd, buf, MAX_DNS_RESPONSE, 0, NULL, 0);
         if (dns_len < 0) {
-            ft_close(s, dns_sd);
+            wolfIP_sock_close(s, dns_sd);
             s->dns_udp_sd = -1;
             s->dns_id = 0;
             return;
@@ -2061,26 +2061,26 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
     }
 }
 
-int nslookup(struct ipstack *s, const char *dname, uint16_t *id, void (*lookup_cb)(uint32_t ip))
+int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb)(uint32_t ip))
 {
     uint8_t buf[512];
     struct dns_header *hdr;
     struct dns_question *q;
     char *q_name, *tok_start, *tok_end;
-    struct ipstack_sockaddr_in dns_srv;
+    struct wolfIP_sockaddr_in dns_srv;
     uint32_t tok_len = 0;
     if (!dname || !id || !lookup_cb) return -22; /* Invalid arguments */
     if (strlen(dname) > 256) return -22; /* Invalid arguments */
     if (s->dns_server == 0) return -101; /* Network unreachable: No DNS server configured */
     if (s->dns_id != 0) return -16; /* DNS query already in progress */
     if (s->dns_udp_sd <= 0) {
-        s->dns_udp_sd = ft_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, FT_IPPROTO_UDP);
+        s->dns_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, FT_IPPROTO_UDP);
         if (s->dns_udp_sd < 0)
             return -1;
-        ipstack_register_callback(s, s->dns_udp_sd, dns_callback, s);
+        wolfIP_register_callback(s, s->dns_udp_sd, dns_callback, s);
     }
     s->dns_lookup_cb = lookup_cb;
-    s->dns_id = ipstack_getrandom();
+    s->dns_id = wolfIP_getrandom();
     *id = s->dns_id;
     memset(buf, 0, 512);
     hdr = (struct dns_header *)buf;
@@ -2110,15 +2110,15 @@ int nslookup(struct ipstack *s, const char *dname, uint16_t *id, void (*lookup_c
     q = (struct dns_question *)(buf + sizeof(struct dns_header) + tok_len);
     q->qtype = ee16(DNS_A);
     q->qclass = ee16(1);
-    memset(&dns_srv, 0, sizeof(struct ipstack_sockaddr_in));
+    memset(&dns_srv, 0, sizeof(struct wolfIP_sockaddr_in));
     dns_srv.sin_family = AF_INET;
     dns_srv.sin_port = ee16(DNS_PORT);
     dns_srv.sin_addr.s_addr = ee32(s->dns_server);
-    ft_sendto(s, s->dns_udp_sd, buf, sizeof(struct dns_header) + tok_len + sizeof(struct dns_question), 0, (struct ipstack_sockaddr *)&dns_srv, sizeof(struct ipstack_sockaddr_in));
+    wolfIP_sock_sendto(s, s->dns_udp_sd, buf, sizeof(struct dns_header) + tok_len + sizeof(struct dns_question), 0, (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
     return 0;
 }
 
-/* ipstack_poll: poll the network stack for incoming packets
+/* wolfIP_poll: poll the network stack for incoming packets
  * This function should be called in a loop to process incoming packets.
  * It will call the poll function of the device driver and process the
  * received packets.
@@ -2128,12 +2128,12 @@ int nslookup(struct ipstack *s, const char *dname, uint16_t *id, void (*lookup_c
  * It returns the number of milliseconds to wait before
  * calling it again (TODO).
  */
-int ipstack_poll(struct ipstack *s, uint64_t now)
+int wolfIP_poll(struct wolfIP *s, uint64_t now)
 {
     int len = 0;
     int i = 0;
     uint8_t buf[LINK_MTU];
-    struct ipstack_timer tmr;
+    struct wolfIP_timer tmr;
     memset(buf, 0, LINK_MTU);
 
     s->last_tick = now;
@@ -2144,7 +2144,7 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
             len = s->ll_dev.poll(&s->ll_dev, buf, LINK_MTU);
             if (len > 0) {
                 /* Process packet */
-                ipstack_recv(s, buf, len);
+                wolfIP_recv(s, buf, len);
             }
         } while (len > 0);
     }
@@ -2175,10 +2175,10 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
         uint32_t len;
         uint32_t in_flight = 0;
         struct pkt_desc *desc;
-        struct ipstack_tcp_seg *tcp;
+        struct wolfIP_tcp_seg *tcp;
         desc = fifo_peek(&ts->sock.tcp.txbuf);
         while (desc) {
-            tcp = (struct ipstack_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+            tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
             if (desc->flags & PKT_FLAG_SENT) {
                 in_flight += ee16(tcp->ip.len) - (IP_HEADER_LEN + (tcp->hlen >> 2));
                 desc = fifo_next(&ts->sock.tcp.txbuf, desc);
@@ -2193,9 +2193,9 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
                 }else
 #endif
                     if (in_flight <= ts->sock.tcp.cwnd) {
-                        struct ipstack_timer tmr = {};
+                        struct wolfIP_timer tmr = {};
                         len = desc->len - ETH_HEADER_LEN;
-                        tcp = (struct ipstack_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+                        tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
                         if ((ts->sock.tcp.ack == ts->sock.tcp.last_ack) &&
                                 (len == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) &&
                                 (tcp->flags == 0x10)) {
@@ -2208,7 +2208,7 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
                         ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                         tcp->ack = ee32(ts->sock.tcp.ack);
                         tcp->win = ee16(queue_space(&ts->sock.tcp.rxbuf));
-                        ip_output_add_header(ts, (struct ipstack_ip_packet *)tcp, FT_IPPROTO_TCP, len);
+                        ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, FT_IPPROTO_TCP, len);
                         s->ll_dev.send(&s->ll_dev, tcp, desc->len);
                         desc->flags |= PKT_FLAG_SENT;
                         desc->time_sent = now;
@@ -2237,7 +2237,7 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
         struct tsocket *t = &s->udpsockets[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
         while (desc) {
-            struct ipstack_udp_datagram *udp = (struct ipstack_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
+            struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
 #ifdef ETHERNET
             ip4 nexthop = NEXTHOP(s, t->remote_ip);
             if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, nexthop, t->nexthop_mac) < 0))) {
@@ -2248,7 +2248,7 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
             if (IS_IP_BCAST(nexthop)) memset(t->nexthop_mac, 0xFF, 6);
 #endif
             len = desc->len - ETH_HEADER_LEN;
-            ip_output_add_header(t, (struct ipstack_ip_packet *)udp, FT_IPPROTO_UDP, len);
+            ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, FT_IPPROTO_UDP, len);
             s->ll_dev.send(&s->ll_dev, udp, desc->len);
             fifo_pop(&t->sock.udp.txbuf);
             desc = fifo_peek(&t->sock.udp.txbuf);
@@ -2257,14 +2257,14 @@ int ipstack_poll(struct ipstack *s, uint64_t now)
     return 0;
 }
 
-void ipstack_ipconfig_set(struct ipstack *s, ip4 ip, ip4 mask, ip4 gw)
+void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw)
 {
     s->ipconf.ip = ip;
     s->ipconf.mask = mask;
     s->ipconf.gw = gw;
 }
 
-void ipstack_ipconfig_get(struct ipstack *s, ip4 *ip, ip4 *mask, ip4 *gw)
+void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw)
 {
     *ip = s->ipconf.ip;
     *mask = s->ipconf.mask;
