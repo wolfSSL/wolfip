@@ -147,7 +147,7 @@ static int test_loop(struct wolfIP *s, int active_close)
 
     while(1) {
         uint32_t ms_next;
-        struct timeval tv;
+        struct timeval tv = {0, 0};
         gettimeofday(&tv, NULL);
         ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(ms_next * 1000);
@@ -334,7 +334,7 @@ int main(int argc, char **argv)
 {
     struct wolfIP *s;
     struct ll *tapdev;
-    struct timeval tv;
+    struct timeval tv = {0, 0};
     struct in_addr linux_ip;
     uint32_t srv_ip;
     ip4 ip = 0, nm = 0, gw = 0;
