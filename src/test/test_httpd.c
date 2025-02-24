@@ -129,7 +129,6 @@ int main(int argc, char **argv)
     struct ll *tapdev;
     struct timeval tv = {0, 0};
     struct in_addr linux_ip;
-    uint32_t srv_ip;
     ip4 ip = 0, nm = 0, gw = 0;
 
     wolfSSL_Init();
@@ -164,12 +163,10 @@ int main(int argc, char **argv)
     } while (!dhcp_bound(s));
     printf("DHCP: obtained IP address.\n");
     wolfIP_ipconfig_get(s, &ip, &nm, &gw);
-    srv_ip = htonl(ip);
 #else
     wolfIP_ipconfig_set(s, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(LINUX_IP));
     printf("IP: manually configured\n");
-    inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
 #endif
 
     /* Server side test */
