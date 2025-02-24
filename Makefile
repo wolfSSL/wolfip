@@ -1,5 +1,5 @@
 CC?=gcc
-CFLAGS:=-Wall -Werror -Wextra -I.
+CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb
 LDFLAGS+=-pthread
 

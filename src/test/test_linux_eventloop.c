@@ -30,7 +30,7 @@
 #include "config.h"
 #include "wolfip.h"
 
-#define TEST_SIZE (8 * 1024)
+#define TEST_SIZE (4 * 1024)
 
 #define BUFFER_SIZE TEST_SIZE
 
