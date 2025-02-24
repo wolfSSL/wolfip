@@ -987,7 +987,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     }
     if (ack_count > 0) {
         struct pkt_desc *fresh_desc = NULL;
-        struct wolfIP_tcp_seg *tcp;
+        struct wolfIP_tcp_seg *inner_tcp;
         /* This ACK ackwnowledged some data. */
         desc = fifo_peek(&t->sock.tcp.txbuf);
         while (desc && (desc->flags & PKT_FLAG_ACKED)) {
@@ -995,9 +995,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             desc = fifo_peek(&t->sock.tcp.txbuf);
         }
         if (fresh_desc) {
-            tcp = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
+            inner_tcp = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
             /* Update rtt */
-            if (tcp_process_ts(t, tcp) < 0) {
+            if (tcp_process_ts(t, inner_tcp) < 0) {
                 /* No timestamp option, use coarse RTT estimation */
                 int rtt = t->S->last_tick - fresh_desc->time_sent;
                 if (t->sock.tcp.rtt == 0) {
@@ -1506,7 +1506,7 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return 0;
 }
 
-int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
@@ -1559,7 +1559,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
     return 0;
 }
 
-int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
