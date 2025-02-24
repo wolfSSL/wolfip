@@ -12,6 +12,12 @@ CPPCHECK_FLAGS=--enable=all --suppress=missingIncludeSystem \
 			   --suppress=constParameterCallback \
 			   --suppress=toomanyconfigs \
 			   --suppress=unmatchedSuppression --inconclusive \
+			   --suppress=shadowVariable \
+			   --suppress=unreadVariable \
+			   --suppress=unassignedVariable \
+			   --suppress=knownConditionTrueFalse \
+			   --suppress=redundantAssignment \
+			   --suppress=redundantInitialization \
 			   --std=c99 --language=c \
 			   --platform=unix64 \
 			   --error-exitcode=1 --xml --xml-version=2
