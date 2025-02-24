@@ -99,7 +99,7 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
     } else {
         snprintf(txt_response, sizeof(txt_response), "HTTP/1.1 %d %s\r\n"
             "Content-Type: %s\r\n"
-            "Content-Length: %lu\r\n"
+            "Content-Length: %zu\r\n"
             "\r\n",
             status_code, status_text, content_type, content_length);
     }
@@ -123,7 +123,7 @@ void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t 
     char txt_chunk[8];
     memset(txt_chunk, 0, sizeof(txt_chunk));
     if (!hc) return;
-    snprintf(txt_chunk, sizeof(txt_chunk), "%lx\r\n", len);
+    snprintf(txt_chunk, sizeof(txt_chunk), "%zx\r\n", len);
     if (hc->ssl) {
         wolfSSL_write(hc->ssl, txt_chunk, strlen(txt_chunk));
         wolfSSL_write(hc->ssl, chunk, len);

@@ -92,7 +92,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
         for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
             if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
                 printf("test client: pattern mismatch\n");
-                printf("at position %d\n", i);
+                printf("at position %u\n", i);
                 buf[i + 16] = 0;
                 printf("%s\n", &buf[i]);
                 return;

@@ -157,7 +157,7 @@ static struct pkt_desc *fifo_peek(struct fifo *f)
         f->tail++;
     if ((f->head < f->tail) && ((f->tail + sizeof(struct pkt_desc) + LINK_MTU > f->size)))
         f->tail = 0;
-    return (struct pkt_desc *)(f->data + f->tail);
+    return (struct pkt_desc *)((uint8_t *)f->data + f->tail);
 }
 
 /* Continue reading starting from a descriptor returned by fifo_peek */
@@ -172,11 +172,11 @@ static struct pkt_desc *fifo_next(struct fifo *f, struct pkt_desc *desc)
     while ((desc->pos + len) % 4)
         len++;
     if ((desc->pos + len + sizeof(struct pkt_desc) + LINK_MTU ) >= f->size)
-        desc = (struct pkt_desc *)(f->data);
+        desc = (struct pkt_desc *)((uint8_t *)f->data);
     else
-        desc = (struct pkt_desc *)((f->data + desc->pos + len));
+        desc = (struct pkt_desc *)((uint8_t *)f->data + desc->pos + len);
     if ((desc->pos + len) == f->h_wrap) {
-        desc = (struct pkt_desc *)(f->data);
+        desc = (struct pkt_desc *)((uint8_t *)f->data);
     }
     return desc;
 }
@@ -211,9 +211,9 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
         return -1;
     desc.pos = f->head;
     desc.len = len;
-    memcpy(f->data + f->head, &desc, sizeof(struct pkt_desc));
+    memcpy((uint8_t *)f->data + f->head, &desc, sizeof(struct pkt_desc));
     f->head += sizeof(struct pkt_desc);
-    memcpy(f->data + f->head, data, len);
+    memcpy((uint8_t *)f->data + f->head, data, len);
     f->head += len;
     return 0;
 }
@@ -231,7 +231,7 @@ static struct pkt_desc *fifo_pop(struct fifo *f)
         return NULL;
     if ((f->head < f->tail) && ((f->tail + sizeof(struct pkt_desc) + LINK_MTU > f->size)))
         f->tail = 0;
-    desc = (struct pkt_desc *)(f->data + f->tail);
+    desc = (struct pkt_desc *)((uint8_t *)f->data + f->tail);
     f->tail += sizeof(struct pkt_desc) + desc->len;
     f->tail %= f->size;
     return desc;
@@ -297,10 +297,10 @@ static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
             return 0;
         /* Write in two steps: consider wrapping */
         if (pos + len > q->size) {
-            memcpy(q->data + pos, data, q->size - pos);
-            memcpy(q->data, data + q->size - pos, len - (q->size - pos));
+            memcpy((uint8_t *)q->data + pos, data, q->size - pos);
+            memcpy((uint8_t *)q->data, (const uint8_t *)data + q->size - pos, len - (q->size - pos));
         } else {
-            memcpy(q->data + pos, data, len);
+            memcpy((uint8_t *)q->data + pos, data, len);
         }
         if (pos + len > q->head)
             q->head = (pos + len) % q->size;
@@ -316,7 +316,7 @@ static int queue_pop(struct queue *q, void *data, uint32_t len)
         return -11;
     if (len > q_len)
         len = q_len;
-    memcpy(data, q->data + q->tail, len);
+    memcpy(data, (const uint8_t *)q->data + q->tail, len);
     q->tail += len;
     q->tail %= q->size;
     q->seq_base += len;
@@ -778,7 +778,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     ts->ecr = t->sock.tcp.last_ts;
     ts->pad = 0x01;
     ts->eoo = 0x01;
-    mss = (struct tcp_opt_mss *)(tcp->data + sizeof(struct tcp_opt_ts));
+    mss = (struct tcp_opt_mss *)((uint8_t *)tcp->data + sizeof(struct tcp_opt_ts));
     mss->opt = TCP_OPTION_MSS;
     mss->len = TCP_OPTION_MSS_LEN;
     mss->mss = ee16(TCP_MSS);
@@ -801,7 +801,7 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
     }
     if (t->sock.tcp.ack == seq) {
         /* push into queue */
-        if (queue_insert(&t->sock.tcp.rxbuf, seg->ip.data + (seg->hlen >> 2),
+        if (queue_insert(&t->sock.tcp.rxbuf, (uint8_t *)seg->ip.data + (seg->hlen >> 2),
                     seq, seg_len) < 0) {
             /* Buffer full, dropped. This will send a duplicate ack. */
         } else {
@@ -927,7 +927,7 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 {
     const struct tcp_opt_ts *ts;
     const uint8_t *opt = tcp->data;
-    while (opt < (tcp->data + (tcp->hlen >> 2))) {
+    while (opt < ((const uint8_t *)tcp->data + (tcp->hlen >> 2))) {
         if (*opt == TCP_OPTION_NOP)
             opt++;
         else if (*opt == TCP_OPTION_EOO)
@@ -1358,7 +1358,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tsopt->ecr = ts->sock.tcp.last_ts;
             tsopt->pad = 0x01;
             tsopt->eoo = 0x00;
-            memcpy(tcp->data + TCP_OPTIONS_LEN, buf + sent, payload_len);
+            memcpy((uint8_t *)tcp->data + TCP_OPTIONS_LEN, (const uint8_t *)buf + sent, payload_len);
             fifo_push(&ts->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + payload_len);
             sent += payload_len;
             ts->sock.tcp.seq += payload_len;

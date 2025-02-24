@@ -96,7 +96,7 @@ START_TEST(test_fifo_push_and_pop) {
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
     desc2 = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc2);
     ck_assert_ptr_eq(desc, desc2);
@@ -108,7 +108,7 @@ START_TEST(test_fifo_push_and_pop) {
     ck_assert_int_eq(fifo_space(&f), memsz);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
     ck_assert_int_eq(fifo_len(&f), 0);
 }
 END_TEST
@@ -131,12 +131,12 @@ START_TEST(test_fifo_push_and_pop_multiple) {
     struct pkt_desc *desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 
     desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data2));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data2, sizeof(data2));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data2, sizeof(data2));
 }
 END_TEST
 
@@ -149,7 +149,7 @@ START_TEST(test_fifo_pop_success) {
     struct pkt_desc *desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc); // Ensure we got a valid descriptor
     ck_assert_int_eq(desc->len, sizeof(data)); // Check length
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data)); // Check data
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data)); // Check data
 }
 
 START_TEST(test_fifo_pop_empty) {
@@ -188,7 +188,7 @@ START_TEST(test_fifo_push_wrap) {
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 }
 END_TEST
 
@@ -208,7 +208,7 @@ START_TEST(test_fifo_push_wrap_multiple) {
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 
     // Push more data to wrap around the buffer
     ret = fifo_push(&f, data2, sizeof(data2));
@@ -321,7 +321,7 @@ START_TEST(test_queue_insert_empty) {
     ck_assert_int_eq(res, 0);
     ck_assert_int_eq(queue_len(&q), sizeof(data));
     ck_assert_int_eq(q.head, sizeof(data));
-    ck_assert_mem_eq(q.data, data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)q.data, data, sizeof(data));
 }
 END_TEST
 
@@ -336,8 +336,8 @@ START_TEST(test_queue_insert_sequential) {
     ck_assert_int_eq(res1, 0);
     ck_assert_int_eq(res2, 0);
     ck_assert_int_eq(queue_len(&q), sizeof(data1) + sizeof(data2));
-    ck_assert_mem_eq(q.data, data1, sizeof(data1));
-    ck_assert_mem_eq(q.data + 2, data2, sizeof(data2));
+    ck_assert_mem_eq((const uint8_t *)q.data, data1, sizeof(data1));
+    ck_assert_mem_eq((uint8_t *)q.data + 2, data2, sizeof(data2));
 }
 END_TEST
 
