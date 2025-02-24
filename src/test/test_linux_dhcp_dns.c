@@ -37,7 +37,7 @@
 
 static int conn_fd = -1;
 static int exit_ok = 0, exit_count = 0;
-static uint8_t buf[TEST_SIZE];
+static uint8_t inner_buf[TEST_SIZE];
 static int tot_sent = 0;
 static int wolfIP_closing = 0;
 static int closed = 0;
@@ -59,12 +59,12 @@ static void client_cb(int fd, uint16_t event, void *arg)
         }
     }
     if (total_w == 0) {
-        for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-            memcpy(buf + i, test_pattern, sizeof(test_pattern));
+        for (i = 0; i < sizeof(inner_buf); i += sizeof(test_pattern)) {
+            memcpy(inner_buf + i, test_pattern, sizeof(test_pattern));
         }
     }
-    if (client_connected && (event & CB_EVENT_WRITABLE) && (total_w < sizeof(buf))) {
-        ret = wolfIP_sock_sendto(s, fd, buf + total_w, sizeof(buf) - total_w, 0, NULL, 0);
+    if (client_connected && (event & CB_EVENT_WRITABLE) && (total_w < sizeof(inner_buf))) {
+        ret = wolfIP_sock_sendto(s, fd, inner_buf + total_w, sizeof(inner_buf) - total_w, 0, NULL, 0);
         if (ret <= 0) {
             printf("Test client write: %d\n", ret);
             return;
@@ -73,7 +73,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
     }
 
     while ((total_r < total_w) && (event & CB_EVENT_READABLE)) {
-        ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
+        ret = wolfIP_sock_recvfrom(s, fd, inner_buf + total_r, sizeof(inner_buf) - total_r, 0, NULL, NULL);
         if (ret < 0){
             if (ret != -11) {
                 printf("Client read: %d\n", ret);
@@ -87,14 +87,14 @@ static void client_cb(int fd, uint16_t event, void *arg)
         total_r += ret;
         printf("Client RX total: %u\n", total_r);
     }
-    if (total_r == sizeof(buf)) {
+    if (total_r == sizeof(inner_buf)) {
         exit_ok = 1;
-        for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-            if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
+        for (i = 0; i < sizeof(inner_buf); i += sizeof(test_pattern)) {
+            if (memcmp(inner_buf + i, test_pattern, sizeof(test_pattern))) {
                 printf("test client: pattern mismatch\n");
                 printf("at position %u\n", i);
-                buf[i + 16] = 0;
-                printf("%s\n", &buf[i]);
+                inner_buf[i + 16] = 0;
+                printf("%s\n", &inner_buf[i]);
                 return;
             }
         }
@@ -138,7 +138,7 @@ static void *pt_echoserver(void *arg)
 {
     int fd, ret;
     unsigned total_r = 0;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t inner_buf[BUFFER_SIZE];
     struct sockaddr_in local_sock = {
         .sin_family = AF_INET,
         .sin_port = ntohs(8), /* Echo */
@@ -171,7 +171,7 @@ static void *pt_echoserver(void *arg)
     printf("test server: client %d connected\n", ret);
     fd = ret;
     while (1) {
-        ret = read(fd, buf + total_r, sizeof(buf) - total_r);
+        ret = read(fd, inner_buf + total_r, sizeof(inner_buf) - total_r);
         if (ret < 0) {
             printf("failed test server read: %d (%s) \n", ret, strerror(errno));
             return (void *)-1;
@@ -184,7 +184,7 @@ static void *pt_echoserver(void *arg)
                 return (void *)-1;
         }
         total_r += ret;
-        write(fd, buf + total_r - ret, ret);
+        write(fd, inner_buf + total_r - ret, ret);
     }
 }
 

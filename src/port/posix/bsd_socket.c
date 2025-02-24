@@ -246,12 +246,12 @@ repeat:
     for (i = 0; i < nfds; i++) {
         struct bsd_poll_helper *poller = NULL;
         int j;
-        int fd = fds[i].fd;
+        int inner_fd = fds[i].fd;
         char c = 0;
         for (j = 0; j < MAX_TCPSOCKETS; j++) {
             if (tcp_pollers[j].fd == 0)
                 continue;
-            if (tcp_pollers[j].pipefds[0] == fd) {
+            if (tcp_pollers[j].pipefds[0] == inner_fd) {
                 poller = &tcp_pollers[j];
                 break;
             }
@@ -260,7 +260,7 @@ repeat:
             for (j = 0; j < MAX_UDPSOCKETS; j++) {
                 if (udp_pollers[j].fd == 0)
                     continue;
-                if (udp_pollers[j].pipefds[0] == fd) {
+                if (udp_pollers[j].pipefds[0] == inner_fd) {
                     poller = &udp_pollers[j];
                     break;
                 }

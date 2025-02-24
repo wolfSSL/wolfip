@@ -39,7 +39,7 @@
 
 static int listen_fd = -1, client_fd = -1;
 static int exit_ok = 0, exit_count = 0;
-static uint8_t buf[TEST_SIZE];
+static uint8_t server_buf[TEST_SIZE];
 static int tot_sent = 0;
 static int tot_recv = 0;
 static int wolfIP_closing = 0;
@@ -77,7 +77,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
             printf("Server: TCP connection established\n");
         }
     } else if ((fd == client_fd) && (event & CB_EVENT_READABLE  )) {
-        ret = wolfSSL_read(server_ssl, buf, sizeof(buf));
+        ret = wolfSSL_read(server_ssl, server_buf, sizeof(server_buf));
         if (ret < 0) {
             ret = wolfSSL_get_error(server_ssl, 0);
             if (ret != WOLFSSL_ERROR_WANT_READ) {
@@ -103,7 +103,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
             exit_ok = 1;
         }
         if ((!closed) && (tot_sent < tot_recv)) {
-            snd_ret = wolfSSL_write(server_ssl, buf + tot_sent, tot_recv - tot_sent);
+            snd_ret = wolfSSL_write(server_ssl, server_buf + tot_sent, tot_recv - tot_sent);
             if (snd_ret != WANT_WRITE) {
                 if (snd_ret < 0) {
                     printf("Send error: %d\n", snd_ret);
@@ -171,7 +171,7 @@ void *pt_echoclient(void *arg)
     int fd, ret;
     unsigned total_r = 0;
     unsigned i;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t inner_buf[BUFFER_SIZE];
     uint32_t *srv_addr = (uint32_t *)arg;
     struct sockaddr_in remote_sock = {
         .sin_family = AF_INET,
@@ -214,16 +214,16 @@ void *pt_echoclient(void *arg)
         printf("Linux client: Failed to connect to TLS server, err: %d\n", ret);
         return (void *)-1;
     }
-    for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-        memcpy(buf + i, test_pattern, sizeof(test_pattern));
+    for (i = 0; i < sizeof(inner_buf); i += sizeof(test_pattern)) {
+        memcpy(inner_buf + i, test_pattern, sizeof(test_pattern));
     }
-    ret = wolfSSL_write(client_ssl, buf, sizeof(buf));
+    ret = wolfSSL_write(client_ssl, inner_buf, sizeof(inner_buf));
     if (ret < 0) {
         printf("test client write: %d\n", ret);
         return (void *)-1;
     }
-    while (total_r < sizeof(buf)) {
-        ret = wolfSSL_read(client_ssl, buf + total_r, sizeof(buf) - total_r);
+    while (total_r < sizeof(inner_buf)) {
+        ret = wolfSSL_read(client_ssl, inner_buf + total_r, sizeof(inner_buf) - total_r);
         if (ret < 0) {
             printf("failed test client read: %d\n", ret);
             return (void *)-1;
@@ -237,12 +237,12 @@ void *pt_echoclient(void *arg)
         }
         total_r += ret;
     }
-    for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-        if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
+    for (i = 0; i < sizeof(inner_buf); i += sizeof(test_pattern)) {
+        if (memcmp(inner_buf + i, test_pattern, sizeof(test_pattern))) {
             printf("test client: pattern mismatch\n");
             printf("at position %u\n", i);
-            buf[i + 16] = 0;
-            printf("%s\n", &buf[i]);
+            inner_buf[i + 16] = 0;
+            printf("%s\n", &inner_buf[i]);
             return (void *)-1;
         }
     }
