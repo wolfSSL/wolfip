@@ -191,26 +191,7 @@ static void telnet_cb(int fd, uint16_t event, void *arg)
             wolfIP_sock_write(IPStack, tel_c, welcome_msg, strlen(welcome_msg));
         }
     }
-#if 0
-    else if ((fd == tel_c) && (event & CB_EVENT_READABLE  )) {
-        int ret;
-        ret = wolfIP_sock_recv((struct wolfIP *)arg, tel_c, buf, sizeof(buf), 0);
-        if (ret != -11) {
-            if (ret < 0) {
-                printf("Recv error: %d\n", ret);
-                wolfIP_sock_close((struct wolfIP *)arg, tel_c);
-            } else if (ret == 0) {
-                printf("Client side closed the connection.\n");
-                wolfIP_sock_close((struct wolfIP *)arg, tel_c);
-                printf("Server: Exiting.\n");
-                exit_ok = 1;
-            } else if (ret > 0) {
-                printf("recv: %d, echoing back\n", ret);
-                tot_recv += ret;
-            }
-        }
-    }
-#endif
+    /* Telnet read callback disabled for now */
 }
 
 
