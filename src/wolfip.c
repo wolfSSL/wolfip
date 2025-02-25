@@ -1506,7 +1506,7 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return 0;
 }
 
-int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
@@ -1559,7 +1559,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
     return 0;
 }
 
-int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
