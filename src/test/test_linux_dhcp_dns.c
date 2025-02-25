@@ -138,7 +138,7 @@ static void *pt_echoserver(void *arg)
 {
     int fd, ret;
     unsigned total_r = 0;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t local_buf[BUFFER_SIZE];
     struct sockaddr_in local_sock = {
         .sin_family = AF_INET,
         .sin_port = ntohs(8), /* Echo */
@@ -171,7 +171,7 @@ static void *pt_echoserver(void *arg)
     printf("test server: client %d connected\n", ret);
     fd = ret;
     while (1) {
-        ret = read(fd, buf + total_r, sizeof(buf) - total_r);
+        ret = read(fd, local_buf + total_r, sizeof(local_buf) - total_r);
         if (ret < 0) {
             printf("failed test server read: %d (%s) \n", ret, strerror(errno));
             return (void *)-1;
@@ -184,7 +184,7 @@ static void *pt_echoserver(void *arg)
                 return (void *)-1;
         }
         total_r += ret;
-        write(fd, buf + total_r - ret, ret);
+        write(fd, local_buf + total_r - ret, ret);
     }
 }
 

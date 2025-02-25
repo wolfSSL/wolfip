@@ -127,7 +127,7 @@ int main(int argc, char **argv)
 {
     struct wolfIP *s;
     struct ll *tapdev;
-    struct timeval tv;
+    struct timeval tv = {0, 0};
     struct in_addr linux_ip;
     uint32_t srv_ip;
     ip4 ip = 0, nm = 0, gw = 0;
@@ -171,6 +171,7 @@ int main(int argc, char **argv)
     printf("IP: manually configured\n");
     inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
 #endif
+    (void)srv_ip;
 
     /* Server side test */
     test_httpd(s);

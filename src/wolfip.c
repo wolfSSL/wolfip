@@ -966,7 +966,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
         if (seg_len == 0) {
+            /* Advance the tail and discard */
             desc = fifo_pop(&t->sock.tcp.txbuf);
+            (void)desc;
             desc = fifo_peek(&t->sock.tcp.txbuf);
             continue;
         }
@@ -987,7 +989,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     }
     if (ack_count > 0) {
         struct pkt_desc *fresh_desc = NULL;
-        struct wolfIP_tcp_seg *tcp;
+        struct wolfIP_tcp_seg *seg;
         /* This ACK ackwnowledged some data. */
         desc = fifo_peek(&t->sock.tcp.txbuf);
         while (desc && (desc->flags & PKT_FLAG_ACKED)) {
@@ -995,9 +997,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             desc = fifo_peek(&t->sock.tcp.txbuf);
         }
         if (fresh_desc) {
-            tcp = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
+            seg = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
             /* Update rtt */
-            if (tcp_process_ts(t, tcp) < 0) {
+            if (tcp_process_ts(t, seg) < 0) {
                 /* No timestamp option, use coarse RTT estimation */
                 int rtt = t->S->last_tick - fresh_desc->time_sent;
                 if (t->sock.tcp.rtt == 0) {
@@ -1020,7 +1022,6 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                 t->events |= CB_EVENT_WRITABLE;
         }
     } else {
-        struct pkt_desc *desc;
         /* Duplicate ack */
         t->sock.tcp.ssthresh = t->sock.tcp.cwnd / 2;
         if (t->sock.tcp.ssthresh < 2 * TCP_MSS) {
@@ -1033,7 +1034,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
             uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
             if (seg_len == 0) {
+                /* Advance the tail and discard */
                 desc = fifo_pop(&t->sock.tcp.txbuf);
+                (void)desc;
                 desc = fifo_peek(&t->sock.tcp.txbuf);
                 continue;
             }
@@ -1141,8 +1144,7 @@ static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t fra
             }
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
-                    (t->sock.tcp.state == TCP_FIN_WAIT_2) ||
-                    (t->sock.tcp.state == TCP_LAST_ACK)) {
+                    (t->sock.tcp.state == TCP_FIN_WAIT_2)) {
 
                 if (tcp->flags & 0x01) {
                     /* FIN */
@@ -1506,7 +1508,7 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return 0;
 }
 
-int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
@@ -1559,7 +1561,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
     return 0;
 }
 
-int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
@@ -2186,8 +2188,8 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     /* Step 4: attempt to write any pending data */
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *ts = &s->tcpsockets[i];
-        uint32_t len;
         uint32_t in_flight = 0;
+        uint32_t size = 0;
         struct pkt_desc *desc;
         struct wolfIP_tcp_seg *tcp;
         desc = fifo_peek(&ts->sock.tcp.txbuf);
@@ -2197,7 +2199,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 in_flight += ee16(tcp->ip.len) - (IP_HEADER_LEN + (tcp->hlen >> 2));
                 desc = fifo_next(&ts->sock.tcp.txbuf, desc);
                 continue;
-            } else if (desc != NULL) {
+            } else {
 #ifdef ETHERNET
                 ip4 nexthop = NEXTHOP(s, ts->remote_ip);
                 if (arp_lookup(s, nexthop, ts->nexthop_mac) < 0) {
@@ -2207,11 +2209,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 }else
 #endif
                     if (in_flight <= ts->sock.tcp.cwnd) {
-                        struct wolfIP_timer tmr = {};
-                        len = desc->len - ETH_HEADER_LEN;
+                        struct wolfIP_timer new_tmr = {};
+                        size = desc->len - ETH_HEADER_LEN;
                         tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
                         if ((ts->sock.tcp.ack == ts->sock.tcp.last_ack) &&
-                                (len == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) &&
+                                (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) &&
                                 (tcp->flags == 0x10)) {
                             desc->flags |= PKT_FLAG_SENT;
                             fifo_pop(&ts->sock.tcp.txbuf);
@@ -2222,22 +2224,22 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                         tcp->ack = ee32(ts->sock.tcp.ack);
                         tcp->win = ee16(queue_space(&ts->sock.tcp.rxbuf));
-                        ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, FT_IPPROTO_TCP, len);
+                        ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, FT_IPPROTO_TCP, size);
                         s->ll_dev.send(&s->ll_dev, tcp, desc->len);
                         desc->flags |= PKT_FLAG_SENT;
                         desc->time_sent = now;
-                        if (len == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
+                        if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
                             desc = fifo_pop(&ts->sock.tcp.txbuf);
                         } else {
-                            uint32_t payload_len = len - (IP_HEADER_LEN + (tcp->hlen >> 2));
+                            uint32_t payload_len = size - (IP_HEADER_LEN + (tcp->hlen >> 2));
                             if (ts->sock.tcp.tmr_rto != NO_TIMER) {
                                 timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
                                 ts->sock.tcp.tmr_rto = NO_TIMER;
                             }
-                            tmr.cb = tcp_rto_cb;
-                            tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
-                            tmr.arg = ts;
-                            ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, tmr);
+                            new_tmr.cb = tcp_rto_cb;
+                            new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+                            new_tmr.arg = ts;
+                            ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
                             in_flight += payload_len;
                             desc = fifo_next(&ts->sock.tcp.txbuf, desc);
                         }

@@ -88,18 +88,15 @@ int main() {
 
         if ((new_socket == -1) && FD_ISSET(server_fd, &tempfds)) {
             printf("Server socket activity\n");
-            // New connection on the socket
+            new_socket = accept(server_fd, NULL, NULL);
             if (new_socket == -1) {
-                new_socket = accept(server_fd, NULL, NULL);
-                if (new_socket == -1) {
-                    perror("Accept failed");
-                    continue;
-                }
-                printf("New connection established\n");
-                FD_SET(new_socket, &readfds);  // Monitor the new socket
-                max_fd = (new_socket > max_fd) ? new_socket : max_fd;
+                perror("Accept failed");
                 continue;
             }
+            printf("New connection established\n");
+            FD_SET(new_socket, &readfds);  // Monitor the new socket
+            max_fd = (new_socket > max_fd) ? new_socket : max_fd;
+            continue;
         }
         if ((new_socket != -1) && FD_ISSET(new_socket, &tempfds)) {
             // Data available on the socket

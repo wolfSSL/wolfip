@@ -185,7 +185,7 @@ int http_url_decode(char *buf, size_t len) {
 
 int http_url_encode(char *buf, size_t len, size_t max_len) {
     char *p = buf;
-    char *q;
+    char *q = NULL;
     while (p < buf + len) {
         q = strchr(p, ' ');
         if (!q) {
@@ -200,7 +200,8 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
         *(q + 2) = '0';
         len += 2;
     }
-    q[len] = '\0';
+    if (q)
+        q[len] = '\0';
     return len;
 }
 

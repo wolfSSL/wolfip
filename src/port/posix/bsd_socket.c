@@ -246,8 +246,8 @@ repeat:
     for (i = 0; i < nfds; i++) {
         struct bsd_poll_helper *poller = NULL;
         int j;
-        int fd = fds[i].fd;
         char c = 0;
+        fd = fds[i].fd;
         for (j = 0; j < MAX_TCPSOCKETS; j++) {
             if (tcp_pollers[j].fd == 0)
                 continue;
