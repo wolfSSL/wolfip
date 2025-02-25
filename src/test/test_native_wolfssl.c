@@ -1,3 +1,23 @@
+/* test_native_wolfssl.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include <stdio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -69,7 +89,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
             wolfIP_sock_close((struct wolfIP *)arg, client_fd);
             printf("Server: Exiting.\n");
             exit_ok = 1;
-        } else if (ret > 0) {
+        } else  /* ret > 0 */ {
             printf("recv: %d, echoing back\n", ret);
             tot_recv += ret;
         }
@@ -151,7 +171,7 @@ void *pt_echoclient(void *arg)
     int fd, ret;
     unsigned total_r = 0;
     unsigned i;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t local_buf[BUFFER_SIZE];
     uint32_t *srv_addr = (uint32_t *)arg;
     struct sockaddr_in remote_sock = {
         .sin_family = AF_INET,
@@ -194,16 +214,16 @@ void *pt_echoclient(void *arg)
         printf("Linux client: Failed to connect to TLS server, err: %d\n", ret);
         return (void *)-1;
     }
-    for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-        memcpy(buf + i, test_pattern, sizeof(test_pattern));
+    for (i = 0; i < sizeof(local_buf); i += sizeof(test_pattern)) {
+        memcpy(local_buf + i, test_pattern, sizeof(test_pattern));
     }
-    ret = wolfSSL_write(client_ssl, buf, sizeof(buf));
+    ret = wolfSSL_write(client_ssl, local_buf, sizeof(local_buf));
     if (ret < 0) {
         printf("test client write: %d\n", ret);
         return (void *)-1;
     }
-    while (total_r < sizeof(buf)) {
-        ret = wolfSSL_read(client_ssl, buf + total_r, sizeof(buf) - total_r);
+    while (total_r < sizeof(local_buf)) {
+        ret = wolfSSL_read(client_ssl, local_buf + total_r, sizeof(local_buf) - total_r);
         if (ret < 0) {
             printf("failed test client read: %d\n", ret);
             return (void *)-1;
@@ -217,12 +237,12 @@ void *pt_echoclient(void *arg)
         }
         total_r += ret;
     }
-    for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-        if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
+    for (i = 0; i < sizeof(local_buf); i += sizeof(test_pattern)) {
+        if (memcmp(local_buf + i, test_pattern, sizeof(test_pattern))) {
             printf("test client: pattern mismatch\n");
-            printf("at position %d\n", i);
-            buf[i + 16] = 0;
-            printf("%s\n", &buf[i]);
+            printf("at position %u\n", i);
+            local_buf[i + 16] = 0;
+            printf("%s\n", &local_buf[i]);
             return (void *)-1;
         }
     }
@@ -314,7 +334,7 @@ int main(int argc, char **argv)
 {
     struct wolfIP *s;
     struct ll *tapdev;
-    struct timeval tv;
+    struct timeval tv = {0, 0};
     struct in_addr linux_ip;
     uint32_t srv_ip;
     ip4 ip = 0, nm = 0, gw = 0;

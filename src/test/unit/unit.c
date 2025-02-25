@@ -1,3 +1,23 @@
+/* unit.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include "check.h"
 #include "../../wolfip.c"
 #include <stdlib.h> /* for random() */
@@ -76,7 +96,7 @@ START_TEST(test_fifo_push_and_pop) {
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
     desc2 = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc2);
     ck_assert_ptr_eq(desc, desc2);
@@ -88,7 +108,7 @@ START_TEST(test_fifo_push_and_pop) {
     ck_assert_int_eq(fifo_space(&f), memsz);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
     ck_assert_int_eq(fifo_len(&f), 0);
 }
 END_TEST
@@ -111,12 +131,12 @@ START_TEST(test_fifo_push_and_pop_multiple) {
     struct pkt_desc *desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 
     desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data2));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data2, sizeof(data2));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data2, sizeof(data2));
 }
 END_TEST
 
@@ -129,7 +149,7 @@ START_TEST(test_fifo_pop_success) {
     struct pkt_desc *desc = fifo_pop(&f);
     ck_assert_ptr_nonnull(desc); // Ensure we got a valid descriptor
     ck_assert_int_eq(desc->len, sizeof(data)); // Check length
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data)); // Check data
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data)); // Check data
 }
 
 START_TEST(test_fifo_pop_empty) {
@@ -168,7 +188,7 @@ START_TEST(test_fifo_push_wrap) {
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 }
 END_TEST
 
@@ -188,7 +208,7 @@ START_TEST(test_fifo_push_wrap_multiple) {
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(desc->len, sizeof(data));
-    ck_assert_mem_eq(f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
 
     // Push more data to wrap around the buffer
     ret = fifo_push(&f, data2, sizeof(data2));
@@ -301,7 +321,7 @@ START_TEST(test_queue_insert_empty) {
     ck_assert_int_eq(res, 0);
     ck_assert_int_eq(queue_len(&q), sizeof(data));
     ck_assert_int_eq(q.head, sizeof(data));
-    ck_assert_mem_eq(q.data, data, sizeof(data));
+    ck_assert_mem_eq((const uint8_t *)q.data, data, sizeof(data));
 }
 END_TEST
 
@@ -316,8 +336,8 @@ START_TEST(test_queue_insert_sequential) {
     ck_assert_int_eq(res1, 0);
     ck_assert_int_eq(res2, 0);
     ck_assert_int_eq(queue_len(&q), sizeof(data1) + sizeof(data2));
-    ck_assert_mem_eq(q.data, data1, sizeof(data1));
-    ck_assert_mem_eq(q.data + 2, data2, sizeof(data2));
+    ck_assert_mem_eq((const uint8_t *)q.data, data1, sizeof(data1));
+    ck_assert_mem_eq((uint8_t *)q.data + 2, data2, sizeof(data2));
 }
 END_TEST
 

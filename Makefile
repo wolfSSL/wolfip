@@ -1,7 +1,20 @@
 CC?=gcc
-CFLAGS:=-Wall -Werror -Wextra -I.
+CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb
 LDFLAGS+=-pthread
+
+CPPCHECK=cppcheck
+CPPCHECK_FLAGS=--enable=all --suppress=missingIncludeSystem \
+			   --suppress=unusedFunction --suppress=unusedVariable \
+			   --suppress=missingInclude --suppress=variableScope \
+			   --suppress=constVariable --suppress=constVariablePointer \
+			   --suppress=constParameterPointer \
+			   --suppress=constParameterCallback \
+			   --suppress=toomanyconfigs \
+			   --suppress=unmatchedSuppression --inconclusive \
+			   --std=c99 --language=c \
+			   --platform=unix64 \
+			   --error-exitcode=1 --xml --xml-version=2
 
 OBJ=build/wolfip.o \
 	build/port/posix/linux_tap.o
@@ -129,4 +142,7 @@ install:
 	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
-.PHONY: clean all static
+.PHONY: clean all static cppcheck
+
+cppcheck:
+	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml

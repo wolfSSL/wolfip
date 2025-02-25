@@ -1,3 +1,23 @@
+/* test_linux_dhcp_dns.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include <stdio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -72,7 +92,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
         for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
             if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
                 printf("test client: pattern mismatch\n");
-                printf("at position %d\n", i);
+                printf("at position %u\n", i);
                 buf[i + 16] = 0;
                 printf("%s\n", &buf[i]);
                 return;
@@ -118,7 +138,7 @@ static void *pt_echoserver(void *arg)
 {
     int fd, ret;
     unsigned total_r = 0;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t local_buf[BUFFER_SIZE];
     struct sockaddr_in local_sock = {
         .sin_family = AF_INET,
         .sin_port = ntohs(8), /* Echo */
@@ -151,7 +171,7 @@ static void *pt_echoserver(void *arg)
     printf("test server: client %d connected\n", ret);
     fd = ret;
     while (1) {
-        ret = read(fd, buf + total_r, sizeof(buf) - total_r);
+        ret = read(fd, local_buf + total_r, sizeof(local_buf) - total_r);
         if (ret < 0) {
             printf("failed test server read: %d (%s) \n", ret, strerror(errno));
             return (void *)-1;
@@ -164,7 +184,7 @@ static void *pt_echoserver(void *arg)
                 return (void *)-1;
         }
         total_r += ret;
-        write(fd, buf + total_r - ret, ret);
+        write(fd, local_buf + total_r - ret, ret);
     }
 }
 

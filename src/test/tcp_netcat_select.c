@@ -1,3 +1,23 @@
+/* tcp_netcat_select.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -68,18 +88,15 @@ int main() {
 
         if ((new_socket == -1) && FD_ISSET(server_fd, &tempfds)) {
             printf("Server socket activity\n");
-            // New connection on the socket
+            new_socket = accept(server_fd, NULL, NULL);
             if (new_socket == -1) {
-                new_socket = accept(server_fd, NULL, NULL);
-                if (new_socket == -1) {
-                    perror("Accept failed");
-                    continue;
-                }
-                printf("New connection established\n");
-                FD_SET(new_socket, &readfds);  // Monitor the new socket
-                max_fd = (new_socket > max_fd) ? new_socket : max_fd;
+                perror("Accept failed");
                 continue;
             }
+            printf("New connection established\n");
+            FD_SET(new_socket, &readfds);  // Monitor the new socket
+            max_fd = (new_socket > max_fd) ? new_socket : max_fd;
+            continue;
         }
         if ((new_socket != -1) && FD_ISSET(new_socket, &tempfds)) {
             // Data available on the socket

@@ -1,7 +1,8 @@
-/* wolfIP: Raspberry-pi pico port + example
+/* main.c
  *
- * This file is part of wolfIP
- * (c) 2024 Daniele Lacamera <root@danielinux.net>
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
  *
  * wolfIP is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,7 +17,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
- *
  * *****
  *
  * Based on LwIP drivers for TinyUSB,
@@ -133,6 +133,7 @@ static void tusb_net_push_rx(const uint8_t *src, uint16_t size) {
             break;
         }
     }
+    if (i == 2) return;
     if (dst) {
         memcpy(dst, src, size);
         tusb_net_rxbuf_used[i] = 1;
@@ -191,26 +192,7 @@ static void telnet_cb(int fd, uint16_t event, void *arg)
             wolfIP_sock_write(IPStack, tel_c, welcome_msg, strlen(welcome_msg));
         }
     }
-#if 0
-    else if ((fd == tel_c) && (event & CB_EVENT_READABLE  )) {
-        int ret;
-        ret = wolfIP_sock_recv((struct wolfIP *)arg, tel_c, buf, sizeof(buf), 0);
-        if (ret != -11) {
-            if (ret < 0) {
-                printf("Recv error: %d\n", ret);
-                wolfIP_sock_close((struct wolfIP *)arg, tel_c);
-            } else if (ret == 0) {
-                printf("Client side closed the connection.\n");
-                wolfIP_sock_close((struct wolfIP *)arg, tel_c);
-                printf("Server: Exiting.\n");
-                exit_ok = 1;
-            } else if (ret > 0) {
-                printf("recv: %d, echoing back\n", ret);
-                tot_recv += ret;
-            }
-        }
-    }
-#endif
+    /* Telnet read callback disabled for now */
 }
 
 

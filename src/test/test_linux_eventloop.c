@@ -1,3 +1,23 @@
+/* test_linux_eventloop.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include <stdio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -10,7 +30,7 @@
 #include "config.h"
 #include "wolfip.h"
 
-#define TEST_SIZE (8 * 1024)
+#define TEST_SIZE (4 * 1024)
 
 #define BUFFER_SIZE TEST_SIZE
 
@@ -138,7 +158,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
         for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
             if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
                 printf("test client: pattern mismatch\n");
-                printf("at position %d\n", i);
+                printf("at position %u\n", i);
                 buf[i + 16] = 0;
                 printf("%s\n", &buf[i]);
                 return;
@@ -185,7 +205,7 @@ void *pt_echoclient(void *arg)
     int fd, ret;
     unsigned total_r = 0;
     unsigned i;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t local_buf[BUFFER_SIZE];
     uint32_t *srv_addr = (uint32_t *)arg;
     struct sockaddr_in remote_sock = {
         .sin_family = AF_INET,
@@ -206,16 +226,16 @@ void *pt_echoclient(void *arg)
         perror("connect");
         return (void *)-1;
     }
-    for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-        memcpy(buf + i, test_pattern, sizeof(test_pattern));
+    for (i = 0; i < sizeof(local_buf); i += sizeof(test_pattern)) {
+        memcpy(local_buf + i, test_pattern, sizeof(test_pattern));
     }
-    ret = write(fd, buf, sizeof(buf));
+    ret = write(fd, local_buf, sizeof(local_buf));
     if (ret < 0) {
         printf("test client write: %d\n", ret);
         return (void *)-1;
     }
-    while (total_r < sizeof(buf)) {
-        ret = read(fd, buf + total_r, sizeof(buf) - total_r);
+    while (total_r < sizeof(local_buf)) {
+        ret = read(fd, local_buf + total_r, sizeof(local_buf) - total_r);
         if (ret < 0) {
             printf("failed test client read: %d\n", ret);
             return (void *)-1;
@@ -229,12 +249,12 @@ void *pt_echoclient(void *arg)
         }
         total_r += ret;
     }
-    for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
-        if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
+    for (i = 0; i < sizeof(local_buf); i += sizeof(test_pattern)) {
+        if (memcmp(local_buf + i, test_pattern, sizeof(test_pattern))) {
             printf("test client: pattern mismatch\n");
-            printf("at position %d\n", i);
-            buf[i + 16] = 0;
-            printf("%s\n", &buf[i]);
+            printf("at position %u\n", i);
+            local_buf[i + 16] = 0;
+            printf("%s\n", &local_buf[i]);
             return (void *)-1;
         }
     }
@@ -250,7 +270,7 @@ static void *pt_echoserver(void *arg)
 {
     int fd, ret;
     unsigned total_r = 0;
-    uint8_t buf[BUFFER_SIZE];
+    uint8_t local_buf[BUFFER_SIZE];
     struct sockaddr_in local_sock = {
         .sin_family = AF_INET,
         .sin_port = ntohs(8), /* Echo */
@@ -283,7 +303,7 @@ static void *pt_echoserver(void *arg)
     printf("test server: client %d connected\n", ret);
     fd = ret;
     while (1) {
-        ret = read(fd, buf + total_r, sizeof(buf) - total_r);
+        ret = read(fd, local_buf + total_r, sizeof(local_buf) - total_r);
         if (ret < 0) {
             printf("failed test server read: %d (%s) \n", ret, strerror(errno));
             return (void *)-1;
@@ -296,7 +316,7 @@ static void *pt_echoserver(void *arg)
                 return (void *)-1;
         }
         total_r += ret;
-        write(fd, buf + total_r - ret, ret);
+        write(fd, local_buf + total_r - ret, ret);
     }
 }
 
@@ -401,7 +421,7 @@ int main(int argc, char **argv)
 {
     struct wolfIP *s;
     struct ll *tapdev;
-    struct timeval tv;
+    struct timeval tv = {0, 0};
     struct in_addr linux_ip;
     uint32_t srv_ip;
     ip4 ip = 0, nm = 0, gw = 0;

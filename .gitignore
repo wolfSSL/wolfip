@@ -12,3 +12,4 @@ CMakeTmp
 build/*
 test/unit/unit
 tags
+cppcheck_results.xml

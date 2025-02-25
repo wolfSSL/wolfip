@@ -1,6 +1,22 @@
-/* HTTP 1.1 server
- * (c) Danielinux 2024 <root@danielinux.net>
- * This code is licensed under the GPLv3 license.
+/* httpd.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 #include "wolfip.h"
 #include "httpd.h"
@@ -83,7 +99,7 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
     } else {
         snprintf(txt_response, sizeof(txt_response), "HTTP/1.1 %d %s\r\n"
             "Content-Type: %s\r\n"
-            "Content-Length: %lu\r\n"
+            "Content-Length: %zu\r\n"
             "\r\n",
             status_code, status_text, content_type, content_length);
     }
@@ -107,7 +123,7 @@ void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t 
     char txt_chunk[8];
     memset(txt_chunk, 0, sizeof(txt_chunk));
     if (!hc) return;
-    snprintf(txt_chunk, sizeof(txt_chunk), "%lx\r\n", len);
+    snprintf(txt_chunk, sizeof(txt_chunk), "%zx\r\n", len);
     if (hc->ssl) {
         wolfSSL_write(hc->ssl, txt_chunk, strlen(txt_chunk));
         wolfSSL_write(hc->ssl, chunk, len);
@@ -169,7 +185,7 @@ int http_url_decode(char *buf, size_t len) {
 
 int http_url_encode(char *buf, size_t len, size_t max_len) {
     char *p = buf;
-    char *q;
+    char *q = NULL;
     while (p < buf + len) {
         q = strchr(p, ' ');
         if (!q) {
@@ -184,7 +200,8 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
         *(q + 2) = '0';
         len += 2;
     }
-    q[len] = '\0';
+    if (q)
+        q[len] = '\0';
     return len;
 }
 

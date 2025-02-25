@@ -1,0 +1,25 @@
+Name: CppCheck code linter
+
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  linter:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: Update repo
+        run: |
+          sudo apt-get update
+
+      - name: Run cppcheck
+        run: |
+          make cppcheck
