@@ -745,7 +745,7 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
 
 static void tcp_send_ack(struct tsocket *t)
 {
-    return tcp_send_empty(t, 0x10);
+    tcp_send_empty(t, 0x10);
 }
 
 static void tcp_send_finack(struct tsocket *t)
@@ -788,7 +788,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
 
 static void tcp_send_synack(struct tsocket *t)
 {
-    return tcp_send_syn(t, 0x12);
+    tcp_send_syn(t, 0x12);
 }
 
 /* Add a segment to the rx buffer for the application to consume */
@@ -1408,7 +1408,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
 int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags)
 {
     return wolfIP_sock_sendto(s, sockfd, buf, len, flags, NULL, 0);
-} 
+}
 
 int wolfIP_sock_write(struct wolfIP *s, int sockfd, const void *buf, size_t len)
 {
@@ -2286,4 +2286,3 @@ void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw)
     *mask = s->ipconf.mask;
     *gw = s->ipconf.gw;
 }
-
