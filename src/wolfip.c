@@ -680,7 +680,7 @@ static void udp_try_recv(struct wolfIP *s, struct wolfIP_udp_datagram *udp, uint
         struct tsocket *t = &s->udpsockets[i];
         if (t->src_port == ee16(udp->dst_port) && t->dst_port == ee16(udp->src_port) &&
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == ee32(udp->ip.dst) && t->remote_ip != s->ipconf.ip)) ) {
+                 (t->local_ip == ee32(udp->ip.dst) && ee32(t->remote_ip) != s->ipconf.ip)) ) {
 
             /* UDP datagram sanity checks */
             if ((int)frame_len != ee16(udp->len) + IP_HEADER_LEN + ETH_HEADER_LEN)
@@ -760,6 +760,17 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     struct tcp_opt_ts *ts;
     struct tcp_opt_mss *mss;
     uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN];
+
+    /* Print IP in network byte order */
+    uint32_t ip = ee32(ee32(t->remote_ip));
+    printf("wolfIP: Sending TCP packet with flags 0x%x to %d.%d.%d.%d:%d\n",
+           flags,
+           (ip >> 24) & 0xFF,
+           (ip >> 16) & 0xFF,
+           (ip >> 8) & 0xFF,
+           ip & 0xFF,
+           ee16(t->dst_port));
+
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
     tcp->src_port = ee16(t->src_port);
@@ -771,6 +782,10 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     tcp->win = ee16((uint16_t)queue_space(&t->sock.tcp.rxbuf));
     tcp->csum = 0;
     tcp->urg = 0;
+
+    printf("wolfIP: TCP header - src_port=%d, dst_port=%d, seq=%u, ack=%u, flags=0x%x\n",
+           t->src_port, t->dst_port, t->sock.tcp.seq, t->sock.tcp.ack, flags);
+
     ts = (struct tcp_opt_ts *)tcp->data;
     ts->opt = TCP_OPTION_TS;
     ts->len = TCP_OPTION_TS_LEN;
@@ -782,6 +797,8 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     mss->opt = TCP_OPTION_MSS;
     mss->len = TCP_OPTION_MSS_LEN;
     mss->mss = ee16(TCP_MSS);
+
+    printf("wolfIP: Pushing TCP packet to transmit buffer\n");
     fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + \
             TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN);
 }
@@ -891,7 +908,7 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, 
     memset(&ph, 0, sizeof(ph));
     memset(ip, 0, sizeof(struct wolfIP_ip_packet));
     ip->src = ee32(t->local_ip);
-    ip->dst = ee32(t->remote_ip);
+    ip->dst = ee32(ee32(t->remote_ip));
     ip->ver_ihl = 0x45;
     ip->tos = 0;
     ip->len = ee16(len);
@@ -1057,7 +1074,7 @@ static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t fra
         uint32_t iplen;
         struct tsocket *t = &S->tcpsockets[i];
         if (t->src_port == ee16(tcp->dst_port) &&
-                t->local_ip == ee32(tcp->ip.dst) && t->remote_ip != S->ipconf.ip) {
+                t->local_ip == ee32(tcp->ip.dst) && ee32(t->remote_ip) != S->ipconf.ip) {
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
             if (iplen > frame_len - sizeof(struct wolfIP_eth_frame)) {
@@ -1065,7 +1082,7 @@ static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t fra
             }
 
             if (t->sock.tcp.state > TCP_LISTEN) {
-                if (t->dst_port != ee16(tcp->src_port) || t->remote_ip != ee32(tcp->ip.src)) {
+                if (t->dst_port != ee16(tcp->src_port) || ee32(t->remote_ip) != ee32(tcp->ip.src)) {
                     /* Not the right socket */
                     continue;
                 }
@@ -1115,18 +1132,42 @@ static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t fra
                     t->sock.tcp.ack = ee32(tcp->seq) + 1;
                     t->sock.tcp.seq = wolfIP_getrandom();
                     t->dst_port = ee16(tcp->src_port);
-                    t->remote_ip = ee32(tcp->ip.src);
+                    ee32(t->remote_ip) = ee32(tcp->ip.src);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
                     tcp_process_ts(t, tcp);
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
-                    if (tcp->flags == 0x12) {
+                    printf("wolfIP: TCP_SYN_SENT - Processing packet from %d.%d.%d.%d:%d with flags 0x%x\n",
+                           (ee32(t->remote_ip) >> 24) & 0xFF,
+                           (ee32(t->remote_ip) >> 16) & 0xFF,
+                           (ee32(t->remote_ip) >> 8) & 0xFF,
+                           ee32(t->remote_ip) & 0xFF,
+                           ee16(tcp->src_port),
+                           tcp->flags);
+                    if (tcp->flags == 0x12) { /* SYN-ACK */
+                        printf("wolfIP: Received SYN-ACK, moving to ESTABLISHED\n");
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         t->sock.tcp.ack = ee32(tcp->seq) + 1;
                         t->sock.tcp.seq = ee32(tcp->ack);
-                        t->events |= CB_EVENT_WRITABLE;
+                        printf("wolfIP: Sending ACK (seq=%u, ack=%u)\n", t->sock.tcp.seq, t->sock.tcp.ack);
                         tcp_process_ts(t, tcp);
                         tcp_send_ack(t);
+                        printf("wolfIP: Setting socket writable\n");
+                        t->events |= CB_EVENT_WRITABLE;
+                        if (t->callback) {
+                            /* Find socket index */
+                            int idx;
+                            for (idx = 0; idx < MAX_TCPSOCKETS; idx++) {
+                                if (&S->tcpsockets[idx] == t) {
+                                    int sock_id = idx | MARK_TCP_SOCKET;
+                                    printf("wolfIP: Calling socket callback with CB_EVENT_WRITABLE (sock_id=%d)\n", sock_id);
+                                    t->callback(sock_id, CB_EVENT_WRITABLE, t->callback_arg);
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        printf("wolfIP: Unexpected flags in SYN_SENT state: 0x%x\n", tcp->flags);
                     }
                 }
             }
@@ -1508,7 +1549,7 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return 0;
 }
 
-int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
@@ -1561,7 +1602,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
     return 0;
 }
 
-int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts = &s->tcpsockets[sockfd];
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
@@ -2255,7 +2296,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         while (desc) {
             struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
 #ifdef ETHERNET
-            ip4 nexthop = NEXTHOP(s, t->remote_ip);
+            ip4 nexthop = NEXTHOP(s, ee32(t->remote_ip));
             if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, nexthop, t->nexthop_mac) < 0))) {
                 /* Send ARP request */
                 arp_request(s, nexthop);
