@@ -1285,7 +1285,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     if (sockfd & MARK_UDP_SOCKET) {
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         ts->dst_port = ee16(sin->sin_port);
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        ts->remote_ip = sin->sin_addr.s_addr; /* Already in network byte order */
         return 0;
     }
     if ((sockfd & MARK_TCP_SOCKET) == 0)
@@ -1300,7 +1300,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     if (ts->sock.tcp.state == TCP_CLOSED) {
         ts->sock.tcp.state = TCP_SYN_SENT;
         ts->local_ip = s->ipconf.ip;
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        ts->remote_ip = sin->sin_addr.s_addr; /* Already in network byte order */
         if (!ts->src_port)
             ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
         if (ts->src_port < 1024)
