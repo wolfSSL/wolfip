@@ -1132,7 +1132,7 @@ static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t fra
                     t->sock.tcp.ack = ee32(tcp->seq) + 1;
                     t->sock.tcp.seq = wolfIP_getrandom();
                     t->dst_port = ee16(tcp->src_port);
-                    ee32(t->remote_ip) = ee32(tcp->ip.src);
+                    t->remote_ip = tcp->ip.src; /* Already in network byte order */
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
                     tcp_process_ts(t, tcp);
                     break;
