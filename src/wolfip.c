@@ -21,8 +21,37 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stddef.h>
 #include "wolfip.h"
 #include "config.h"
+
+#if WOLFIP_ENABLE_LOOPBACK
+#define WOLFIP_LOOPBACK_IF_IDX 0U
+#define WOLFIP_PRIMARY_IF_IDX 1U
+#define WOLFIP_LOOPBACK_IP 0x7F000001U
+#define WOLFIP_LOOPBACK_MASK 0xFF000000U
+static inline int wolfIP_is_loopback_if(unsigned int if_idx)
+{
+    return if_idx == WOLFIP_LOOPBACK_IF_IDX;
+}
+#else
+#define WOLFIP_LOOPBACK_IF_IDX 0U
+#define WOLFIP_PRIMARY_IF_IDX 0U
+static inline int wolfIP_is_loopback_if(unsigned int if_idx)
+{
+    (void)if_idx;
+    return 0;
+}
+#endif
+
+#define WOLFIP_CONTAINER_OF(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
+
+#if WOLFIP_ENABLE_LOOPBACK
+static int wolfIP_loopback_send(struct ll *ll, void *buf, uint32_t len);
+static int wolfIP_loopback_poll(struct ll *ll, void *buf, uint32_t len);
+#endif
+static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 
 /* Fixed size binary heap: each element is a timer. */
 #define MAX_TIMERS MAX_TCPSOCKETS * 3
@@ -558,6 +587,33 @@ struct wolfIP
 #endif
 };
 
+#if WOLFIP_ENABLE_LOOPBACK
+static int wolfIP_loopback_poll(struct ll *ll, void *buf, uint32_t len)
+{
+    (void)ll;
+    (void)buf;
+    (void)len;
+    return 0;
+}
+
+static int wolfIP_loopback_send(struct ll *ll, void *buf, uint32_t len)
+{
+    struct wolfIP *s;
+    uint32_t copy = len;
+    uint8_t frame[LINK_MTU];
+    if (!ll || !buf)
+        return -1;
+    s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
+    if (!s)
+        return -1;
+    if (copy > LINK_MTU)
+        copy = LINK_MTU;
+    memcpy(frame, buf, copy);
+    wolfIP_recv_on(s, WOLFIP_LOOPBACK_IF_IDX, frame, copy);
+    return (int)copy;
+}
+#endif
+
 /* ***************************** */
 /* Implementation */
 
@@ -573,6 +629,11 @@ static inline struct ipconf *wolfIP_ipconf_at(struct wolfIP *s, unsigned int if_
     if (!s || if_idx >= s->if_count)
         return NULL;
     return &s->ipconf[if_idx];
+}
+
+static inline struct ipconf *wolfIP_primary_ipconf(struct wolfIP *s)
+{
+    return wolfIP_ipconf_at(s, WOLFIP_PRIMARY_IF_IDX);
 }
 
 static inline int ip_is_local_conf(const struct ipconf *conf, ip4 addr)
@@ -619,14 +680,20 @@ static inline ip4 wolfIP_select_nexthop(const struct ipconf *conf, ip4 dest)
 
 static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
 {
-    unsigned int fallback = 0;
-    int has_fallback = 0;
+    unsigned int default_if = 0;
+    unsigned int gw_fallback = 0;
+    unsigned int first_non_loop = 0;
+    int has_gw_fallback = 0;
+    int has_non_loop = 0;
 
     if (!s || s->if_count == 0)
         return 0;
 
+    if (WOLFIP_PRIMARY_IF_IDX < s->if_count)
+        default_if = WOLFIP_PRIMARY_IF_IDX;
+
     if (dest == IPADDR_ANY || IS_IP_BCAST(dest))
-        return 0;
+        return default_if;
 
     for (unsigned int i = 0; i < s->if_count; i++) {
         struct ipconf *conf = &s->ipconf[i];
@@ -635,12 +702,20 @@ static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
         if (ip_is_local_conf(conf, dest) || conf->ip == dest) {
             return i;
         }
-        if (!has_fallback && conf->gw != IPADDR_ANY) {
-            fallback = i;
-            has_fallback = 1;
+        if (!wolfIP_is_loopback_if(i) && !has_non_loop) {
+            first_non_loop = i;
+            has_non_loop = 1;
+        }
+        if (!wolfIP_is_loopback_if(i) && !has_gw_fallback && conf->gw != IPADDR_ANY) {
+            gw_fallback = i;
+            has_gw_fallback = 1;
         }
     }
-    return has_fallback ? fallback : 0;
+    if (has_gw_fallback)
+        return gw_fallback;
+    if (has_non_loop)
+        return first_non_loop;
+    return default_if;
 }
 
 static inline unsigned int wolfIP_socket_if_idx(const struct tsocket *t)
@@ -652,10 +727,15 @@ static inline unsigned int wolfIP_socket_if_idx(const struct tsocket *t)
 
 static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *found)
 {
+    unsigned int primary = 0;
     if (found)
         *found = 0;
-    if (!s || s->if_count == 0 || local_ip == IPADDR_ANY)
+    if (!s || s->if_count == 0)
         return 0;
+    if (WOLFIP_PRIMARY_IF_IDX < s->if_count)
+        primary = WOLFIP_PRIMARY_IF_IDX;
+    if (local_ip == IPADDR_ANY)
+        return primary;
     for (unsigned int i = 0; i < s->if_count; i++) {
         struct ipconf *conf = &s->ipconf[i];
         if (conf->ip == local_ip) {
@@ -664,7 +744,7 @@ static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *
             return i;
         }
     }
-    return 0;
+    return primary;
 }
 
 #ifdef ETHERNET
@@ -1047,6 +1127,13 @@ static int wolfIP_forward_prepare(struct wolfIP *s, unsigned int out_if, ip4 des
 #ifdef ETHERNET
     if (!broadcast || !mac)
         return 0;
+    if (wolfIP_is_loopback_if(out_if)) {
+        struct ll *loop = wolfIP_ll_at(s, out_if);
+        if (loop)
+            memcpy(mac, loop->mac, 6);
+        *broadcast = 0;
+        return 1;
+    }
     if (IS_IP_BCAST(dest)) {
         *broadcast = 1;
         return 1;
@@ -1445,8 +1532,11 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         ts->if_idx = (uint8_t)if_idx;
         if (ts->local_ip == 0 && conf && conf->ip != IPADDR_ANY)
             ts->local_ip = conf->ip;
-        else if (ts->local_ip == 0 && s->ipconf[0].ip != IPADDR_ANY)
-            ts->local_ip = s->ipconf[0].ip;
+        else if (ts->local_ip == 0) {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            if (primary && primary->ip != IPADDR_ANY)
+                ts->local_ip = primary->ip;
+        }
         return 0;
     }
     if ((sockfd & MARK_TCP_SOCKET) == 0)
@@ -1466,10 +1556,13 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         ts->if_idx = (uint8_t)if_idx;
         if (conf && conf->ip != IPADDR_ANY)
             ts->local_ip = conf->ip;
-        else if (s->ipconf[0].ip != IPADDR_ANY)
-            ts->local_ip = s->ipconf[0].ip;
-        else
-            ts->local_ip = 0;
+        else {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            if (primary && primary->ip != IPADDR_ANY)
+                ts->local_ip = primary->ip;
+            else
+                ts->local_ip = 0;
+        }
         if (!ts->src_port)
             ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
         if (ts->src_port < 1024)
@@ -1609,8 +1702,11 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (ts->local_ip == 0) {
             if (conf && conf->ip != IPADDR_ANY)
                 ts->local_ip = conf->ip;
-            else if (s->ipconf[0].ip != IPADDR_ANY)
-                ts->local_ip = s->ipconf[0].ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    ts->local_ip = primary->ip;
+            }
         }
 
         udp->src_port = ee16(ts->src_port);
@@ -1762,8 +1858,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->local_ip = bind_ip;
         else if (conf && conf->ip != IPADDR_ANY)
             ts->local_ip = conf->ip;
-        else if (s->ipconf[0].ip != IPADDR_ANY)
-            ts->local_ip = s->ipconf[0].ip;
+        else {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            if (primary && primary->ip != IPADDR_ANY)
+                ts->local_ip = primary->ip;
+        }
         ts->src_port = ee16(sin->sin_port);
         return 0;
     } else if (sockfd & MARK_UDP_SOCKET) {
@@ -1777,6 +1876,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->local_ip = bind_ip;
         else if (conf && conf->ip != IPADDR_ANY)
             ts->local_ip = conf->ip;
+        else {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            if (primary && primary->ip != IPADDR_ANY)
+                ts->local_ip = primary->ip;
+        }
         ts->src_port = ee16(sin->sin_port);
         return 0;
     } else return -1;
@@ -1872,6 +1976,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg)
     struct dhcp_option *opt = (struct dhcp_option *)(msg->options);
     uint32_t ip;
     uint32_t netmask = 0xFFFFFF00;
+    struct ipconf *primary = wolfIP_primary_ipconf(s);
     while (opt->code != 0xFF) {
         if (opt->code == DHCP_OPTION_MSG_TYPE) {
             if (opt->data[0] == DHCP_OFFER) {
@@ -1888,8 +1993,10 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg)
                     opt = (struct dhcp_option *)((uint8_t *)opt + 2 + opt->len);
                 }
                 ip = ee32(msg->yiaddr);
-                s->ipconf[0].ip = ip;
-                s->ipconf[0].mask = ee32(netmask);
+                if (primary) {
+                    primary->ip = ip;
+                    primary->mask = ee32(netmask);
+                }
                 s->dhcp_ip = ip;
                 dhcp_cancel_timer(s);
                 s->dhcp_state = DHCP_REQUEST_SENT;
@@ -1909,6 +2016,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg)
 static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg)
 {
     struct dhcp_option *opt = (struct dhcp_option *)(msg->options);
+    struct ipconf *primary = wolfIP_primary_ipconf(s);
     while (opt->code != 0xFF) {
         if (opt->code == DHCP_OPTION_MSG_TYPE) {
             if (opt->data[0] == DHCP_ACK) {
@@ -1918,17 +2026,19 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg)
                 while (opt->code != 0xFF) {
                     if (opt->code == DHCP_OPTION_SERVER_ID)
                         s->dhcp_server_ip = ee32(data);
-                    if (opt->code == DHCP_OPTION_OFFER_IP)
-                        s->ipconf[0].ip = ee32(data);
-                    if (opt->code == DHCP_OPTION_SUBNET_MASK)
-                        s->ipconf[0].mask = ee32(data);
-                    if (opt->code == DHCP_OPTION_ROUTER)
-                        s->ipconf[0].gw = ee32(data);
+                    if (primary) {
+                        if (opt->code == DHCP_OPTION_OFFER_IP)
+                            primary->ip = ee32(data);
+                        if (opt->code == DHCP_OPTION_SUBNET_MASK)
+                            primary->mask = ee32(data);
+                        if (opt->code == DHCP_OPTION_ROUTER)
+                            primary->gw = ee32(data);
+                    }
                     if ((opt->code == DHCP_OPTION_DNS) && (s->dns_server == 0))
                         s->dns_server = ee32(data);
                     opt = (struct dhcp_option *)((uint8_t *)opt + 2 + opt->len);
                 }
-                if ((s->ipconf[0].ip != 0) && (s->ipconf[0].mask != 0)) {
+                if (primary && (primary->ip != 0) && (primary->mask != 0)) {
                     dhcp_cancel_timer(s);
                     s->dhcp_state = DHCP_BOUND;
                     return 0;
@@ -1953,9 +2063,12 @@ static int dhcp_poll(struct wolfIP *s)
         dhcp_send_request(s);
     else if ((s->dhcp_state == DHCP_REQUEST_SENT) && (dhcp_parse_ack(s, &msg) == 0)) {
         LOG("DHCP configuration received.\n");
-        LOG("IP Address: %u.%u.%u.%u\n", (s->ipconf[0].ip >> 24) & 0xFF, (s->ipconf[0].ip >> 16) & 0xFF, (s->ipconf[0].ip >> 8) & 0xFF, (s->ipconf[0].ip >> 0) & 0xFF);
-        LOG("Subnet Mask: %u.%u.%u.%u\n", (s->ipconf[0].mask >> 24) & 0xFF, (s->ipconf[0].mask >> 16) & 0xFF, (s->ipconf[0].mask >> 8) & 0xFF, (s->ipconf[0].mask >> 0) & 0xFF);
-        LOG("Gateway: %u.%u.%u.%u\n", (s->ipconf[0].gw >> 24) & 0xFF, (s->ipconf[0].gw >> 16) & 0xFF, (s->ipconf[0].gw >> 8) & 0xFF, (s->ipconf[0].gw >> 0) & 0xFF);
+        struct ipconf *primary = wolfIP_primary_ipconf(s);
+        if (primary) {
+            LOG("IP Address: %u.%u.%u.%u\n", (primary->ip >> 24) & 0xFF, (primary->ip >> 16) & 0xFF, (primary->ip >> 8) & 0xFF, (primary->ip >> 0) & 0xFF);
+            LOG("Subnet Mask: %u.%u.%u.%u\n", (primary->mask >> 24) & 0xFF, (primary->mask >> 16) & 0xFF, (primary->mask >> 8) & 0xFF, (primary->mask >> 0) & 0xFF);
+            LOG("Gateway: %u.%u.%u.%u\n", (primary->gw >> 24) & 0xFF, (primary->gw >> 16) & 0xFF, (primary->gw >> 8) & 0xFF, (primary->gw >> 0) & 0xFF);
+        }
         if (s->dns_server)
             LOG("DNS Server: %u.%u.%u.%u\n", (s->dns_server >> 24) & 0xFF, (s->dns_server >> 16) & 0xFF, (s->dns_server >> 8) & 0xFF, (s->dns_server >> 0) & 0xFF);
     }
@@ -1978,7 +2091,7 @@ static int dhcp_send_request(struct wolfIP *s)
     req.xid = ee32(s->dhcp_xid);
     req.magic = ee32(DHCP_MAGIC);
     {
-        struct ll *ll = wolfIP_ll_at(s, 0);
+        struct ll *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
         if (ll)
             memcpy(req.chaddr, ll->mac, 6);
         else
@@ -2054,7 +2167,7 @@ static int dhcp_send_discover(struct wolfIP *s)
     disc.xid = ee32(s->dhcp_xid);
     disc.magic = ee32(DHCP_MAGIC);
     {
-        struct ll *ll = wolfIP_ll_at(s, 0);
+        struct ll *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
         if (ll)
             memcpy(disc.chaddr, ll->mac, 6);
         else
@@ -2223,11 +2336,31 @@ void wolfIP_init(struct wolfIP *s)
     for (unsigned int i = 0; i < s->if_count; i++) {
         s->ipconf[i].ll = wolfIP_ll_at(s, i);
     }
+#if WOLFIP_ENABLE_LOOPBACK
+    if (s->if_count > WOLFIP_LOOPBACK_IF_IDX) {
+        struct ll *loop = wolfIP_ll_at(s, WOLFIP_LOOPBACK_IF_IDX);
+        struct ipconf *loop_conf = wolfIP_ipconf_at(s, WOLFIP_LOOPBACK_IF_IDX);
+        static const uint8_t loop_mac[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+        if (loop) {
+            memcpy(loop->mac, loop_mac, sizeof(loop_mac));
+            strncpy(loop->ifname, "lo", sizeof(loop->ifname) - 1);
+            loop->ifname[sizeof(loop->ifname) - 1] = '\0';
+            loop->poll = wolfIP_loopback_poll;
+            loop->send = wolfIP_loopback_send;
+        }
+        if (loop_conf) {
+            loop_conf->ll = loop;
+            loop_conf->ip = WOLFIP_LOOPBACK_IP;
+            loop_conf->mask = WOLFIP_LOOPBACK_MASK;
+            loop_conf->gw = IPADDR_ANY;
+        }
+    }
+#endif
 }
 
 struct ll *wolfIP_getdev(struct wolfIP *s)
 {
-    return wolfIP_getdev_ex(s, 0);
+    return wolfIP_getdev_ex(s, WOLFIP_PRIMARY_IF_IDX);
 }
 
 struct ll *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx)
@@ -2336,7 +2469,7 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
  */
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len)
 {
-    wolfIP_recv_on(s, 0, buf, len);
+    wolfIP_recv_on(s, WOLFIP_PRIMARY_IF_IDX, buf, len);
 }
 
 void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len)
@@ -2537,11 +2670,15 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 unsigned int if_idx = wolfIP_socket_if_idx(ts);
                 struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
                 ip4 nexthop = wolfIP_select_nexthop(conf, ts->remote_ip);
-                if (arp_lookup(s, if_idx, nexthop, ts->nexthop_mac) < 0) {
+                if (wolfIP_is_loopback_if(if_idx)) {
+                    struct ll *loop = wolfIP_ll_at(s, if_idx);
+                    if (loop)
+                        memcpy(ts->nexthop_mac, loop->mac, 6);
+                } else if (arp_lookup(s, if_idx, nexthop, ts->nexthop_mac) < 0) {
                     /* Send ARP request */
                     arp_request(s, if_idx, nexthop);
                     break;
-                }else
+                }
 #endif
                     if (in_flight <= ts->sock.tcp.cwnd) {
                         struct wolfIP_timer new_tmr = {};
@@ -2597,12 +2734,18 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             unsigned int if_idx = wolfIP_socket_if_idx(t);
             struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
             ip4 nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
-            if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, if_idx, nexthop, t->nexthop_mac) < 0))) {
-                /* Send ARP request */
-                arp_request(s, if_idx, nexthop);
-                break;
+            if (wolfIP_is_loopback_if(if_idx)) {
+                struct ll *loop = wolfIP_ll_at(s, if_idx);
+                if (loop)
+                    memcpy(t->nexthop_mac, loop->mac, 6);
+            } else {
+                if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, if_idx, nexthop, t->nexthop_mac) < 0))) {
+                    /* Send ARP request */
+                    arp_request(s, if_idx, nexthop);
+                    break;
+                }
+                if (IS_IP_BCAST(nexthop)) memset(t->nexthop_mac, 0xFF, 6);
             }
-            if (IS_IP_BCAST(nexthop)) memset(t->nexthop_mac, 0xFF, 6);
 #endif
             len = desc->len - ETH_HEADER_LEN;
             ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, WI_IPPROTO_UDP, len);
@@ -2620,12 +2763,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw)
 {
-    wolfIP_ipconfig_set_ex(s, 0, ip, mask, gw);
+    wolfIP_ipconfig_set_ex(s, WOLFIP_PRIMARY_IF_IDX, ip, mask, gw);
 }
 
 void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw)
 {
-    wolfIP_ipconfig_get_ex(s, 0, ip, mask, gw);
+    wolfIP_ipconfig_get_ex(s, WOLFIP_PRIMARY_IF_IDX, ip, mask, gw);
 }
 
 void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw)

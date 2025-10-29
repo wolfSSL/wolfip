@@ -19,6 +19,14 @@
 #define WOLFIP_ENABLE_FORWARDING 0
 #endif
 
+#ifndef WOLFIP_ENABLE_LOOPBACK
+#define WOLFIP_ENABLE_LOOPBACK 0
+#endif
+
+#if WOLFIP_ENABLE_LOOPBACK && WOLFIP_MAX_INTERFACES < 2
+#error "WOLFIP_ENABLE_LOOPBACK requires WOLFIP_MAX_INTERFACES > 1"
+#endif
+
 /* Linux test configuration */
 #define WOLFIP_IP "10.10.10.2"
 #define LINUX_IP "10.10.10.1"

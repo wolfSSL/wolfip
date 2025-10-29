@@ -30,7 +30,7 @@ struct ll {
     int (*send)(struct ll *ll, void *buf, uint32_t len);  // Transmit function
 };
 ```
-wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` (default `1`). Call `wolfIP_getdev_ex()` to access a specific slot; the legacy `wolfIP_getdev()` helper still returns slot `0`.
+wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` (default `1`). Call `wolfIP_getdev_ex()` to access a specific slot; the legacy `wolfIP_getdev()` helper targets the first hardware slot (index `0` normally, or `1` when the optional loopback interface is enabled).
 
 ### IP Configuration
 ```c
@@ -41,9 +41,14 @@ struct ipconf {
     ip4 gw;                  // Default gateway
 };
 ```
-Each `struct wolfIP` instance owns `WOLFIP_MAX_INTERFACES` `ipconf` entries—one per link-layer slot. Use the `_ex` helpers to read or update a specific interface; the legacy accessors operate on index `0` for backwards compatibility.
+Each `struct wolfIP` instance owns `WOLFIP_MAX_INTERFACES` `ipconf` entries—one per link-layer slot. Use the `_ex` helpers to read or update a specific interface; the legacy accessors operate on the first hardware interface (index `0` unless loopback support is compiled in).
 
 If `WOLFIP_ENABLE_FORWARDING` is set to `1` at compile time, the stack performs simple IPv4 forwarding between interfaces. Packets received on one interface whose destinations match another configured interface are re-sent with the IP TTL decreased by one (or an ICMP TTL-exceeded response if the TTL would drop to zero).
+
+Enabling `WOLFIP_ENABLE_LOOPBACK` (requires `WOLFIP_MAX_INTERFACES > 1`) creates an internal loopback
+device at index `0` with the fixed address `127.0.0.1/8`. Traffic sent to that address is reflected back
+through the stack so local sockets, pings, and other services behave as they would on a standard
+loopback interface; the first hardware interface then shifts to index `1` for legacy helpers.
 
 ### Socket Address Structures
 ```c

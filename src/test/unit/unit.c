@@ -19,11 +19,21 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 #include "check.h"
-#ifndef WOLFIP_MAX_INTERFACES
-#define WOLFIP_MAX_INTERFACES 2
-#endif
+#include "../../../config.h"
+#undef WOLFIP_MAX_INTERFACES
+#define WOLFIP_MAX_INTERFACES 3
+#undef WOLFIP_ENABLE_FORWARDING
 #ifndef WOLFIP_ENABLE_FORWARDING
 #define WOLFIP_ENABLE_FORWARDING 1
+#endif
+#if WOLFIP_ENABLE_LOOPBACK
+#define TEST_LOOPBACK_IF 0U
+#define TEST_PRIMARY_IF 1U
+#define TEST_SECOND_IF 2U
+#else
+#define TEST_LOOPBACK_IF 0U
+#define TEST_PRIMARY_IF 0U
+#define TEST_SECOND_IF 1U
 #endif
 #include <stdio.h>
 #include "../../wolfip.c"
@@ -78,7 +88,11 @@ static void mock_link_init_idx(struct wolfIP *s, unsigned int idx, const uint8_t
 
 void mock_link_init(struct wolfIP *s)
 {
-    mock_link_init_idx(s, 0, NULL);
+    unsigned int idx = 0;
+#if WOLFIP_ENABLE_LOOPBACK
+    idx = 1;
+#endif
+    mock_link_init_idx(s, idx, NULL);
 }
 
 static struct timers_binheap heap;
@@ -468,19 +482,19 @@ START_TEST(test_arp_request_basic)
     uint32_t target_ip = 0xC0A80002; /* 192.168.0.2 */
     mock_link_init(&s);
     s.last_tick = 1000;
-    arp_request(&s, 0, target_ip);
+    arp_request(&s, TEST_PRIMARY_IF, target_ip);
     ck_assert_int_eq(last_frame_sent_size, sizeof(struct arp_packet));
     arp = (struct arp_packet *)last_frame_sent;
     ck_assert_mem_eq(arp->eth.dst, "\xff\xff\xff\xff\xff\xff", 6);
-    ck_assert_mem_eq(arp->eth.src, s.ll_dev[0].mac, 6);
+    ck_assert_mem_eq(arp->eth.src, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     ck_assert_int_eq(arp->eth.type, ee16(0x0806));
     ck_assert_int_eq(arp->htype, ee16(1));
     ck_assert_int_eq(arp->ptype, ee16(0x0800));
     ck_assert_int_eq(arp->hlen, 6);
     ck_assert_int_eq(arp->plen, 4);
     ck_assert_int_eq(arp->opcode, ee16(ARP_REQUEST));
-    ck_assert_mem_eq(arp->sma, s.ll_dev[0].mac, 6);
-    ck_assert_int_eq(arp->sip, ee32(s.ipconf[0].ip));
+    ck_assert_mem_eq(arp->sma, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    ck_assert_int_eq(arp->sip, ee32(s.ipconf[TEST_PRIMARY_IF].ip));
     ck_assert_mem_eq(arp->tma, "\x00\x00\x00\x00\x00\x00", 6);
     ck_assert_int_eq(arp->tip, ee32(target_ip));
 }
@@ -493,9 +507,9 @@ START_TEST(test_arp_request_throttle)
     uint32_t target_ip = 0xC0A80002; /*192.168.0.2*/
     mock_link_init(&s);
     s.last_tick = 1000;
-    s.arp.last_arp[0] = 880;
+    s.arp.last_arp[TEST_PRIMARY_IF] = 880;
     last_frame_sent_size = 0;
-    arp_request(&s, 0, target_ip);
+    arp_request(&s, TEST_PRIMARY_IF, target_ip);
     ck_assert_int_eq(last_frame_sent_size, 0);
 }
 END_TEST
@@ -506,7 +520,7 @@ START_TEST(test_arp_request_target_ip) {
     wolfIP_init(&s);
     mock_link_init(&s);
     s.last_tick = 1000;
-    arp_request(&s, 0, target_ip);
+    arp_request(&s, TEST_PRIMARY_IF, target_ip);
     ck_assert_int_eq(((struct arp_packet *)(last_frame_sent))->tip, ee32(target_ip));
 }
 END_TEST
@@ -522,7 +536,7 @@ START_TEST(test_arp_request_handling) {
     struct wolfIP s;
     wolfIP_init(&s);
     mock_link_init(&s);
-    s.ipconf[0].ip = device_ip;
+    s.ipconf[TEST_PRIMARY_IF].ip = device_ip;
 
     /* Prepare ARP request */
     arp_req.opcode = ee16(ARP_REQUEST);
@@ -531,7 +545,7 @@ START_TEST(test_arp_request_handling) {
     arp_req.tip = ee32(device_ip);
 
     /* Call arp_recv with the ARP request */
-    arp_recv(&s, 0, &arp_req, sizeof(arp_req));
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
     wolfIP_poll(&s, 1000);
     wolfIP_poll(&s, 1001);
     wolfIP_poll(&s, 1002);
@@ -545,7 +559,7 @@ START_TEST(test_arp_request_handling) {
     arp_reply = (struct arp_packet *)last_frame_sent;
     ck_assert_int_eq(last_frame_sent_size, sizeof(struct arp_packet));
     ck_assert_int_eq(arp_reply->opcode, ee16(ARP_REPLY));
-    ck_assert_mem_eq(arp_reply->sma, s.ll_dev[0].mac, 6);     // source MAC
+    ck_assert_mem_eq(arp_reply->sma, s.ll_dev[TEST_PRIMARY_IF].mac, 6);     // source MAC
     ck_assert_int_eq(arp_reply->sip, ee32(device_ip));     // source IP
     ck_assert_mem_eq(arp_reply->tma, req_mac, 6);          // target MAC
     ck_assert_int_eq(arp_reply->tip, ee32(req_ip));        // target IP
@@ -567,7 +581,7 @@ START_TEST(test_arp_reply_handling) {
     memcpy(arp_reply.sma, reply_mac, 6);
 
     /* Call arp_recv with the ARP reply */
-    arp_recv(&s, 0, &arp_reply, sizeof(arp_reply));
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
 
     /* Check if ARP table updated with reply IP and MAC */
     ck_assert_int_eq(s.arp.neighbors[0].ip, reply_ip);
@@ -576,7 +590,7 @@ START_TEST(test_arp_reply_handling) {
     /* Update same IP with a different MAC address */
     uint8_t new_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     memcpy(arp_reply.sma, new_mac, 6);
-    arp_recv(&s, 0, &arp_reply, sizeof(arp_reply));
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
 
     /* Check if ARP table updates with new MAC */
     ck_assert_mem_eq(s.arp.neighbors[0].mac, new_mac, 6);
@@ -596,7 +610,7 @@ START_TEST(test_arp_lookup_success) {
     memcpy(s.arp.neighbors[0].mac, mock_mac, 6);
 
     /* Test arp_lookup */
-    int result = arp_lookup(&s, 0, ip, found_mac);
+    int result = arp_lookup(&s, TEST_PRIMARY_IF, ip, found_mac);
     ck_assert_int_eq(result, 0);
     ck_assert_mem_eq(found_mac, mock_mac, 6);
 }
@@ -610,7 +624,7 @@ START_TEST(test_arp_lookup_failure) {
     mock_link_init(&s);
 
     /* Ensure arp_lookup fails for unknown IP */
-    int result = arp_lookup(&s, 0, ip, found_mac);
+    int result = arp_lookup(&s, TEST_PRIMARY_IF, ip, found_mac);
     ck_assert_int_eq(result, -1);
     uint8_t zero_mac[6] = {0, 0, 0, 0, 0, 0};
     ck_assert_mem_eq(found_mac, zero_mac, 6);
@@ -623,10 +637,45 @@ START_TEST(test_wolfip_getdev_ex_api)
     wolfIP_init(&s);
     struct ll *ll_def = wolfIP_getdev(&s);
     ck_assert_ptr_nonnull(ll_def);
-    ck_assert_ptr_eq(ll_def, wolfIP_getdev_ex(&s, 0));
+    ck_assert_ptr_eq(ll_def, wolfIP_getdev_ex(&s, TEST_PRIMARY_IF));
+#if WOLFIP_ENABLE_LOOPBACK
+    ck_assert_ptr_ne(ll_def, wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF));
+#endif
     ck_assert_ptr_null(wolfIP_getdev_ex(&s, WOLFIP_MAX_INTERFACES));
 }
 END_TEST
+
+#if WOLFIP_ENABLE_LOOPBACK
+START_TEST(test_wolfip_loopback_defaults)
+{
+    struct wolfIP s;
+    struct ll *loop;
+    struct ll *hw;
+    ip4 ip = 0, mask = 0, gw = 0;
+
+    wolfIP_init(&s);
+
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
+    ck_assert_ptr_nonnull(loop->send);
+    ck_assert_uint_eq(loop->mac[0], 0x02);
+
+    wolfIP_ipconfig_get_ex(&s, TEST_LOOPBACK_IF, &ip, &mask, &gw);
+    ck_assert_uint_eq(ip, 0x7F000001U);
+    ck_assert_uint_eq(mask, 0xFF000000U);
+    ck_assert_uint_eq(gw, 0U);
+
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0x0A0000FEU);
+    wolfIP_ipconfig_get_ex(&s, TEST_PRIMARY_IF, &ip, &mask, &gw);
+    ck_assert_uint_eq(ip, 0x0A000001U);
+    ck_assert_uint_eq(mask, 0xFFFFFF00U);
+    ck_assert_uint_eq(gw, 0x0A0000FEU);
+
+    hw = wolfIP_getdev(&s);
+    ck_assert_ptr_eq(hw, wolfIP_getdev_ex(&s, TEST_PRIMARY_IF));
+}
+END_TEST
+#endif
 
 START_TEST(test_wolfip_ipconfig_ex_per_interface)
 {
@@ -643,8 +692,8 @@ START_TEST(test_wolfip_ipconfig_ex_per_interface)
     wolfIP_init(&s);
     wolfIP_ipconfig_set(&s, base_ip, base_mask, base_gw);
 
-    wolfIP_ipconfig_set_ex(&s, 1, iface_ip, iface_mask, iface_gw);
-    wolfIP_ipconfig_get_ex(&s, 1, &out_ip, &out_mask, &out_gw);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, iface_ip, iface_mask, iface_gw);
+    wolfIP_ipconfig_get_ex(&s, TEST_SECOND_IF, &out_ip, &out_mask, &out_gw);
 
     ck_assert_uint_eq(out_ip, iface_ip);
     ck_assert_uint_eq(out_mask, iface_mask);
@@ -656,11 +705,11 @@ START_TEST(test_wolfip_ipconfig_ex_per_interface)
     ck_assert_uint_eq(def_gw, base_gw);
 
     wolfIP_ipconfig_set_ex(&s, WOLFIP_MAX_INTERFACES, 0xDEADBEEF, 0xFFFFFFFF, 0x01010101);
-    ck_assert_uint_eq(s.ipconf[1].ip, iface_ip);
-    ck_assert_uint_eq(s.ipconf[1].mask, iface_mask);
-    ck_assert_uint_eq(s.ipconf[1].gw, iface_gw);
+    ck_assert_uint_eq(s.ipconf[TEST_SECOND_IF].ip, iface_ip);
+    ck_assert_uint_eq(s.ipconf[TEST_SECOND_IF].mask, iface_mask);
+    ck_assert_uint_eq(s.ipconf[TEST_SECOND_IF].gw, iface_gw);
 
-    wolfIP_ipconfig_get_ex(&s, 1, NULL, NULL, NULL);
+    wolfIP_ipconfig_get_ex(&s, TEST_SECOND_IF, NULL, NULL, NULL);
 }
 END_TEST
 
@@ -674,9 +723,9 @@ START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
 
     wolfIP_init(&s);
     mock_link_init(&s);
-    mock_link_init_idx(&s, 1, iface1_mac);
+    mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
     wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
-    wolfIP_ipconfig_set_ex(&s, 1, 0xC0A80101, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
 
     memset(&arp_req, 0, sizeof(arp_req));
     memset(last_frame_sent, 0, sizeof(last_frame_sent));
@@ -695,14 +744,14 @@ START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
     memset(arp_req.tma, 0, sizeof(arp_req.tma));
     arp_req.tip = ee32(0xC0A80101);
 
-    wolfIP_recv_ex(&s, 1, &arp_req, sizeof(arp_req));
+    wolfIP_recv_ex(&s, TEST_SECOND_IF, &arp_req, sizeof(arp_req));
 
     ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
     arp_reply = (struct arp_packet *)last_frame_sent;
     ck_assert_uint_eq(arp_reply->opcode, ee16(ARP_REPLY));
     ck_assert_mem_eq(arp_reply->eth.src, iface1_mac, 6);
     ck_assert_mem_eq(arp_reply->sma, iface1_mac, 6);
-    ck_assert_uint_eq(arp_reply->sip, ee32(s.ipconf[1].ip));
+    ck_assert_uint_eq(arp_reply->sip, ee32(s.ipconf[TEST_SECOND_IF].ip));
 }
 END_TEST
 
@@ -721,15 +770,15 @@ START_TEST(test_wolfip_forwarding_basic)
 
     wolfIP_init(&s);
     mock_link_init(&s);
-    mock_link_init_idx(&s, 1, iface1_mac);
+    mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
     wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
-    wolfIP_ipconfig_set_ex(&s, 1, 0xC0A80101, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
     s.arp.neighbors[0].ip = dest_ip;
-    s.arp.neighbors[0].if_idx = 1;
+    s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
     memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
 
     memset(&frame, 0, sizeof(frame));
-    memcpy(frame.eth.dst, s.ll_dev[0].mac, 6);
+    memcpy(frame.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     memcpy(frame.eth.src, src_mac, 6);
     frame.eth.type = ee16(ETH_TYPE_IP);
     frame.ver_ihl = 0x45;
@@ -745,12 +794,12 @@ START_TEST(test_wolfip_forwarding_basic)
     memset(last_frame_sent, 0, sizeof(last_frame_sent));
     last_frame_sent_size = 0;
 
-    wolfIP_recv_ex(&s, 0, &frame, sizeof(frame));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, &frame, sizeof(frame));
 
     ck_assert_uint_eq(last_frame_sent_size, sizeof(struct wolfIP_ip_packet));
     fwd = (struct wolfIP_ip_packet *)last_frame_sent;
     ck_assert_mem_eq(fwd->eth.dst, next_hop_mac, 6);
-    ck_assert_mem_eq(fwd->eth.src, s.ll_dev[1].mac, 6);
+    ck_assert_mem_eq(fwd->eth.src, s.ll_dev[TEST_SECOND_IF].mac, 6);
     ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
     expected_csum = (uint16_t)(orig_csum + 1);
     if (expected_csum == 0)
@@ -770,12 +819,12 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
 
     wolfIP_init(&s);
     mock_link_init(&s);
-    mock_link_init_idx(&s, 1, iface1_mac);
+    mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
     wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
-    wolfIP_ipconfig_set_ex(&s, 1, 0xC0A80101, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
 
     memset(&frame, 0, sizeof(frame));
-    memcpy(frame.eth.dst, s.ll_dev[0].mac, 6);
+    memcpy(frame.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     memcpy(frame.eth.src, src_mac, 6);
     frame.eth.type = ee16(ETH_TYPE_IP);
     frame.ver_ihl = 0x45;
@@ -790,13 +839,13 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     memset(last_frame_sent, 0, sizeof(last_frame_sent));
     last_frame_sent_size = 0;
 
-    wolfIP_recv_ex(&s, 0, &frame, sizeof(frame));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, &frame, sizeof(frame));
 
     ck_assert_uint_eq(last_frame_sent_size, sizeof(struct wolfIP_icmp_packet));
     icmp = (struct wolfIP_icmp_packet *)last_frame_sent;
     ck_assert_uint_eq(icmp->type, ICMP_TTL_EXCEEDED);
     ck_assert_mem_eq(icmp->ip.eth.dst, src_mac, 6);
-    ck_assert_mem_eq(icmp->ip.eth.src, s.ll_dev[0].mac, 6);
+    ck_assert_mem_eq(icmp->ip.eth.src, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     ck_assert_uint_eq(frame.ttl, 1); /* original packet should remain unchanged */
 }
 END_TEST
@@ -968,6 +1017,10 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_wolfip_getdev_ex_api);
     suite_add_tcase(s, tc_utils);
+#if WOLFIP_ENABLE_LOOPBACK
+    tcase_add_test(tc_utils, test_wolfip_loopback_defaults);
+    suite_add_tcase(s, tc_utils);
+#endif
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
     suite_add_tcase(s, tc_utils);
 
