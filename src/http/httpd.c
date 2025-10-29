@@ -20,6 +20,7 @@
  */
 #include "wolfip.h"
 #include "httpd.h"
+#include <ctype.h>
 
 static const char *http_status_text(int status_code) {
     switch (status_code) {
@@ -55,7 +56,9 @@ static struct http_client *http_client_find(struct httpd *httpd, int sd) {
 int httpd_register_handler(struct httpd *httpd, const char *path, int (*handler)(struct httpd *httpd, struct http_client *hc, struct http_request *req)) {
     for (int i = 0; i < HTTPD_MAX_URLS; i++) {
         if (httpd->urls[i].handler == NULL) {
+            /* Copy path and guarantee null termination */
             strncpy(httpd->urls[i].path, path, HTTP_PATH_LEN);
+            httpd->urls[i].path[HTTP_PATH_LEN-1] = '\0';
             httpd->urls[i].handler = handler;
             return 0;
         }
@@ -66,7 +69,9 @@ int httpd_register_handler(struct httpd *httpd, const char *path, int (*handler)
 int httpd_register_static_page(struct httpd *httpd, const char *path, const char *content) {
     for (int i = 0; i < HTTPD_MAX_URLS; i++) {
         if (httpd->urls[i].handler == NULL) {
+            /* Copy path and guarantee null termination */
             strncpy(httpd->urls[i].path, path, HTTP_PATH_LEN);
+            httpd->urls[i].path[HTTP_PATH_LEN-1] = '\0';
             httpd->urls[i].handler = NULL;
             httpd->urls[i].static_content = content;
             return 0;
@@ -104,18 +109,39 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
             status_code, status_text, content_type, content_length);
     }
     if (hc->ssl) {
-        wolfSSL_write(hc->ssl, txt_response, strlen(txt_response));
+        int rc = wolfSSL_write(hc->ssl, txt_response, strlen(txt_response));
+        if (rc <= 0) {
+            /* Error – close connection */
+            wolfSSL_free(hc->ssl);
+            hc->ssl = NULL;
+            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+            hc->client_sd = 0;
+        }
     } else {
-        wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, txt_response, strlen(txt_response), 0);
+        int rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, txt_response, strlen(txt_response), 0);
+        if (rc <= 0) {
+            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+            hc->client_sd = 0;
+        }
     }
 }
 
 void http_send_response_body(struct http_client *hc, const void *body, size_t len) {
     if (!hc) return;
     if (hc->ssl) {
-        wolfSSL_write(hc->ssl, body, len);
+        int rc = wolfSSL_write(hc->ssl, body, len);
+        if (rc <= 0) {
+            wolfSSL_free(hc->ssl);
+            hc->ssl = NULL;
+            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+            hc->client_sd = 0;
+        }
     } else {
-        wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
+        int rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
+        if (rc <= 0) {
+            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+            hc->client_sd = 0;
+        }
     }
 }
 
@@ -125,23 +151,52 @@ void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t 
     if (!hc) return;
     snprintf(txt_chunk, sizeof(txt_chunk), "%zx\r\n", len);
     if (hc->ssl) {
-        wolfSSL_write(hc->ssl, txt_chunk, strlen(txt_chunk));
-        wolfSSL_write(hc->ssl, chunk, len);
-        wolfSSL_write(hc->ssl, "\r\n", 2);
+        int rc = wolfSSL_write(hc->ssl, txt_chunk, strlen(txt_chunk));
+        if (rc <= 0)
+            goto close_conn;
+        rc = wolfSSL_write(hc->ssl, chunk, len);
+        if (rc <= 0)
+            goto close_conn;
+        rc = wolfSSL_write(hc->ssl, "\r\n", 2);
+        if (rc <= 0)
+            goto close_conn;
     } else {
         struct wolfIP *s = hc->httpd->ipstack;
-        wolfIP_sock_send(s, hc->client_sd, txt_chunk, strlen(txt_chunk), 0);
-        wolfIP_sock_send(s, hc->client_sd, chunk, len, 0);
-        wolfIP_sock_send(s, hc->client_sd, "\r\n", 2, 0);
+        int rc = wolfIP_sock_send(s, hc->client_sd, txt_chunk, strlen(txt_chunk), 0);
+        if (rc <= 0)
+            goto close_conn;
+        rc = wolfIP_sock_send(s, hc->client_sd, chunk, len, 0);
+        if (rc <= 0)
+           goto close_conn;
+        rc = wolfIP_sock_send(s, hc->client_sd, "\r\n", 2, 0);
+        if (rc <= 0)
+            goto close_conn;
     }
+    return;
+close_conn:
+    if (hc->ssl) {
+        wolfSSL_free(hc->ssl);
+        hc->ssl = NULL;
+    }
+    wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+    hc->client_sd = 0;
 }
 
 void http_send_response_chunk_end(struct http_client *hc) {
     if (!hc) return;
     if (hc->ssl) {
-        wolfSSL_write(hc->ssl, "0\r\n\r\n", 5);
+        if (wolfSSL_write(hc->ssl, "0\r\n\r\n", 5) <= 0) {
+            wolfSSL_free(hc->ssl);
+            hc->ssl = NULL;
+            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+            hc->client_sd = 0;
+            return;
+        }
     } else {
-        wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0);
+        if (wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0) <= 0) {
+            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+            hc->client_sd = 0;
+        }
     }
 }
 
@@ -173,7 +228,12 @@ int http_url_decode(char *buf, size_t len) {
         if (!q) {
             break;
         }
+        /* Ensure we have two more hex digits */
         if (q + 2 >= buf + len) {
+            break; /* Malformed escape */
+        }
+        /* Validate hex characters before conversion */
+        if (!isxdigit((unsigned char)q[1]) || !isxdigit((unsigned char)q[2])) {
             break;
         }
         *q = (char) strtol(q + 1, NULL, 16);
@@ -194,13 +254,14 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
         if (len + 2 >= max_len) {
             return -1; /* Not enough space */
         }
+        /* Shift memory to create space for %20 */
         memmove(q + 3, q + 1, len - (q + 1 - buf));
         *q = '%';
         *(q + 1) = '2';
         *(q + 2) = '0';
         len += 2;
     }
-    if (q)
+    if (q && (len < max_len))
         q[len] = '\0';
     return len;
 }
@@ -215,39 +276,51 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     struct http_url *url = NULL;
     memset(&req, 0, sizeof(struct http_request));
     http_url_decode(p, len); /* Decode can be done in place */ 
-    if (len < 4) goto bad_request;
+    if (len < 4)
+        goto bad_request;
     /* Parse the request line */
     q = strchr(p, ' ');
-    if (!q) goto bad_request;
+    if (!q)
+        goto bad_request;
     n = q - p;
-    if (n >= sizeof(req.method)) goto bad_request;
+    if (n >= sizeof(req.method))
+        goto bad_request;
     memcpy(req.method, p, n);
     req.method[n] = '\0';
     p = q + 1;
     q = strchr(p, ' ');
-    if (!q) goto bad_request;
+    if (!q)
+        goto bad_request;
     n = q - p;
-    if (n >= sizeof(req.path)) goto bad_request;
+    if (n >= sizeof(req.path))
+        goto bad_request;
     memcpy(req.path, p, n);
     req.path[n] = '\0';
     p = q + 1;
     q = strchr(p, '\r');
-    if (!q) goto bad_request;
+    if (!q)
+        goto bad_request;
     n = q - p;
-    if (n >= sizeof(req.query)) goto bad_request;
+    if (n >= sizeof(req.query))
+        goto bad_request;
     memcpy(req.query, p, n);
     req.query[n] = '\0';
     p = q + 2;
 
     /* Parse the headers */
+    /* Parse headers – keep them in a single buffer to avoid allocations */
     while (p < end) {
         q = strstr(p, "\r\n");
-        if (!q) goto bad_request;
+        if (!q)
+            goto bad_request;
         n = q - p;
         if (n == 0) {
-            break;
+            break; /* End of headers */
         }
-        if (n >= sizeof(req.headers)) goto bad_request;
+        /* Enforce header maximum length */
+        if (n >= sizeof(req.headers))
+            goto bad_request;
+        /* Copy header and terminate */
         memcpy(req.headers, p, n);
         req.headers[n] = '\0';
         p = q + 2;
@@ -266,7 +339,8 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     if ((strcmp(req.method, "GET") != 0) && (strcmp(req.method, "POST") != 0))
         goto bad_request;
     url = http_find_url(hc->httpd, req.path);
-    if (!url) goto not_found;
+    if (!url)
+        goto not_found;
     
     if ((url->handler == NULL) && (url->static_content == NULL))
         goto service_unavailable;
@@ -422,8 +496,3 @@ int httpd_init(struct httpd *httpd, struct wolfIP *s, uint16_t port, void *ssl_c
     wolfIP_register_callback(s, httpd->listen_sd, http_accept_cb, httpd);
     return 0;
 }
-
-
-
-
-

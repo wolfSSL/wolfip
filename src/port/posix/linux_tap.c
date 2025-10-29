@@ -83,6 +83,7 @@ int tap_init(struct ll *ll, const char *ifname, uint32_t host_ip)
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ-1] = '\0';
     if (ioctl(tap_fd, TUNSETIFF, (void *)&ifr) < 0) {
         perror("ioctl TUNSETIFF");
         close(tap_fd);
