@@ -19,6 +19,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 #include "check.h"
+#ifndef WOLFIP_MAX_INTERFACES
+#define WOLFIP_MAX_INTERFACES 2
+#endif
+#include <stdio.h>
 #include "../../wolfip.c"
 #include <stdlib.h> /* for random() */
 
@@ -33,7 +37,6 @@ uint32_t wolfIP_getrandom(void)
 
 static uint8_t mem[8 * 1024];
 static uint32_t memsz = 8 * 1024;
-static const char ifname[] = "mock0";
 static const uint8_t ifmac[] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
 static uint8_t last_frame_sent[LINK_MTU];
 static uint32_t last_frame_sent_size = 0;
@@ -54,15 +57,25 @@ static int mock_poll(struct ll *dev, void *frame, uint32_t len)
     return 0;
 }
 
+static void mock_link_init_idx(struct wolfIP *s, unsigned int idx, const uint8_t *mac_override)
+{
+    struct ll *ll = wolfIP_getdev_ex(s, idx);
+    ck_assert_ptr_nonnull(ll);
+    memset(ll, 0, sizeof(*ll));
+    snprintf((char *)ll->ifname, sizeof(ll->ifname), "mock%u", idx);
+    if (mac_override) {
+        memcpy(ll->mac, mac_override, 6);
+    } else {
+        memcpy(ll->mac, ifmac, 6);
+        ll->mac[5] ^= (uint8_t)(idx + 1);
+    }
+    ll->poll = mock_poll;
+    ll->send = mock_send;
+}
 
 void mock_link_init(struct wolfIP *s)
 {
-    struct ll *ll = &s->ll_dev;
-    strncpy((char *)ll->ifname, ifname, sizeof(ll->ifname) - 1);
-    memcpy(ll->mac, ifmac, 6);
-    ll->mac[5] ^= 1;
-    ll->poll = mock_poll;
-    ll->send = mock_send;
+    mock_link_init_idx(s, 0, NULL);
 }
 
 static struct timers_binheap heap;
@@ -452,19 +465,19 @@ START_TEST(test_arp_request_basic)
     uint32_t target_ip = 0xC0A80002; /* 192.168.0.2 */
     mock_link_init(&s);
     s.last_tick = 1000;
-    arp_request(&s, target_ip);
+    arp_request(&s, 0, target_ip);
     ck_assert_int_eq(last_frame_sent_size, sizeof(struct arp_packet));
     arp = (struct arp_packet *)last_frame_sent;
     ck_assert_mem_eq(arp->eth.dst, "\xff\xff\xff\xff\xff\xff", 6);
-    ck_assert_mem_eq(arp->eth.src, s.ll_dev.mac, 6);
+    ck_assert_mem_eq(arp->eth.src, s.ll_dev[0].mac, 6);
     ck_assert_int_eq(arp->eth.type, ee16(0x0806));
     ck_assert_int_eq(arp->htype, ee16(1));
     ck_assert_int_eq(arp->ptype, ee16(0x0800));
     ck_assert_int_eq(arp->hlen, 6);
     ck_assert_int_eq(arp->plen, 4);
     ck_assert_int_eq(arp->opcode, ee16(ARP_REQUEST));
-    ck_assert_mem_eq(arp->sma, s.ll_dev.mac, 6);
-    ck_assert_int_eq(arp->sip, ee32(s.ipconf.ip));
+    ck_assert_mem_eq(arp->sma, s.ll_dev[0].mac, 6);
+    ck_assert_int_eq(arp->sip, ee32(s.ipconf[0].ip));
     ck_assert_mem_eq(arp->tma, "\x00\x00\x00\x00\x00\x00", 6);
     ck_assert_int_eq(arp->tip, ee32(target_ip));
 }
@@ -477,9 +490,9 @@ START_TEST(test_arp_request_throttle)
     uint32_t target_ip = 0xC0A80002; /*192.168.0.2*/
     mock_link_init(&s);
     s.last_tick = 1000;
-    s.arp.last_arp = 880;
+    s.arp.last_arp[0] = 880;
     last_frame_sent_size = 0;
-    arp_request(&s, target_ip);
+    arp_request(&s, 0, target_ip);
     ck_assert_int_eq(last_frame_sent_size, 0);
 }
 END_TEST
@@ -490,7 +503,7 @@ START_TEST(test_arp_request_target_ip) {
     wolfIP_init(&s);
     mock_link_init(&s);
     s.last_tick = 1000;
-    arp_request(&s, target_ip);
+    arp_request(&s, 0, target_ip);
     ck_assert_int_eq(((struct arp_packet *)(last_frame_sent))->tip, ee32(target_ip));
 }
 END_TEST
@@ -506,7 +519,7 @@ START_TEST(test_arp_request_handling) {
     struct wolfIP s;
     wolfIP_init(&s);
     mock_link_init(&s);
-    s.ipconf.ip = device_ip;
+    s.ipconf[0].ip = device_ip;
 
     /* Prepare ARP request */
     arp_req.opcode = ee16(ARP_REQUEST);
@@ -515,7 +528,7 @@ START_TEST(test_arp_request_handling) {
     arp_req.tip = ee32(device_ip);
 
     /* Call arp_recv with the ARP request */
-    arp_recv(&s, &arp_req, sizeof(arp_req));
+    arp_recv(&s, 0, &arp_req, sizeof(arp_req));
     wolfIP_poll(&s, 1000);
     wolfIP_poll(&s, 1001);
     wolfIP_poll(&s, 1002);
@@ -529,7 +542,7 @@ START_TEST(test_arp_request_handling) {
     arp_reply = (struct arp_packet *)last_frame_sent;
     ck_assert_int_eq(last_frame_sent_size, sizeof(struct arp_packet));
     ck_assert_int_eq(arp_reply->opcode, ee16(ARP_REPLY));
-    ck_assert_mem_eq(arp_reply->sma, s.ll_dev.mac, 6);     // source MAC
+    ck_assert_mem_eq(arp_reply->sma, s.ll_dev[0].mac, 6);     // source MAC
     ck_assert_int_eq(arp_reply->sip, ee32(device_ip));     // source IP
     ck_assert_mem_eq(arp_reply->tma, req_mac, 6);          // target MAC
     ck_assert_int_eq(arp_reply->tip, ee32(req_ip));        // target IP
@@ -551,7 +564,7 @@ START_TEST(test_arp_reply_handling) {
     memcpy(arp_reply.sma, reply_mac, 6);
 
     /* Call arp_recv with the ARP reply */
-    arp_recv(&s, &arp_reply, sizeof(arp_reply));
+    arp_recv(&s, 0, &arp_reply, sizeof(arp_reply));
 
     /* Check if ARP table updated with reply IP and MAC */
     ck_assert_int_eq(s.arp.neighbors[0].ip, reply_ip);
@@ -560,7 +573,7 @@ START_TEST(test_arp_reply_handling) {
     /* Update same IP with a different MAC address */
     uint8_t new_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     memcpy(arp_reply.sma, new_mac, 6);
-    arp_recv(&s, &arp_reply, sizeof(arp_reply));
+    arp_recv(&s, 0, &arp_reply, sizeof(arp_reply));
 
     /* Check if ARP table updates with new MAC */
     ck_assert_mem_eq(s.arp.neighbors[0].mac, new_mac, 6);
@@ -580,7 +593,7 @@ START_TEST(test_arp_lookup_success) {
     memcpy(s.arp.neighbors[0].mac, mock_mac, 6);
 
     /* Test arp_lookup */
-    int result = arp_lookup(&s, ip, found_mac);
+    int result = arp_lookup(&s, 0, ip, found_mac);
     ck_assert_int_eq(result, 0);
     ck_assert_mem_eq(found_mac, mock_mac, 6);
 }
@@ -594,10 +607,99 @@ START_TEST(test_arp_lookup_failure) {
     mock_link_init(&s);
 
     /* Ensure arp_lookup fails for unknown IP */
-    int result = arp_lookup(&s, ip, found_mac);
+    int result = arp_lookup(&s, 0, ip, found_mac);
     ck_assert_int_eq(result, -1);
     uint8_t zero_mac[6] = {0, 0, 0, 0, 0, 0};
     ck_assert_mem_eq(found_mac, zero_mac, 6);
+}
+END_TEST
+
+START_TEST(test_wolfip_getdev_ex_api)
+{
+    struct wolfIP s;
+    wolfIP_init(&s);
+    struct ll *ll_def = wolfIP_getdev(&s);
+    ck_assert_ptr_nonnull(ll_def);
+    ck_assert_ptr_eq(ll_def, wolfIP_getdev_ex(&s, 0));
+    ck_assert_ptr_null(wolfIP_getdev_ex(&s, WOLFIP_MAX_INTERFACES));
+}
+END_TEST
+
+START_TEST(test_wolfip_ipconfig_ex_per_interface)
+{
+    struct wolfIP s;
+    ip4 base_ip = 0x0A000001;
+    ip4 base_mask = 0xFFFFFF00;
+    ip4 base_gw = 0x0A0000FE;
+    ip4 iface_ip = 0x0A000201;
+    ip4 iface_mask = 0xFFFF0000;
+    ip4 iface_gw = 0x0A0002FE;
+    ip4 out_ip = 0, out_mask = 0, out_gw = 0;
+    ip4 def_ip = 0, def_mask = 0, def_gw = 0;
+
+    wolfIP_init(&s);
+    wolfIP_ipconfig_set(&s, base_ip, base_mask, base_gw);
+
+    wolfIP_ipconfig_set_ex(&s, 1, iface_ip, iface_mask, iface_gw);
+    wolfIP_ipconfig_get_ex(&s, 1, &out_ip, &out_mask, &out_gw);
+
+    ck_assert_uint_eq(out_ip, iface_ip);
+    ck_assert_uint_eq(out_mask, iface_mask);
+    ck_assert_uint_eq(out_gw, iface_gw);
+
+    wolfIP_ipconfig_get(&s, &def_ip, &def_mask, &def_gw);
+    ck_assert_uint_eq(def_ip, base_ip);
+    ck_assert_uint_eq(def_mask, base_mask);
+    ck_assert_uint_eq(def_gw, base_gw);
+
+    wolfIP_ipconfig_set_ex(&s, WOLFIP_MAX_INTERFACES, 0xDEADBEEF, 0xFFFFFFFF, 0x01010101);
+    ck_assert_uint_eq(s.ipconf[1].ip, iface_ip);
+    ck_assert_uint_eq(s.ipconf[1].mask, iface_mask);
+    ck_assert_uint_eq(s.ipconf[1].gw, iface_gw);
+
+    wolfIP_ipconfig_get_ex(&s, 1, NULL, NULL, NULL);
+}
+END_TEST
+
+START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
+{
+    struct wolfIP s;
+    struct arp_packet arp_req;
+    struct arp_packet *arp_reply;
+    uint8_t requester_mac[6] = {0x10, 0x22, 0x33, 0x44, 0x55, 0x66};
+    uint8_t iface1_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, 1, iface1_mac);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, 1, 0xC0A80101, 0xFFFFFF00, 0);
+
+    memset(&arp_req, 0, sizeof(arp_req));
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    memset(arp_req.eth.dst, 0xFF, sizeof(arp_req.eth.dst));
+    memcpy(arp_req.eth.src, requester_mac, 6);
+    arp_req.eth.type = ee16(ETH_TYPE_ARP);
+    arp_req.htype = ee16(1);
+    arp_req.ptype = ee16(ETH_TYPE_IP);
+    arp_req.hlen = 6;
+    arp_req.plen = 4;
+    arp_req.opcode = ee16(ARP_REQUEST);
+    memcpy(arp_req.sma, requester_mac, 6);
+    arp_req.sip = ee32(0xC0A80164);
+    memset(arp_req.tma, 0, sizeof(arp_req.tma));
+    arp_req.tip = ee32(0xC0A80101);
+
+    wolfIP_recv_ex(&s, 1, &arp_req, sizeof(arp_req));
+
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    arp_reply = (struct arp_packet *)last_frame_sent;
+    ck_assert_uint_eq(arp_reply->opcode, ee16(ARP_REPLY));
+    ck_assert_mem_eq(arp_reply->eth.src, iface1_mac, 6);
+    ck_assert_mem_eq(arp_reply->sma, iface1_mac, 6);
+    ck_assert_uint_eq(arp_reply->sip, ee32(s.ipconf[1].ip));
 }
 END_TEST
 
@@ -653,13 +755,14 @@ END_TEST
 START_TEST(test_eth_output_add_header) {
     struct wolfIP_eth_frame eth_frame;
     struct wolfIP S;
-    memset(&S, 0, sizeof(S));
+    wolfIP_init(&S);
     memset(&eth_frame, 0, sizeof(eth_frame));
 
     uint8_t test_mac[6] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
-    memcpy(S.ll_dev.mac, test_mac, 6);
+    struct ll *ll = wolfIP_getdev(&S);
+    memcpy(ll->mac, test_mac, 6);
 
-    eth_output_add_header(&S, NULL, &eth_frame, ETH_TYPE_IP);
+    eth_output_add_header(&S, 0, NULL, &eth_frame, ETH_TYPE_IP);
 
     ck_assert_mem_eq(eth_frame.dst, "\xff\xff\xff\xff\xff\xff", 6);  // Broadcast
     ck_assert_mem_eq(eth_frame.src, test_mac, 6);
@@ -765,6 +868,10 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_cancel_timer);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_wolfip_getdev_ex_api);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
+    suite_add_tcase(s, tc_utils);
 
     tcase_add_test(tc_proto, test_arp_request_basic);
     suite_add_tcase(s, tc_proto);
@@ -779,6 +886,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_lookup_success);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_arp_lookup_failure);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_wolfip_recv_ex_multi_interface_arp_reply);
     suite_add_tcase(s, tc_proto);
     
     tcase_add_test(tc_utils, test_transport_checksum);

@@ -30,6 +30,7 @@ struct ll {
     int (*send)(struct ll *ll, void *buf, uint32_t len);  // Transmit function
 };
 ```
+wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` (default `1`). Call `wolfIP_getdev_ex()` to access a specific slot; the legacy `wolfIP_getdev()` helper still returns slot `0`.
 
 ### IP Configuration
 ```c
@@ -40,6 +41,7 @@ struct ipconf {
     ip4 gw;                  // Default gateway
 };
 ```
+Each `struct wolfIP` instance owns `WOLFIP_MAX_INTERFACES` `ipconf` entries—one per link-layer slot. Use the `_ex` helpers to read or update a specific interface; the legacy accessors operate on index `0` for backwards compatibility.
 
 ### Socket Address Structures
 ```c
@@ -161,6 +163,12 @@ Processes pending network events.
 - Returns: Number of events processed
 
 ```c
+void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
+void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
+```
+Pass inbound frames to the stack. `_ex` allows the caller to specify which interface slot produced the frame.
+
+```c
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw);
 ```
@@ -170,6 +178,18 @@ Set/get IP configuration.
   - ip: IPv4 address
   - mask: Subnet mask
   - gw: Default gateway
+
+```c
+void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
+void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
+```
+Per-interface versions of the IP configuration helpers. The legacy functions target interface `0`.
+
+```c
+struct ll *wolfIP_getdev(struct wolfIP *s);
+struct ll *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+```
+Access the link-layer descriptor(s) that should be wired to hardware drivers. `_ex` returns `NULL` if `if_idx` exceeds `WOLFIP_MAX_INTERFACES`.
 
 ## DHCP Client Functions
 

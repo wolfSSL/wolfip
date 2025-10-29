@@ -98,10 +98,14 @@ void wolfIP_init(struct wolfIP *s);
 void wolfIP_init_static(struct wolfIP **s);
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
+void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw);
 
 struct ll *wolfIP_getdev(struct wolfIP *s);
+struct ll *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
+void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
 
 /* Callback flags */
 #define CB_EVENT_READABLE 0x01 /* Accepted connection or data available */

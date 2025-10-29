@@ -11,6 +11,10 @@
 
 #define MAX_NEIGHBORS 16
 
+#ifndef WOLFIP_MAX_INTERFACES
+#define WOLFIP_MAX_INTERFACES 1
+#endif
+
 /* Linux test configuration */
 #define WOLFIP_IP "10.10.10.2"
 #define LINUX_IP "10.10.10.1"
