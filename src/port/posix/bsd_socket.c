@@ -552,7 +552,7 @@ void *wolfIP_sock_posix_ip_loop(void *arg) {
 }
 
 void __attribute__((constructor)) init_wolfip_posix() {
-    struct in_addr linux_ip; 
+    struct in_addr linux_ip;
     struct ll *tapdev;
     pthread_t wolfIP_thread;
     if (IPSTACK)

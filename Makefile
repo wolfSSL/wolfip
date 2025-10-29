@@ -3,6 +3,23 @@ CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb
 LDFLAGS+=-pthread
 
+# Debug flags:
+# CFLAGS+=-DDEBUG_TAP
+# print ethernet headers
+# CFLAGS+=-DDEBUG_ETH
+# print ip headers
+ CFLAGS+=-DDEBUG_IP
+# print tcp headers
+# CFLAGS+=-DDEBUG_TCP
+# print esp header data
+CFLAGS+=-DWOLFIP_DEBUG_ESP
+#CFLAGS+=-DWOLFIP_DEBUG_ESP_VERBOSE
+
+# ESP support
+ CFLAGS+=-DWOLFIP_ESP
+ CFLAGS+=-DWOLFSSL_WOLFIP
+ LDFLAGS+=-lwolfssl
+
 CPPCHECK=cppcheck
 CPPCHECK_FLAGS=--enable=all --suppress=missingIncludeSystem \
 			   --suppress=unusedFunction --suppress=unusedVariable \

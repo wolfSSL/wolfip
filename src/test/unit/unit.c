@@ -780,7 +780,7 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_arp_lookup_failure);
     suite_add_tcase(s, tc_proto);
-    
+
     tcase_add_test(tc_utils, test_transport_checksum);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
@@ -791,8 +791,6 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_proto);
     return s;
 }
-
-
 
 int main(void)
 {
@@ -807,5 +805,4 @@ int main(void)
     n_fail = srunner_ntests_failed(sr);
     srunner_free(sr);
     return (n_fail == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
-
 }

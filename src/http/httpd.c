@@ -214,7 +214,7 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     struct http_request req;
     struct http_url *url = NULL;
     memset(&req, 0, sizeof(struct http_request));
-    http_url_decode(p, len); /* Decode can be done in place */ 
+    http_url_decode(p, len); /* Decode can be done in place */
     if (len < 4) goto bad_request;
     /* Parse the request line */
     q = strchr(p, ' ');
@@ -267,7 +267,7 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
         goto bad_request;
     url = http_find_url(hc->httpd, req.path);
     if (!url) goto not_found;
-    
+
     if ((url->handler == NULL) && (url->static_content == NULL))
         goto service_unavailable;
     if (url->handler == NULL) {

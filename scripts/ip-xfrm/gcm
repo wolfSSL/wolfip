@@ -1,0 +1,48 @@
+#!/bin/bash
+#
+#
+# rfc4106(gcm(aes)) example: aes-gcm encryption + auth.
+#
+# The 4 byte nonce is placed at end of key, forming 20 bytes
+# of key material.
+#
+
+alg="rfc4106(gcm(aes))"
+
+print_usage_and_die() {
+  echo "usage:"
+  echo "  gcm"
+  echo ""
+  echo "examples:"
+  echo "  ./scripts/ip-xfrm/gcm"
+  exit 1
+}
+
+ip_proto=tcp
+nonce=bdc5448a
+
+# State
+# ipv4
+sudo ip xfrm state add \
+  src 10.10.10.1 dst 10.10.10.2 \
+  proto esp \
+  spi 0xcd65bc5d \
+  mode transport \
+  replay-window 64 \
+  aead $alg 0x03030303030303030303030303030303$nonce 128 \
+  sel src 10.10.10.1 dst 10.10.10.2
+
+sudo ip xfrm state add \
+  src 10.10.10.2 dst 10.10.10.1 \
+  proto esp \
+  spi 0xe99bab7e \
+  mode transport \
+  replay-window 64 \
+  aead $alg 0x03030303030303030303030303030303$nonce 128 \
+  sel src 10.10.10.2 dst 10.10.10.1
+
+# Policies
+# ipv4
+sudo ip xfrm policy add \
+  dst 10.10.10.2 proto $ip_proto dir out tmpl proto esp spi 0xcd65bc5d mode transport
+

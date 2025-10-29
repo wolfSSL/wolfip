@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# aes-cbc (rfc3602) + hmac-[md5,sha1,sha256]-96,128 example.
+#
+
+print_usage_and_die() {
+  echo "usage:"
+  echo "  cbc_auth [auth]"
+  echo ""
+  echo "  auth = md5, sha1, sha256"
+  echo ""
+  echo "examples:"
+  echo "  ./scripts/ip-xfrm/hmac_auth sha256 128"
+  echo "  ./scripts/ip-xfrm/hmac_auth sha256 96"
+  echo "  ./scripts/ip-xfrm/hmac_auth sha1"
+  echo "  ./scripts/ip-xfrm/hmac_auth md5"
+  exit 1
+}
+
+alg=sha1
+ip_proto=tcp
+len=96
+
+if [ $# -eq 0 ]; then
+  print_usage_and_die
+fi
+
+if [ $# -eq 1 ]; then
+  alg=$1
+fi
+
+if [ $# -eq 2 ]; then
+  alg=$1
+  len=$2
+fi
+
+# State
+# ipv4
+sudo ip xfrm state add \
+  src 10.10.10.1 dst 10.10.10.2 \
+  proto esp \
+  spi 0x764f47c9 \
+  mode transport \
+  replay-window 64 \
+  auth-trunc $alg 0x01010101010101010101010101010101 $len \
+  enc aes 0x03030303030303030303030303030303 \
+  sel src 10.10.10.1 dst 10.10.10.2
+
+sudo ip xfrm state add \
+  src 10.10.10.2 dst 10.10.10.1 \
+  proto esp \
+  spi 0x49ebfdd4 \
+  mode transport \
+  replay-window 64 \
+  auth-trunc $alg 0x02020202020202020202020202020202 $len \
+  enc aes 0x04040404040404040404040404040404 \
+  sel src 10.10.10.2 dst 10.10.10.1
+
+# Policies
+# ipv4
+sudo ip xfrm policy add \
+  dst 10.10.10.2 proto $ip_proto dir out tmpl proto esp spi 0x764f47c9 mode transport
+

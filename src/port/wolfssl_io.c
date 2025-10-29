@@ -22,7 +22,7 @@
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
 
-static struct wolfIP *ref_ipstack = NULL; 
+static struct wolfIP *ref_ipstack = NULL;
 
 static int wolfIP_io_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
 {

@@ -42,8 +42,10 @@ static int tot_sent = 0;
 static int wolfIP_closing = 0;
 static int closed = 0;
 static int client_connected = 0;
-static const uint8_t test_pattern[16] = "Test pattern - -";
-
+/* "Test pattern - -" 16 chars without trailing null. */
+static const uint8_t test_pattern[16] = {0x54, 0x65, 0x73, 0x74, 0x20, 0x70,
+                                         0x61, 0x74, 0x74, 0x65, 0x72, 0x6e,
+                                         0x20, 0x2d, 0x20, 0x2d};
 
 /* Client-side callback. */
 static void client_cb(int fd, uint16_t event, void *arg)

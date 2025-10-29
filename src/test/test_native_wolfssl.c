@@ -44,8 +44,10 @@ static int tot_sent = 0;
 static int tot_recv = 0;
 static int wolfIP_closing = 0;
 static int closed = 0;
-static const uint8_t test_pattern[16] = "Test pattern - -";
-
+/* "Test pattern - -" 16 chars without trailing null. */
+static const uint8_t test_pattern[16] = {0x54, 0x65, 0x73, 0x74, 0x20, 0x70,
+                                         0x61, 0x74, 0x74, 0x65, 0x72, 0x6e,
+                                         0x20, 0x2d, 0x20, 0x2d};
 static WOLFSSL_CTX *server_ctx = NULL; /* Used by wolfIP */
 static WOLFSSL_CTX *client_ctx = NULL; /* Used by Linux */
 static WOLFSSL *client_ssl = NULL;
@@ -286,7 +288,7 @@ void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
     }
     printf("Associating server context with wolfIP\n");
     wolfSSL_SetIO_FT_CTX(server_ctx, s);
-    
+
     printf("Importing server certificate\n");
     ret = wolfSSL_CTX_use_certificate_buffer(server_ctx, server_der,
             server_der_len, SSL_FILETYPE_ASN1);

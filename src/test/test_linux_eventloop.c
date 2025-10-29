@@ -30,6 +30,11 @@
 #include "config.h"
 #include "wolfip.h"
 
+#if defined(WOLFIP_ESP)
+    #include "wolfesp.h"
+    #include "esp_sa_list.c"
+#endif
+
 #define TEST_SIZE (4 * 1024)
 
 #define BUFFER_SIZE TEST_SIZE
@@ -43,8 +48,10 @@ static int wolfIP_closing = 0;
 static int closed = 0;
 static int conn_fd = -1;
 static int client_connected = 0;
-static const uint8_t test_pattern[16] = "Test pattern - -";
-
+/* "Test pattern - -" 16 chars without trailing null. */
+static const uint8_t test_pattern[16] = {0x54, 0x65, 0x73, 0x74, 0x20, 0x70,
+                                         0x61, 0x74, 0x74, 0x65, 0x72, 0x6e,
+                                         0x20, 0x2d, 0x20, 0x2d};
 
 
 /* wolfIP: server side callback. */
@@ -171,7 +178,6 @@ static void client_cb(int fd, uint16_t event, void *arg)
         printf("Test client: success\n");
     }
 }
-
 
 /* wolfIP side: main loop of the stack under test. */
 static int test_loop(struct wolfIP *s, int active_close)
@@ -461,6 +467,11 @@ int main(int argc, char **argv)
             atoip4(LINUX_IP));
     printf("IP: manually configured\n");
     inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
+#endif
+
+#if defined(WOLFIP_ESP)
+    esp_load_sa_list(test_in_sa_list, 2, 1);
+    esp_load_sa_list(test_out_sa_list, 2, 0);
 #endif
 
     /* Server side test */

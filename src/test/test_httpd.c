@@ -41,8 +41,6 @@ static int wolfIP_closing = 0;
 static int closed = 0;
 
 
-
-
 /* wolfIP side: main loop of the stack under test. */
 static int test_loop(struct wolfIP *s, int active_close)
 {

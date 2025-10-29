@@ -14,11 +14,11 @@ typedef uint32_t ip4;
 
 
 #ifdef DEBUG
-#include <stdio.h>
-#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
-#else
-#define LOG(fmt, ...) do{}while(0)
-#endif
+    #include <stdio.h>
+    #define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+    #else
+    #define LOG(fmt, ...) do{}while(0)
+#endif /* DEBUG */
 
 /* Device driver interface */
 /* Struct to contain a hw device description */
@@ -43,55 +43,63 @@ struct ipconf {
 #define MARK_TCP_SOCKET 0x100 /* Mark a socket as TCP */
 #define MARK_UDP_SOCKET 0x200 /* Mark a socket as UDP */
 #if (MARK_TCP_SOCKET >= MARK_UDP_SOCKET)
-#error "MARK_TCP_SOCKET must be less than MARK_UDP_SOCKET"
-#endif
+    #error "MARK_TCP_SOCKET must be less than MARK_UDP_SOCKET"
+#endif /* MARK_TCP_SOCKET >= MARK_UDP_SOCKET */
 
 
 #ifndef WOLF_POSIX
-#define IPSTACK_SOCK_STREAM 1
-#define IPSTACK_SOCK_DGRAM 2
+    #define IPSTACK_SOCK_STREAM 1
+    #define IPSTACK_SOCK_DGRAM 2
 
-
-struct wolfIP_sockaddr_in {
-    uint16_t sin_family;
-    uint16_t sin_port;
-    struct sin_addr { uint32_t s_addr; } sin_addr;
-};
-struct wolfIP_sockaddr { uint16_t sa_family; };
-typedef uint32_t socklen_t;
-#ifndef AF_INET
-#define AF_INET 2
-#endif
+    struct wolfIP_sockaddr_in {
+        uint16_t sin_family;
+        uint16_t sin_port;
+        struct sin_addr { uint32_t s_addr; } sin_addr;
+    };
+    struct wolfIP_sockaddr { uint16_t sa_family; };
+    typedef uint32_t socklen_t;
+    #ifndef AF_INET
+        #define AF_INET 2
+    #endif /* !AF_INET */
 #else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#define wolfIP_sockaddr_in sockaddr_in
-#define wolfIP_sockaddr sockaddr
-#endif
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+    #define wolfIP_sockaddr_in sockaddr_in
+    #define wolfIP_sockaddr sockaddr
+#endif /* !WOLF_POSIX */
 
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol);
-int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen);
+int wolfIP_sock_bind(struct wolfIP *s, int sockfd,
+                     const struct wolfIP_sockaddr *addr, socklen_t addrlen);
 int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog);
-int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen);
-int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen);
-int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags, const struct wolfIP_sockaddr *dest_addr, socklen_t addrlen);
-int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags);
+int wolfIP_sock_accept(struct wolfIP *s, int sockfd,
+                       struct wolfIP_sockaddr *addr, socklen_t *addrlen);
+int wolfIP_sock_connect(struct wolfIP *s, int sockfd,
+                        const struct wolfIP_sockaddr *addr, socklen_t addrlen);
+int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf,
+                       size_t len, int flags, const struct wolfIP_sockaddr *dest_addr,
+                       socklen_t addrlen);
+int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len,
+                     int flags);
 int wolfIP_sock_write(struct wolfIP *s, int sockfd, const void *buf, size_t len);
-int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags, struct wolfIP_sockaddr *src_addr, socklen_t *addrlen);
+int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len,
+                         int flags, struct wolfIP_sockaddr *src_addr, socklen_t *addrlen);
 int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags);
 int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len);
 int wolfIP_sock_close(struct wolfIP *s, int sockfd);
-int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen);
-int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen);
+int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr,
+                            const socklen_t *addrlen);
+int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr,
+                            const socklen_t *addrlen);
 
 int dhcp_client_init(struct wolfIP *s);
 int dhcp_bound(struct wolfIP *s);
 
 /* DNS client */
-
-int nslookup(struct wolfIP *s, const char *name, uint16_t *id, void (*lookup_cb)(uint32_t ip));
+int nslookup(struct wolfIP *s, const char *name, uint16_t *id,
+             void (*lookup_cb)(uint32_t ip));
 
 /* IP stack interface */
 void wolfIP_init(struct wolfIP *s);
@@ -108,7 +116,9 @@ struct ll *wolfIP_getdev(struct wolfIP *s);
 #define CB_EVENT_TIMEOUT 0x02  /* Timeout */
 #define CB_EVENT_WRITABLE 0x04 /* Connected or space available to send */
 #define CB_EVENT_CLOSED 0x10   /* Connection closed by peer */
-void wolfIP_register_callback(struct wolfIP *s, int sock_fd, void (*cb)(int sock_fd, uint16_t events, void *arg), void *arg);
+void wolfIP_register_callback(struct wolfIP *s, int sock_fd,
+                              void (*cb)(int sock_fd, uint16_t events, void *arg),
+                              void *arg);
 
 /* External requirements */
 uint32_t wolfIP_getrandom(void);
@@ -153,16 +163,22 @@ static inline void iptoa(ip4 ip, char *buf)
 }
 
 #ifdef WOLFSSL_WOLFIP
-#ifdef WOLFSSL_USER_SETTINGS
-#include "user_settings.h"
-#else
-#include <wolfssl/options.h>
-#endif
-#include <wolfssl/wolfcrypt/settings.h>
-#include <wolfssl/ssl.h>
-/* Defined in wolfssl_io.c */
-int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
-#endif
+    #ifdef WOLFSSL_USER_SETTINGS
+        #include "user_settings.h"
+        #else
+        #include <wolfssl/options.h>
+    #endif /* WOLFSSL_USER_SETTINGS */
+    #include <wolfssl/wolfcrypt/settings.h>
+    #include <wolfssl/ssl.h>
+    /* Defined in wolfssl_io.c */
+    int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
+    int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 
-#endif
+    #ifdef  WOLFIP_ESP
+        #include <wolfssl/wolfcrypt/aes.h>
+        #include <wolfssl/wolfcrypt/des3.h>
+        #include <wolfssl/wolfcrypt/hmac.h>
+    #endif /* WOLFIP_ESP */
+#endif /* WOLFSSL_WOLFIP */
+
+#endif /* !WOLFIP_H */
