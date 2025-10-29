@@ -2385,6 +2385,14 @@ size_t wolfIP_instance_size(void)
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *ip,
         uint32_t len)
 {
+#if WOLFIP_ENABLE_LOOPBACK
+    if (!wolfIP_is_loopback_if(if_idx)) {
+        ip4 dest = ee32(ip->dst);
+        if ((dest & WOLFIP_LOOPBACK_MASK) == (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
+            return;
+        }
+    }
+#endif
 #if WOLFIP_ENABLE_FORWARDING
     if (ip->ver_ihl == 0x45) {
         ip4 dest = ee32(ip->dst);

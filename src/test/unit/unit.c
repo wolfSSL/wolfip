@@ -22,6 +22,8 @@
 #include "../../../config.h"
 #undef WOLFIP_MAX_INTERFACES
 #define WOLFIP_MAX_INTERFACES 3
+#undef WOLFIP_ENABLE_LOOPBACK
+#define WOLFIP_ENABLE_LOOPBACK 1
 #undef WOLFIP_ENABLE_FORWARDING
 #ifndef WOLFIP_ENABLE_FORWARDING
 #define WOLFIP_ENABLE_FORWARDING 1
@@ -607,6 +609,7 @@ START_TEST(test_arp_lookup_success) {
 
     /* Add a known IP-MAC pair */
     s.arp.neighbors[0].ip = ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
     memcpy(s.arp.neighbors[0].mac, mock_mac, 6);
 
     /* Test arp_lookup */
@@ -850,6 +853,39 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
 }
 END_TEST
 
+START_TEST(test_loopback_dest_not_forwarded)
+{
+    struct wolfIP s;
+    struct wolfIP_ip_packet frame;
+    uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+
+    memset(&frame, 0, sizeof(frame));
+    memcpy(frame.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame.eth.src, src_mac, 6);
+    frame.eth.type = ee16(ETH_TYPE_IP);
+    frame.ver_ihl = 0x45;
+    frame.ttl = 64;
+    frame.proto = WI_IPPROTO_UDP;
+    frame.len = ee16(IP_HEADER_LEN);
+    frame.src = ee32(0x0A000002U);
+    frame.dst = ee32(0x7F000001U);
+    frame.csum = 0;
+    iphdr_set_checksum(&frame);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, &frame, sizeof(frame));
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
 
 // Test for `transport_checksum` calculation
 START_TEST(test_transport_checksum) {
@@ -906,10 +942,10 @@ START_TEST(test_eth_output_add_header) {
     memset(&eth_frame, 0, sizeof(eth_frame));
 
     uint8_t test_mac[6] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
-    struct ll *ll = wolfIP_getdev(&S);
+    struct ll *ll = wolfIP_getdev_ex(&S, TEST_PRIMARY_IF);
     memcpy(ll->mac, test_mac, 6);
 
-    eth_output_add_header(&S, 0, NULL, &eth_frame, ETH_TYPE_IP);
+    eth_output_add_header(&S, TEST_PRIMARY_IF, NULL, &eth_frame, ETH_TYPE_IP);
 
     ck_assert_mem_eq(eth_frame.dst, "\xff\xff\xff\xff\xff\xff", 6);  // Broadcast
     ck_assert_mem_eq(eth_frame.src, test_mac, 6);
@@ -1043,6 +1079,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_wolfip_forwarding_ttl_expired);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_loopback_dest_not_forwarded);
     suite_add_tcase(s, tc_proto);
     
     tcase_add_test(tc_utils, test_transport_checksum);
