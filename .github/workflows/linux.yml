@@ -19,6 +19,7 @@ jobs:
       - name: Update repo
         run: |
           sudo apt-get update
+          sudo apt-get install -y libwolfssl-dev
           sudo modprobe tun
 
       - name: Build linux tests
@@ -26,8 +27,13 @@ jobs:
           mkdir -p build/port
           make
 
-#      - name: Run interop tests
-#        run: |
-#          sudo build/test
-#
-#
+      - name: Run unit tests
+        run: make unit
+
+      - name: Run standalone tests
+        run: |
+          sudo ./build/test-evloop
+          sudo ./build/test-wolfssl
+          ./build/test-wolfssl-forwarding
+          ./build/test-ttl-expired
+

@@ -584,6 +584,26 @@ static inline int ip_is_local_conf(const struct ipconf *conf, ip4 addr)
     return ((addr & conf->mask) == (conf->ip & conf->mask));
 }
 
+#if WOLFIP_ENABLE_FORWARDING
+static unsigned int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 dest)
+{
+    if (!s || s->if_count < 2)
+        return s ? s->if_count : 0;
+    for (unsigned int i = 0; i < s->if_count; i++) {
+        struct ipconf *conf = &s->ipconf[i];
+        if (i == in_if)
+            continue;
+        if (!conf || conf->ip == IPADDR_ANY)
+            continue;
+        if (dest == conf->ip)
+            return s->if_count;
+        if (ip_is_local_conf(conf, dest))
+            return i;
+    }
+    return s->if_count;
+}
+#endif
+
 static inline ip4 wolfIP_select_nexthop(const struct ipconf *conf, ip4 dest)
 {
     if (IS_IP_BCAST(dest))
@@ -646,6 +666,48 @@ static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *
     }
     return 0;
 }
+
+#ifdef ETHERNET
+static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp);
+static void iphdr_set_checksum(struct wolfIP_ip_packet *ip);
+static int eth_output_add_header(struct wolfIP *S, unsigned int if_idx, const uint8_t *dst, struct wolfIP_eth_frame *eth,
+        uint16_t type);
+#endif
+#if WOLFIP_ENABLE_FORWARDING && defined(ETHERNET)
+static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip);
+static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac);
+#endif
+
+#ifdef ETHERNET
+static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *orig)
+{
+    struct ll *ll = wolfIP_ll_at(s, if_idx);
+    if (!ll || !ll->send)
+        return;
+    struct wolfIP_icmp_packet icmp;
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.type = ICMP_TTL_EXCEEDED;
+    icmp.csum = ee16(icmp_checksum(&icmp));
+    icmp.ip.ver_ihl = 0x45;
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.id = ee16(s->ipcounter++);
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.ip.src = orig->dst;
+    icmp.ip.dst = orig->src;
+    icmp.ip.csum = 0;
+    iphdr_set_checksum(&icmp.ip);
+    eth_output_add_header(s, if_idx, orig->eth.src, &icmp.ip.eth, ETH_TYPE_IP);
+    ll->send(ll, &icmp, sizeof(struct wolfIP_icmp_packet));
+}
+#else
+static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *orig)
+{
+    (void)s;
+    (void)if_idx;
+    (void)orig;
+}
+#endif
 
 /* User Callbacks */
 void wolfIP_register_callback(struct wolfIP *s, int sock_fd, void (*cb)(int sock_fd, uint16_t events, void *arg), void *arg)
@@ -979,6 +1041,53 @@ static int eth_output_add_header(struct wolfIP *S, unsigned int if_idx, const ui
 }
 #endif
 
+#if WOLFIP_ENABLE_FORWARDING
+static int wolfIP_forward_prepare(struct wolfIP *s, unsigned int out_if, ip4 dest, uint8_t *mac, int *broadcast)
+{
+#ifdef ETHERNET
+    if (!broadcast || !mac)
+        return 0;
+    if (IS_IP_BCAST(dest)) {
+        *broadcast = 1;
+        return 1;
+    }
+    *broadcast = 0;
+    if (arp_lookup(s, out_if, dest, mac) == 0)
+        return 1;
+    arp_request(s, out_if, dest);
+    return 0;
+#else
+    (void)s;
+    (void)out_if;
+    (void)dest;
+    (void)mac;
+    (void)broadcast;
+    return 0;
+#endif
+}
+
+static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if, struct wolfIP_ip_packet *ip, uint32_t len, const uint8_t *mac, int broadcast)
+{
+#ifdef ETHERNET
+    struct ll *ll = wolfIP_ll_at(s, out_if);
+    if (!ll || !ll->send)
+        return;
+    if (broadcast)
+        eth_output_add_header(s, out_if, NULL, &ip->eth, ETH_TYPE_IP);
+    else
+        eth_output_add_header(s, out_if, mac, &ip->eth, ETH_TYPE_IP);
+    ll->send(ll, ip, len);
+#else
+    (void)s;
+    (void)out_if;
+    (void)ip;
+    (void)len;
+    (void)mac;
+    (void)broadcast;
+#endif
+}
+#endif
+
 static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, uint8_t proto, uint16_t len)
 {
     union transport_pseudo_header ph;
@@ -1148,7 +1257,6 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
 {
     struct ipconf *conf = wolfIP_ipconf_at(S, if_idx);
-    struct ll *ll = wolfIP_ll_at(S, if_idx);
     ip4 local_ip = conf ? conf->ip : IPADDR_ANY;
     for (int i = 0; i < MAX_TCPSOCKETS; i++) {
         uint32_t tcplen;
@@ -1171,20 +1279,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             }
             /* Check IP ttl */
             if (tcp->ip.ttl == 0) {
-                /* Send ICMP TTL exceeded */
-                struct wolfIP_icmp_packet icmp;
-                memset(&icmp, 0, sizeof(icmp));
-                icmp.type = ICMP_TTL_EXCEEDED;
-                icmp.csum = ee16(icmp_checksum(&icmp));
-                icmp.ip.src = tcp->ip.dst;
-                icmp.ip.dst = tcp->ip.src;
-                icmp.ip.proto = WI_IPPROTO_ICMP;
-                icmp.ip.id = ee16(S->ipcounter++);
-                icmp.ip.csum = 0;
-                iphdr_set_checksum(&icmp.ip);
-                eth_output_add_header(S, if_idx, icmp.ip.eth.src, &icmp.ip.eth, ETH_TYPE_IP);
-                if (ll && ll->send)
-                    ll->send(ll, &icmp, sizeof(struct wolfIP_icmp_packet));
+                wolfIP_send_ttl_exceeded(S, if_idx, &tcp->ip);
                 return;
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
@@ -2149,9 +2244,54 @@ void wolfIP_init_static(struct wolfIP **s)
     *s = &wolfIP_static;
 }
 
+size_t wolfIP_instance_size(void)
+{
+    return sizeof(struct wolfIP);
+}
+
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *ip,
         uint32_t len)
 {
+#if WOLFIP_ENABLE_FORWARDING
+    if (ip->ver_ihl == 0x45) {
+        ip4 dest = ee32(ip->dst);
+        int is_local = 0;
+        if (dest == IPADDR_ANY || IS_IP_BCAST(dest)) {
+            is_local = 1;
+        } else {
+            for (unsigned int i = 0; i < s->if_count; i++) {
+                struct ipconf *conf = &s->ipconf[i];
+                if (!conf || conf->ip == IPADDR_ANY)
+                    continue;
+                if (conf->ip == dest) {
+                    is_local = 1;
+                    break;
+                }
+            }
+        }
+        if (!is_local) {
+            unsigned int out_if = wolfIP_forward_interface(s, if_idx, dest);
+            if (out_if < s->if_count) {
+                if (ip->ttl <= 1) {
+                    wolfIP_send_ttl_exceeded(s, if_idx, ip);
+                    return;
+                }
+                uint8_t mac[6];
+                int broadcast = 0;
+                if (!wolfIP_forward_prepare(s, out_if, dest, mac, &broadcast))
+                    return;
+                ip->ttl--;
+                uint16_t csum = ee16(ip->csum);
+                csum = (uint16_t)(csum + 1);
+                if (csum == 0)
+                    csum = 0xFFFF;
+                ip->csum = ee16(csum);
+                wolfIP_forward_packet(s, out_if, ip, len, broadcast ? NULL : mac, broadcast);
+                return;
+            }
+        }
+    }
+#endif
     if (ip->ver_ihl == 0x45 && ip->proto == 0x06) {
         struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)ip;
         tcp_input(s, if_idx, tcp, len);

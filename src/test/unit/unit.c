@@ -22,6 +22,9 @@
 #ifndef WOLFIP_MAX_INTERFACES
 #define WOLFIP_MAX_INTERFACES 2
 #endif
+#ifndef WOLFIP_ENABLE_FORWARDING
+#define WOLFIP_ENABLE_FORWARDING 1
+#endif
 #include <stdio.h>
 #include "../../wolfip.c"
 #include <stdlib.h> /* for random() */
@@ -703,6 +706,101 @@ START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
 }
 END_TEST
 
+START_TEST(test_wolfip_forwarding_basic)
+{
+    struct wolfIP s;
+    struct wolfIP_ip_packet frame;
+    struct wolfIP_ip_packet *fwd;
+    uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    uint8_t next_hop_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    uint32_t dest_ip = 0xC0A80164; /* 192.168.1.100 */
+    uint8_t initial_ttl = 2;
+    uint16_t orig_csum;
+    uint16_t expected_csum;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, 1, iface1_mac);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, 1, 0xC0A80101, 0xFFFFFF00, 0);
+    s.arp.neighbors[0].ip = dest_ip;
+    s.arp.neighbors[0].if_idx = 1;
+    memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
+
+    memset(&frame, 0, sizeof(frame));
+    memcpy(frame.eth.dst, s.ll_dev[0].mac, 6);
+    memcpy(frame.eth.src, src_mac, 6);
+    frame.eth.type = ee16(ETH_TYPE_IP);
+    frame.ver_ihl = 0x45;
+    frame.ttl = initial_ttl;
+    frame.proto = WI_IPPROTO_UDP;
+    frame.len = ee16(IP_HEADER_LEN);
+    frame.src = ee32(0xC0A800AA);
+    frame.dst = ee32(dest_ip);
+    frame.csum = 0;
+    iphdr_set_checksum(&frame);
+    orig_csum = ee16(frame.csum);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, 0, &frame, sizeof(frame));
+
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct wolfIP_ip_packet));
+    fwd = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_mem_eq(fwd->eth.dst, next_hop_mac, 6);
+    ck_assert_mem_eq(fwd->eth.src, s.ll_dev[1].mac, 6);
+    ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
+    expected_csum = (uint16_t)(orig_csum + 1);
+    if (expected_csum == 0)
+        expected_csum = 0xFFFF;
+    ck_assert_uint_eq(ee16(fwd->csum), expected_csum);
+}
+END_TEST
+
+START_TEST(test_wolfip_forwarding_ttl_expired)
+{
+    struct wolfIP s;
+    struct wolfIP_ip_packet frame;
+    struct wolfIP_icmp_packet *icmp;
+    uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0xAA, 0xBB, 0xCC};
+    uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+    uint32_t dest_ip = 0xC0A80110;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, 1, iface1_mac);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, 1, 0xC0A80101, 0xFFFFFF00, 0);
+
+    memset(&frame, 0, sizeof(frame));
+    memcpy(frame.eth.dst, s.ll_dev[0].mac, 6);
+    memcpy(frame.eth.src, src_mac, 6);
+    frame.eth.type = ee16(ETH_TYPE_IP);
+    frame.ver_ihl = 0x45;
+    frame.ttl = 1;
+    frame.proto = WI_IPPROTO_UDP;
+    frame.len = ee16(IP_HEADER_LEN);
+    frame.src = ee32(0xC0A800AA);
+    frame.dst = ee32(dest_ip);
+    frame.csum = 0;
+    iphdr_set_checksum(&frame);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, 0, &frame, sizeof(frame));
+
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct wolfIP_icmp_packet));
+    icmp = (struct wolfIP_icmp_packet *)last_frame_sent;
+    ck_assert_uint_eq(icmp->type, ICMP_TTL_EXCEEDED);
+    ck_assert_mem_eq(icmp->ip.eth.dst, src_mac, 6);
+    ck_assert_mem_eq(icmp->ip.eth.src, s.ll_dev[0].mac, 6);
+    ck_assert_uint_eq(frame.ttl, 1); /* original packet should remain unchanged */
+}
+END_TEST
+
 
 // Test for `transport_checksum` calculation
 START_TEST(test_transport_checksum) {
@@ -888,6 +986,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_lookup_failure);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_wolfip_recv_ex_multi_interface_arp_reply);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_wolfip_forwarding_ttl_expired);
     suite_add_tcase(s, tc_proto);
     
     tcase_add_test(tc_utils, test_transport_checksum);

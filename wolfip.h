@@ -96,6 +96,7 @@ int nslookup(struct wolfIP *s, const char *name, uint16_t *id, void (*lookup_cb)
 /* IP stack interface */
 void wolfIP_init(struct wolfIP *s);
 void wolfIP_init_static(struct wolfIP **s);
+size_t wolfIP_instance_size(void);
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
 void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);

@@ -43,6 +43,8 @@ struct ipconf {
 ```
 Each `struct wolfIP` instance owns `WOLFIP_MAX_INTERFACES` `ipconf` entries—one per link-layer slot. Use the `_ex` helpers to read or update a specific interface; the legacy accessors operate on index `0` for backwards compatibility.
 
+If `WOLFIP_ENABLE_FORWARDING` is set to `1` at compile time, the stack performs simple IPv4 forwarding between interfaces. Packets received on one interface whose destinations match another configured interface are re-sent with the IP TTL decreased by one (or an ICMP TTL-exceeded response if the TTL would drop to zero).
+
 ### Socket Address Structures
 ```c
 struct wolfIP_sockaddr_in {
@@ -152,6 +154,11 @@ void wolfIP_init_static(struct wolfIP **s);
 Initializes a static wolfIP instance.
 - Parameters:
   - s: Pointer to wolfIP instance pointer
+
+```c
+size_t wolfIP_instance_size(void);
+```
+Returns the size (in bytes) required to store a `struct wolfIP`. Use this when allocating stacks from custom memory managers.
 
 ```c
 int wolfIP_poll(struct wolfIP *s, uint64_t now);

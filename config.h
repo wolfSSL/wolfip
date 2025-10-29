@@ -15,6 +15,10 @@
 #define WOLFIP_MAX_INTERFACES 1
 #endif
 
+#ifndef WOLFIP_ENABLE_FORWARDING
+#define WOLFIP_ENABLE_FORWARDING 0
+#endif
+
 /* Linux test configuration */
 #define WOLFIP_IP "10.10.10.2"
 #define LINUX_IP "10.10.10.1"
