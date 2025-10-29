@@ -612,7 +612,7 @@ START_TEST(test_transport_checksum) {
     // Set up pseudo-header values for test
     ph.ph.src = 0xc0a80101; // 192.168.1.1
     ph.ph.dst = 0xc0a80102; // 192.168.1.2
-    ph.ph.proto = FT_IPPROTO_TCP;
+    ph.ph.proto = WI_IPPROTO_TCP;
     ph.ph.len = ee16(20); // TCP header length (without options)
 
     // Test with a simple TCP header with src/dst ports and no data
@@ -640,7 +640,7 @@ START_TEST(test_iphdr_set_checksum) {
     ip.id = ee16(1);
     ip.flags_fo = 0;
     ip.ttl = 64;
-    ip.proto = FT_IPPROTO_TCP;
+    ip.proto = WI_IPPROTO_TCP;
     ip.src = ee32(0xc0a80101); // 192.168.1.1
     ip.dst = ee32(0xc0a80102); // 192.168.1.2
 
@@ -682,13 +682,13 @@ START_TEST(test_ip_output_add_header) {
     t.S = &S;
 
     // Run the function for a TCP packet
-    int result = ip_output_add_header(&t, &ip, FT_IPPROTO_TCP, 40);
+    int result = ip_output_add_header(&t, &ip, WI_IPPROTO_TCP, 40);
     ck_assert_int_eq(result, 0);
 
     // Validate IP header fields
     ck_assert_uint_eq(ip.ver_ihl, 0x45);
     ck_assert_uint_eq(ip.ttl, 64);
-    ck_assert_uint_eq(ip.proto, FT_IPPROTO_TCP);
+    ck_assert_uint_eq(ip.proto, WI_IPPROTO_TCP);
     ck_assert_uint_eq(ip.src, ee32(t.local_ip));
     ck_assert_uint_eq(ip.dst, ee32(t.remote_ip));
     ck_assert_msg(ip.csum != 0, "IP header checksum should not be zero");

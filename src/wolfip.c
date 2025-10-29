@@ -32,9 +32,9 @@
 #define ICMP_ECHO_REQUEST 8
 #define ICMP_TTL_EXCEEDED 11
 
-#define FT_IPPROTO_ICMP 0x01
-#define FT_IPPROTO_TCP 0x06
-#define FT_IPPROTO_UDP 0x11
+#define WI_IPPROTO_ICMP 0x01
+#define WI_IPPROTO_TCP 0x06
+#define WI_IPPROTO_UDP 0x11
 #define IPADDR_ANY 0x00000000
 
 #define TCP_OPTION_MSS 0x02
@@ -62,8 +62,8 @@
 
 #define NO_TIMER 0
 
-#define FT_IP_MTU 1500
-#define TCP_MSS (FT_IP_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
+#define WI_IP_MTU 1500
+#define TCP_MSS (WI_IP_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
 
 /* Macros */
 #define IS_IP_BCAST(ip) (ip == 0xFFFFFFFF)
@@ -663,7 +663,7 @@ static struct tsocket *udp_new_socket(struct wolfIP *s)
     for (int i = 0; i < MAX_UDPSOCKETS; i++) {
         t = &s->udpsockets[i];
         if (t->proto == 0) {
-            t->proto = FT_IPPROTO_UDP;
+            t->proto = WI_IPPROTO_UDP;
             t->S = s;
             fifo_init(&t->sock.udp.rxbuf, t->rxmem, RXBUF_SIZE);
             fifo_init(&t->sock.udp.txbuf, t->txmem, TXBUF_SIZE);
@@ -699,7 +699,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
     for (int i = 0; i < MAX_TCPSOCKETS; i++) {
         t = &s->tcpsockets[i];
         if (t->proto == 0) {
-            t->proto = FT_IPPROTO_TCP;
+            t->proto = WI_IPPROTO_TCP;
             t->S = s;
             t->sock.tcp.state = TCP_CLOSED;
             t->sock.tcp.rto = 1000;
@@ -907,11 +907,11 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, 
     ph.ph.zero = 0;
     ph.ph.proto = proto;
     ph.ph.len = ee16(len - IP_HEADER_LEN);
-    if (proto == FT_IPPROTO_TCP) {
+    if (proto == WI_IPPROTO_TCP) {
         struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)ip;
         tcp->csum = 0;
         tcp->csum = ee16(transport_checksum(&ph, &tcp->src_port));
-    } else if (proto == FT_IPPROTO_UDP) {
+    } else if (proto == WI_IPPROTO_UDP) {
         struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
         udp->csum = 0;
         udp->csum = ee16(transport_checksum(&ph, &udp->src_port));
@@ -1079,7 +1079,7 @@ static void tcp_input(struct wolfIP *S, struct wolfIP_tcp_seg *tcp, uint32_t fra
                 icmp.csum = ee16(icmp_checksum(&icmp));
                 icmp.ip.src = tcp->ip.dst;
                 icmp.ip.dst = tcp->ip.src;
-                icmp.ip.proto = FT_IPPROTO_ICMP;
+                icmp.ip.proto = WI_IPPROTO_ICMP;
                 icmp.ip.id = ee16(S->ipcounter++);
                 icmp.ip.csum = 0;
                 iphdr_set_checksum(&icmp.ip);
@@ -1179,7 +1179,7 @@ static void tcp_rto_cb(void *arg)
     struct wolfIP_timer tmr = { };
     struct wolfIP_timer *ptmr = NULL;
     int pending = 0;
-    if ((ts->proto != FT_IPPROTO_TCP) || (ts->sock.tcp.state != TCP_ESTABLISHED))
+    if ((ts->proto != WI_IPPROTO_TCP) || (ts->sock.tcp.state != TCP_ESTABLISHED))
         return;
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     while (desc) {
@@ -1383,7 +1383,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         }
         if ((ts->dst_port==0) || (ts->remote_ip==0))
             return -1;
-        if (len > FT_IP_MTU - IP_HEADER_LEN - UDP_HEADER_LEN)
+        if (len > WI_IP_MTU - IP_HEADER_LEN - UDP_HEADER_LEN)
             return -1; /* Fragmentation not supported */
         if (fifo_space(&ts->sock.udp.txbuf) < len)
             return -11;
@@ -1858,7 +1858,7 @@ int dhcp_client_init(struct wolfIP *s)
         wolfIP_sock_close(s, s->dhcp_udp_sd);
     }
 
-    s->dhcp_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, FT_IPPROTO_UDP);
+    s->dhcp_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     if (s->dhcp_udp_sd < 0) {
         s->dhcp_state = DHCP_OFF;
         return -1;
@@ -2090,7 +2090,7 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
     if (s->dns_server == 0) return -101; /* Network unreachable: No DNS server configured */
     if (s->dns_id != 0) return -16; /* DNS query already in progress */
     if (s->dns_udp_sd <= 0) {
-        s->dns_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, FT_IPPROTO_UDP);
+        s->dns_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
         if (s->dns_udp_sd < 0)
             return -1;
         wolfIP_register_callback(s, s->dns_udp_sd, dns_callback, s);
@@ -2224,7 +2224,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                         tcp->ack = ee32(ts->sock.tcp.ack);
                         tcp->win = ee16(queue_space(&ts->sock.tcp.rxbuf));
-                        ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, FT_IPPROTO_TCP, size);
+                        ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
                         s->ll_dev.send(&s->ll_dev, tcp, desc->len);
                         desc->flags |= PKT_FLAG_SENT;
                         desc->time_sent = now;
@@ -2264,7 +2264,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             if (IS_IP_BCAST(nexthop)) memset(t->nexthop_mac, 0xFF, 6);
 #endif
             len = desc->len - ETH_HEADER_LEN;
-            ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, FT_IPPROTO_UDP, len);
+            ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, WI_IPPROTO_UDP, len);
             s->ll_dev.send(&s->ll_dev, udp, desc->len);
             fifo_pop(&t->sock.udp.txbuf);
             desc = fifo_peek(&t->sock.udp.txbuf);

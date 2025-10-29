@@ -6,8 +6,8 @@
 
 #define MAX_TCPSOCKETS 4
 #define MAX_UDPSOCKETS 2
-#define RXBUF_SIZE LINK_MTU * 4
-#define TXBUF_SIZE LINK_MTU * 4
+#define RXBUF_SIZE LINK_MTU * 16
+#define TXBUF_SIZE LINK_MTU * 16
 
 #define MAX_NEIGHBORS 16
 

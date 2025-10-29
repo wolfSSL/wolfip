@@ -53,8 +53,8 @@ static WOLFSSL *server_ssl = NULL;
 
 
 /* Defined in wolfssl_io.c */
-int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
+int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd);
+int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 
 /* wolfIP: server side callback. */
 static void server_cb(int fd, uint16_t event, void *arg)
@@ -70,7 +70,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
                 printf("Failed to create server SSL object\n");
                 return;
             }
-            wolfSSL_SetIO_FT(server_ssl, client_fd);
+            wolfSSL_SetIO_wolfIP(server_ssl, client_fd);
             /* Accepting the TLS session is not necessary here, as the
              * first read will trigger the handshake.
              */
@@ -285,7 +285,7 @@ void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
         return;
     }
     printf("Associating server context with wolfIP\n");
-    wolfSSL_SetIO_FT_CTX(server_ctx, s);
+    wolfSSL_SetIO_wolfIP_CTX(server_ctx, s);
     
     printf("Importing server certificate\n");
     ret = wolfSSL_CTX_use_certificate_buffer(server_ctx, server_der,

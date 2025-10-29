@@ -160,9 +160,8 @@ static inline void iptoa(ip4 ip, char *buf)
 #endif
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
-/* Defined in wolfssl_io.c */
-int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
+int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd);
+int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 #endif
 
 #endif

@@ -418,7 +418,7 @@ static void http_accept_cb(int sd, uint16_t event, void *arg) {
             if (httpd->ssl_ctx) {
                 httpd->clients[i].ssl = wolfSSL_new(httpd->ssl_ctx);
                 if (httpd->clients[i].ssl) {
-                    wolfSSL_SetIO_FT(httpd->clients[i].ssl, client_sd);
+                    wolfSSL_SetIO_wolfIP(httpd->clients[i].ssl, client_sd);
                 } else {
                     /* Failed to create SSL object */
                     wolfIP_sock_close(httpd->ipstack, client_sd);
@@ -491,7 +491,7 @@ int httpd_init(struct httpd *httpd, struct wolfIP *s, uint16_t port, void *ssl_c
     }
     if (ssl_ctx) {
         httpd->ssl_ctx = (WOLFSSL_CTX *) ssl_ctx;
-        wolfSSL_SetIO_FT_CTX(httpd->ssl_ctx, httpd->ipstack);
+        wolfSSL_SetIO_wolfIP_CTX(httpd->ssl_ctx, httpd->ipstack);
     }
     wolfIP_register_callback(s, httpd->listen_sd, http_accept_cb, httpd);
     return 0;

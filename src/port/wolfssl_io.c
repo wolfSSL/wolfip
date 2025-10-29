@@ -54,7 +54,7 @@ static int wolfIP_io_send(WOLFSSL* ssl, char* buf, int sz, void* ctx)
     return ret;
 }
 
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX* ctx, struct wolfIP *s)
+int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX* ctx, struct wolfIP *s)
 {
     wolfSSL_SetIORecv(ctx, wolfIP_io_recv);
     wolfSSL_SetIOSend(ctx, wolfIP_io_send);
@@ -62,7 +62,7 @@ int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX* ctx, struct wolfIP *s)
     return 0;
 }
 
-int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd)
+int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd)
 {
     wolfSSL_SetIOReadCtx(ssl, (void*)(intptr_t)fd);
     wolfSSL_SetIOWriteCtx(ssl, (void*)(intptr_t)fd);
