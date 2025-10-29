@@ -4,7 +4,9 @@ CFLAGS+=-g -ggdb
 LDFLAGS+=-pthread
 
 CPPCHECK=cppcheck
-CPPCHECK_FLAGS=--enable=all --suppress=missingIncludeSystem \
+CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
+			   --suppress=missingIncludeSystem \
+			   -i src/test \
 			   --suppress=unusedFunction --suppress=unusedVariable \
 			   --suppress=missingInclude --suppress=variableScope \
 			   --suppress=constVariable --suppress=constVariablePointer \
@@ -12,8 +14,10 @@ CPPCHECK_FLAGS=--enable=all --suppress=missingIncludeSystem \
 			   --suppress=constParameterCallback \
 			   --suppress=toomanyconfigs \
 			   --suppress=unmatchedSuppression --inconclusive \
+			   --disable=style \
 			   --std=c99 --language=c \
 			   --platform=unix64 \
+			   --check-level=exhaustive \
 			   --error-exitcode=1 --xml --xml-version=2
 
 OBJ=build/wolfip.o \
