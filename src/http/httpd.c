@@ -92,6 +92,7 @@ static struct http_url *http_find_url(struct httpd *httpd, const char *path) {
 void http_send_response_headers(struct http_client *hc, int status_code, const char *status_text, const char *content_type, size_t content_length)
 {
     char txt_response[HTTP_TX_BUF_LEN];
+    int rc;
     memset(txt_response, 0, sizeof(txt_response));
     if (!hc) return;
     /* If content_lenght is 0, assume chunked encoding */
@@ -109,20 +110,16 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
             status_code, status_text, content_type, content_length);
     }
     if (hc->ssl) {
-        int rc = wolfSSL_write(hc->ssl, txt_response, strlen(txt_response));
-        if (rc <= 0) {
-            /* Error – close connection */
-            wolfSSL_free(hc->ssl);
-            hc->ssl = NULL;
-            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-            hc->client_sd = 0;
-        }
+        rc = wolfSSL_write(hc->ssl, txt_response, strlen(txt_response));
     } else {
-        int rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, txt_response, strlen(txt_response), 0);
-        if (rc <= 0) {
-            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-            hc->client_sd = 0;
-        }
+        rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, txt_response, strlen(txt_response), 0);
+    }
+    if (rc <= 0) {
+        /* Error – close connection */
+        wolfSSL_free(hc->ssl);
+        hc->ssl = NULL;
+        wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+        hc->client_sd = 0;
     }
 }
 
