@@ -99,7 +99,7 @@ struct mem_link {
 };
 
 struct mem_ep {
-    struct ll *ll;
+    struct wolfIP_ll_dev *ll;
     struct mem_link *link;
     int idx;
 };
@@ -120,7 +120,7 @@ static void mem_link_init(struct mem_link *link)
     link->name[0] = link->name[1] = "";
 }
 
-static struct mem_ep *mem_ep_lookup(struct ll *ll)
+static struct mem_ep *mem_ep_lookup(struct wolfIP_ll_dev *ll)
 {
     for (size_t i = 0; i < mem_ep_count; i++) {
         if (mem_eps[i].ll == ll)
@@ -129,7 +129,7 @@ static struct mem_ep *mem_ep_lookup(struct ll *ll)
     return NULL;
 }
 
-static int mem_ll_poll(struct ll *ll, void *buf, uint32_t len)
+static int mem_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
     if (!ep)
@@ -152,7 +152,7 @@ static int mem_ll_poll(struct ll *ll, void *buf, uint32_t len)
     return ret;
 }
 
-static int mem_ll_send(struct ll *ll, void *buf, uint32_t len)
+static int mem_ll_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
     if (!ep)
@@ -173,7 +173,7 @@ static int mem_ll_send(struct ll *ll, void *buf, uint32_t len)
     return (int)len;
 }
 
-static void mem_link_attach(struct ll *ll, struct mem_link *link, int idx,
+static void mem_link_attach(struct wolfIP_ll_dev *ll, struct mem_link *link, int idx,
         const char *ifname, const uint8_t mac[6])
 {
     ll->poll = mem_ll_poll;

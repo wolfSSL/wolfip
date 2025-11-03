@@ -45,7 +45,7 @@ void print_buffer(uint8_t *buf, int len)
     printf("\n");
 }
 
-static int tap_poll(struct ll *ll, void *buf, uint32_t len)
+static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct pollfd pfd;
     (void)ll;
@@ -63,14 +63,14 @@ static int tap_poll(struct ll *ll, void *buf, uint32_t len)
     return read(tap_fd, buf, len);
 }
 
-static int tap_send(struct ll *ll, void *buf, uint32_t len)
+static int tap_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     (void)ll;
     //print_buffer(buf, len);
     return write(tap_fd, buf, len);
 }
 
-int tap_init(struct ll *ll, const char *ifname, uint32_t host_ip)
+int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
 {
     struct ifreq ifr;
     struct sockaddr_in *addr;

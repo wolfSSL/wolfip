@@ -324,7 +324,7 @@ static void *pt_echoserver(void *arg)
 /* Catch-all function to initialize a new tap device as the network interface.
  * This is defined in port/linux.c
  * */
-extern int tap_init(struct ll *dev, const char *name, uint32_t host_ip);
+extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
 /* Test cases */
 
@@ -420,7 +420,7 @@ void test_wolfip_echoclient(struct wolfIP *s)
 int main(int argc, char **argv)
 {
     struct wolfIP *s;
-    struct ll *tapdev;
+    struct wolfIP_ll_dev *tapdev;
     struct timeval tv = {0, 0};
     struct in_addr linux_ip;
     uint32_t srv_ip;

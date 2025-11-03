@@ -23,11 +23,11 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
 
 ### Device Driver Interface
 ```c
-struct ll {
+struct wolfIP_ll_dev {
     uint8_t mac[6];          // Device MAC address
     char ifname[16];         // Interface name
-    int (*poll)(struct ll *ll, void *buf, uint32_t len);  // Receive function
-    int (*send)(struct ll *ll, void *buf, uint32_t len);  // Transmit function
+    int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Receive function
+    int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Transmit function
 };
 ```
 wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` (default `1`). Call `wolfIP_getdev_ex()` to access a specific slot; the legacy `wolfIP_getdev()` helper targets the first hardware slot (index `0` normally, or `1` when the optional loopback interface is enabled).
@@ -35,7 +35,7 @@ wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` 
 ### IP Configuration
 ```c
 struct ipconf {
-    struct ll *ll;           // Link layer device
+    struct wolfIP_ll_dev *ll;           // Link layer device
     ip4 ip;                  // IPv4 address
     ip4 mask;                // Subnet mask
     ip4 gw;                  // Default gateway
@@ -198,8 +198,8 @@ void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 
 Per-interface versions of the IP configuration helpers. The legacy functions target interface `0`.
 
 ```c
-struct ll *wolfIP_getdev(struct wolfIP *s);
-struct ll *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s);
+struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
 ```
 Access the link-layer descriptor(s) that should be wired to hardware drivers. `_ex` returns `NULL` if `if_idx` exceeds `WOLFIP_MAX_INTERFACES`.
 

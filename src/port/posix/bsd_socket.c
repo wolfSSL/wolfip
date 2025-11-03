@@ -534,7 +534,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 /* Catch-all function to initialize a new tap device as the network interface.
  * This is defined in port/linux.c
  * */
-extern int tap_init(struct ll *dev, const char *name, uint32_t host_ip);
+extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
 void *wolfIP_sock_posix_ip_loop(void *arg) {
     struct wolfIP *ipstack = (struct wolfIP *)arg;
@@ -553,7 +553,7 @@ void *wolfIP_sock_posix_ip_loop(void *arg) {
 
 void __attribute__((constructor)) init_wolfip_posix() {
     struct in_addr linux_ip; 
-    struct ll *tapdev;
+    struct wolfIP_ll_dev *tapdev;
     pthread_t wolfIP_thread;
     if (IPSTACK)
         return;

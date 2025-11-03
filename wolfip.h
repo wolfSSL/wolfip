@@ -22,18 +22,18 @@ typedef uint32_t ip4;
 
 /* Device driver interface */
 /* Struct to contain a hw device description */
-struct ll {
+struct wolfIP_ll_dev {
     uint8_t mac[6];
     char ifname[16];
     /* poll function */
-    int (*poll)(struct ll *ll, void *buf, uint32_t len);
+    int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
     /* send function */
-    int (*send)(struct ll *ll, void *buf, uint32_t len);
+    int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
 };
 
 /* Struct to contain an IP device configuration */
 struct ipconf {
-    struct ll *ll;
+    struct wolfIP_ll_dev *ll;
     ip4 ip;
     ip4 mask;
     ip4 gw;
@@ -103,8 +103,8 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw);
 
-struct ll *wolfIP_getdev(struct wolfIP *s);
-struct ll *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s);
+struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
 void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
 

@@ -56,7 +56,7 @@ static const uint8_t ifmac[] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
 static uint8_t last_frame_sent[LINK_MTU];
 static uint32_t last_frame_sent_size = 0;
 
-static int mock_send(struct ll *dev, void *frame, uint32_t  len)
+static int mock_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t  len)
 {
     (void)dev;
     memcpy(last_frame_sent, frame, len);
@@ -64,7 +64,7 @@ static int mock_send(struct ll *dev, void *frame, uint32_t  len)
     return 0;
 }
 
-static int mock_poll(struct ll *dev, void *frame, uint32_t len)
+static int mock_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 {
     (void)dev;
     (void)frame;
@@ -74,7 +74,7 @@ static int mock_poll(struct ll *dev, void *frame, uint32_t len)
 
 static void mock_link_init_idx(struct wolfIP *s, unsigned int idx, const uint8_t *mac_override)
 {
-    struct ll *ll = wolfIP_getdev_ex(s, idx);
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, idx);
     ck_assert_ptr_nonnull(ll);
     memset(ll, 0, sizeof(*ll));
     snprintf((char *)ll->ifname, sizeof(ll->ifname), "mock%u", idx);
@@ -638,7 +638,7 @@ START_TEST(test_wolfip_getdev_ex_api)
 {
     struct wolfIP s;
     wolfIP_init(&s);
-    struct ll *ll_def = wolfIP_getdev(&s);
+    struct wolfIP_ll_dev *ll_def = wolfIP_getdev(&s);
     ck_assert_ptr_nonnull(ll_def);
     ck_assert_ptr_eq(ll_def, wolfIP_getdev_ex(&s, TEST_PRIMARY_IF));
 #if WOLFIP_ENABLE_LOOPBACK
@@ -652,8 +652,8 @@ END_TEST
 START_TEST(test_wolfip_loopback_defaults)
 {
     struct wolfIP s;
-    struct ll *loop;
-    struct ll *hw;
+    struct wolfIP_ll_dev *loop;
+    struct wolfIP_ll_dev *hw;
     ip4 ip = 0, mask = 0, gw = 0;
 
     wolfIP_init(&s);
@@ -942,7 +942,7 @@ START_TEST(test_eth_output_add_header) {
     memset(&eth_frame, 0, sizeof(eth_frame));
 
     uint8_t test_mac[6] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
-    struct ll *ll = wolfIP_getdev_ex(&S, TEST_PRIMARY_IF);
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(&S, TEST_PRIMARY_IF);
     memcpy(ll->mac, test_mac, 6);
 
     eth_output_add_header(&S, TEST_PRIMARY_IF, NULL, &eth_frame, ETH_TYPE_IP);

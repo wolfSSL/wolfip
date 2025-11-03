@@ -111,7 +111,7 @@ struct mem_link {
 };
 
 struct mem_ep {
-    struct ll *ll;
+    struct wolfIP_ll_dev *ll;
     struct mem_link *link;
     int idx;
 };
@@ -127,7 +127,7 @@ static void mem_link_init(struct mem_link *link)
     link->len[0] = link->len[1] = 0;
 }
 
-static struct mem_ep *mem_ep_lookup(struct ll *ll)
+static struct mem_ep *mem_ep_lookup(struct wolfIP_ll_dev *ll)
 {
     for (size_t i = 0; i < 2; i++)
         if (mem_eps[i].ll == ll)
@@ -135,7 +135,7 @@ static struct mem_ep *mem_ep_lookup(struct ll *ll)
     return NULL;
 }
 
-static int mem_ll_poll(struct ll *ll, void *buf, uint32_t len)
+static int mem_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
     if (!ep)
@@ -158,7 +158,7 @@ static int mem_ll_poll(struct ll *ll, void *buf, uint32_t len)
     return ret;
 }
 
-static int mem_ll_send(struct ll *ll, void *buf, uint32_t len)
+static int mem_ll_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
     if (!ep)
@@ -179,7 +179,7 @@ static int mem_ll_send(struct ll *ll, void *buf, uint32_t len)
     return (int)len;
 }
 
-static void mem_attach(struct ll *ll, struct mem_link *link, int idx, const uint8_t *mac)
+static void mem_attach(struct wolfIP_ll_dev *ll, struct mem_link *link, int idx, const uint8_t *mac)
 {
     ll->poll = mem_ll_poll;
     ll->send = mem_ll_send;
@@ -261,14 +261,14 @@ static void build_ttl_frame(uint8_t *frame, const uint8_t *src_mac, const uint8_
     icmp->csum = ones_csum(icmp, sizeof(*icmp));
 }
 
-static int dummy_send(struct ll *ll, void *buf, uint32_t len)
+static int dummy_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     (void)ll;
     (void)buf;
     return (int)len;
 }
 
-static int dummy_poll(struct ll *ll, void *buf, uint32_t len)
+static int dummy_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     (void)ll;
     (void)buf;
@@ -295,8 +295,8 @@ int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     struct wolfIP *router;
-    struct ll *iface0;
-    struct ll *iface1;
+    struct wolfIP_ll_dev *iface0;
+    struct wolfIP_ll_dev *iface1;
     struct mem_link link;
     pthread_t th;
     uint8_t host_mac[6] = {0x02,0x00,0x00,0x00,0xAA,0x01};
