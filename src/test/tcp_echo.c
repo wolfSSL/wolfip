@@ -63,6 +63,7 @@ int main() {
     printf("Echo server listening on port %d\n", PORT);
 
     while (1) {
+        ssize_t bytes_read;
         // Accept a client connection
         if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
             perror("Accept failed");
@@ -71,7 +72,6 @@ int main() {
 
         printf("Client connected, fd: %d\n", client_fd);
 
-        ssize_t bytes_read;
         while ((bytes_read = read(client_fd, buffer, BUFFER_SIZE)) > 0) {
             write(client_fd, buffer, bytes_read); // Echo data back to the client
         }

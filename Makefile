@@ -1,6 +1,6 @@
 CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
-CFLAGS+=-g -ggdb
+CFLAGS+=-g -ggdb -Wdeclaration-after-statement
 LDFLAGS+=-pthread
 
 CPPCHECK=cppcheck

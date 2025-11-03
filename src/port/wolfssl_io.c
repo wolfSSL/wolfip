@@ -24,7 +24,14 @@
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-#define MAX_WOLFIP_CTX 8
+#ifndef EAGAIN
+#define EAGAIN (11)
+#endif
+
+
+#ifndef MAX_WOLFIP_CTX
+    #define MAX_WOLFIP_CTX 8 /* Default value */
+#endif
 
 struct ctx_entry {
     WOLFSSL_CTX *ctx;
@@ -62,13 +69,14 @@ static void wolfIP_register_stack(WOLFSSL_CTX *ctx, struct wolfIP *stack)
 static int wolfIP_io_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
 {
     struct wolfip_io_desc *desc = (struct wolfip_io_desc *)ctx;
+    int ret;
     (void)ssl;
 
     if (!desc || !desc->stack)
         return WOLFSSL_CBIO_ERR_GENERAL;
 
-    int ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, sz, 0);
-    if (ret == -11 || ret == -1)
+    ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, sz, 0);
+    if (ret == -EAGAIN || ret == -1)
         return WOLFSSL_CBIO_ERR_WANT_READ;
     if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
@@ -78,13 +86,14 @@ static int wolfIP_io_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
 static int wolfIP_io_send(WOLFSSL* ssl, char* buf, int sz, void* ctx)
 {
     struct wolfip_io_desc *desc = (struct wolfip_io_desc *)ctx;
+    int ret;
     (void)ssl;
 
     if (!desc || !desc->stack)
         return WOLFSSL_CBIO_ERR_GENERAL;
 
-    int ret = wolfIP_sock_send(desc->stack, desc->fd, buf, sz, 0);
-    if (ret == -11 || ret == -1)
+    ret = wolfIP_sock_send(desc->stack, desc->fd, buf, sz, 0);
+    if (ret == -EAGAIN || ret == -1)
         return WOLFSSL_CBIO_ERR_WANT_WRITE;
     if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
@@ -101,8 +110,20 @@ int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX* ctx, struct wolfIP *s)
 
 int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd)
 {
-    WOLFSSL_CTX *ctx = wolfSSL_get_SSL_CTX(ssl);
-    struct wolfIP *stack = wolfIP_lookup_stack(ctx);
+    WOLFSSL_CTX *ctx;
+    struct wolfIP *stack;
+
+    if (!ssl)
+        return -1;
+    
+    ctx = wolfSSL_get_SSL_CTX(ssl);
+
+    if (!ctx)
+        return -1;
+
+    stack = wolfIP_lookup_stack(ctx);
+    if (fd < 0)
+        return -1;
 
     if (!stack)
         return WOLFSSL_CBIO_ERR_GENERAL;
@@ -116,6 +137,5 @@ int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd)
             return 0;
         }
     }
-
     return -1;
 }

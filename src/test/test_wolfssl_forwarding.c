@@ -132,11 +132,14 @@ static struct mem_ep *mem_ep_lookup(struct wolfIP_ll_dev *ll)
 static int mem_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
+    struct mem_link *link;
+    int idx;
+    int ret = 0;
+
     if (!ep)
         return -1;
-    struct mem_link *link = ep->link;
-    int idx = ep->idx;
-    int ret = 0;
+    link = ep->link;
+    idx = ep->idx;
 
     pthread_mutex_lock(&link->lock);
     if (link->ready[idx]) {
@@ -155,10 +158,13 @@ static int mem_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 static int mem_ll_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
+    struct mem_link *link;
+    int dst;
+
     if (!ep)
         return -1;
-    struct mem_link *link = ep->link;
-    int dst = 1 - ep->idx;
+    link = ep->link;
+    dst = 1 - ep->idx;
 
     pthread_mutex_lock(&link->lock);
     while (link->ready[dst])
@@ -333,12 +339,10 @@ static volatile enum client_state client_state = CLIENT_STATE_IDLE;
 static void client_cb(int fd, uint16_t events, void *arg)
 {
     struct wolfIP *cli = (struct wolfIP *)arg;
-    (void)cli;
+    int progress = 1;
 
     if (fd != client_fd || client_ssl == NULL)
         return;
-
-    int progress = 1;
 
     while (progress) {
         progress = 0;
@@ -499,16 +503,16 @@ static void *poll_thread(void *arg)
 
 int main(void)
 {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    /* MAC addresses */
     static const uint8_t mac_client[6] = {0x02, 0x00, 0x00, 0x00, 0x01, 0x10};
     static const uint8_t mac_router0[6] = {0x02, 0x00, 0x00, 0x00, 0x01, 0xFE};
     static const uint8_t mac_router1[6] = {0x02, 0x00, 0x00, 0x00, 0x02, 0xFE};
     static const uint8_t mac_server[6] = {0x02, 0x00, 0x00, 0x00, 0x02, 0x10};
-
     struct mem_link link_client_router;
     struct mem_link link_router_server;
     int ret = 0;
+    size_t stack_sz;
+
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     mem_link_init(&link_client_router);
     mem_link_init(&link_router_server);
@@ -517,7 +521,7 @@ int main(void)
     wolfSSL_Debugging_OFF();
 
     /* Initialise stacks */
-    size_t stack_sz = wolfIP_instance_size();
+    stack_sz = wolfIP_instance_size();
     client_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     router_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     server_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);

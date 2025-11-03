@@ -153,10 +153,10 @@ int wolfIP_sock_fcntl(struct wolfIP *ipstack, int fd, int cmd, int arg) {
 int fcntl(int fd, int cmd, ...) {
     va_list ap;
     int arg;
+    int ret;
     va_start(ap, cmd);
     arg = va_arg(ap, int);
     va_end(ap);
-    int ret;
     if (in_the_stack) {
         return host_fcntl(fd, cmd, arg);
     } else {

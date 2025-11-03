@@ -138,11 +138,14 @@ static struct mem_ep *mem_ep_lookup(struct wolfIP_ll_dev *ll)
 static int mem_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
+    struct mem_link *link;
+    int idx;
+    int ret = 0;
+
     if (!ep)
         return -1;
-    struct mem_link *link = ep->link;
-    int idx = ep->idx;
-    int ret = 0;
+    link = ep->link;
+    idx = ep->idx;
 
     pthread_mutex_lock(&link->lock);
     if (link->ready[idx]) {
@@ -161,10 +164,13 @@ static int mem_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 static int mem_ll_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct mem_ep *ep = mem_ep_lookup(ll);
+    struct mem_link *link;
+    int dst;
+
     if (!ep)
         return -1;
-    struct mem_link *link = ep->link;
-    int dst = 1 - ep->idx;
+    link = ep->link;
+    dst = 1 - ep->idx;
 
     pthread_mutex_lock(&link->lock);
     while (link->ready[dst])
@@ -283,8 +289,10 @@ static void *poll_thread(void *arg)
     struct wolfIP *s = (struct wolfIP *)arg;
     while (running) {
         struct timespec ts;
+        uint64_t now;
+
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        uint64_t now = (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+        now = (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
         wolfIP_poll(s, now);
         usleep(1000);
     }
@@ -293,7 +301,6 @@ static void *poll_thread(void *arg)
 
 int main(void)
 {
-    setvbuf(stdout, NULL, _IONBF, 0);
     struct wolfIP *router;
     struct wolfIP_ll_dev *iface0;
     struct wolfIP_ll_dev *iface1;
@@ -304,6 +311,9 @@ int main(void)
     uint8_t router1_mac[6] = {0x02,0x00,0x00,0x00,0xCC,0x01};
     uint8_t frame[LINK_MTU];
     int rc = EXIT_FAILURE;
+    int n;
+
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     mem_link_init(&link);
     wolfIP_init_static(&router);
@@ -333,7 +343,7 @@ int main(void)
     build_ttl_frame(frame, host_mac, router0_mac, HOST_IP, DEST_IP);
     mem_host_send(&link, frame, sizeof(struct eth_hdr) + sizeof(struct ipv4_hdr) + sizeof(struct icmp_echo));
 
-    int n = mem_host_recv(&link, frame, sizeof(frame), 1000);
+    n = mem_host_recv(&link, frame, sizeof(frame), 1000);
     if (n > 0) {
         struct eth_hdr *eth = (struct eth_hdr *)frame;
         struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + sizeof(*eth));

@@ -48,8 +48,8 @@ void print_buffer(uint8_t *buf, int len)
 static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct pollfd pfd;
-    (void)ll;
     int ret;
+    (void)ll;
     pfd.fd = tap_fd;
     pfd.events = POLLIN;
     ret = poll(&pfd, 1, 2);

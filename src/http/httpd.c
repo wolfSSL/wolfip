@@ -21,6 +21,7 @@
 #include "wolfip.h"
 #include "httpd.h"
 #include <ctype.h>
+#include <string.h>
 
 static const char *http_status_text(int status_code) {
     switch (status_code) {
@@ -187,7 +188,6 @@ void http_send_response_chunk_end(struct http_client *hc) {
             hc->ssl = NULL;
             wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
             hc->client_sd = 0;
-            return;
         }
     } else {
         if (wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0) <= 0) {
@@ -217,27 +217,47 @@ void http_send_418_teapot(struct http_client *hc) {
             http_status_text(HTTP_STATUS_TEAPOT), "text/plain", 0);
 }
 
-int http_url_decode(char *buf, size_t len) {
+static int http_hex_value(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    c = (char)tolower((unsigned char)c);
+    if (c >= 'a' && c <= 'f')
+        return 10 + (c - 'a');
+    return -1;
+}
+
+int http_url_decode(char *buf, size_t len)
+{
     char *p = buf;
-    char *q;
-    while (p < buf + len) {
-        q = strchr(p, '%');
-        if (!q) {
+    char *end = buf + len;
+    int hi;
+    int lo;
+    size_t tail;
+
+    while (p < end) {
+        char *percent = memchr(p, '%', (size_t)(end - p));
+        if (!percent)
             break;
-        }
-        /* Ensure we have two more hex digits */
-        if (q + 2 >= buf + len) {
-            break; /* Malformed escape */
-        }
-        /* Validate hex characters before conversion */
-        if (!isxdigit((unsigned char)q[1]) || !isxdigit((unsigned char)q[2])) {
-            break;
-        }
-        *q = (char) strtol(q + 1, NULL, 16);
-        memmove(q + 1, q + 3, len - (q + 3 - buf));
+
+        if (percent + 2 >= end)
+            return HTTP_URL_DECODE_ERR_TRUNCATED;
+
+        hi = http_hex_value(percent[1]);
+        lo = http_hex_value(percent[2]);
+        if (hi < 0 || lo < 0)
+            return HTTP_URL_DECODE_ERR_BAD_ESCAPE;
+
+        *percent = (char)((hi << 4) | lo);
+
+        tail = (size_t)(end - (percent + 3));
+        memmove(percent + 1, percent + 3, tail);
+        end -= 2;
         len -= 2;
+        p = percent + 1;
     }
-    return len;
+
+    return (int)len;
 }
 
 int http_url_encode(char *buf, size_t len, size_t max_len) {
@@ -258,8 +278,11 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
         *(q + 2) = '0';
         len += 2;
     }
-    if (q && (len < max_len))
+    if (q) {
+        if (len >= max_len)
+            return -1; /* No space for the null terminator */
         q[len] = '\0';
+    }
     return len;
 }
 
@@ -269,10 +292,18 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     char *q;
     size_t n;
     int ret;
+    int decoded_len;
     struct http_request req;
     struct http_url *url = NULL;
     memset(&req, 0, sizeof(struct http_request));
-    http_url_decode(p, len); /* Decode can be done in place */ 
+    decoded_len = http_url_decode(p, len); /* Decode can be done in place */
+    if (decoded_len < 0) {
+        http_send_response_headers(hc, HTTP_STATUS_BAD_REQUEST,
+                http_status_text(HTTP_STATUS_BAD_REQUEST), "text/plain", 0);
+        return decoded_len;
+    }
+    len = (size_t)decoded_len;
+    end = p + len;
     if (len < 4)
         goto bad_request;
     /* Parse the request line */
