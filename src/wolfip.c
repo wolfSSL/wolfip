@@ -1546,11 +1546,14 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     struct tsocket *ts;
     const struct wolfIP_sockaddr_in *sin;
     unsigned int if_idx;
-    if (!addr)
+    if ((!addr)|| (sockfd < 0))
         return -WOLFIP_EINVAL;
     sin = (const struct wolfIP_sockaddr_in *)addr;
     if (sockfd & MARK_UDP_SOCKET) {
         struct ipconf *conf;
+        if ((sockfd & ~MARK_UDP_SOCKET) >= MAX_UDPSOCKETS)
+            return -WOLFIP_EINVAL;
+
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         ts->dst_port = ee16(sin->sin_port);
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
@@ -1566,8 +1569,12 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         }
         return 0;
     }
+
     if ((sockfd & MARK_TCP_SOCKET) == 0)
-        return -1;
+        return -WOLFIP_EINVAL;
+    if ((sockfd & ~MARK_TCP_SOCKET)>= MAX_TCPSOCKETS)
+        return -WOLFIP_EINVAL;
+
     ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
     if (ts->sock.tcp.state == TCP_ESTABLISHED)
         return 0;
@@ -1671,9 +1678,13 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
     if (sockfd & MARK_TCP_SOCKET) {
         size_t sent = 0;
         struct tcp_opt_ts *tsopt = (struct tcp_opt_ts *)tcp->data;
+        if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
+
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
         if (ts->sock.tcp.state != TCP_ESTABLISHED)
             return -1;
+
         while (sent < len) {
             uint32_t payload_len = len - sent;
             if (payload_len > (TCP_MSS - TCP_OPTIONS_LEN))
@@ -1710,6 +1721,9 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)dest_addr;
         unsigned int if_idx;
         struct ipconf *conf;
+        if ((sockfd & ~MARK_UDP_SOCKET) >= MAX_UDPSOCKETS)
+            return -WOLFIP_EINVAL;
+
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         if ((ts->dst_port == 0) && (dest_addr == NULL))
             return -1;
