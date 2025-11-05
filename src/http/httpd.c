@@ -410,7 +410,7 @@ static void http_recv_cb(int sd, uint16_t event, void *arg) {
         }
     } else {
         ret = wolfIP_sock_recv(hc->httpd->ipstack, sd, buf, sizeof(buf), 0);
-        if (ret == -11)
+        if (ret == -WOLFIP_EAGAIN)
             return;
     }
     if (ret <= 0)

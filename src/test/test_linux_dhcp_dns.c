@@ -75,7 +75,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
     while ((total_r < total_w) && (event & CB_EVENT_READABLE)) {
         ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
         if (ret < 0){
-            if (ret != -11) {
+            if (ret != -EAGAIN) {
                 printf("Client read: %d\n", ret);
             }
             return;

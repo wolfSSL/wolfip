@@ -101,10 +101,10 @@ static int (*host_fcntl) (int fd, int cmd, ...);
             int __wolfip_retval; \
             do { \
                 __wolfip_retval = wolfIP_sock_##call(IPSTACK, fd, ## __VA_ARGS__); \
-                if (__wolfip_retval == -11) { \
+                if (__wolfip_retval == -EAGAIN) { \
                     usleep(1000); \
                 } \
-            } while (__wolfip_retval == -11); \
+            } while (__wolfip_retval == -EAGAIN); \
             if (__wolfip_retval < 0) { \
                 errno = __wolfip_retval; \
                 pthread_mutex_unlock(&wolfIP_mutex); \
