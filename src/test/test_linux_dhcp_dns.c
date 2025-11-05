@@ -75,7 +75,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
     while ((total_r < total_w) && (event & CB_EVENT_READABLE)) {
         ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
         if (ret < 0){
-            if (ret != -11) {
+            if (ret != -EAGAIN) {
                 printf("Client read: %d\n", ret);
             }
             return;
@@ -192,7 +192,7 @@ static void *pt_echoserver(void *arg)
 /* Catch-all function to initialize a new tap device as the network interface.
  * This is defined in port/linux.c
  * */
-extern int tap_init(struct ll *dev, const char *name, uint32_t host_ip);
+extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
 void test_wolfip_echoclient(struct wolfIP *s)
 {
@@ -237,7 +237,7 @@ void ns_cb(uint32_t ip)
 int main(int argc, char **argv)
 {
     struct wolfIP *s;
-    struct ll *tapdev;
+    struct wolfIP_ll_dev *tapdev;
     struct timeval tv;
     struct in_addr linux_ip;
     uint32_t srv_ip;

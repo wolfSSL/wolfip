@@ -78,6 +78,11 @@ void http_send_500_server_error(struct http_client *hc);
 void http_send_503_service_unavailable(struct http_client *hc);
 void http_send_418_teapot(struct http_client *hc);
 
+/* URL decoding return codes */
+#define HTTP_URL_DECODE_ERR_TRUNCATED  (-1)
+#define HTTP_URL_DECODE_ERR_BAD_ESCAPE (-2)
+
+/* Returns the decoded length on success, or negative error code on failure. */
 int http_url_decode(char *buf, size_t len);
 int http_url_encode(char *buf, size_t len, size_t max_len);
 

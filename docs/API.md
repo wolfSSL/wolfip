@@ -23,23 +23,32 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
 
 ### Device Driver Interface
 ```c
-struct ll {
+struct wolfIP_ll_dev {
     uint8_t mac[6];          // Device MAC address
     char ifname[16];         // Interface name
-    int (*poll)(struct ll *ll, void *buf, uint32_t len);  // Receive function
-    int (*send)(struct ll *ll, void *buf, uint32_t len);  // Transmit function
+    int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Receive function
+    int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Transmit function
 };
 ```
+wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` (default `1`). Call `wolfIP_getdev_ex()` to access a specific slot; the legacy `wolfIP_getdev()` helper targets the first hardware slot (index `0` normally, or `1` when the optional loopback interface is enabled).
 
 ### IP Configuration
 ```c
 struct ipconf {
-    struct ll *ll;           // Link layer device
+    struct wolfIP_ll_dev *ll;           // Link layer device
     ip4 ip;                  // IPv4 address
     ip4 mask;                // Subnet mask
     ip4 gw;                  // Default gateway
 };
 ```
+Each `struct wolfIP` instance owns `WOLFIP_MAX_INTERFACES` `ipconf` entries—one per link-layer slot. Use the `_ex` helpers to read or update a specific interface; the legacy accessors operate on the first hardware interface (index `0` unless loopback support is compiled in).
+
+If `WOLFIP_ENABLE_FORWARDING` is set to `1` at compile time, the stack performs simple IPv4 forwarding between interfaces. Packets received on one interface whose destinations match another configured interface are re-sent with the IP TTL decreased by one (or an ICMP TTL-exceeded response if the TTL would drop to zero).
+
+Enabling `WOLFIP_ENABLE_LOOPBACK` (requires `WOLFIP_MAX_INTERFACES > 1`) creates an internal loopback
+device at index `0` with the fixed address `127.0.0.1/8`. Traffic sent to that address is reflected back
+through the stack so local sockets, pings, and other services behave as they would on a standard
+loopback interface; the first hardware interface then shifts to index `1` for legacy helpers.
 
 ### Socket Address Structures
 ```c
@@ -152,6 +161,11 @@ Initializes a static wolfIP instance.
   - s: Pointer to wolfIP instance pointer
 
 ```c
+size_t wolfIP_instance_size(void);
+```
+Returns the size (in bytes) required to store a `struct wolfIP`. Use this when allocating stacks from custom memory managers.
+
+```c
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
 ```
 Processes pending network events.
@@ -159,6 +173,12 @@ Processes pending network events.
   - s: wolfIP instance
   - now: Current timestamp
 - Returns: Number of events processed
+
+```c
+void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
+void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
+```
+Pass inbound frames to the stack. `_ex` allows the caller to specify which interface slot produced the frame.
 
 ```c
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
@@ -170,6 +190,18 @@ Set/get IP configuration.
   - ip: IPv4 address
   - mask: Subnet mask
   - gw: Default gateway
+
+```c
+void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
+void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
+```
+Per-interface versions of the IP configuration helpers. The legacy functions target interface `0`.
+
+```c
+struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s);
+struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+```
+Access the link-layer descriptor(s) that should be wired to hardware drivers. `_ex` returns `NULL` if `if_idx` exceeds `WOLFIP_MAX_INTERFACES`.
 
 ## DHCP Client Functions
 

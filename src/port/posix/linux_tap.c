@@ -45,11 +45,11 @@ void print_buffer(uint8_t *buf, int len)
     printf("\n");
 }
 
-static int tap_poll(struct ll *ll, void *buf, uint32_t len)
+static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct pollfd pfd;
-    (void)ll;
     int ret;
+    (void)ll;
     pfd.fd = tap_fd;
     pfd.events = POLLIN;
     ret = poll(&pfd, 1, 2);
@@ -63,14 +63,14 @@ static int tap_poll(struct ll *ll, void *buf, uint32_t len)
     return read(tap_fd, buf, len);
 }
 
-static int tap_send(struct ll *ll, void *buf, uint32_t len)
+static int tap_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     (void)ll;
     //print_buffer(buf, len);
     return write(tap_fd, buf, len);
 }
 
-int tap_init(struct ll *ll, const char *ifname, uint32_t host_ip)
+int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
 {
     struct ifreq ifr;
     struct sockaddr_in *addr;
@@ -83,6 +83,7 @@ int tap_init(struct ll *ll, const char *ifname, uint32_t host_ip)
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ-1] = '\0';
     if (ioctl(tap_fd, TUNSETIFF, (void *)&ifr) < 0) {
         perror("ioctl TUNSETIFF");
         close(tap_fd);

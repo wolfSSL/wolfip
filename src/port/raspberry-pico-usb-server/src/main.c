@@ -77,7 +77,7 @@ uint32_t wolfIP_getrandom(void)
  * It is called by the wolfIP stack when a frame is ready to be sent.
  * It will return the number of bytes sent, or 0 if the USB host is not ready.
  */
-static int ll_usb_send(struct ll *dev, void *frame, uint32_t sz) {
+static int ll_usb_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t sz) {
     uint16_t sz16 = (uint16_t)sz;
     uint32_t i;
     (void) dev;
@@ -152,7 +152,7 @@ bool tud_network_recv_cb(const uint8_t *src, uint16_t size) {
  *
  * Frames copied in tusb_net_push_rx are processed here and sent to the stack.
  */
-int  ll_usb_poll(struct ll *dev, void *frame, uint32_t sz) {
+int  ll_usb_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t sz) {
     int i;
     (void) dev;
     if (sz < 64)
@@ -213,7 +213,7 @@ static void telnetd_init(void)
 
 int main(void)
 {
-    struct ll *tusb_netdev;
+    struct wolfIP_ll_dev *tusb_netdev;
     /* initialize TinyUSB */
     board_init();
 

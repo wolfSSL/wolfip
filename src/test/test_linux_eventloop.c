@@ -58,7 +58,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
         }
     } else if ((fd == client_fd) && (event & CB_EVENT_READABLE  )) {
         ret = wolfIP_sock_recvfrom((struct wolfIP *)arg, client_fd, buf, sizeof(buf), 0, NULL, NULL);
-        if (ret != -11) {
+        if (ret != -EAGAIN) {
             if (ret < 0) {
                 printf("Recv error: %d\n", ret);
                 wolfIP_sock_close((struct wolfIP *)arg, client_fd);
@@ -83,7 +83,7 @@ static void server_cb(int fd, uint16_t event, void *arg)
         }
         if ((!closed) && (tot_sent < tot_recv)) {
             snd_ret = wolfIP_sock_sendto((struct wolfIP *)arg, client_fd, buf + tot_sent, tot_recv - tot_sent, 0, NULL, 0);
-            if (snd_ret != -11) {
+            if (snd_ret != -EAGAIN) {
                 if (snd_ret < 0) {
                     printf("Send error: %d\n", snd_ret);
                     wolfIP_sock_close((struct wolfIP *)arg, client_fd);
@@ -141,7 +141,7 @@ static void client_cb(int fd, uint16_t event, void *arg)
     while ((total_r < total_w) && (event & CB_EVENT_READABLE)) {
         ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
         if (ret < 0){
-            if (ret != -11) {
+            if (ret != -EAGAIN) {
                 printf("Client read: %d\n", ret);
             }
             return;
@@ -324,7 +324,7 @@ static void *pt_echoserver(void *arg)
 /* Catch-all function to initialize a new tap device as the network interface.
  * This is defined in port/linux.c
  * */
-extern int tap_init(struct ll *dev, const char *name, uint32_t host_ip);
+extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
 /* Test cases */
 
@@ -420,7 +420,7 @@ void test_wolfip_echoclient(struct wolfIP *s)
 int main(int argc, char **argv)
 {
     struct wolfIP *s;
-    struct ll *tapdev;
+    struct wolfIP_ll_dev *tapdev;
     struct timeval tv = {0, 0};
     struct in_addr linux_ip;
     uint32_t srv_ip;

@@ -12,6 +12,13 @@ typedef uint32_t ip4;
 #define ee32(x) __builtin_bswap32(x)
 #define DEBUG
 
+#ifndef WOLFIP_EINVAL
+#define WOLFIP_EINVAL (22)
+#endif
+#ifndef WOLFIP_EAGAIN
+#define WOLFIP_EAGAIN (11)
+#endif
+
 
 #ifdef DEBUG
 #include <stdio.h>
@@ -21,19 +28,20 @@ typedef uint32_t ip4;
 #endif
 
 /* Device driver interface */
-/* Struct to contain a hw device description */
-struct ll {
+/* Struct to contain link-layer (ll) device description
+ */
+struct wolfIP_ll_dev {
     uint8_t mac[6];
     char ifname[16];
     /* poll function */
-    int (*poll)(struct ll *ll, void *buf, uint32_t len);
+    int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
     /* send function */
-    int (*send)(struct ll *ll, void *buf, uint32_t len);
+    int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
 };
 
 /* Struct to contain an IP device configuration */
 struct ipconf {
-    struct ll *ll;
+    struct wolfIP_ll_dev *ll;
     ip4 ip;
     ip4 mask;
     ip4 gw;
@@ -42,9 +50,22 @@ struct ipconf {
 /* Socket interface */
 #define MARK_TCP_SOCKET 0x100 /* Mark a socket as TCP */
 #define MARK_UDP_SOCKET 0x200 /* Mark a socket as UDP */
+
+
+/* Compile-time sanity check for socket marks & number of sockets */
 #if (MARK_TCP_SOCKET >= MARK_UDP_SOCKET)
 #error "MARK_TCP_SOCKET must be less than MARK_UDP_SOCKET"
 #endif
+
+#if MAX_TCPSOCKETS > 255
+#error "MAX_TCPSOCKETS must be less than 256"
+#endif
+
+#if MAX_UDPSOCKETS > 255
+#error "MAX_UDPSOCKETS must be less than 256"
+#endif
+
+
 
 
 #ifndef WOLF_POSIX
@@ -96,12 +117,17 @@ int nslookup(struct wolfIP *s, const char *name, uint16_t *id, void (*lookup_cb)
 /* IP stack interface */
 void wolfIP_init(struct wolfIP *s);
 void wolfIP_init_static(struct wolfIP **s);
+size_t wolfIP_instance_size(void);
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
+void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw);
 
-struct ll *wolfIP_getdev(struct wolfIP *s);
+struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s);
+struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
+void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
 
 /* Callback flags */
 #define CB_EVENT_READABLE 0x01 /* Accepted connection or data available */
@@ -160,9 +186,8 @@ static inline void iptoa(ip4 ip, char *buf)
 #endif
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
-/* Defined in wolfssl_io.c */
-int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
+int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd);
+int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 #endif
 
 #endif

@@ -1,5 +1,4 @@
-Name: Linux interop tests
-
+name: Linux interop tests
 
 on:
   push:
@@ -8,17 +7,18 @@ on:
     branches: [ '*' ]
 
 jobs:
-  unit_test:
-    runs-on: ubuntu-22.04
+  linux_test:
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
 
       - name: Update repo
         run: |
           sudo apt-get update
+          sudo apt-get install -y libwolfssl-dev
           sudo modprobe tun
 
       - name: Build linux tests
@@ -26,8 +26,21 @@ jobs:
           mkdir -p build/port
           make
 
-#      - name: Run interop tests
-#        run: |
-#          sudo build/test
-#
-#
+      - name: Run standalone "event loop" test
+        run: |
+          sudo ./build/test-evloop
+          sudo killall tcpdump || true
+
+      - name: Run standalone wolfssl test
+        run: |
+          sudo ./build/test-wolfssl
+          sudo killall tcpdump || true
+
+      - name: Run standalone forwarding test
+        run: |
+          sudo ./build/test-wolfssl-forwarding
+
+      - name: Run standalone TTL expired test
+        run: |
+          ./build/test-ttl-expired
+

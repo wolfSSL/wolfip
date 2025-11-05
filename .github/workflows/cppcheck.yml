@@ -1,5 +1,4 @@
-Name: CppCheck code linter
-
+name: CppCheck code linter
 
 on:
   push:
@@ -9,16 +8,17 @@ on:
 
 jobs:
   linter:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
 
       - name: Update repo
         run: |
           sudo apt-get update
+          sudo apt install -y cppcheck
 
       - name: Run cppcheck
         run: |

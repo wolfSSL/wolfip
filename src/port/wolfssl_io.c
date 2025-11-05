@@ -1,6 +1,5 @@
 /* wolfssl_io.c
- *
- * Copyright (C) 2024 wolfSSL Inc.
+ * Copyright (C) 2025 wolfSSL Inc.
  *
  * This file is part of wolfIP TCP/IP stack.
  *
@@ -17,55 +16,122 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ *
+ * wolfIP <-> wolfSSL glue for custom IO callbacks.
  */
 #include "wolfip.h"
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/memory.h>
 
-static struct wolfIP *ref_ipstack = NULL; 
+
+#ifndef MAX_WOLFIP_CTX
+    #define MAX_WOLFIP_CTX 8 /* Default value */
+#endif
+
+struct ctx_entry {
+    WOLFSSL_CTX *ctx;
+    struct wolfIP *stack;
+};
+
+struct wolfip_io_desc {
+    int fd;
+    struct wolfIP *stack;
+};
+
+static struct ctx_entry ctx_map[MAX_WOLFIP_CTX];
+static struct wolfip_io_desc io_descs[MAX_WOLFIP_CTX];
+
+static struct wolfIP *wolfIP_lookup_stack(WOLFSSL_CTX *ctx)
+{
+    for (int i = 0; i < MAX_WOLFIP_CTX; i++) {
+        if (ctx_map[i].ctx == ctx)
+            return ctx_map[i].stack;
+    }
+    return NULL;
+}
+
+static void wolfIP_register_stack(WOLFSSL_CTX *ctx, struct wolfIP *stack)
+{
+    for (int i = 0; i < MAX_WOLFIP_CTX; i++) {
+        if (ctx_map[i].ctx == ctx || ctx_map[i].ctx == NULL) {
+            ctx_map[i].ctx = ctx;
+            ctx_map[i].stack = stack;
+            return;
+        }
+    }
+}
 
 static int wolfIP_io_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
 {
-    int ret = 0;
-    int fd = (intptr_t)ctx;
+    struct wolfip_io_desc *desc = (struct wolfip_io_desc *)ctx;
+    int ret;
     (void)ssl;
-    if (!ref_ipstack)
-        return -1;
-    ret = wolfIP_sock_recv(ref_ipstack, fd, buf, sz, 0);
-    if (ret == -11)
+
+    if (!desc || !desc->stack)
+        return WOLFSSL_CBIO_ERR_GENERAL;
+
+    ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, sz, 0);
+    if (ret == -WOLFIP_EAGAIN || ret == -1)
         return WOLFSSL_CBIO_ERR_WANT_READ;
-    else if (ret <= 0)
+    if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
     return ret;
 }
 
 static int wolfIP_io_send(WOLFSSL* ssl, char* buf, int sz, void* ctx)
 {
-    int ret = 0;
-    int fd = (intptr_t)ctx;
+    struct wolfip_io_desc *desc = (struct wolfip_io_desc *)ctx;
+    int ret;
     (void)ssl;
-    if (!ref_ipstack)
-        return -1;
-    ret = wolfIP_sock_send(ref_ipstack, fd, buf, sz, 0);
-    if (ret == -11)
+
+    if (!desc || !desc->stack)
+        return WOLFSSL_CBIO_ERR_GENERAL;
+
+    ret = wolfIP_sock_send(desc->stack, desc->fd, buf, sz, 0);
+    if (ret == -WOLFIP_EAGAIN || ret == -1)
         return WOLFSSL_CBIO_ERR_WANT_WRITE;
-    else if (ret <= 0)
+    if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
     return ret;
 }
 
-int wolfSSL_SetIO_FT_CTX(WOLFSSL_CTX* ctx, struct wolfIP *s)
+int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX* ctx, struct wolfIP *s)
 {
     wolfSSL_SetIORecv(ctx, wolfIP_io_recv);
     wolfSSL_SetIOSend(ctx, wolfIP_io_send);
-    ref_ipstack = s;
+    wolfIP_register_stack(ctx, s);
     return 0;
 }
 
-int wolfSSL_SetIO_FT(WOLFSSL* ssl, int fd)
+int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd)
 {
-    wolfSSL_SetIOReadCtx(ssl, (void*)(intptr_t)fd);
-    wolfSSL_SetIOWriteCtx(ssl, (void*)(intptr_t)fd);
-    return 0;
-}
+    WOLFSSL_CTX *ctx;
+    struct wolfIP *stack;
 
+    if (!ssl)
+        return -1;
+    
+    ctx = wolfSSL_get_SSL_CTX(ssl);
+
+    if (!ctx)
+        return -1;
+
+    stack = wolfIP_lookup_stack(ctx);
+    if (fd < 0)
+        return -1;
+
+    if (!stack)
+        return WOLFSSL_CBIO_ERR_GENERAL;
+
+    for (int i = 0; i < MAX_WOLFIP_CTX; i++) {
+        if (io_descs[i].stack == NULL) {
+            io_descs[i].fd = fd;
+            io_descs[i].stack = stack;
+            wolfSSL_SetIOReadCtx(ssl, &io_descs[i]);
+            wolfSSL_SetIOWriteCtx(ssl, &io_descs[i]);
+            return 0;
+        }
+    }
+    return -1;
+}
