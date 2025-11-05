@@ -12,6 +12,13 @@ typedef uint32_t ip4;
 #define ee32(x) __builtin_bswap32(x)
 #define DEBUG
 
+#ifndef WOLFIP_EINVAL
+#define WOLFIP_EINVAL (22)
+#endif
+#ifndef WOLFIP_EAGAIN
+#define WOLFIP_EAGAIN (11)
+#endif
+
 
 #ifdef DEBUG
 #include <stdio.h>

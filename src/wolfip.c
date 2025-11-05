@@ -335,7 +335,7 @@ static int queue_pop(struct queue *q, void *data, uint32_t len)
 {
     uint32_t q_len = queue_len(q);
     if (q_len == 0)
-        return -11;
+        return -WOLFIP_EAGAIN;
     if (len > q_len)
         len = q_len;
     memcpy(data, (const uint8_t *)q->data + q->tail, len);
@@ -1547,7 +1547,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     const struct wolfIP_sockaddr_in *sin;
     unsigned int if_idx;
     if (!addr)
-        return -2;
+        return -WOLFIP_EINVAL;
     sin = (const struct wolfIP_sockaddr_in *)addr;
     if (sockfd & MARK_UDP_SOCKET) {
         struct ipconf *conf;
@@ -1572,9 +1572,9 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     if (ts->sock.tcp.state == TCP_ESTABLISHED)
         return 0;
     if (ts->sock.tcp.state == TCP_SYN_SENT)
-        return -11; /* Call again */
+        return -WOLFIP_EAGAIN; /* Call again */
     if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
-        return -2;
+        return -WOLFIP_EINVAL;
     if (ts->sock.tcp.state == TCP_CLOSED) {
         struct ipconf *conf;
         ts->sock.tcp.state = TCP_SYN_SENT;
@@ -1597,9 +1597,9 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             ts->src_port += 1024;
         ts->dst_port = ee16(sin->sin_port);
         tcp_send_syn(ts, 0x02);
-        return -11;
+        return -WOLFIP_EAGAIN;
     }
-    return -2;
+    return -WOLFIP_EINVAL;
 }
 
 int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
@@ -1645,7 +1645,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             ts->sock.tcp.seq = wolfIP_getrandom();
             return (newts - s->tcpsockets) | MARK_TCP_SOCKET;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
-            return -11;
+            return -WOLFIP_EAGAIN;
         }
     }
     return -1;;
@@ -1703,7 +1703,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             ts->sock.tcp.seq += payload_len;
         }
         if (sent == 0)
-            return -11;
+            return -WOLFIP_EAGAIN;
         else
             return sent;
     } else if (sockfd & MARK_UDP_SOCKET) {
@@ -1725,7 +1725,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (len > WI_IP_MTU - IP_HEADER_LEN - UDP_HEADER_LEN)
             return -1; /* Fragmentation not supported */
         if (fifo_space(&ts->sock.udp.txbuf) < len)
-            return -11;
+            return -WOLFIP_EAGAIN;
         if (ts->src_port == 0) {
             ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
             if (ts->src_port < 1024)
@@ -1796,7 +1796,7 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             return -1;
         if (addrlen) *addrlen = sizeof(struct wolfIP_sockaddr_in);
         if (fifo_len(&ts->sock.udp.rxbuf) == 0)
-            return -11;
+            return -WOLFIP_EAGAIN;
         desc = fifo_peek(&ts->sock.udp.rxbuf);
         udp = (struct wolfIP_udp_datagram *)(ts->rxmem + desc->pos + sizeof(*desc));
         if (sin) {
@@ -1830,20 +1830,20 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
         if (ts->sock.tcp.state == TCP_ESTABLISHED) {
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             tcp_send_finack(ts);
-            return -11;
+            return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_CLOSE_WAIT) {
             ts->sock.tcp.state = TCP_LAST_ACK;
             tcp_send_finack(ts);
-            return -11;
+            return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_CLOSING) {
             ts->sock.tcp.state = TCP_TIME_WAIT;
-            return -11;
+            return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1) {
             ts->sock.tcp.state = TCP_CLOSING;
-            return -11;
+            return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_FIN_WAIT_2) {
             ts->sock.tcp.state = TCP_TIME_WAIT;
-            return -11;
+            return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state != TCP_CLOSED) {
             ts->sock.tcp.state = TCP_CLOSED;
             close_socket(ts);

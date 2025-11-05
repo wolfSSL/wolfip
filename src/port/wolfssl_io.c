@@ -24,10 +24,6 @@
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-#ifndef EAGAIN
-#define EAGAIN (11)
-#endif
-
 
 #ifndef MAX_WOLFIP_CTX
     #define MAX_WOLFIP_CTX 8 /* Default value */
@@ -76,7 +72,7 @@ static int wolfIP_io_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
         return WOLFSSL_CBIO_ERR_GENERAL;
 
     ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, sz, 0);
-    if (ret == -EAGAIN || ret == -1)
+    if (ret == -WOLFIP_EAGAIN || ret == -1)
         return WOLFSSL_CBIO_ERR_WANT_READ;
     if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
@@ -93,7 +89,7 @@ static int wolfIP_io_send(WOLFSSL* ssl, char* buf, int sz, void* ctx)
         return WOLFSSL_CBIO_ERR_GENERAL;
 
     ret = wolfIP_sock_send(desc->stack, desc->fd, buf, sz, 0);
-    if (ret == -EAGAIN || ret == -1)
+    if (ret == -WOLFIP_EAGAIN || ret == -1)
         return WOLFSSL_CBIO_ERR_WANT_WRITE;
     if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
