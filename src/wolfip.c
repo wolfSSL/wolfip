@@ -541,7 +541,7 @@ struct arp_neighbor {
 };
 
 #ifndef WOLFIP_ARP_PENDING_MAX
-#define WOLFIP_ARP_PENDING_MAX 4
+#define WOLFIP_ARP_PENDING_MAX 8
 #endif
 
 struct arp_pending_entry {
