@@ -516,26 +516,6 @@ struct TEST_PACKED test_arp_packet {
     uint32_t tip;
 };
 
-static void inject_arp_reply(struct wolfIP *stack, unsigned int if_idx,
-        const uint8_t *src_mac, ip4 src_ip, const uint8_t *dst_mac, ip4 dst_ip)
-{
-    struct test_arp_packet pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    memcpy(pkt.dst, dst_mac, 6);
-    memcpy(pkt.src, src_mac, 6);
-    pkt.type = htons(0x0806);
-    pkt.htype = htons(1);
-    pkt.ptype = htons(0x0800);
-    pkt.hlen = 6;
-    pkt.plen = 4;
-    pkt.opcode = htons(2);
-    memcpy(pkt.sma, src_mac, 6);
-    pkt.sip = htonl(src_ip);
-    memcpy(pkt.tma, dst_mac, 6);
-    pkt.tip = htonl(dst_ip);
-    wolfIP_recv_ex(stack, if_idx, &pkt, sizeof(pkt));
-}
-
 /* ------------------------------------------------------------------------- */
 /* Main                                                                      */
 /* ------------------------------------------------------------------------- */
@@ -609,9 +589,9 @@ int main(void)
     wolfIP_ipconfig_set_ex(router_stack, 1, router_wan_ip4, IP4(255,255,255,0), IP4(0,0,0,0));
     wolfIP_ipconfig_set(server_stack, server_ip4, IP4(255,255,255,0), router_wan_ip4);
 
-    inject_arp_reply(router_stack, 1, mac_server, server_ip4, mac_router1, router_wan_ip4);
-    inject_arp_reply(server_stack, 0, mac_router1, router_wan_ip4, mac_server, server_ip4);
-    inject_arp_reply(router_stack, 0, host_mac, host_ip4, tap_dev->mac, router_lan_ip4);
+    //inject_arp_reply(router_stack, 1, mac_server, server_ip4, mac_router1, router_wan_ip4);
+    //inject_arp_reply(server_stack, 0, mac_router1, router_wan_ip4, mac_server, server_ip4);
+    //inject_arp_reply(router_stack, 0, host_mac, host_ip4, tap_dev->mac, router_lan_ip4);
 
     if (server_setup(server_stack) < 0) {
         fprintf(stderr, "failed to set up server\n");
