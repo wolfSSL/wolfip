@@ -50,9 +50,22 @@ struct ipconf {
 /* Socket interface */
 #define MARK_TCP_SOCKET 0x100 /* Mark a socket as TCP */
 #define MARK_UDP_SOCKET 0x200 /* Mark a socket as UDP */
+
+
+/* Compile-time sanity check for socket marks & number of sockets */
 #if (MARK_TCP_SOCKET >= MARK_UDP_SOCKET)
 #error "MARK_TCP_SOCKET must be less than MARK_UDP_SOCKET"
 #endif
+
+#if MAX_TCPSOCKETS > 255
+#error "MAX_TCPSOCKETS must be less than 256"
+#endif
+
+#if MAX_UDPSOCKETS > 255
+#error "MAX_UDPSOCKETS must be less than 256"
+#endif
+
+
 
 
 #ifndef WOLF_POSIX
