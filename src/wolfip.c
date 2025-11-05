@@ -49,7 +49,6 @@ static inline int wolfIP_is_loopback_if(unsigned int if_idx)
 
 #if WOLFIP_ENABLE_LOOPBACK
 static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
-static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
 #endif
 static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 
@@ -588,13 +587,6 @@ struct wolfIP
 };
 
 #if WOLFIP_ENABLE_LOOPBACK
-static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
-{
-    (void)ll;
-    (void)buf;
-    (void)len;
-    return 0;
-}
 
 static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
@@ -2374,7 +2366,7 @@ void wolfIP_init(struct wolfIP *s)
             memcpy(loop->mac, loop_mac, sizeof(loop_mac));
             strncpy(loop->ifname, "lo", sizeof(loop->ifname) - 1);
             loop->ifname[sizeof(loop->ifname) - 1] = '\0';
-            loop->poll = wolfIP_loopback_poll;
+            loop->poll = NULL;
             loop->send = wolfIP_loopback_send;
         }
         if (loop_conf) {

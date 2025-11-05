@@ -21,7 +21,8 @@ typedef uint32_t ip4;
 #endif
 
 /* Device driver interface */
-/* Struct to contain a hw device description */
+/* Struct to contain link-layer (ll) device description
+ */
 struct wolfIP_ll_dev {
     uint8_t mac[6];
     char ifname[16];

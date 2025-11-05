@@ -17,6 +17,29 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ *
+ *
+ * This is a simple HTTP server module for wolfIP.
+ *
+ * This file contains a basic implementation of a HTTP server
+ * that can be used with wolfIP.
+ *
+ * The HTTP server supports:
+ * - GET requests
+ * - POST requests
+ * - Basic file serving
+ * - Basic error handling
+ *
+ * Usage:
+ * - Initialize via httpd_init()
+ * - Add static pages via httpd_register_static_page()
+ * - Add request handlers via httpd_register_handler()
+ *
+ * Note:
+ * - Responses are sent immediately after generation. No buffering is done.
+ *   If the output socket is flooded, extra responses will be discarded.
+ *
+ *
  */
 #include "wolfip.h"
 #include "httpd.h"
@@ -43,16 +66,6 @@ static const char *http_status_text(int status_code) {
             return "Unknown";
     }
 }
-/*
-static struct http_client *http_client_find(struct httpd *httpd, int sd) {
-    for (int i = 0; i < HTTPD_MAX_CLIENTS; i++) {
-        if (httpd->clients[i].client_sd == sd) {
-            return &httpd->clients[i];
-        }
-    }
-    return NULL;
-}
-*/
 
 int httpd_register_handler(struct httpd *httpd, const char *path, int (*handler)(struct httpd *httpd, struct http_client *hc, struct http_request *req)) {
     for (int i = 0; i < HTTPD_MAX_URLS; i++) {
@@ -125,75 +138,63 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
 }
 
 void http_send_response_body(struct http_client *hc, const void *body, size_t len) {
-    if (!hc) return;
-    if (hc->ssl) {
-        int rc = wolfSSL_write(hc->ssl, body, len);
-        if (rc <= 0) {
-            wolfSSL_free(hc->ssl);
-            hc->ssl = NULL;
-            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-            hc->client_sd = 0;
-        }
-    } else {
-        int rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
-        if (rc <= 0) {
-            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-            hc->client_sd = 0;
-        }
+    int rc;
+    if (!hc)
+        return;
+    if (hc->ssl)
+        rc = wolfSSL_write(hc->ssl, body, len);
+    else
+        rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
+
+    if (rc <= 0) {
+        wolfSSL_free(hc->ssl);
+        hc->ssl = NULL;
+        wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+        hc->client_sd = 0;
     }
+}
+
+static int http_write_response(struct http_client *hc, const void *buf, size_t len)
+{
+    struct wolfIP *s;
+    if (!hc)
+        return -1;
+    s = hc->httpd->ipstack;
+    if (hc->ssl)
+        return wolfSSL_write(hc->ssl, buf, len);
+    else
+        return wolfIP_sock_send(s, hc->client_sd, buf, len, 0);
 }
 
 void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t len) {
     char txt_chunk[8];
     memset(txt_chunk, 0, sizeof(txt_chunk));
-    if (!hc) return;
+    if (!hc)
+        return;
     snprintf(txt_chunk, sizeof(txt_chunk), "%zx\r\n", len);
-    if (hc->ssl) {
-        int rc = wolfSSL_write(hc->ssl, txt_chunk, strlen(txt_chunk));
-        if (rc <= 0)
-            goto close_conn;
-        rc = wolfSSL_write(hc->ssl, chunk, len);
-        if (rc <= 0)
-            goto close_conn;
-        rc = wolfSSL_write(hc->ssl, "\r\n", 2);
-        if (rc <= 0)
-            goto close_conn;
-    } else {
-        struct wolfIP *s = hc->httpd->ipstack;
-        int rc = wolfIP_sock_send(s, hc->client_sd, txt_chunk, strlen(txt_chunk), 0);
-        if (rc <= 0)
-            goto close_conn;
-        rc = wolfIP_sock_send(s, hc->client_sd, chunk, len, 0);
-        if (rc <= 0)
-           goto close_conn;
-        rc = wolfIP_sock_send(s, hc->client_sd, "\r\n", 2, 0);
-        if (rc <= 0)
-            goto close_conn;
-    }
-    return;
-close_conn:
-    if (hc->ssl) {
+    if ((http_write_response(hc, txt_chunk, strlen(txt_chunk)) <= 0) ||
+            (http_write_response(hc, chunk, len) <= 0) ||
+            (http_write_response(hc, "\r\n", 2) <= 0)) {
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
+        wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+        hc->client_sd = 0;
     }
-    wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-    hc->client_sd = 0;
 }
 
 void http_send_response_chunk_end(struct http_client *hc) {
-    if (!hc) return;
-    if (hc->ssl) {
-        if (wolfSSL_write(hc->ssl, "0\r\n\r\n", 5) <= 0) {
-            wolfSSL_free(hc->ssl);
-            hc->ssl = NULL;
-            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-            hc->client_sd = 0;
-        }
-    } else {
-        if (wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0) <= 0) {
-            wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
-            hc->client_sd = 0;
-        }
+    int rc;
+    if (!hc)
+        return;
+    if (hc->ssl)
+        rc = wolfSSL_write(hc->ssl, "0\r\n\r\n", 5);
+    else
+        rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0);
+    if (rc <= 0) {
+        wolfSSL_free(hc->ssl);
+        hc->ssl = NULL;
+        wolfIP_sock_close(hc->httpd->ipstack, hc->client_sd);
+        hc->client_sd = 0;
     }
 }
 
@@ -369,7 +370,7 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     url = http_find_url(hc->httpd, req.path);
     if (!url)
         goto not_found;
-    
+
     if ((url->handler == NULL) && (url->static_content == NULL))
         goto service_unavailable;
     if (url->handler == NULL) {
