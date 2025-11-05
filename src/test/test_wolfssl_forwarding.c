@@ -589,10 +589,6 @@ int main(void)
     wolfIP_ipconfig_set_ex(router_stack, 1, router_wan_ip4, IP4(255,255,255,0), IP4(0,0,0,0));
     wolfIP_ipconfig_set(server_stack, server_ip4, IP4(255,255,255,0), router_wan_ip4);
 
-    //inject_arp_reply(router_stack, 1, mac_server, server_ip4, mac_router1, router_wan_ip4);
-    //inject_arp_reply(server_stack, 0, mac_router1, router_wan_ip4, mac_server, server_ip4);
-    //inject_arp_reply(router_stack, 0, host_mac, host_ip4, tap_dev->mac, router_lan_ip4);
-
     if (server_setup(server_stack) < 0) {
         fprintf(stderr, "failed to set up server\n");
         ret = 1;
