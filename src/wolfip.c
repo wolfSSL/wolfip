@@ -1616,12 +1616,17 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
     struct tsocket *newts;
 
     if ((addr) && (!(addrlen) || (*addrlen < sizeof(struct wolfIP_sockaddr_in))))
-        return -1;
+        return -WOLFIP_EINVAL;
+
+    if (sockfd < 0)
+        return -WOLFIP_EINVAL;
 
     if (addr && addrlen)
         *addrlen = sizeof(struct wolfIP_sockaddr_in);
 
     if (sockfd & MARK_TCP_SOCKET) {
+        if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
         if ((ts->sock.tcp.state != TCP_SYN_RCVD) && (ts->sock.tcp.state != TCP_LISTEN))
             return -1;
@@ -1655,7 +1660,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             return -WOLFIP_EAGAIN;
         }
     }
-    return -1;;
+    return -WOLFIP_EINVAL;
 }
 
 int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags,
@@ -1670,7 +1675,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
     (void)flags;
 
     if (sockfd < 0)
-        return -1;
+        return -WOLFIP_EINVAL;
 
     if ((!buf) || (len == 0))
         return -1;
@@ -1771,7 +1776,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
 int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags)
 {
     return wolfIP_sock_sendto(s, sockfd, buf, len, flags, NULL, 0);
-} 
+}
 
 int wolfIP_sock_write(struct wolfIP *s, int sockfd, const void *buf, size_t len)
 {
@@ -1787,7 +1792,12 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
     struct tsocket *ts;
     (void)flags;
 
+    if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+
     if (sockfd & MARK_TCP_SOCKET) {
+        if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
         if (ts->sock.tcp.state == TCP_CLOSE_WAIT)
         {
@@ -1805,6 +1815,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         }
     } else if (sockfd & MARK_UDP_SOCKET) {
         struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)src_addr;
+        if ((sockfd & ~MARK_UDP_SOCKET) >= MAX_UDPSOCKETS)
+            return -WOLFIP_EINVAL;
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -1;
@@ -1824,7 +1836,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         memcpy(buf, udp->data, seg_len);
         fifo_pop(&ts->sock.udp.rxbuf);
         return seg_len;
-    } else return -1;
+    } else
+        return -WOLFIP_EINVAL;
 }
 
 int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags)
@@ -1839,8 +1852,13 @@ int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len)
 
 int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 {
+    if (sockfd < 0)
+        return -WOLFIP_EINVAL;
     if (sockfd & MARK_TCP_SOCKET) {
-        struct tsocket *ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
+        struct tsocket *ts;
+        if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
+        ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
         if (ts->sock.tcp.state == TCP_ESTABLISHED) {
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             tcp_send_finack(ts);
@@ -1864,7 +1882,10 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             return 0;
         } else return -1;
     } else if (sockfd & MARK_UDP_SOCKET) {
-        struct tsocket *ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
+        struct tsocket *ts;
+        if ((sockfd & ~MARK_UDP_SOCKET) >= MAX_UDPSOCKETS)
+            return -WOLFIP_EINVAL;
+        ts = &s->tcpsockets[sockfd & ~MARK_UDP_SOCKET];
         close_socket(ts);
         return 0;
     } else return -1;
@@ -1873,8 +1894,19 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 
 int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
-    struct tsocket *ts = &s->tcpsockets[sockfd];
-    struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in *sin;
+
+    if ((!addr) || (sockfd < 0))
+        return -WOLFIP_EINVAL;
+
+    if ((sockfd & MARK_TCP_SOCKET) == 0)
+        return -1;
+    if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+        return -WOLFIP_EINVAL;
+
+    ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
+    sin = (struct wolfIP_sockaddr_in *)addr;
     if (!sin || *addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
     sin->sin_family = AF_INET;
@@ -1893,7 +1925,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
     unsigned int if_idx;
 
     if (!sin || addrlen < sizeof(struct wolfIP_sockaddr_in))
-        return -1;
+        return -WOLFIP_EINVAL;
+
+    if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+
     bind_ip = ee32(sin->sin_addr.s_addr);
     if_idx = wolfIP_if_for_local_ip(s, bind_ip, &match);
     conf = wolfIP_ipconf_at(s, if_idx);
@@ -1901,6 +1937,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         return -1;
 
     if (sockfd & MARK_TCP_SOCKET) {
+        if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
         if (ts->sock.tcp.state != TCP_CLOSED)
             return -1;
@@ -1919,6 +1957,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         ts->src_port = ee16(sin->sin_port);
         return 0;
     } else if (sockfd & MARK_UDP_SOCKET) {
+        if ((sockfd & ~MARK_UDP_SOCKET) >= MAX_UDPSOCKETS)
+            return -WOLFIP_EINVAL;
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         if (ts->src_port != 0)
             return -1;
@@ -1944,9 +1984,15 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
 {
     struct tsocket *ts;
     (void)backlog;
+    if (sockfd < 0)
+        return -WOLFIP_EINVAL;
     if (sockfd & MARK_TCP_SOCKET) {
+        if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
-    } else return -1;
+    } else
+        return -1;
+
     if (ts->sock.tcp.state != TCP_CLOSED)
         return -1;
     ts->sock.tcp.state = TCP_LISTEN;
@@ -1955,8 +2001,17 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
 
 int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen)
 {
-    struct tsocket *ts = &s->tcpsockets[sockfd];
+    struct tsocket *ts;
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+    if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+    if ((sockfd & MARK_TCP_SOCKET) == 0) {
+        return -1;
+    }
+    if ((sockfd & ~MARK_TCP_SOCKET) >= MAX_TCPSOCKETS)
+        return -WOLFIP_EINVAL;
+
+    ts = &s->tcpsockets[sockfd & ~MARK_TCP_SOCKET];
     if (!sin || *addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
     sin->sin_family = AF_INET;
