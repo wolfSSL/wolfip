@@ -52,6 +52,7 @@
 #define ROUTER_GW   IP4(10,0,1,254)
 #define ROUTER_IF1  IP4(10,0,2,1)
 #define DEST_IP     IP4(10,0,2,200)
+#define TTL_EXCEEDED_DATA_LEN 28
 
 #define PACKED __attribute__((packed))
 
@@ -80,6 +81,14 @@ struct icmp_echo {
     uint16_t csum;
     uint16_t id;
     uint16_t seq;
+} PACKED;
+
+struct icmp_ttl_exceeded {
+    uint8_t type;
+    uint8_t code;
+    uint16_t csum;
+    uint8_t unused[4];
+    uint8_t data[TTL_EXCEEDED_DATA_LEN];
 } PACKED;
 
 static uint16_t ones_csum(const void *buf, size_t len)
@@ -344,19 +353,63 @@ int main(void)
     mem_host_send(&link, frame, sizeof(struct eth_hdr) + sizeof(struct ipv4_hdr) + sizeof(struct icmp_echo));
 
     n = mem_host_recv(&link, frame, sizeof(frame), 1000);
-    if (n > 0) {
-        struct eth_hdr *eth = (struct eth_hdr *)frame;
-        struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + sizeof(*eth));
-        struct icmp_echo *icmp = (struct icmp_echo *)(frame + sizeof(*eth) + sizeof(*ip));
-        if (ntohs(eth->type) == ETH_P_IP && ip->proto == 1 && icmp->type == 11 &&
-                ntohl(ip->src) == DEST_IP && ntohl(ip->dst) == HOST_IP) {
-            printf("TTL expired response received\n");
-            rc = EXIT_SUCCESS;
-        }
-    } else {
+    if (n <= 0) {
         fprintf(stderr, "No TTL expired response\n");
+        goto cleanup;
     }
 
+    {
+        struct eth_hdr *eth = (struct eth_hdr *)frame;
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + sizeof(*eth));
+        struct icmp_ttl_exceeded *icmp = (struct icmp_ttl_exceeded *)(frame + sizeof(*eth) + sizeof(*ip));
+        struct ipv4_hdr *orig_ip = (struct ipv4_hdr *)icmp->data;
+        struct icmp_echo *orig_icmp = (struct icmp_echo *)(icmp->data + sizeof(*orig_ip));
+        size_t expected_len = sizeof(*eth) + sizeof(*ip) + sizeof(*icmp);
+        uint16_t ip_len = ntohs(ip->len);
+        uint16_t expected_ip_len = (uint16_t)(sizeof(*ip) + sizeof(*icmp));
+
+        if ((size_t)n != expected_len) {
+            fprintf(stderr, "Unexpected frame length: got %d expected %zu\n", n, expected_len);
+            goto mismatch;
+        }
+        if (ntohs(eth->type) != ETH_P_IP ||
+                memcmp(eth->dst, host_mac, sizeof(host_mac)) != 0 ||
+                memcmp(eth->src, router0_mac, sizeof(router0_mac)) != 0) {
+            fprintf(stderr, "Ethernet header mismatch\n");
+            goto mismatch;
+        }
+        if (ip->ver_ihl != 0x45 || ip->proto != 1 || ip->ttl != 64 ||
+                ip_len != expected_ip_len ||
+                ntohl(ip->src) != ROUTER_IF0 || ntohl(ip->dst) != HOST_IP) {
+            fprintf(stderr, "IPv4 header mismatch\n");
+            goto mismatch;
+        }
+        if (icmp->type != 11 || icmp->code != 0 ||
+                memcmp(icmp->unused, "\x00\x00\x00\x00", sizeof(icmp->unused)) != 0) {
+            fprintf(stderr, "ICMP header mismatch\n");
+            goto mismatch;
+        }
+        if (orig_ip->ver_ihl != 0x45 || orig_ip->proto != 1 ||
+                ntohl(orig_ip->src) != HOST_IP || ntohl(orig_ip->dst) != DEST_IP ||
+                ntohs(orig_ip->len) != sizeof(*orig_ip) + sizeof(struct icmp_echo) ||
+                ntohs(orig_ip->id) != 0x1234 || orig_ip->ttl != 1) {
+            fprintf(stderr, "Embedded IPv4 header mismatch\n");
+            goto mismatch;
+        }
+        if (orig_icmp->type != 8 || orig_icmp->code != 0 ||
+                ntohs(orig_icmp->id) != 0x0101 || ntohs(orig_icmp->seq) != 1) {
+            fprintf(stderr, "Embedded ICMP header mismatch\n");
+            goto mismatch;
+        }
+        printf("TTL expired response received\n");
+        rc = EXIT_SUCCESS;
+        goto cleanup;
+    }
+
+mismatch:
+    fprintf(stderr, "TTL expired response mismatch\n");
+
+cleanup:
     running = 0;
     pthread_join(th, NULL);
     return rc;
