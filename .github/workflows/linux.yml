@@ -38,7 +38,7 @@ jobs:
 
       - name: Run standalone forwarding test
         run: |
-          ./build/test-wolfssl-forwarding
+          sudo ./build/test-wolfssl-forwarding
 
       - name: Run standalone TTL expired test
         run: |

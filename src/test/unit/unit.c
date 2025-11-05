@@ -837,9 +837,13 @@ START_TEST(test_wolfip_forwarding_basic)
     ck_assert_mem_eq(fwd->eth.dst, next_hop_mac, 6);
     ck_assert_mem_eq(fwd->eth.src, s.ll_dev[TEST_SECOND_IF].mac, 6);
     ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
-    expected_csum = (uint16_t)(orig_csum + 1);
-    if (expected_csum == 0)
-        expected_csum = 0xFFFF;
+    {
+        uint32_t sum = orig_csum + 0x0100;
+        sum = (sum & 0xFFFF) + (sum >> 16);
+        expected_csum = (uint16_t)sum;
+        if (expected_csum == 0)
+            expected_csum = 0xFFFF;
+    }
     ck_assert_uint_eq(ee16(fwd->csum), expected_csum);
 }
 END_TEST
