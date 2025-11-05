@@ -363,6 +363,7 @@ static int run_linux_tls_client(ip4 server_ip)
     int connected = 0;
     char remote_str[16];
 
+    sleep(1);
     ip4_to_str(server_ip, remote_str, sizeof(remote_str));
     printf("TLS client: connecting to %s:%u\n", remote_str, 4433);
 
