@@ -414,11 +414,23 @@ union transport_pseudo_header {
 };
 
 /* ICMP */
+
+#define TTL_EXCEEDED_ORIG_PACKET_SIZE (28)
+#define ICMP_TTL_EXCEEDED_SIZE (36)
+
 struct PACKED wolfIP_icmp_packet {
     struct wolfIP_ip_packet ip;
     uint8_t type, code;
     uint16_t csum;
-    uint8_t data[0];
+    uint8_t unused[4];
+};
+
+struct PACKED wolfIP_icmp_ttl_exceeded_packet {
+    struct wolfIP_ip_packet ip;
+    uint8_t type, code;
+    uint16_t csum;
+    uint8_t unused[4];
+    uint8_t orig_packet[TTL_EXCEEDED_ORIG_PACKET_SIZE];
 };
 
 /* DHCP */
@@ -764,7 +776,7 @@ static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *
 }
 
 #ifdef ETHERNET
-static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp);
+static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len);
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip);
 static int eth_output_add_header(struct wolfIP *S, unsigned int if_idx, const uint8_t *dst, struct wolfIP_eth_frame *eth,
         uint16_t type);
@@ -778,23 +790,26 @@ static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *ma
 static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *orig)
 {
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-    struct wolfIP_icmp_packet icmp;
+    struct wolfIP_icmp_ttl_exceeded_packet icmp;
     if (!ll || !ll->send)
         return;
     memset(&icmp, 0, sizeof(icmp));
     icmp.type = ICMP_TTL_EXCEEDED;
-    icmp.csum = ee16(icmp_checksum(&icmp));
+    memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN,
+            TTL_EXCEEDED_ORIG_PACKET_SIZE);
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_TTL_EXCEEDED_SIZE));
     icmp.ip.ver_ihl = 0x45;
     icmp.ip.ttl = 64;
     icmp.ip.proto = WI_IPPROTO_ICMP;
     icmp.ip.id = ee16(s->ipcounter++);
-    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
-    icmp.ip.src = orig->dst;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE);
+    icmp.ip.src = ee32(wolfIP_ipconf_at(s, if_idx)->ip);
     icmp.ip.dst = orig->src;
     icmp.ip.csum = 0;
     iphdr_set_checksum(&icmp.ip);
     eth_output_add_header(s, if_idx, orig->eth.src, &icmp.ip.eth, ETH_TYPE_IP);
-    ll->send(ll, &icmp, sizeof(struct wolfIP_icmp_packet));
+    ll->send(ll, &icmp, sizeof(icmp));
 }
 #else
 static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *orig)
@@ -1093,12 +1108,12 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
     return ~sum;
 }
 
-static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp)
+static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
     uint16_t *ptr = (uint16_t *)(&icmp->type);
-    for (i = 0; i < ICMP_HEADER_LEN / 2; i++) {
+    for (i = 0; i < len / 2; i++) {
         sum += ee16(ptr[i]);
     }
     while (sum >> 16) {
