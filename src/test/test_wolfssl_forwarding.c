@@ -1,40 +1,21 @@
 /* test_wolfssl_forwarding.c
  *
- * Copyright (C) 2025 wolfSSL Inc.
- *
- * This file is part of wolfIP TCP/IP stack.
- *
- * wolfIP is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
- * (at your option) any later version.
- *
- * wolfIP is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
- *
- * Integration test that exercises wolfIP's TLS echo server across a simple
- * IP router running with forwarding enabled.  The topology is:
- *
- *  client (wolfIP) <--mem link--> router (2 interfaces, forwarding on)
- *                                <--mem link--> server (wolfIP TLS echo)
- *
- * The router itself opens no sockets; it only polls the stack so incoming
- * frames are forwarded between the two networks.
+ * Simplified forwarding test that exercises a wolfIP TLS echo server
+ * reachable through a wolfIP router while the client runs on the host
+ * using the Linux TCP/IP stack.
  */
 
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <poll.h>
 #include <time.h>
-#include <signal.h>
 #include <unistd.h>
 
 #include "config.h"
@@ -59,13 +40,47 @@ extern const unsigned char server_der[];
 extern const unsigned long server_der_len;
 extern const unsigned char server_key_der[];
 extern const unsigned long server_key_der_len;
-static pthread_t th_server, th_client, th_router;
 
-/* Helper macros */
+extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
+
 #define IP4(a,b,c,d) (((ip4)(a) << 24) | ((ip4)(b) << 16) | ((ip4)(c) << 8) | (ip4)(d))
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
-/* Millisecond clock */
+#define TEST_PAYLOAD 1024
+#define TAP_IFNAME   "wtls0"
+#define HOST_ROUTE   "10.20.2.0/24"
+
+static const ip4 host_ip4          = IP4(10,20,1,2);
+static const ip4 router_lan_ip4    = IP4(10,20,1,254);
+static const ip4 router_wan_ip4    = IP4(10,20,2,1);
+static const ip4 server_ip4        = IP4(10,20,2,2);
+
+static pthread_t th_server;
+static pthread_t th_router;
+
+static struct wolfIP *router_stack;
+static struct wolfIP *server_stack;
+
+static int server_listen_fd = -1;
+static int server_client_fd = -1;
+static WOLFSSL_CTX *server_ctx = NULL;
+static WOLFSSL *server_ssl = NULL;
+static uint8_t server_buf[TEST_PAYLOAD];
+static int server_bytes_recv = 0;
+static int server_bytes_sent = 0;
+static volatile int server_done = 0;
+static int server_handshake_done = 0;
+
+static volatile int router_running = 1;
+
+static void ip4_to_str(ip4 addr, char *buf, size_t len)
+{
+    snprintf(buf, len, "%u.%u.%u.%u",
+            (unsigned)((addr >> 24) & 0xFF),
+            (unsigned)((addr >> 16) & 0xFF),
+            (unsigned)((addr >> 8) & 0xFF),
+            (unsigned)(addr & 0xFF));
+}
+
 static uint64_t monotonic_ms(void)
 {
     struct timespec ts;
@@ -106,9 +121,6 @@ struct mem_ep {
 
 static struct mem_ep mem_eps[8];
 static size_t mem_ep_count;
-
-static void inject_arp_reply(struct wolfIP *stack, unsigned int if_idx,
-        const uint8_t *src_mac, ip4 src_ip, const uint8_t *dst_mac, ip4 dst_ip);
 
 static void mem_link_init(struct mem_link *link)
 {
@@ -194,30 +206,20 @@ static void mem_link_attach(struct wolfIP_ll_dev *ll, struct mem_link *link, int
 /* TLS echo server (wolfIP stack)                                           */
 /* ------------------------------------------------------------------------- */
 
-#define TEST_PAYLOAD (1024)
-
-static struct wolfIP *server_stack;
-static int server_listen_fd = -1;
-static int server_client_fd = -1;
-static WOLFSSL_CTX *server_ctx = NULL;
-static WOLFSSL *server_ssl = NULL;
-static uint8_t server_buf[TEST_PAYLOAD];
-static int server_bytes_recv = 0;
-static int server_bytes_sent = 0;
-static volatile int server_done = 0;
-static int server_handshake_done = 0;
-
 static void server_cb(int fd, uint16_t events, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
-
-
+    (void)events;
     if (fd == server_listen_fd && (events & CB_EVENT_READABLE) && server_client_fd == -1) {
         server_client_fd = wolfIP_sock_accept(s, server_listen_fd, NULL, NULL);
         if (server_client_fd > 0) {
+            wolfIP_register_callback(s, server_client_fd, server_cb, s);
             server_ssl = wolfSSL_new(server_ctx);
             wolfSSL_SetIO_wolfIP(server_ssl, server_client_fd);
             server_handshake_done = 0;
+            server_bytes_recv = 0;
+            server_bytes_sent = 0;
+            printf("TLS server: accepted client (fd 0x%04x)\n", server_client_fd);
         }
         return;
     }
@@ -229,11 +231,12 @@ static void server_cb(int fd, uint16_t events, void *arg)
         int ret = wolfSSL_accept(server_ssl);
         if (ret == SSL_SUCCESS) {
             server_handshake_done = 1;
+            printf("TLS server: handshake complete\n");
         } else {
             int err = wolfSSL_get_error(server_ssl, ret);
-            if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
+            if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE)
                 return;
-            }
+            fprintf(stderr, "TLS server: handshake failed (%d)\n", err);
             wolfIP_sock_close(s, server_client_fd);
             server_client_fd = -1;
             wolfip_reset_io(server_ssl);
@@ -248,14 +251,16 @@ static void server_cb(int fd, uint16_t events, void *arg)
         if (server_bytes_recv < TEST_PAYLOAD) {
             int ret = wolfSSL_read(server_ssl, server_buf + server_bytes_recv,
                     TEST_PAYLOAD - server_bytes_recv);
-            if (ret > 0)
+            if (ret > 0) {
                 server_bytes_recv += ret;
+            }
         }
         if (server_bytes_recv == TEST_PAYLOAD && server_bytes_sent < TEST_PAYLOAD) {
             int ret = wolfSSL_write(server_ssl, server_buf + server_bytes_sent,
                     TEST_PAYLOAD - server_bytes_sent);
-            if (ret > 0)
+            if (ret > 0) {
                 server_bytes_sent += ret;
+            }
         }
         if (server_bytes_sent == TEST_PAYLOAD) {
             wolfIP_sock_close(s, server_client_fd);
@@ -265,6 +270,7 @@ static void server_cb(int fd, uint16_t events, void *arg)
             server_ssl = NULL;
             server_handshake_done = 0;
             server_done = 1;
+            printf("TLS server: echoed %d bytes\n", TEST_PAYLOAD);
         }
     }
 
@@ -313,159 +319,7 @@ static int server_setup(struct wolfIP *s)
 }
 
 /* ------------------------------------------------------------------------- */
-/* TLS client (wolfIP stack)                                                */
-/* ------------------------------------------------------------------------- */
-
-static struct wolfIP *client_stack;
-static WOLFSSL_CTX *client_ctx = NULL;
-static WOLFSSL *client_ssl = NULL;
-static int client_fd = -1;
-static uint8_t client_tx[TEST_PAYLOAD];
-static uint8_t client_rx[TEST_PAYLOAD];
-static int client_sent = 0;
-static int client_recv = 0;
-
-enum client_state {
-    CLIENT_STATE_IDLE = 0,
-    CLIENT_STATE_HANDSHAKE,
-    CLIENT_STATE_WRITE,
-    CLIENT_STATE_READ,
-    CLIENT_STATE_DONE,
-    CLIENT_STATE_ERROR
-};
-
-static volatile enum client_state client_state = CLIENT_STATE_IDLE;
-
-static void client_cb(int fd, uint16_t events, void *arg)
-{
-    struct wolfIP *cli = (struct wolfIP *)arg;
-    int progress = 1;
-
-    if (fd != client_fd || client_ssl == NULL)
-        return;
-
-    while (progress) {
-        progress = 0;
-        if (client_state == CLIENT_STATE_HANDSHAKE) {
-            int ret = wolfSSL_connect(client_ssl);
-            if (ret == SSL_SUCCESS) {
-                client_state = CLIENT_STATE_WRITE;
-                progress = 1;
-                continue;
-            } else {
-                int err = wolfSSL_get_error(client_ssl, ret);
-                if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE)
-                    break;
-                client_state = CLIENT_STATE_ERROR;
-                break;
-            }
-        }
-        if (client_state == CLIENT_STATE_WRITE &&
-                (events & (CB_EVENT_WRITABLE | CB_EVENT_READABLE))) {
-            int ret = wolfSSL_write(client_ssl, client_tx + client_sent,
-                    TEST_PAYLOAD - client_sent);
-            if (ret > 0) {
-                client_sent += ret;
-                progress = 1;
-                if (client_sent == TEST_PAYLOAD)
-                    client_state = CLIENT_STATE_READ;
-            } else {
-                int err = wolfSSL_get_error(client_ssl, ret);
-                if (err != WOLFSSL_ERROR_WANT_WRITE) {
-                    client_state = CLIENT_STATE_ERROR;
-                }
-                break;
-            }
-        }
-        if (client_state == CLIENT_STATE_READ && (events & CB_EVENT_READABLE)) {
-            int ret = wolfSSL_read(client_ssl, client_rx + client_recv,
-                    TEST_PAYLOAD - client_recv);
-            if (ret > 0) {
-                client_recv += ret;
-                progress = 1;
-                if (client_recv == TEST_PAYLOAD) {
-                    if (memcmp(client_rx, client_tx, TEST_PAYLOAD) == 0) {
-                        client_state = CLIENT_STATE_DONE;
-                        wolfIP_sock_close(cli, client_fd);
-                        wolfip_reset_io(client_ssl);
-                    } else {
-                        client_state = CLIENT_STATE_ERROR;
-                    }
-                }
-            } else if (ret == 0) {
-                client_state = CLIENT_STATE_ERROR;
-            } else {
-                int err = wolfSSL_get_error(client_ssl, ret);
-                if (err != WOLFSSL_ERROR_WANT_READ)
-                    client_state = CLIENT_STATE_ERROR;
-                break;
-            }
-        } else if (client_state == CLIENT_STATE_READ && !(events & CB_EVENT_READABLE)) {
-            break;
-        }
-    }
-
-    if ((events & CB_EVENT_CLOSED) && client_state != CLIENT_STATE_DONE)
-        client_state = CLIENT_STATE_ERROR;
-}
-
-static int client_start(struct wolfIP *cli, ip4 server_ip)
-{
-    struct wolfIP_sockaddr_in remote = {
-        .sin_family = AF_INET,
-        .sin_port = ee16(4433),
-        .sin_addr.s_addr = ee32(server_ip),
-    };
-
-    client_ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
-    if (!client_ctx)
-        return -1;
-    wolfSSL_SetIO_wolfIP_CTX(client_ctx, cli);
-    wolfSSL_CTX_load_verify_buffer(client_ctx, ca_der, ca_der_len, SSL_FILETYPE_ASN1);
-
-    client_ssl = wolfSSL_new(client_ctx);
-    if (!client_ssl)
-        return -1;
-
-    for (size_t i = 0; i < sizeof(client_tx); i += 16)
-        memcpy(client_tx + i, "Test pattern - -", 16);
-
-    client_fd = wolfIP_sock_socket(cli, AF_INET, IPSTACK_SOCK_STREAM, 0);
-    if (client_fd < 0)
-        return -1;
-    wolfIP_register_callback(cli, client_fd, client_cb, cli);
-    wolfSSL_SetIO_wolfIP(client_ssl, client_fd);
-
-    client_state = CLIENT_STATE_HANDSHAKE;
-    {
-        int conn = wolfIP_sock_connect(cli, client_fd,
-                (struct wolfIP_sockaddr *)&remote, sizeof(remote));
-        if (conn < 0 && conn != -11) {
-            client_state = CLIENT_STATE_ERROR;
-            return -1;
-        }
-    }
-    /* Kick-start handshake */
-    {
-    int first = wolfSSL_connect(client_ssl);
-    if (first != SSL_SUCCESS) {
-        int err = wolfSSL_get_error(client_ssl, first);
-        if (!(err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE))
-            return -1;
-    }
-    }
-    return 0;
-}
-
-/* ------------------------------------------------------------------------- */
-/* Router                                                                   */
-/* ------------------------------------------------------------------------- */
-
-static struct wolfIP *router_stack;
-static volatile int router_running = 1;
-
-/* ------------------------------------------------------------------------- */
-/* Stack polling threads                                                    */
+/* Stack polling                                                             */
 /* ------------------------------------------------------------------------- */
 
 static void *poll_thread(void *arg)
@@ -475,123 +329,175 @@ static void *poll_thread(void *arg)
         uint64_t now = monotonic_ms();
         wolfIP_poll(s, now);
         usleep(1000);
-        if (s == client_stack) {
-            static int last_state = -1;
-            if ((int)client_state != last_state) {
-                last_state = client_state;
-            }
-        }
         if (s == router_stack) {
             if (!router_running)
                 break;
         } else if (s == server_stack) {
             if (server_done)
                 break;
-        } else if (s == client_stack) {
-            if (client_state == CLIENT_STATE_DONE || client_state == CLIENT_STATE_ERROR) {
-                server_done = 1;
-                break;
-            }
         }
     }
     return NULL;
 }
 
 /* ------------------------------------------------------------------------- */
-/* Main                                                                     */
+/* Linux TLS client                                                          */
 /* ------------------------------------------------------------------------- */
 
-int main(void)
+static int run_linux_tls_client(ip4 server_ip)
 {
-    static const uint8_t mac_client[6] = {0x02, 0x00, 0x00, 0x00, 0x01, 0x10};
-    static const uint8_t mac_router0[6] = {0x02, 0x00, 0x00, 0x00, 0x01, 0xFE};
-    static const uint8_t mac_router1[6] = {0x02, 0x00, 0x00, 0x00, 0x02, 0xFE};
-    static const uint8_t mac_server[6] = {0x02, 0x00, 0x00, 0x00, 0x02, 0x10};
-    struct mem_link link_client_router;
-    struct mem_link link_router_server;
-    int ret = 0;
-    size_t stack_sz;
+    struct sockaddr_in remote = {
+        .sin_family = AF_INET,
+        .sin_port = htons(4433),
+        .sin_addr.s_addr = htonl(server_ip),
+    };
+    uint8_t tx[TEST_PAYLOAD];
+    uint8_t rx[TEST_PAYLOAD];
+    WOLFSSL_CTX *ctx = NULL;
+    WOLFSSL *ssl = NULL;
+    int fd = -1;
+    int ret = -1;
+    int err = 0;
+    size_t sent = 0;
+    size_t received = 0;
+    int connected = 0;
+    char remote_str[16];
 
-    setvbuf(stdout, NULL, _IONBF, 0);
+    ip4_to_str(server_ip, remote_str, sizeof(remote_str));
+    printf("TLS client: connecting to %s:%u\n", remote_str, 4433);
 
-    mem_link_init(&link_client_router);
-    mem_link_init(&link_router_server);
-
-    wolfSSL_Init();
-    wolfSSL_Debugging_OFF();
-
-    /* Initialise stacks */
-    stack_sz = wolfIP_instance_size();
-    client_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
-    router_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
-    server_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
-    if (!client_stack || !router_stack || !server_stack) {
-        fprintf(stderr, "failed to allocate stacks\n");
-        ret = 1;
-        goto cleanup;
+    ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
+    if (!ctx) {
+        fprintf(stderr, "linux client: failed to init context\n");
+        goto out;
     }
-    XMEMSET(client_stack, 0, stack_sz);
-    XMEMSET(router_stack, 0, stack_sz);
-    XMEMSET(server_stack, 0, stack_sz);
-    wolfIP_init(client_stack);
-    wolfIP_init(router_stack);
-    wolfIP_init(server_stack);
+    wolfSSL_CTX_load_verify_buffer(ctx, ca_der, ca_der_len, SSL_FILETYPE_ASN1);
 
-    /* Attach memory links */
-    mem_link_attach(wolfIP_getdev(client_stack), &link_client_router, 0, "cli0", mac_client);
-    mem_link_attach(wolfIP_getdev_ex(router_stack, 0), &link_client_router, 1, "rt0", mac_router0);
-    mem_link_attach(wolfIP_getdev_ex(router_stack, 1), &link_router_server, 0, "rt1", mac_router1);
-    mem_link_attach(wolfIP_getdev(server_stack), &link_router_server, 1, "srv0", mac_server);
-
-    /* Configure IP addresses */
-    wolfIP_ipconfig_set(client_stack, IP4(10,0,1,2), IP4(255,255,255,0), IP4(10,0,1,254));
-    wolfIP_ipconfig_set_ex(router_stack, 0, IP4(10,0,1,254), IP4(255,255,255,0), IP4(0,0,0,0));
-    wolfIP_ipconfig_set_ex(router_stack, 1, IP4(10,0,2,1), IP4(255,255,255,0), IP4(0,0,0,0));
-    wolfIP_ipconfig_set(server_stack, IP4(10,0,2,2), IP4(255,255,255,0), IP4(10,0,2,1));
-
-    /* Pre-populate ARP entries so forwarding can proceed immediately */
-    inject_arp_reply(client_stack, 0, mac_router0, IP4(10,0,1,254), mac_client, IP4(10,0,1,2));
-    inject_arp_reply(router_stack, 0, mac_client, IP4(10,0,1,2), mac_router0, IP4(10,0,1,254));
-    inject_arp_reply(router_stack, 1, mac_server, IP4(10,0,2,2), mac_router1, IP4(10,0,2,1));
-    inject_arp_reply(server_stack, 0, mac_router1, IP4(10,0,2,1), mac_server, IP4(10,0,2,2));
-
-    if (server_setup(server_stack) < 0) {
-        fprintf(stderr, "failed to set up server\n");
-        ret = 1;
-        goto cleanup;
+    ssl = wolfSSL_new(ctx);
+    if (!ssl) {
+        fprintf(stderr, "linux client: failed to allocate ssl object\n");
+        goto out;
     }
 
-    if (client_start(client_stack, IP4(10,0,2,2)) < 0) {
-        fprintf(stderr, "failed to start client\n");
-        ret = 1;
-        goto cleanup;
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        goto out;
+    }
+    wolfSSL_set_fd(ssl, fd);
+
+    for (int attempt = 0; attempt < 50; attempt++) {
+        int cret;
+        cret = connect(fd, (struct sockaddr *)&remote, sizeof(remote));
+        if (cret == 0) {
+            connected = 1;
+            printf("TLS client: TCP connected\n");
+            break;
+        }
+        if (errno == EINPROGRESS) {
+            if (wolfSSL_get_using_nonblock(ssl) == 0)
+                wolfSSL_set_using_nonblock(ssl, 1);
+            if (poll(&(struct pollfd){ .fd = fd, .events = POLLOUT }, 1, 100) > 0) {
+                socklen_t errlen = sizeof(err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) == 0 && err == 0) {
+                    connected = 1;
+                    printf("TLS client: TCP connect completed after wait\n");
+                    break;
+                }
+            }
+            continue;
+        }
+        if (errno == ECONNREFUSED || errno == ENETUNREACH || errno == ETIMEDOUT) {
+            usleep(100000);
+            continue;
+        }
+        perror("connect");
+        goto out;
     }
 
-    router_running = 1;
-    if (pthread_create(&th_router, NULL, poll_thread, router_stack) != 0) {
-        fprintf(stderr, "failed to start router thread\n");
-        ret = 1;
-        goto cleanup;
-    }
-    if (pthread_create(&th_server, NULL, poll_thread, server_stack) != 0) {
-        fprintf(stderr, "failed to start server thread\n");
-        ret = 1;
-        goto cleanup;
-    }
-    if (pthread_create(&th_client, NULL, poll_thread, client_stack) != 0) {
-        fprintf(stderr, "failed to start client thread\n");
-        ret = 1;
-        goto cleanup;
+    if (!connected) {
+        fprintf(stderr, "linux client: unable to connect after retries\n");
+        goto out;
     }
 
+    while (1) {
+        int hret = wolfSSL_connect(ssl);
+        if (hret == SSL_SUCCESS) {
+            printf("TLS client: TLS handshake complete\n");
+            break;
+        }
+        err = wolfSSL_get_error(ssl, hret);
+        if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
+            usleep(1000);
+            continue;
+        }
+        fprintf(stderr, "linux client: handshake failed (%d)\n", err);
+        goto out;
+    }
 
-cleanup:
-    pthread_join(th_server, NULL);
+    for (size_t i = 0; i < sizeof(tx); i += 16)
+        memcpy(tx + i, "Test pattern - -", 16);
 
-    printf("Test result: %s\n", ret == 0 ? "SUCCESS" : "FAIL");
+    while (sent < sizeof(tx)) {
+        int wrote = wolfSSL_write(ssl, tx + sent, (int)(sizeof(tx) - sent));
+        if (wrote > 0) {
+            sent += (size_t)wrote;
+            continue;
+        }
+        err = wolfSSL_get_error(ssl, wrote);
+        if (err == WOLFSSL_ERROR_WANT_WRITE || err == WOLFSSL_ERROR_WANT_READ) {
+            usleep(1000);
+            continue;
+        }
+        fprintf(stderr, "linux client: write failed (%d)\n", err);
+        goto out;
+    }
+    printf("TLS client: wrote %d bytes\n", TEST_PAYLOAD);
+
+    while (received < sizeof(rx)) {
+        int got = wolfSSL_read(ssl, rx + received, (int)(sizeof(rx) - received));
+        if (got > 0) {
+            received += (size_t)got;
+            continue;
+        }
+        if (got == 0) {
+            fprintf(stderr, "linux client: unexpected eof\n");
+            goto out;
+        }
+        err = wolfSSL_get_error(ssl, got);
+        if (err == WOLFSSL_ERROR_WANT_READ) {
+            usleep(1000);
+            continue;
+        }
+        fprintf(stderr, "linux client: read failed (%d)\n", err);
+        goto out;
+    }
+    printf("TLS client: read %d bytes\n", TEST_PAYLOAD);
+
+    if (memcmp(tx, rx, sizeof(tx)) != 0) {
+        fprintf(stderr, "linux client: payload mismatch\n");
+        goto out;
+    }
+
+    printf("TLS client: verified %d-byte echo\n", TEST_PAYLOAD);
+    ret = 0;
+
+out:
+    if (ssl) {
+        wolfSSL_shutdown(ssl);
+        wolfSSL_free(ssl);
+    }
+    if (ctx)
+        wolfSSL_CTX_free(ctx);
+    if (fd >= 0)
+        close(fd);
     return ret;
 }
-#include <arpa/inet.h>
+
+/* ------------------------------------------------------------------------- */
+/* ARP helper                                                                */
+/* ------------------------------------------------------------------------- */
+
 #define TEST_PACKED __attribute__((packed))
 
 struct TEST_PACKED test_arp_packet {
@@ -621,10 +527,160 @@ static void inject_arp_reply(struct wolfIP *stack, unsigned int if_idx,
     pkt.ptype = htons(0x0800);
     pkt.hlen = 6;
     pkt.plen = 4;
-    pkt.opcode = htons(2); /* reply */
+    pkt.opcode = htons(2);
     memcpy(pkt.sma, src_mac, 6);
     pkt.sip = htonl(src_ip);
     memcpy(pkt.tma, dst_mac, 6);
     pkt.tip = htonl(dst_ip);
     wolfIP_recv_ex(stack, if_idx, &pkt, sizeof(pkt));
+}
+
+/* ------------------------------------------------------------------------- */
+/* Main                                                                      */
+/* ------------------------------------------------------------------------- */
+
+int main(void)
+{
+    static const uint8_t mac_router1[6] = {0x02, 0x00, 0x00, 0x00, 0x02, 0xFE};
+    static const uint8_t mac_server[6] = {0x02, 0x00, 0x00, 0x00, 0x02, 0x10};
+    struct mem_link link_router_server;
+    struct wolfIP_ll_dev *tap_dev = NULL;
+    size_t stack_sz;
+    int ret = 0;
+    int router_started = 0;
+    int server_started = 0;
+    char route_cmd[128] = {0};
+    char route_del_cmd[128] = {0};
+    struct in_addr host_addr = { .s_addr = htonl(host_ip4) };
+    uint8_t host_mac[6];
+    char host_str[16];
+    char lan_str[16];
+    char wan_str[16];
+    char srv_str[16];
+
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    mem_link_init(&link_router_server);
+
+    wolfSSL_Init();
+    wolfSSL_Debugging_OFF();
+
+    ip4_to_str(host_ip4, host_str, sizeof(host_str));
+    ip4_to_str(router_lan_ip4, lan_str, sizeof(lan_str));
+    ip4_to_str(router_wan_ip4, wan_str, sizeof(wan_str));
+    ip4_to_str(server_ip4, srv_str, sizeof(srv_str));
+    printf("Configuration: host=%s router_lan=%s router_wan=%s server=%s\n",
+            host_str, lan_str, wan_str, srv_str);
+
+    stack_sz = wolfIP_instance_size();
+    router_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    server_stack = (struct wolfIP *)XMALLOC(stack_sz, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (!router_stack || !server_stack) {
+        fprintf(stderr, "failed to allocate stacks\n");
+        ret = 1;
+        goto cleanup;
+    }
+    XMEMSET(router_stack, 0, stack_sz);
+    XMEMSET(server_stack, 0, stack_sz);
+    wolfIP_init(router_stack);
+    wolfIP_init(server_stack);
+
+    tap_dev = wolfIP_getdev(router_stack);
+    if (!tap_dev) {
+        fprintf(stderr, "failed to obtain router interface 0\n");
+        ret = 1;
+        goto cleanup;
+    }
+    if (tap_init(tap_dev, TAP_IFNAME, host_addr.s_addr) < 0) {
+        perror("tap_init");
+        ret = 1;
+        goto cleanup;
+    }
+    memcpy(host_mac, tap_dev->mac, sizeof(host_mac));
+    host_mac[5] ^= 1;
+
+    mem_link_attach(wolfIP_getdev_ex(router_stack, 1), &link_router_server, 0,
+            "rt1", mac_router1);
+    mem_link_attach(wolfIP_getdev(server_stack), &link_router_server, 1,
+            "srv0", mac_server);
+
+    wolfIP_ipconfig_set_ex(router_stack, 0, router_lan_ip4, IP4(255,255,255,0), IP4(0,0,0,0));
+    wolfIP_ipconfig_set_ex(router_stack, 1, router_wan_ip4, IP4(255,255,255,0), IP4(0,0,0,0));
+    wolfIP_ipconfig_set(server_stack, server_ip4, IP4(255,255,255,0), router_wan_ip4);
+
+    inject_arp_reply(router_stack, 1, mac_server, server_ip4, mac_router1, router_wan_ip4);
+    inject_arp_reply(server_stack, 0, mac_router1, router_wan_ip4, mac_server, server_ip4);
+    inject_arp_reply(router_stack, 0, host_mac, host_ip4, tap_dev->mac, router_lan_ip4);
+
+    if (server_setup(server_stack) < 0) {
+        fprintf(stderr, "failed to set up server\n");
+        ret = 1;
+        goto cleanup;
+    }
+
+    router_running = 1;
+    server_done = 0;
+
+    if (pthread_create(&th_router, NULL, poll_thread, router_stack) != 0) {
+        fprintf(stderr, "failed to start router thread\n");
+        ret = 1;
+        goto cleanup;
+    }
+    router_started = 1;
+
+    if (pthread_create(&th_server, NULL, poll_thread, server_stack) != 0) {
+        fprintf(stderr, "failed to start server thread\n");
+        ret = 1;
+        goto cleanup;
+    }
+    server_started = 1;
+
+    snprintf(route_cmd, sizeof(route_cmd),
+            "ip route add %s dev %s via %u.%u.%u.%u 2>/dev/null",
+            HOST_ROUTE, TAP_IFNAME,
+            (router_lan_ip4 >> 24) & 0xFF,
+            (router_lan_ip4 >> 16) & 0xFF,
+            (router_lan_ip4 >> 8) & 0xFF,
+            router_lan_ip4 & 0xFF);
+    snprintf(route_del_cmd, sizeof(route_del_cmd),
+            "ip route del %s dev %s 2>/dev/null",
+            HOST_ROUTE, TAP_IFNAME);
+    if (route_cmd[0])
+        system(route_cmd);
+
+    if (run_linux_tls_client(server_ip4) < 0) {
+        fprintf(stderr, "linux client: test failed\n");
+        ret = 1;
+    }
+
+cleanup:
+    router_running = 0;
+    server_done = 1;
+
+    if (server_started)
+        pthread_join(th_server, NULL);
+    if (router_started)
+        pthread_join(th_router, NULL);
+
+    if (route_del_cmd[0])
+        system(route_del_cmd);
+
+    if (server_ssl) {
+        wolfip_reset_io(server_ssl);
+        wolfSSL_free(server_ssl);
+        server_ssl = NULL;
+    }
+    if (server_ctx) {
+        wolfSSL_CTX_free(server_ctx);
+        server_ctx = NULL;
+    }
+    if (server_listen_fd >= 0 && server_stack)
+        wolfIP_sock_close(server_stack, server_listen_fd);
+    if (router_stack)
+        XFREE(router_stack, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (server_stack)
+        XFREE(server_stack, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+
+    printf("Test result: %s\n", ret == 0 ? "SUCCESS" : "FAIL");
+    return ret;
 }

@@ -540,6 +540,23 @@ struct arp_neighbor {
     uint8_t if_idx;
 };
 
+#ifndef WOLFIP_ARP_PENDING_MAX
+#define WOLFIP_ARP_PENDING_MAX 4
+#endif
+
+struct arp_pending_entry {
+    ip4 dest;
+    uint32_t len;
+    uint8_t if_idx;
+    uint8_t frame[LINK_MTU];
+};
+
+static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac);
+#if WOLFIP_ENABLE_FORWARDING
+static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if, struct wolfIP_ip_packet *ip,
+        uint32_t len, const uint8_t *mac, int broadcast);
+#endif
+
 #endif
 
 struct wolfIP;
@@ -583,6 +600,7 @@ struct wolfIP
         uint64_t last_arp[WOLFIP_MAX_INTERFACES];
         struct arp_neighbor neighbors[MAX_NEIGHBORS];
     } arp;
+    struct arp_pending_entry arp_pending[WOLFIP_ARP_PENDING_MAX];
 #endif
 };
 
@@ -651,8 +669,9 @@ static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 de
             continue;
         if (dest == conf->ip)
             return -1;
-        if (ip_is_local_conf(conf, dest))
+        if (ip_is_local_conf(conf, dest)) {
             return i;
+        }
     }
     return -1;
 }
@@ -705,10 +724,12 @@ static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
             has_gw_fallback = 1;
         }
     }
-    if (has_gw_fallback)
+    if (has_gw_fallback) {
         return gw_fallback;
-    if (has_non_loop)
+    }
+    if (has_non_loop) {
         return first_non_loop;
+    }
     return default_if;
 }
 
@@ -2257,24 +2278,103 @@ int dhcp_client_init(struct wolfIP *s)
 /* ARP */
 #ifdef ETHERNET
 
+#if WOLFIP_ENABLE_FORWARDING
+static void arp_queue_packet(struct wolfIP *s, unsigned int if_idx, ip4 dest,
+        const struct wolfIP_ip_packet *ip, uint32_t len)
+{
+    int slot = -1;
+    int i;
+
+    if (!s || len == 0)
+        return;
+    if (len > LINK_MTU)
+        len = LINK_MTU;
+
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        if (s->arp_pending[i].dest == dest && s->arp_pending[i].if_idx == if_idx) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && s->arp_pending[i].dest == IPADDR_ANY)
+            slot = i;
+    }
+    if (slot < 0)
+        slot = 0;
+
+    memcpy(s->arp_pending[slot].frame, ip, len);
+    s->arp_pending[slot].len = len;
+    s->arp_pending[slot].dest = dest;
+    s->arp_pending[slot].if_idx = (uint8_t)if_idx;
+}
+
+static void arp_flush_pending(struct wolfIP *s, unsigned int if_idx, ip4 ip)
+{
+    uint8_t mac[6];
+    int i;
+
+    if (!s)
+        return;
+    if (arp_lookup(s, if_idx, ip, mac) != 0)
+        return;
+
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        struct arp_pending_entry *pending = &s->arp_pending[i];
+        if (pending->dest != ip || pending->if_idx != if_idx)
+            continue;
+        if (pending->len == 0) {
+            pending->dest = IPADDR_ANY;
+            continue;
+        }
+        if (pending->len > LINK_MTU)
+            pending->len = LINK_MTU;
+        {
+            struct wolfIP_ip_packet *pkt =
+                (struct wolfIP_ip_packet *)pending->frame;
+
+            if (pkt->ttl <= 1) {
+                pending->dest = IPADDR_ANY;
+                pending->len = 0;
+                continue;
+            }
+            pkt->ttl--;
+            pkt->csum = 0;
+            iphdr_set_checksum(pkt);
+            wolfIP_forward_packet(s, if_idx, pkt, pending->len, mac, 0);
+        }
+        pending->dest = IPADDR_ANY;
+        pending->len = 0;
+    }
+}
+#endif /* WOLFIP_ENABLE_FORWARDING */
+
 static void arp_store_neighbor(struct wolfIP *s, unsigned int if_idx, ip4 ip, const uint8_t *mac)
 {
     int i;
+    int stored = 0;
     if (!s)
         return;
     for (i = 0; i < MAX_NEIGHBORS; i++) {
         if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx) {
             memcpy(s->arp.neighbors[i].mac, mac, 6);
-            return;
+            stored = 1;
+            break;
         }
     }
-    for (i = 0; i < MAX_NEIGHBORS; i++) {
-        if (s->arp.neighbors[i].ip == IPADDR_ANY) {
-            s->arp.neighbors[i].ip = ip;
-            s->arp.neighbors[i].if_idx = (uint8_t)if_idx;
-            memcpy(s->arp.neighbors[i].mac, mac, 6);
-            return;
+    if (!stored) {
+        for (i = 0; i < MAX_NEIGHBORS; i++) {
+            if (s->arp.neighbors[i].ip == IPADDR_ANY) {
+                s->arp.neighbors[i].ip = ip;
+                s->arp.neighbors[i].if_idx = (uint8_t)if_idx;
+                memcpy(s->arp.neighbors[i].mac, mac, 6);
+                stored = 1;
+                break;
+            }
         }
+    }
+    if (stored) {
+#if WOLFIP_ENABLE_FORWARDING
+        arp_flush_pending(s, if_idx, ip);
+#endif
     }
 }
 
@@ -2436,23 +2536,21 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_
         }
         if (!is_local) {
             int out_if = wolfIP_forward_interface(s, if_idx, dest);
-            if (out_if > 0) {
+            if (out_if >= 0) {
                 uint8_t mac[6];
                 int broadcast = 0;
-                uint16_t csum;
 
                 if (ip->ttl <= 1) {
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
-                if (!wolfIP_forward_prepare(s, out_if, dest, mac, &broadcast))
+                if (!wolfIP_forward_prepare(s, out_if, dest, mac, &broadcast)) {
+                    arp_queue_packet(s, out_if, dest, ip, len);
                     return;
+                }
                 ip->ttl--;
-                csum = ee16(ip->csum);
-                csum = (uint16_t)(csum + 1);
-                if (csum == 0)
-                    csum = 0xFFFF;
-                ip->csum = ee16(csum);
+                ip->csum = 0;
+                iphdr_set_checksum(ip);
                 wolfIP_forward_packet(s, out_if, ip, len, broadcast ? NULL : mac, broadcast);
                 return;
             }
