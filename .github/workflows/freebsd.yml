@@ -1,0 +1,34 @@
+name: FreeBSD interop tests
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  freebsd_test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run tests on FreeBSD
+        id: test
+        uses: vmactions/freebsd-vm@v1
+        with:
+          copyback: false
+          usesh: true
+          prepare: |
+            set -ex
+            env IGNORE_OSVERSION=yes pkg update -f
+            env IGNORE_OSVERSION=yes pkg install -y gmake gcc wolfssl check vim
+            kldload if_tap || true
+            sysctl net.link.tap.up_on_open=1 || true
+          run: |
+            set -ex
+            cd "${GITHUB_WORKSPACE:-/root/work/github/workspace}"
+            gmake build/test-evloop build/test-wolfssl build/test-ttl-expired unit
+            ./build/test/unit
+            ./build/test-evloop
+            ./build/test-wolfssl
+            ./build/test-ttl-expired

@@ -29,6 +29,6 @@
 
 /* Linux test configuration */
 #define WOLFIP_IP "10.10.10.2"
-#define LINUX_IP "10.10.10.1"
+#define HOST_STACK_IP "10.10.10.1"
 
 #endif

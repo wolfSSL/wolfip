@@ -44,3 +44,15 @@ jobs:
         run: |
           ./build/test-ttl-expired
 
+      - name: Install check
+        run: |
+          sudo apt-get install -y check
+
+      - name: Build unit tests
+        run: |
+          make unit
+
+      - name: Run unit tests
+        run: |
+          build/test/unit
+

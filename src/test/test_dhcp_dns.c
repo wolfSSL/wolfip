@@ -1,4 +1,4 @@
-/* test_linux_dhcp_dns.c
+/* test_dhcp_dns.c
  *
  * Copyright (C) 2024 wolfSSL Inc.
  *
@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include "config.h"
 #include "wolfip.h"
 
@@ -131,8 +133,8 @@ static int test_loop(struct wolfIP *s, int active_close)
     return 0;
 }
 
-/* Test code (Linux side).
- * Thread with echo server to test the client.
+/* Test code (host side).
+ * Provide an echo server to exercise the client path.
  */
 static void *pt_echoserver(void *arg)
 {
@@ -150,7 +152,7 @@ static void *pt_echoserver(void *arg)
         printf("test server socket: %d\n", fd);
         return (void *)-1;
     }
-    local_sock.sin_addr.s_addr = inet_addr(LINUX_IP);
+    local_sock.sin_addr.s_addr = inet_addr(HOST_STACK_IP);
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
     ret = bind(fd, (struct sockaddr *)&local_sock, sizeof(local_sock));
     if (ret < 0) {
@@ -190,7 +192,7 @@ static void *pt_echoserver(void *arg)
 
 
 /* Catch-all function to initialize a new tap device as the network interface.
- * This is defined in port/linux.c
+ * This is defined in port/posix/bsd_socket.c
  * */
 extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
@@ -202,19 +204,19 @@ void test_wolfip_echoclient(struct wolfIP *s)
     /* Client side test: client is closing the connection */
     remote_sock.sin_family = AF_INET;
     remote_sock.sin_port = ee16(8);
-    remote_sock.sin_addr.s_addr = inet_addr(LINUX_IP);
+    remote_sock.sin_addr.s_addr = inet_addr(HOST_STACK_IP);
     printf("TCP client tests\n");
     conn_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     printf("client socket: %04x\n", conn_fd);
     wolfIP_register_callback(s, conn_fd, client_cb, s);
-    printf("Connecting to %s:8\n", LINUX_IP);
+    printf("Connecting to %s:8\n", HOST_STACK_IP);
     wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock, sizeof(remote_sock));
     pthread_create(&pt, NULL, pt_echoserver, (void*)1);
     printf("Starting test: echo client active close\n");
     ret = test_loop(s, 1);
     printf("Test echo client active close: %d\n", ret);
     pthread_join(pt, (void **)&test_ret);
-    printf("Test linux server: %d\n", test_ret);
+        printf("Test host server: %d\n", test_ret);
 
     if (conn_fd >= 0) {
         wolfIP_sock_close(s, conn_fd);
@@ -239,10 +241,13 @@ int main(int argc, char **argv)
     struct wolfIP *s;
     struct wolfIP_ll_dev *tapdev;
     struct timeval tv;
-    struct in_addr linux_ip;
+    struct in_addr host_stack_ip;
     uint32_t srv_ip;
     uint16_t dns_id = 0;
     ip4 ip = 0, nm = 0, gw = 0;
+#ifdef __FreeBSD__
+    char dnsmasq_pid_file[64] = {0};
+#endif
 
     (void)argc;
     (void)argv;
@@ -254,12 +259,61 @@ int main(int argc, char **argv)
     tapdev = wolfIP_getdev(s);
     if (!tapdev)
         return 1;
-    inet_aton(LINUX_IP, &linux_ip);
-    if (tap_init(tapdev, "wtcp0", linux_ip.s_addr) < 0) {
+    inet_aton(HOST_STACK_IP, &host_stack_ip);
+    if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
         return 2;
     }
-    system("tcpdump -i wtcp0 -w test.pcap &");
+    {
+#if !defined(__FreeBSD__) && !defined(__APPLE__)
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "tcpdump -i %s -w test.pcap &", tapdev->ifname);
+        system(cmd);
+#elif defined(__FreeBSD__)
+        char cmd[256];
+        char addr_buf[INET_ADDRSTRLEN];
+        char start_buf[INET_ADDRSTRLEN];
+        char end_buf[INET_ADDRSTRLEN];
+        uint32_t host_ip = ntohl(host_stack_ip.s_addr);
+        uint32_t net = host_ip & 0xFFFFFF00U;
+        uint32_t start = net | 0x14U;
+        uint32_t end = net | 0x28U;
+        struct in_addr tmp;
+
+        inet_ntop(AF_INET, &host_stack_ip, addr_buf, sizeof(addr_buf));
+        tmp.s_addr = htonl(start);
+        inet_ntop(AF_INET, &tmp, start_buf, sizeof(start_buf));
+        tmp.s_addr = htonl(end);
+        inet_ntop(AF_INET, &tmp, end_buf, sizeof(end_buf));
+
+        snprintf(dnsmasq_pid_file, sizeof(dnsmasq_pid_file),
+                "/tmp/dnsmasq-%s.pid", tapdev->ifname);
+        snprintf(cmd, sizeof(cmd),
+                "dnsmasq --interface=%s "
+                "--bind-interfaces "
+                "--listen-address=%s "
+                "--conf-file=/dev/null "
+                "--dhcp-range=%s,%s,255.255.255.0,1h "
+                "--dhcp-option=3,%s "
+                "--dhcp-option=6,%s "
+                "--dhcp-authoritative "
+                "--address=/example.com/%s "
+                "--log-facility=/dev/null "
+                "--pid-file=%s >/dev/null 2>&1 &",
+                tapdev->ifname,
+                addr_buf,
+                start_buf,
+                end_buf,
+                addr_buf,
+                addr_buf,
+                addr_buf,
+                dnsmasq_pid_file);
+        printf("Starting dnsmasq: %s\n", cmd);
+        system(cmd);
+#else
+        (void)tapdev;
+#endif
+    }
 
     gettimeofday(&tv, NULL);
     wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
@@ -288,7 +342,16 @@ int main(int argc, char **argv)
 
     sleep(2);
     sync();
+#if !defined(__FreeBSD__) && !defined(__APPLE__)
     system("killall tcpdump");
+#elif defined(__FreeBSD__)
+    if (dnsmasq_pid_file[0] != '\0') {
+        char stop_cmd[160];
+        snprintf(stop_cmd, sizeof(stop_cmd),
+                "if [ -f %s ]; then kill $(cat %s) >/dev/null 2>&1; rm -f %s; fi",
+                dnsmasq_pid_file, dnsmasq_pid_file, dnsmasq_pid_file);
+        system(stop_cmd);
+    }
+#endif
     return 0;
 }
-

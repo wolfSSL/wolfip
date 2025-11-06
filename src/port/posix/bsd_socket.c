@@ -532,8 +532,8 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
 
 
 /* Catch-all function to initialize a new tap device as the network interface.
- * This is defined in port/linux.c
- * */
+ * Implemented in port/posix/tap_*.c
+ */
 extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
 void *wolfIP_sock_posix_ip_loop(void *arg) {
@@ -552,12 +552,12 @@ void *wolfIP_sock_posix_ip_loop(void *arg) {
 }
 
 void __attribute__((constructor)) init_wolfip_posix() {
-    struct in_addr linux_ip; 
+    struct in_addr host_stack_ip; 
     struct wolfIP_ll_dev *tapdev;
     pthread_t wolfIP_thread;
     if (IPSTACK)
         return;
-    inet_aton(LINUX_IP, &linux_ip);
+    inet_aton(HOST_STACK_IP, &host_stack_ip);
     swap_socketcall(socket, "socket");
     swap_socketcall(bind, "bind");
     swap_socketcall(listen, "listen");
@@ -581,14 +581,13 @@ void __attribute__((constructor)) init_wolfip_posix() {
     pthread_mutex_init(&wolfIP_mutex, NULL);
     wolfIP_init_static(&IPSTACK);
     tapdev = wolfIP_getdev(IPSTACK);
-    if (tap_init(tapdev, "wtcp0", linux_ip.s_addr) < 0) {
+    if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
     }
     wolfIP_ipconfig_set(IPSTACK, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
-            atoip4(LINUX_IP));
+            atoip4(HOST_STACK_IP));
     printf("IP: manually configured - %s\n", WOLFIP_IP);
     sleep(1);
     pthread_create(&wolfIP_thread, NULL, wolfIP_sock_posix_ip_loop, IPSTACK);
     in_the_stack = 0;
 }
-

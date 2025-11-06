@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 OUT_DIR=build/certs
 
@@ -58,4 +58,3 @@ openssl x509 -in "$OUT_DIR/server.crt" -outform DER -out "$OUT_DIR/server.der"
 xxd -i "$OUT_DIR/server.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/build_certs_//g" > "$OUT_DIR/server_cert.c"
 
 echo "==== Done ===="
-
