@@ -341,10 +341,10 @@ static void *poll_thread(void *arg)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Linux TLS client                                                          */
+/* Host TLS client                                                           */
 /* ------------------------------------------------------------------------- */
 
-static int run_linux_tls_client(ip4 server_ip)
+static int run_host_tls_client(ip4 server_ip)
 {
     struct sockaddr_in remote = {
         .sin_family = AF_INET,
@@ -369,14 +369,14 @@ static int run_linux_tls_client(ip4 server_ip)
 
     ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
     if (!ctx) {
-        fprintf(stderr, "linux client: failed to init context\n");
+        fprintf(stderr, "host client: failed to init context\n");
         goto out;
     }
     wolfSSL_CTX_load_verify_buffer(ctx, ca_der, ca_der_len, SSL_FILETYPE_ASN1);
 
     ssl = wolfSSL_new(ctx);
     if (!ssl) {
-        fprintf(stderr, "linux client: failed to allocate ssl object\n");
+        fprintf(stderr, "host client: failed to allocate ssl object\n");
         goto out;
     }
 
@@ -417,7 +417,7 @@ static int run_linux_tls_client(ip4 server_ip)
     }
 
     if (!connected) {
-        fprintf(stderr, "linux client: unable to connect after retries\n");
+        fprintf(stderr, "host client: unable to connect after retries\n");
         goto out;
     }
 
@@ -432,7 +432,7 @@ static int run_linux_tls_client(ip4 server_ip)
             usleep(1000);
             continue;
         }
-        fprintf(stderr, "linux client: handshake failed (%d)\n", err);
+        fprintf(stderr, "host client: handshake failed (%d)\n", err);
         goto out;
     }
 
@@ -450,7 +450,7 @@ static int run_linux_tls_client(ip4 server_ip)
             usleep(1000);
             continue;
         }
-        fprintf(stderr, "linux client: write failed (%d)\n", err);
+        fprintf(stderr, "host client: write failed (%d)\n", err);
         goto out;
     }
     printf("TLS client: wrote %d bytes\n", TEST_PAYLOAD);
@@ -462,7 +462,7 @@ static int run_linux_tls_client(ip4 server_ip)
             continue;
         }
         if (got == 0) {
-            fprintf(stderr, "linux client: unexpected eof\n");
+            fprintf(stderr, "host client: unexpected eof\n");
             goto out;
         }
         err = wolfSSL_get_error(ssl, got);
@@ -470,13 +470,13 @@ static int run_linux_tls_client(ip4 server_ip)
             usleep(1000);
             continue;
         }
-        fprintf(stderr, "linux client: read failed (%d)\n", err);
+        fprintf(stderr, "host client: read failed (%d)\n", err);
         goto out;
     }
     printf("TLS client: read %d bytes\n", TEST_PAYLOAD);
 
     if (memcmp(tx, rx, sizeof(tx)) != 0) {
-        fprintf(stderr, "linux client: payload mismatch\n");
+        fprintf(stderr, "host client: payload mismatch\n");
         goto out;
     }
 
@@ -625,8 +625,8 @@ int main(void)
     if (route_cmd[0])
         system(route_cmd);
 
-    if (run_linux_tls_client(server_ip4) < 0) {
-        fprintf(stderr, "linux client: test failed\n");
+    if (run_host_tls_client(server_ip4) < 0) {
+        fprintf(stderr, "host client: test failed\n");
         ret = 1;
     }
 

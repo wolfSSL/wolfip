@@ -69,7 +69,7 @@ static int test_loop(struct wolfIP *s, int active_close)
 
 
 /* Catch-all function to initialize a new tap device as the network interface.
- * This is defined in port/linux.c
+ * This is defined in port/posix/bsd_socket.c
  * */
 extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
 
@@ -128,7 +128,7 @@ int main(int argc, char **argv)
     struct wolfIP *s;
     struct wolfIP_ll_dev *tapdev;
     struct timeval tv = {0, 0};
-    struct in_addr linux_ip;
+    struct in_addr host_stack_ip;
     uint32_t srv_ip;
     ip4 ip = 0, nm = 0, gw = 0;
 
@@ -145,12 +145,20 @@ int main(int argc, char **argv)
     tapdev = wolfIP_getdev(s);
     if (!tapdev)
         return 1;
-    inet_aton(LINUX_IP, &linux_ip);
-    if (tap_init(tapdev, "wtcp0", linux_ip.s_addr) < 0) {
+    inet_aton(HOST_STACK_IP, &host_stack_ip);
+    if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
         return 2;
     }
-    system("tcpdump -i wtcp0 -w test.pcap &");
+    {
+#if !defined(__FreeBSD__) && !defined(__APPLE__)
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "tcpdump -i %s -w test.pcap &", tapdev->ifname);
+        system(cmd);
+#else
+        (void)tapdev;
+#endif
+    }
 
 #ifdef DHCP
     gettimeofday(&tv, NULL);
@@ -167,7 +175,7 @@ int main(int argc, char **argv)
     srv_ip = htonl(ip);
 #else
     wolfIP_ipconfig_set(s, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
-            atoip4(LINUX_IP));
+            atoip4(HOST_STACK_IP));
     printf("IP: manually configured\n");
     inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
 #endif
@@ -177,7 +185,8 @@ int main(int argc, char **argv)
     test_httpd(s);
     sleep(2);
     sync();
+#if !defined(__FreeBSD__) && !defined(__APPLE__)
     system("killall tcpdump");
+#endif
     return 0;
 }
-

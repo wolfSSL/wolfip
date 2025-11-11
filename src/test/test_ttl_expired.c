@@ -24,6 +24,9 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <net/ethernet.h>
+#ifndef ETH_P_IP
+#define ETH_P_IP ETHERTYPE_IP
+#endif
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>

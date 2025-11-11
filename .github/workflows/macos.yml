@@ -1,0 +1,46 @@
+name: macOS interop tests
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  macos_test:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install make wolfssl check
+
+      - name: Build tests
+        run: |
+          PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH" \
+          gmake build/test-evloop build/test-wolfssl build/test-ttl-expired unit
+
+      - name: Run event loop test
+        run: |
+          sudo PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH" ./build/test-evloop
+        timeout-minutes: 3
+
+      - name: Run wolfSSL interop test
+        run: |
+          sudo PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH" ./build/test-wolfssl
+        timeout-minutes: 3
+
+      - name: Run unit tests
+        run: |
+          ./build/test/unit
+        timeout-minutes: 2
+
+      - name: Run TTL expired test
+        run: |
+          ./build/test-ttl-expired
+        timeout-minutes: 1
