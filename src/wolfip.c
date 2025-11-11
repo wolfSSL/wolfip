@@ -2507,9 +2507,9 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
         arp->sip = ee32(conf->ip);
         arp_store_neighbor(s, if_idx, ee32(arp->sip), arp->sma);
         eth_output_add_header(s, if_idx, arp->tma, &arp->eth, ETH_TYPE_ARP);
-    if (ll->send)
-        ll->send(ll, buf, len);
-}
+        if (ll->send)
+            ll->send(ll, buf, len);
+    }
     if (arp->opcode == ee16(ARP_REPLY)) {
         arp_store_neighbor(s, if_idx, ee32(arp->sip), arp->sma);
     }

@@ -7,73 +7,74 @@ UNAME_S:=$(shell uname -s)
 UNAME_M:=$(shell uname -m)
 UNAME_LC:=$(shell echo $(UNAME_S) | tr 'A-Z' 'a-z')
 ifeq ($(UNAME_S),FreeBSD)
-CFLAGS+=-I/usr/local/include
-LDFLAGS+=-L/usr/local/lib
+  CFLAGS+=-I/usr/local/include
+  LDFLAGS+=-L/usr/local/lib
 endif
 ifeq ($(UNAME_S),Darwin)
-BREW_PREFIX?=$(shell brew --prefix 2>/dev/null)
-ifeq ($(filter command\ line environment,$(origin BREW_PREFIX)),)
-ifeq ($(UNAME_M),arm64)
-ARM_BREW_PREFIX:=$(shell /opt/homebrew/bin/brew --prefix 2>/dev/null)
-ifneq ($(ARM_BREW_PREFIX),)
-BREW_PREFIX:=$(ARM_BREW_PREFIX)
-endif
-endif
-endif
-ifeq ($(BREW_PREFIX),)
-BREW_PREFIX:=/opt/homebrew
+  BREW_PREFIX?=$(shell brew --prefix 2>/dev/null)
+  ifeq ($(filter command\ line environment,$(origin BREW_PREFIX)),)
+    ifeq ($(UNAME_M),arm64)
+      ARM_BREW_PREFIX:=$(shell /opt/homebrew/bin/brew --prefix 2>/dev/null)
+      ifneq ($(ARM_BREW_PREFIX),)
+        BREW_PREFIX:=$(ARM_BREW_PREFIX)
+      endif
+    endif
+  endif
+  ifeq ($(BREW_PREFIX),)
+    BREW_PREFIX:=/opt/homebrew
+  endif
+  WOLFSSL_PREFIX?=$(shell brew --prefix wolfssl 2>/dev/null)
+  ifeq ($(filter command\ line environment,$(origin WOLFSSL_PREFIX)),)
+    ifeq ($(UNAME_M),arm64)
+      ARM_WOLFSSL_PREFIX:=$(shell /opt/homebrew/bin/brew --prefix wolfssl 2>/dev/null)
+      ifneq ($(ARM_WOLFSSL_PREFIX),)
+        WOLFSSL_PREFIX:=$(ARM_WOLFSSL_PREFIX)
+      endif
+    endif
+  endif
+  ifneq ($(WOLFSSL_PREFIX),)
+    CFLAGS+=-I$(WOLFSSL_PREFIX)/include
+    LDFLAGS+=-L$(WOLFSSL_PREFIX)/lib
+  endif
+  CHECK_PREFIX?=$(shell brew --prefix check 2>/dev/null)
+  ifeq ($(filter command\ line environment,$(origin CHECK_PREFIX)),)
+    ifeq ($(UNAME_M),arm64)
+      ARM_CHECK_PREFIX:=$(shell /opt/homebrew/bin/brew --prefix check 2>/dev/null)
+      ifneq ($(ARM_CHECK_PREFIX),)
+        CHECK_PREFIX:=$(ARM_CHECK_PREFIX)
+      endif
+    endif
+  endif
+  ifeq ($(CHECK_PREFIX),)
+    CHECK_PREFIX:=$(BREW_PREFIX)
+  endif
+  ifneq ($(CHECK_PREFIX),)
+    UNIT_CFLAGS+=-I$(CHECK_PREFIX)/include
+    UNIT_LDFLAGS+=-L$(CHECK_PREFIX)/lib
+  endif
 endif
 
-WOLFSSL_PREFIX?=$(shell brew --prefix wolfssl 2>/dev/null)
-ifeq ($(filter command\ line environment,$(origin WOLFSSL_PREFIX)),)
-ifeq ($(UNAME_M),arm64)
-ARM_WOLFSSL_PREFIX:=$(shell /opt/homebrew/bin/brew --prefix wolfssl 2>/dev/null)
-ifneq ($(ARM_WOLFSSL_PREFIX),)
-WOLFSSL_PREFIX:=$(ARM_WOLFSSL_PREFIX)
-endif
-endif
-endif
-ifneq ($(WOLFSSL_PREFIX),)
-CFLAGS+=-I$(WOLFSSL_PREFIX)/include
-LDFLAGS+=-L$(WOLFSSL_PREFIX)/lib
-endif
-CHECK_PREFIX?=$(shell brew --prefix check 2>/dev/null)
-ifeq ($(filter command\ line environment,$(origin CHECK_PREFIX)),)
-ifeq ($(UNAME_M),arm64)
-ARM_CHECK_PREFIX:=$(shell /opt/homebrew/bin/brew --prefix check 2>/dev/null)
-ifneq ($(ARM_CHECK_PREFIX),)
-CHECK_PREFIX:=$(ARM_CHECK_PREFIX)
-endif
-endif
-endif
-ifeq ($(CHECK_PREFIX),)
-CHECK_PREFIX:=$(BREW_PREFIX)
-endif
-ifneq ($(CHECK_PREFIX),)
-UNIT_CFLAGS+=-I$(CHECK_PREFIX)/include
-UNIT_LDFLAGS+=-L$(CHECK_PREFIX)/lib
-endif
-endif
+
 TAP_SRC:=src/port/posix/tap_$(UNAME_LC).c
 ifeq ($(wildcard $(TAP_SRC)),)
-TAP_SRC:=src/port/posix/tap_linux.c
+  TAP_SRC:=src/port/posix/tap_linux.c
 endif
 TAP_OBJ:=$(patsubst src/%.c,build/%.o,$(TAP_SRC))
 TAP_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(TAP_SRC))
 
 ifeq ($(UNAME_S),Darwin)
-BEGIN_GROUP:=
-END_GROUP:=
+  BEGIN_GROUP:=
+  END_GROUP:=
 else
-BEGIN_GROUP:=-Wl,--start-group
-END_GROUP:=-Wl,--end-group
+  BEGIN_GROUP:=-Wl,--start-group
+  END_GROUP:=-Wl,--end-group
 endif
 
 CHECK_PKG_CFLAGS:=$(shell pkg-config --cflags check 2>/dev/null)
 CHECK_PKG_LIBS:=$(shell pkg-config --libs check 2>/dev/null)
 
 ifneq ($(CHECK_PKG_CFLAGS),)
-UNIT_CFLAGS+=$(CHECK_PKG_CFLAGS)
+  UNIT_CFLAGS+=$(CHECK_PKG_CFLAGS)
 endif
 
 CPPCHECK=cppcheck
@@ -151,14 +152,14 @@ asan:LDFLAGS+=-static-libasan
 # Test
 
 ifeq ($(CHECK_PKG_LIBS),)
-UNIT_LIBS=-lcheck -lm -lpthread -lrt -ldl -lsubunit
-ifeq ($(UNAME_S),Darwin)
-UNIT_LIBS=-lcheck -lm -lpthread
-else ifeq ($(UNAME_S),FreeBSD)
-UNIT_LIBS=-lcheck -lm -lpthread
-endif
+  UNIT_LIBS=-lcheck -lm -lpthread -lrt -ldl -lsubunit
+  ifeq ($(UNAME_S),Darwin)
+    UNIT_LIBS=-lcheck -lm -lpthread
+  else ifeq ($(UNAME_S),FreeBSD)
+    UNIT_LIBS=-lcheck -lm -lpthread
+  endif
 else
-UNIT_LIBS=$(CHECK_PKG_LIBS)
+  UNIT_LIBS=$(CHECK_PKG_LIBS)
 endif
 
 unit:LDFLAGS+=$(UNIT_LIBS)

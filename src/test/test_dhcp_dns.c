@@ -216,7 +216,7 @@ void test_wolfip_echoclient(struct wolfIP *s)
     ret = test_loop(s, 1);
     printf("Test echo client active close: %d\n", ret);
     pthread_join(pt, (void **)&test_ret);
-        printf("Test host server: %d\n", test_ret);
+    printf("Test host server: %d\n", test_ret);
 
     if (conn_fd >= 0) {
         wolfIP_sock_close(s, conn_fd);
