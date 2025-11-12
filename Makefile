@@ -97,6 +97,9 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 OBJ=build/wolfip.o \
 	$(TAP_OBJ)
 
+IPFILTER_OBJ=build/ipfilter/wolfip.o \
+	$(TAP_OBJ)
+
 HAVE_WOLFSSL:=$(shell printf "#include <wolfssl/options.h>\nint main(void){return 0;}\n" | $(CC) $(CFLAGS) -x c - -c -o /dev/null 2>/dev/null && echo 1)
 
 # Require wolfSSL unless the requested goals are wolfSSL-independent (unit/cppcheck/clean).
@@ -115,7 +118,8 @@ endif
 
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
-	build/test-ttl-expired build/test-wolfssl build/test-httpd
+	build/test-ttl-expired build/test-wolfssl build/test-httpd \
+	build/ipfilter-logger
 LIB=libwolfip.so
 
 PREFIX=/usr/local
@@ -191,6 +195,17 @@ build/test-wolfssl-forwarding:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP 
 build/test-wolfssl: $(OBJ) build/test/test_native_wolfssl.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+
+build/ipfilter-logger: $(IPFILTER_OBJ) build/test/ipfilter_logger.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+
+build/ipfilter/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (ipfilter)"
+	@$(CC) $(CFLAGS) -DCONFIG_IPFILTER=1 -c $< -o $@
+
+build/test/ipfilter_logger.o: CFLAGS+=-DCONFIG_IPFILTER=1
 
 build/test-wolfssl-forwarding: build/test/test_wolfssl_forwarding.o build/test/wolfip_forwarding.o $(TAP_OBJ) build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"

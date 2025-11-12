@@ -12,11 +12,28 @@ typedef uint32_t ip4;
 #define ee32(x) __builtin_bswap32(x)
 #define DEBUG
 
+#ifndef WOLFIP_EAGAIN
+#ifdef EAGAIN
+#define WOLFIP_EAGAIN EAGAIN
+#else
+#define WOLFIP_EAGAIN (11)
+#endif
+#endif
+
 #ifndef WOLFIP_EINVAL
+#ifdef EINVAL
+#define WOLFIP_EINVAL EINVAL
+#else
 #define WOLFIP_EINVAL (22)
 #endif
-#ifndef WOLFIP_EAGAIN
-#define WOLFIP_EAGAIN (11)
+#endif
+
+#ifndef WOLFIP_EACCES
+#ifdef EACCES
+#define WOLFIP_EACCES EACCES
+#else
+#define WOLFIP_EACCES (13)
+#endif
 #endif
 
 
@@ -113,6 +130,10 @@ int dhcp_bound(struct wolfIP *s);
 /* DNS client */
 
 int nslookup(struct wolfIP *s, const char *name, uint16_t *id, void (*lookup_cb)(uint32_t ip));
+
+#if CONFIG_IPFILTER
+#include "wolfip-filter.h"
+#endif
 
 /* IP stack interface */
 void wolfIP_init(struct wolfIP *s);
