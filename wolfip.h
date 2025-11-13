@@ -165,7 +165,7 @@ static inline uint32_t atou(const char *s)
 {
     uint32_t ret = 0;
     while (*s >= '0' && *s <= '9') {
-        ret = ret * 10 + (*s - '0');
+        ret = (ret * 10u) + (uint32_t)(*s - '0');
         s++;
     }
     return ret;
@@ -191,9 +191,9 @@ static inline void iptoa(ip4 ip, char *buf)
     buf[0] = 0;
     for (i = 0; i < 4; i++) {
         uint8_t x = (ip >> (24 - i * 8)) & 0xFF;
-        if (x > 99) buf[j++] = x / 100 + '0';
-        if (x > 9) buf[j++] = (x / 10) % 10 + '0';
-        buf[j++] = x % 10 + '0';
+        if (x > 99) buf[j++] = (char)(x / 100 + '0');
+        if (x > 9) buf[j++] = (char)(((x / 10) % 10) + '0');
+        buf[j++] = (char)((x % 10) + '0');
         if (i < 3) buf[j++] = '.';
     }
     buf[j] = 0;

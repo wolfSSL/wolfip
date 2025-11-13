@@ -980,14 +980,16 @@ static int wolfIP_filter_notify_socket_event(
     meta.src_ip = ee32(local_ip);
     meta.dst_ip = ee32(remote_ip);
     if (ts) {
-        meta.ip_proto = (uint8_t)ts->proto;
         if (ts->proto == WI_IPPROTO_TCP) {
+            meta.ip_proto = WOLFIP_FILTER_PROTO_TCP;
             meta.l4.tcp.src_port = ee16(local_port);
             meta.l4.tcp.dst_port = ee16(remote_port);
         } else if (ts->proto == WI_IPPROTO_UDP) {
+            meta.ip_proto = WOLFIP_FILTER_PROTO_UDP;
             meta.l4.udp.src_port = ee16(local_port);
             meta.l4.udp.dst_port = ee16(remote_port);
-        }
+        } else
+            meta.ip_proto = 0;
     }
 
     return wolfIP_filter_dispatch(reason, s, if_idx, NULL, 0, &meta);
