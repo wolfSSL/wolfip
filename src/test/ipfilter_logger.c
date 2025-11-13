@@ -78,20 +78,38 @@ static void ip_to_str(uint32_t net_ip, char *buf, size_t len)
     buf[len - 1] = '\0';
 }
 
-static void log_ports(uint8_t proto, const struct wolfIP_filter_metadata *meta)
+static const char *proto_to_name(uint16_t proto)
+{
+    switch (proto) {
+    case WOLFIP_FILTER_PROTO_ETH:
+        return "ETH";
+    case WOLFIP_FILTER_PROTO_IP:
+        return "IP";
+    case WOLFIP_FILTER_PROTO_TCP:
+        return "TCP";
+    case WOLFIP_FILTER_PROTO_UDP:
+        return "UDP";
+    case WOLFIP_FILTER_PROTO_ICMP:
+        return "ICMP";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void log_ports(uint16_t proto, const struct wolfIP_filter_metadata *meta)
 {
     if (proto == 0)
         return;
-    if (proto == WI_IPPROTO_TCP) {
+    if (proto == WOLFIP_FILTER_PROTO_TCP) {
         printf(" tcp=%u->%u flags=0x%02x",
-               ee16(meta->l4.tcp.src_port),
-               ee16(meta->l4.tcp.dst_port),
+               ntohs(meta->l4.tcp.src_port),
+               ntohs(meta->l4.tcp.dst_port),
                meta->l4.tcp.flags);
-    } else if (proto == WI_IPPROTO_UDP) {
+    } else if (proto == WOLFIP_FILTER_PROTO_UDP) {
         printf(" udp=%u->%u",
-               ee16(meta->l4.udp.src_port),
-               ee16(meta->l4.udp.dst_port));
-    } else if (proto == WI_IPPROTO_ICMP) {
+               ntohs(meta->l4.udp.src_port),
+               ntohs(meta->l4.udp.dst_port));
+    } else if (proto == WOLFIP_FILTER_PROTO_ICMP) {
         printf(" icmp type=%u code=%u",
                meta->l4.icmp.type,
                meta->l4.icmp.code);
@@ -107,16 +125,16 @@ static int filter_logger_cb(void *arg, const struct wolfIP_filter_event *event)
     mac_to_str(event->meta.src_mac, src_mac, sizeof(src_mac));
     mac_to_str(event->meta.dst_mac, dst_mac, sizeof(dst_mac));
 
-    printf("[ipfilter] reason=%s if=%u len=%" PRIu32
-           " ip=%s->%s mac=%s->%s proto=%u",
+    printf("[ipfilter] %s reason=%s if=%u len=%" PRIu32
+           " ip=%s->%s mac=%s->%s",
+           proto_to_name(event->meta.ip_proto),
            filter_reason_str(event->reason),
            event->if_idx,
            event->length,
            src_ip,
            dst_ip,
            src_mac,
-           dst_mac,
-           event->meta.ip_proto);
+           dst_mac);
     log_ports(event->meta.ip_proto, &event->meta);
     printf("\n");
 

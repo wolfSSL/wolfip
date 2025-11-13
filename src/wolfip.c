@@ -443,6 +443,11 @@ struct PACKED wolfIP_icmp_ttl_exceeded_packet {
 static wolfIP_filter_cb wolfip_filter_cb;
 static void *wolfip_filter_arg;
 static uint32_t wolfip_filter_mask;
+static uint32_t wolfip_filter_mask_eth;
+static uint32_t wolfip_filter_mask_ip;
+static uint32_t wolfip_filter_mask_tcp;
+static uint32_t wolfip_filter_mask_udp;
+static uint32_t wolfip_filter_mask_icmp;
 static int wolfip_filter_lock;
 
 void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg)
@@ -456,6 +461,31 @@ void wolfIP_filter_set_mask(uint32_t mask)
     wolfip_filter_mask = mask;
 }
 
+void wolfIP_filter_set_eth_mask(uint32_t mask)
+{
+    wolfip_filter_mask_eth = mask;
+}
+
+void wolfIP_filter_set_ip_mask(uint32_t mask)
+{
+    wolfip_filter_mask_ip = mask;
+}
+
+void wolfIP_filter_set_tcp_mask(uint32_t mask)
+{
+    wolfip_filter_mask_tcp = mask;
+}
+
+void wolfIP_filter_set_udp_mask(uint32_t mask)
+{
+    wolfip_filter_mask_udp = mask;
+}
+
+void wolfIP_filter_set_icmp_mask(uint32_t mask)
+{
+    wolfip_filter_mask_icmp = mask;
+}
+
 uint32_t wolfIP_filter_get_mask(void)
 {
     return wolfip_filter_mask;
@@ -466,14 +496,37 @@ static void wolfIP_filter_init_metadata(struct wolfIP_filter_metadata *meta)
     memset(meta, 0, sizeof(*meta));
 }
 
+static uint32_t wolfIP_filter_mask_for_proto(uint16_t proto)
+{
+    switch (proto) {
+    case WOLFIP_FILTER_PROTO_ETH:
+        return wolfip_filter_mask_eth ? wolfip_filter_mask_eth : wolfip_filter_mask;
+    case WOLFIP_FILTER_PROTO_IP:
+        return wolfip_filter_mask_ip ? wolfip_filter_mask_ip : wolfip_filter_mask;
+    case WOLFIP_FILTER_PROTO_TCP:
+        return wolfip_filter_mask_tcp ? wolfip_filter_mask_tcp : wolfip_filter_mask;
+    case WOLFIP_FILTER_PROTO_UDP:
+        return wolfip_filter_mask_udp ? wolfip_filter_mask_udp : wolfip_filter_mask;
+    case WOLFIP_FILTER_PROTO_ICMP:
+        return wolfip_filter_mask_icmp ? wolfip_filter_mask_icmp : wolfip_filter_mask;
+    default:
+        return wolfip_filter_mask;
+    }
+}
+
 static int wolfIP_filter_dispatch(enum wolfIP_filter_reason reason, struct wolfIP *s, unsigned int if_idx, const void *buffer, uint32_t length, const struct wolfIP_filter_metadata *meta)
 {
     struct wolfIP_filter_event event;
     int ret;
+    uint32_t mask;
 
     if (!wolfip_filter_cb)
         return 0;
-    if ((wolfip_filter_mask & (1U << reason)) == 0)
+    if (!meta)
+        mask = wolfip_filter_mask;
+    else
+        mask = wolfIP_filter_mask_for_proto(meta->ip_proto);
+    if ((mask & (1U << reason)) == 0)
         return 0;
     if (wolfip_filter_lock)
         return 0;
@@ -504,6 +557,7 @@ static int wolfIP_filter_notify_eth(enum wolfIP_filter_reason reason, struct wol
     memcpy(meta.src_mac, eth->src, sizeof(meta.src_mac));
     memcpy(meta.dst_mac, eth->dst, sizeof(meta.dst_mac));
     meta.eth_type = eth->type;
+    meta.ip_proto = WOLFIP_FILTER_PROTO_ETH;
 
     return wolfIP_filter_dispatch(reason, s, if_idx, eth, len, &meta);
 }
@@ -515,7 +569,10 @@ static void wolfIP_filter_fill_ip_metadata(struct wolfIP_filter_metadata *meta, 
 {
     meta->src_ip = ip->src;
     meta->dst_ip = ip->dst;
-    meta->ip_proto = ip->proto;
+    meta->ip_proto = (ip->proto == WI_IPPROTO_TCP) ? WOLFIP_FILTER_PROTO_TCP :
+        (ip->proto == WI_IPPROTO_UDP) ? WOLFIP_FILTER_PROTO_UDP :
+        (ip->proto == WI_IPPROTO_ICMP) ? WOLFIP_FILTER_PROTO_ICMP :
+        WOLFIP_FILTER_PROTO_IP;
 #ifdef ETHERNET
     memcpy(meta->src_mac, ip->eth.src, sizeof(meta->src_mac));
     memcpy(meta->dst_mac, ip->eth.dst, sizeof(meta->dst_mac));
@@ -529,6 +586,10 @@ static int wolfIP_filter_notify_ip(enum wolfIP_filter_reason reason, struct wolf
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, ip);
+    if (meta.ip_proto == WOLFIP_FILTER_PROTO_TCP ||
+        meta.ip_proto == WOLFIP_FILTER_PROTO_UDP ||
+        meta.ip_proto == WOLFIP_FILTER_PROTO_ICMP)
+        meta.ip_proto = WOLFIP_FILTER_PROTO_IP;
 
     return wolfIP_filter_dispatch(reason, s, if_idx, ip, len, &meta);
 }
@@ -539,6 +600,7 @@ static int wolfIP_filter_notify_tcp(enum wolfIP_filter_reason reason, struct wol
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, &tcp->ip);
+    meta.ip_proto = WOLFIP_FILTER_PROTO_TCP;
     meta.l4.tcp.src_port = tcp->src_port;
     meta.l4.tcp.dst_port = tcp->dst_port;
     meta.l4.tcp.flags = tcp->flags;
@@ -552,6 +614,7 @@ static int wolfIP_filter_notify_udp(enum wolfIP_filter_reason reason, struct wol
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, &udp->ip);
+    meta.ip_proto = WOLFIP_FILTER_PROTO_UDP;
     meta.l4.udp.src_port = udp->src_port;
     meta.l4.udp.dst_port = udp->dst_port;
 
@@ -564,6 +627,7 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason, struct wo
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, &icmp->ip);
+    meta.ip_proto = WOLFIP_FILTER_PROTO_ICMP;
     meta.l4.icmp.type = icmp->type;
     meta.l4.icmp.code = icmp->code;
 

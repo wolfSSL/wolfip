@@ -25,13 +25,19 @@ enum wolfIP_filter_reason {
 
 #define WOLFIP_FILT_MASK(reason) (1U << (reason))
 
+#define WOLFIP_FILTER_PROTO_ETH  0x008f
+#define WOLFIP_FILTER_PROTO_IP   0x0800
+#define WOLFIP_FILTER_PROTO_TCP  0x0006
+#define WOLFIP_FILTER_PROTO_UDP  0x0011
+#define WOLFIP_FILTER_PROTO_ICMP 0x0001
+
 struct wolfIP_filter_metadata {
     uint8_t src_mac[6];
     uint8_t dst_mac[6];
     uint16_t eth_type;
     uint32_t src_ip;
     uint32_t dst_ip;
-    uint8_t ip_proto;
+    uint16_t ip_proto;
     union {
         struct {
             uint16_t src_port;
@@ -62,6 +68,11 @@ typedef int (*wolfIP_filter_cb)(void *arg, const struct wolfIP_filter_event *eve
 
 void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg);
 void wolfIP_filter_set_mask(uint32_t mask);
+void wolfIP_filter_set_eth_mask(uint32_t mask);
+void wolfIP_filter_set_ip_mask(uint32_t mask);
+void wolfIP_filter_set_tcp_mask(uint32_t mask);
+void wolfIP_filter_set_udp_mask(uint32_t mask);
+void wolfIP_filter_set_icmp_mask(uint32_t mask);
 uint32_t wolfIP_filter_get_mask(void);
 
 #endif /* WOLFIP_FILTER_H */
