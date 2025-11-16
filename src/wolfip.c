@@ -733,6 +733,7 @@ struct tsocket {
     } sock;
     uint16_t proto, events;
     ip4 local_ip, remote_ip;
+    ip4 bound_local_ip;
     uint16_t src_port, dst_port;
     struct wolfIP *S;
 #ifdef ETHERNET
@@ -1652,8 +1653,6 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 /* Preselect socket, parse options, manage handshakes, pass to application */
 static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
 {
-    struct ipconf *conf = wolfIP_ipconf_at(S, if_idx);
-    ip4 local_ip = conf ? conf->ip : IPADDR_ANY;
     int i;
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len) != 0)
         return;
@@ -1661,8 +1660,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
         uint32_t tcplen;
         uint32_t iplen;
         struct tsocket *t = &S->tcpsockets[i];
-        if (t->src_port == ee16(tcp->dst_port) &&
-                t->local_ip == ee32(tcp->ip.dst) && t->remote_ip != local_ip) {
+        if (t->src_port == ee16(tcp->dst_port)) {
             t->if_idx = (uint8_t)if_idx;
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
@@ -1671,7 +1669,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             }
 
             if (t->sock.tcp.state > TCP_LISTEN) {
-                if (t->dst_port != ee16(tcp->src_port) || t->remote_ip != ee32(tcp->ip.src)) {
+                if (t->dst_port != ee16(tcp->src_port)) {
                     /* Not the right socket */
                     continue;
                 }
@@ -1712,6 +1710,21 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             /* Check if SYN */
             if (tcp->flags & 0x02) {
                 if (t->sock.tcp.state == TCP_LISTEN) {
+                    ip4 syn_dst = ee32(tcp->ip.dst);
+                    int dst_match = 0;
+                    unsigned int dst_if;
+
+                    if (syn_dst == IPADDR_ANY)
+                        continue;
+                    if (t->bound_local_ip != IPADDR_ANY && t->bound_local_ip != syn_dst)
+                        continue;
+
+                    dst_if = wolfIP_if_for_local_ip(S, syn_dst, &dst_match);
+                    if (!dst_match)
+                        continue;
+
+                    t->local_ip = syn_dst;
+                    t->if_idx = (uint8_t)dst_if;
                     t->sock.tcp.state = TCP_SYN_RCVD;
                     t->sock.tcp.ack = ee32(tcp->seq) + 1;
                     t->sock.tcp.seq = wolfIP_getrandom();
@@ -1852,15 +1865,23 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         ts = &s->udpsockets[sockfd & ~MARK_UDP_SOCKET];
         ts->dst_port = ee16(sin->sin_port);
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
-        if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
-        conf = wolfIP_ipconf_at(s, if_idx);
-        ts->if_idx = (uint8_t)if_idx;
-        if (ts->local_ip == 0 && conf && conf->ip != IPADDR_ANY)
-            ts->local_ip = conf->ip;
-        else if (ts->local_ip == 0) {
-            struct ipconf *primary = wolfIP_primary_ipconf(s);
-            if (primary && primary->ip != IPADDR_ANY)
-                ts->local_ip = primary->ip;
+        if (ts->bound_local_ip != IPADDR_ANY) {
+            int bound_match = 0;
+            unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
+            if (!bound_match)
+                return -WOLFIP_EINVAL;
+            ts->if_idx = (uint8_t)bound_if;
+            ts->local_ip = ts->bound_local_ip;
+        } else {
+            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            conf = wolfIP_ipconf_at(s, if_idx);
+            ts->if_idx = (uint8_t)if_idx;
+            if (conf && conf->ip != IPADDR_ANY)
+                ts->local_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                ts->local_ip = (primary && primary->ip != IPADDR_ANY) ? primary->ip : IPADDR_ANY;
+            }
         }
         return 0;
     }
@@ -1881,17 +1902,26 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         struct ipconf *conf;
         ts->sock.tcp.state = TCP_SYN_SENT;
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
-        if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
-        conf = wolfIP_ipconf_at(s, if_idx);
-        ts->if_idx = (uint8_t)if_idx;
-        if (conf && conf->ip != IPADDR_ANY)
-            ts->local_ip = conf->ip;
-        else {
-            struct ipconf *primary = wolfIP_primary_ipconf(s);
-            if (primary && primary->ip != IPADDR_ANY)
-                ts->local_ip = primary->ip;
-            else
-                ts->local_ip = 0;
+        if (ts->bound_local_ip != IPADDR_ANY) {
+            int bound_match = 0;
+            unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
+            if (!bound_match)
+                return -WOLFIP_EINVAL;
+            ts->if_idx = (uint8_t)bound_if;
+            ts->local_ip = ts->bound_local_ip;
+        } else {
+            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            conf = wolfIP_ipconf_at(s, if_idx);
+            ts->if_idx = (uint8_t)if_idx;
+            if (conf && conf->ip != IPADDR_ANY)
+                ts->local_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    ts->local_ip = primary->ip;
+                else
+                    ts->local_ip = IPADDR_ANY;
+            }
         }
         if (!ts->src_port)
             ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
@@ -1933,6 +1963,9 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             return -1;
 
         if (ts->sock.tcp.state == TCP_SYN_RCVD) {
+            ip4 conn_local = ts->local_ip;
+            uint8_t conn_if = ts->if_idx;
+
             tcp_send_synack(ts);
             newts = tcp_new_socket(s);
             if (!newts)
@@ -1941,8 +1974,9 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->events |= CB_EVENT_WRITABLE;
             newts->callback = ts->callback;
             newts->callback_arg = ts->callback_arg;
-            newts->local_ip = ts->local_ip;
-            newts->if_idx = ts->if_idx;
+            newts->local_ip = conn_local;
+            newts->bound_local_ip = conn_local;
+            newts->if_idx = conn_if;
             newts->remote_ip = ts->remote_ip;
             newts->src_port = ts->src_port;
             newts->dst_port = ts->dst_port;
@@ -1956,6 +1990,15 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             }
             ts->sock.tcp.state = TCP_LISTEN;
             ts->sock.tcp.seq = wolfIP_getrandom();
+            if (ts->bound_local_ip != IPADDR_ANY) {
+                int bound_match = 0;
+                unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
+                ts->if_idx = bound_match ? (uint8_t)bound_if : ts->if_idx;
+                ts->local_ip = ts->bound_local_ip;
+            } else {
+                ts->local_ip = IPADDR_ANY;
+                ts->if_idx = 0;
+            }
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_ACCEPTING, s, newts,
                     newts->local_ip, newts->src_port, newts->remote_ip, newts->dst_port) != 0) {
@@ -2287,6 +2330,14 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             }
             ts->src_port = new_port;
         }
+        ts->if_idx = (bind_ip != IPADDR_ANY) ? (uint8_t)if_idx : 0U;
+        if (bind_ip != IPADDR_ANY) {
+            ts->local_ip = bind_ip;
+        } else {
+            ts->local_ip = IPADDR_ANY;
+        }
+        ts->bound_local_ip = ts->local_ip;
+        ts->src_port = ee16(sin->sin_port);
         return 0;
     } else if (sockfd & MARK_UDP_SOCKET) {
         if ((sockfd & ~MARK_UDP_SOCKET) >= MAX_UDPSOCKETS)
@@ -2319,6 +2370,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 return -1;
             }
         }
+        ts->bound_local_ip = ts->local_ip;
+        ts->src_port = ee16(sin->sin_port);
         return 0;
     } else return -1;
 
@@ -2922,6 +2975,7 @@ struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx)
     return wolfIP_ll_at(s, if_idx);
 }
 
+#ifndef WOLFIP_NOSTATIC
 static struct wolfIP wolfIP_static;
 void wolfIP_init_static(struct wolfIP **s)
 {
@@ -2930,6 +2984,7 @@ void wolfIP_init_static(struct wolfIP **s)
     wolfIP_init(&wolfIP_static);
     *s = &wolfIP_static;
 }
+#endif
 
 size_t wolfIP_instance_size(void)
 {
