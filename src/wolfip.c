@@ -1996,8 +1996,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 ts->if_idx = bound_match ? (uint8_t)bound_if : ts->if_idx;
                 ts->local_ip = ts->bound_local_ip;
             } else {
-                ts->local_ip = IPADDR_ANY;
-                ts->if_idx = 0;
+                ts->local_ip = conn_local;
+                ts->if_idx = conn_if;
             }
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_ACCEPTING, s, newts,
