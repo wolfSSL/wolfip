@@ -1,6 +1,10 @@
 #ifndef WOLF_CONFIG_H
 #define WOLF_CONFIG_H
 
+#ifndef CONFIG_IPFILTER
+#define CONFIG_IPFILTER 0
+#endif
+
 #define ETHERNET
 #define LINK_MTU 1536
 
