@@ -44,7 +44,10 @@
 #include <unistd.h>
 
 #include "config.h"
+#define WOLF_POSIX
+#include "config.h"
 #include "wolfip.h"
+#undef WOLF_POSIX
 
 #ifndef ETHERTYPE_IP
 #define ETHERTYPE_IP 0x0800

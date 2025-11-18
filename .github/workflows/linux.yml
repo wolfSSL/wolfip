@@ -44,6 +44,10 @@ jobs:
         run: |
           ./build/test-ttl-expired
 
+      - name: Testing ICMP socket by stealing system calls in ping
+        run: |
+          sudo LD_PRELOAD=$PWD/libwolfip.so ping -c 5 10.10.10.1
+
       - name: Install check
         run: |
           sudo apt-get install -y check
@@ -55,4 +59,3 @@ jobs:
       - name: Run unit tests
         run: |
           build/test/unit
-

@@ -31,6 +31,11 @@
 #include <sys/time.h>
 #include <poll.h>
 #include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/uio.h>
+#include <limits.h>
 #define WOLF_POSIX
 #include "config.h"
 #include "wolfip.h"
@@ -38,6 +43,41 @@
 static __thread int in_the_stack = 1;
 static struct wolfIP *IPSTACK = NULL;
 pthread_mutex_t wolfIP_mutex;
+
+int wolfIP_sock_poll(struct wolfIP *ipstack, struct pollfd *fds, nfds_t nfds, int timeout);
+
+#if WOLFIP_POSIX_TCPDUMP
+static pid_t tcpdump_pid = -1;
+
+static void wolfIP_stop_tcpdump(void);
+
+static void wolfIP_start_tcpdump(const char *ifname)
+{
+    if (tcpdump_pid > 0 || !ifname || ifname[0] == '\0')
+        return;
+    tcpdump_pid = fork();
+    if (tcpdump_pid == 0) {
+        execlp("tcpdump", "tcpdump", "-i", ifname,
+                "-w", "/tmp/wolfip.pcap", "-U", "-n", NULL);
+        _exit(127);
+    } else if (tcpdump_pid < 0) {
+        perror("tcpdump fork");
+    }
+}
+
+static void wolfIP_stop_tcpdump(void)
+{
+    if (tcpdump_pid > 0) {
+        kill(tcpdump_pid, SIGINT);
+        tcpdump_pid = -1;
+    }
+}
+
+static void wolfIP_stop_tcpdump_atexit(void)
+{
+    wolfIP_stop_tcpdump();
+}
+#endif
 
 /* host_ functions are the original functions from the libc */
 static int (*host_socket  ) (int domain, int type, int protocol) = NULL;
@@ -51,6 +91,8 @@ static ssize_t (*host_read    ) (int sockfd, void *buf, size_t len);
 static ssize_t (*host_sendto  ) (int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *addr, socklen_t addrlen);
 static ssize_t (*host_send    ) (int sockfd, const void *buf, size_t len, int flags);
 static ssize_t (*host_write   ) (int sockfd, const void *buf, size_t len);
+static ssize_t (*host_sendmsg ) (int sockfd, const struct msghdr *msg, int flags);
+static ssize_t (*host_recvmsg ) (int sockfd, struct msghdr *msg, int flags);
 static int (*host_close   ) (int sockfd);
 static int (*host_setsockopt) (int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 static int (*host_getsockopt) (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
@@ -77,7 +119,7 @@ static int (*host_fcntl) (int fd, int cmd, ...);
         return host_##call(fd, ## __VA_ARGS__); \
     } else { \
         pthread_mutex_lock(&wolfIP_mutex); \
-        if ((fd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET)) != 0) { \
+        if ((fd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET | MARK_ICMP_SOCKET)) != 0) { \
             int __wolfip_retval = wolfIP_sock_##call(IPSTACK, fd, ## __VA_ARGS__); \
             if (__wolfip_retval < 0) { \
                 errno = __wolfip_retval; \
@@ -97,7 +139,7 @@ static int (*host_fcntl) (int fd, int cmd, ...);
         return host_##call(fd, ## __VA_ARGS__); \
     } else { \
         pthread_mutex_lock(&wolfIP_mutex); \
-        if ((fd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET)) != 0) { \
+        if ((fd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET | MARK_ICMP_SOCKET)) != 0) { \
             int __wolfip_retval; \
             do { \
                 __wolfip_retval = wolfIP_sock_##call(IPSTACK, fd, ## __VA_ARGS__); \
@@ -119,35 +161,186 @@ static int (*host_fcntl) (int fd, int cmd, ...);
     }
 
 
-int wolfIP_sock_setsockopt(struct wolfIP *ipstack, int fd, int level, int optname, const void *optval, socklen_t optlen) {
-    printf("Intercepted setsockopt\n");
-    (void)ipstack;
-    (void)fd;
-    (void)level;
-    (void)optname;
-    (void)optval;
-    (void)optlen;
-    return 0;
-}
-
-int wolfIP_sock_getsockopt(struct wolfIP *ipstack, int fd, int level, int optname, void *optval, socklen_t *optlen) {
-    printf("Intercepted getsockopt\n");
-    (void)ipstack;
-    (void)fd;
-    (void)level;
-    (void)optname;
-    (void)optval;
-    (void)optlen;
-    return 0;
-}
 
 int wolfIP_sock_fcntl(struct wolfIP *ipstack, int fd, int cmd, int arg) {
-    printf("Intercepted fcntl\n");
     (void)ipstack;
     (void)fd;
     (void)cmd;
     (void)arg;
     return 0;
+}
+
+#define WOLFIP_IOV_STACK_BUF 2048
+
+static int wolfip_calc_msghdr_len(const struct msghdr *msg, size_t *total_len)
+{
+    size_t len = 0;
+    size_t i;
+
+    if (!msg || msg->msg_iovlen == 0 || !msg->msg_iov)
+        return -WOLFIP_EINVAL;
+    for (i = 0; i < msg->msg_iovlen; i++) {
+        const struct iovec *iov = &msg->msg_iov[i];
+        if (!iov)
+            return -WOLFIP_EINVAL;
+        if (!iov->iov_base && iov->iov_len != 0)
+            return -WOLFIP_EINVAL;
+        if (SIZE_MAX - len < iov->iov_len)
+            return -WOLFIP_EINVAL;
+        len += iov->iov_len;
+    }
+    if (total_len)
+        *total_len = len;
+    return 0;
+}
+
+static void wolfip_flatten_iov(uint8_t *dst, const struct msghdr *msg)
+{
+    size_t offset = 0;
+    size_t i;
+
+    if (!dst || !msg)
+        return;
+    for (i = 0; i < msg->msg_iovlen; i++) {
+        const struct iovec *iov = &msg->msg_iov[i];
+        if (!iov || !iov->iov_base || iov->iov_len == 0)
+            continue;
+        memcpy(dst + offset, iov->iov_base, iov->iov_len);
+        offset += iov->iov_len;
+    }
+}
+
+static void wolfip_scatter_iov(const struct msghdr *msg, const uint8_t *src, size_t len)
+{
+    size_t offset = 0;
+    size_t i;
+
+    if (!msg || !msg->msg_iov || !src)
+        return;
+    for (i = 0; i < msg->msg_iovlen && offset < len; i++) {
+        const struct iovec *iov = &msg->msg_iov[i];
+        size_t chunk;
+
+        if (!iov || !iov->iov_base || iov->iov_len == 0)
+            continue;
+        chunk = iov->iov_len;
+        if (chunk > len - offset)
+            chunk = len - offset;
+        memcpy(iov->iov_base, src + offset, chunk);
+        offset += chunk;
+    }
+}
+
+static void wolfip_fill_ttl_control(struct wolfIP *ipstack, int sockfd, struct msghdr *msg)
+{
+    int ttl;
+    int ttl_status;
+    struct cmsghdr *cmsg;
+
+    if (!msg)
+        return;
+    msg->msg_controllen = 0;
+    ttl_status = wolfIP_sock_get_recv_ttl(ipstack, sockfd, &ttl);
+    if (ttl_status <= 0)
+        return;
+    if (!msg->msg_control || msg->msg_controllen < (socklen_t)CMSG_SPACE(sizeof(int)))
+        return;
+    cmsg = (struct cmsghdr *)msg->msg_control;
+    cmsg->cmsg_level = SOL_IP;
+    cmsg->cmsg_type = IP_TTL;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    *((int *)CMSG_DATA(cmsg)) = ttl;
+    msg->msg_controllen = cmsg->cmsg_len;
+}
+
+int wolfIP_sock_sendmsg(struct wolfIP *ipstack, int sockfd, const struct msghdr *msg, int flags)
+{
+    const struct wolfIP_sockaddr *dest = NULL;
+    socklen_t addrlen = 0;
+    size_t total_len = 0;
+    int ret;
+    uint8_t stack_buf[WOLFIP_IOV_STACK_BUF];
+    uint8_t *heap_buf = NULL;
+    const void *payload = NULL;
+
+    if (wolfip_calc_msghdr_len(msg, &total_len) < 0)
+        return -WOLFIP_EINVAL;
+    if (msg->msg_name && msg->msg_namelen > 0) {
+        dest = (const struct wolfIP_sockaddr *)msg->msg_name;
+        addrlen = msg->msg_namelen;
+    }
+    if (msg->msg_iovlen == 1) {
+        payload = msg->msg_iov[0].iov_base;
+    } else if (total_len > 0) {
+        uint8_t *tmp = stack_buf;
+        if (total_len > sizeof(stack_buf)) {
+            heap_buf = (uint8_t *)malloc(total_len);
+            if (!heap_buf)
+                return -WOLFIP_ENOMEM;
+            tmp = heap_buf;
+        }
+        wolfip_flatten_iov(tmp, msg);
+        payload = tmp;
+    }
+
+    ret = wolfIP_sock_sendto(ipstack, sockfd, payload, total_len, flags, dest, addrlen);
+    if (heap_buf)
+        free(heap_buf);
+    return ret;
+}
+
+int wolfIP_sock_recvmsg(struct wolfIP *ipstack, int sockfd, struct msghdr *msg, int flags)
+{
+    struct wolfIP_sockaddr *src = NULL;
+    socklen_t addrlen = 0;
+    size_t total_len = 0;
+    int ret;
+    uint8_t stack_buf[WOLFIP_IOV_STACK_BUF];
+    uint8_t *heap_buf = NULL;
+    uint8_t *buf = NULL;
+    struct pollfd pfd;
+
+    if (wolfip_calc_msghdr_len(msg, &total_len) < 0)
+        return -WOLFIP_EINVAL;
+    if (msg->msg_name && msg->msg_namelen > 0) {
+        src = (struct wolfIP_sockaddr *)msg->msg_name;
+        addrlen = msg->msg_namelen;
+    }
+    if (msg->msg_iovlen == 1) {
+        buf = (uint8_t *)msg->msg_iov[0].iov_base;
+    } else if (total_len > 0) {
+        if (total_len > sizeof(stack_buf)) {
+            heap_buf = (uint8_t *)malloc(total_len);
+            if (!heap_buf)
+                return -WOLFIP_ENOMEM;
+            buf = heap_buf;
+        } else {
+            buf = stack_buf;
+        }
+    }
+
+    pfd.fd = sockfd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    while (1) {
+        ret = wolfIP_sock_recvfrom(ipstack, sockfd, buf ? buf : msg->msg_iov[0].iov_base,
+                total_len, flags, src, src ? &addrlen : NULL);
+        if (ret != -WOLFIP_EAGAIN)
+            break;
+        (void)wolfIP_sock_poll(ipstack, &pfd, 1, -1);
+    }
+    if (ret >= 0 && msg->msg_iovlen > 1) {
+        wolfip_scatter_iov(msg, buf, (size_t)ret);
+    }
+    if (heap_buf)
+        free(heap_buf);
+    if (ret >= 0) {
+        if (src)
+            msg->msg_namelen = addrlen;
+        msg->msg_flags = 0;
+        wolfip_fill_ttl_control(ipstack, sockfd, msg);
+    }
+    return ret;
 }
 
 int fcntl(int fd, int cmd, ...) {
@@ -177,6 +370,7 @@ struct bsd_poll_helper {
 /* Static arrays for poll helpers */
 static struct bsd_poll_helper tcp_pollers[MAX_TCPSOCKETS] = {{0}};
 static struct bsd_poll_helper udp_pollers[MAX_UDPSOCKETS] = {{0}};
+static struct bsd_poll_helper icmp_pollers[MAX_ICMPSOCKETS] = {{0}};
 
 void poller_callback(int fd, uint16_t event, void *arg)
 {
@@ -187,6 +381,8 @@ void poller_callback(int fd, uint16_t event, void *arg)
         poller = &tcp_pollers[fd & ~MARK_TCP_SOCKET];
     else if ((fd & MARK_UDP_SOCKET) != 0)
         poller = &udp_pollers[fd & ~MARK_UDP_SOCKET];
+    else if ((fd & MARK_ICMP_SOCKET) != 0)
+        poller = &icmp_pollers[fd & ~MARK_ICMP_SOCKET];
     else
         return;
     if (poller->fd != fd)
@@ -212,6 +408,7 @@ int wolfIP_sock_poll(struct wolfIP *ipstack, struct pollfd *fds, nfds_t nfds, in
     }
     memset(tcp_pollers, 0, sizeof(tcp_pollers));
     memset(udp_pollers, 0, sizeof(udp_pollers));
+    memset(icmp_pollers, 0, sizeof(icmp_pollers));
     for (i = 0; i < nfds; i++) {
         struct bsd_poll_helper *poller = NULL;
         fd = fds[i].fd;
@@ -220,6 +417,8 @@ int wolfIP_sock_poll(struct wolfIP *ipstack, struct pollfd *fds, nfds_t nfds, in
             poller = &tcp_pollers[fd & ~MARK_TCP_SOCKET];
         else if ((fd & MARK_UDP_SOCKET) != 0)
             poller = &udp_pollers[fd & ~MARK_UDP_SOCKET];
+        else if ((fd & MARK_ICMP_SOCKET) != 0)
+            poller = &icmp_pollers[fd & ~MARK_ICMP_SOCKET];
         else
             continue;
         if (pipe(poller->pipefds) < 0) {
@@ -262,6 +461,16 @@ repeat:
                     continue;
                 if (udp_pollers[j].pipefds[0] == fd) {
                     poller = &udp_pollers[j];
+                    break;
+                }
+            }
+        }
+        if (!poller) {
+            for (j = 0; j < MAX_ICMPSOCKETS; j++) {
+                if (icmp_pollers[j].fd == 0)
+                    continue;
+                if (icmp_pollers[j].pipefds[0] == fd) {
+                    poller = &icmp_pollers[j];
                     break;
                 }
             }
@@ -385,6 +594,33 @@ int wolfIP_sock_select(struct wolfIP *ipstack, int nfds, fd_set *readfds, fd_set
             }
         }
     }
+    for (i = MARK_ICMP_SOCKET; i < nfds && i < (MARK_ICMP_SOCKET | MAX_ICMPSOCKETS); i++) {
+        int icmp_pos = i & (~MARK_ICMP_SOCKET);
+        if (FD_ISSET(i, readfds) || FD_ISSET(i, writefds) || FD_ISSET(i, exceptfds)) {
+            pipe(icmp_pollers[icmp_pos].pipefds);
+            icmp_pollers[icmp_pos].fd = i;
+            icmp_pollers[icmp_pos].events = 0;
+            wolfIP_register_callback(ipstack, i, poller_callback, ipstack);
+            if (readfds && FD_ISSET(i, readfds)) {
+                icmp_pollers[icmp_pos].events |= POLLIN;
+                FD_CLR(i, readfds);
+                FD_SET(icmp_pollers[icmp_pos].pipefds[0], readfds);
+            }
+            if (writefds && FD_ISSET(i, writefds)) {
+                icmp_pollers[icmp_pos].events |= POLLOUT;
+                FD_CLR(i, writefds);
+                FD_SET(icmp_pollers[icmp_pos].pipefds[0], writefds);
+            }
+            if (exceptfds && FD_ISSET(i, exceptfds)) {
+                icmp_pollers[icmp_pos].events |= POLLERR | POLLHUP;
+                FD_CLR(i, exceptfds);
+                FD_SET(icmp_pollers[icmp_pos].pipefds[0], exceptfds);
+            }
+            if (maxfd < icmp_pollers[icmp_pos].pipefds[0]) {
+                maxfd = icmp_pollers[icmp_pos].pipefds[0];
+            }
+        }
+    }
     /* Call the original select */
     pthread_mutex_unlock(&wolfIP_mutex);
     ret = host_select(maxfd + 1, readfds, writefds, exceptfds, timeout);
@@ -432,6 +668,26 @@ int wolfIP_sock_select(struct wolfIP *ipstack, int nfds, fd_set *readfds, fd_set
         host_close(udp_pollers[i].pipefds[1]);
         wolfIP_register_callback(ipstack, tcp_pollers[i].fd, NULL, NULL);
         udp_pollers[i].fd = 0;
+    }
+    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
+        if (icmp_pollers[i].fd == 0) {
+            continue;
+        }
+        if (FD_ISSET(icmp_pollers[i].pipefds[0], readfds)) {
+            char c;
+            read(icmp_pollers[i].pipefds[0], &c, 1);
+            if (readfds && (c == 'r')) {
+                FD_SET(icmp_pollers[i].fd, readfds);
+            } else if (writefds && (c == 'w')) {
+                FD_SET(icmp_pollers[i].fd, writefds);
+            } else if (exceptfds && (c == 'e')) {
+                FD_SET(icmp_pollers[i].fd, exceptfds);
+            }
+        }
+        host_close(icmp_pollers[i].pipefds[0]);
+        host_close(icmp_pollers[i].pipefds[1]);
+        wolfIP_register_callback(ipstack, icmp_pollers[i].fd, NULL, NULL);
+        icmp_pollers[i].fd = 0;
     }
     return ret;
 }
@@ -497,6 +753,10 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
     conditional_steal_blocking_call(recvfrom, sockfd, buf, len, flags, addr, addrlen);
 }
 
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags) {
+    conditional_steal_blocking_call(recvmsg, sockfd, msg, flags);
+}
+
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     conditional_steal_blocking_call(recv, sockfd, buf, len, flags);
 }
@@ -507,6 +767,10 @@ ssize_t read(int sockfd, void *buf, size_t len) {
 
 ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *addr, socklen_t addrlen) {
     conditional_steal_blocking_call(sendto, sockfd, buf, len, flags, addr, addrlen);
+}
+
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
+    conditional_steal_blocking_call(sendmsg, sockfd, msg, flags);
 }
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
@@ -555,6 +819,9 @@ void __attribute__((constructor)) init_wolfip_posix() {
     struct in_addr host_stack_ip; 
     struct wolfIP_ll_dev *tapdev;
     pthread_t wolfIP_thread;
+#if WOLFIP_POSIX_TCPDUMP
+    static int tcpdump_atexit_registered;
+#endif
     if (IPSTACK)
         return;
     inet_aton(HOST_STACK_IP, &host_stack_ip);
@@ -564,7 +831,9 @@ void __attribute__((constructor)) init_wolfip_posix() {
     swap_socketcall(accept, "accept");
     swap_socketcall(connect, "connect");
     swap_socketcall(sendto, "sendto");
+    swap_socketcall(sendmsg, "sendmsg");
     swap_socketcall(recvfrom, "recvfrom");
+    swap_socketcall(recvmsg, "recvmsg");
     swap_socketcall(recv, "recv");
     swap_socketcall(send, "send");
     swap_socketcall(close, "close");
@@ -584,6 +853,13 @@ void __attribute__((constructor)) init_wolfip_posix() {
     if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
     }
+#if WOLFIP_POSIX_TCPDUMP
+    if (!tcpdump_atexit_registered) {
+        atexit(wolfIP_stop_tcpdump_atexit);
+        tcpdump_atexit_registered = 1;
+    }
+    wolfIP_start_tcpdump((tapdev && tapdev->ifname[0]) ? tapdev->ifname : "wtcp0");
+#endif
     wolfIP_ipconfig_set(IPSTACK, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(HOST_STACK_IP));
     printf("IP: manually configured - %s\n", WOLFIP_IP);
