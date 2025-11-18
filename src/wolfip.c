@@ -22,12 +22,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
-#include <unistd.h>
-#ifdef WOLF_POSIX
-#include <poll.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#endif
 #include "wolfip.h"
 #include "config.h"
 
@@ -2407,8 +2401,7 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
     struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
     if (!ts)
         return -WOLFIP_EINVAL;
-#ifdef WOLF_POSIX
-    if (level == SOL_IP && optname == IP_RECVTTL) {
+    if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_RECVTTL) {
         int enable;
         if (!optval || optlen < (socklen_t)sizeof(int))
             return -WOLFIP_EINVAL;
@@ -2416,12 +2409,10 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         ts->recv_ttl = enable ? 1 : 0;
         return 0;
     }
-#else
     (void)level;
     (void)optname;
     (void)optval;
     (void)optlen;
-#endif
     return 0;
 }
 
@@ -2442,22 +2433,19 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
     struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
     if (!ts)
         return -WOLFIP_EINVAL;
-#ifdef WOLF_POSIX
-    if (level == SOL_IP && optname == IP_RECVTTL) {
+    if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_RECVTTL) {
         int value;
         if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
             return -WOLFIP_EINVAL;
-        value = ts->recv_ttl ? 1 : 0;
+        value = ts->recv_ttl ? ts->last_pkt_ttl : 0;
         memcpy(optval, &value, sizeof(int));
         *optlen = sizeof(int);
         return 0;
     }
-#else
     (void)level;
     (void)optname;
     (void)optval;
     (void)optlen;
-#endif
     return 0;
 }
 int wolfIP_sock_close(struct wolfIP *s, int sockfd)

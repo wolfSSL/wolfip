@@ -236,14 +236,16 @@ static void wolfip_fill_ttl_control(struct wolfIP *ipstack, int sockfd, struct m
     int ttl;
     int ttl_status;
     struct cmsghdr *cmsg;
+    socklen_t ctrl_len;
 
     if (!msg)
         return;
+    ctrl_len = msg->msg_controllen;
     msg->msg_controllen = 0;
     ttl_status = wolfIP_sock_get_recv_ttl(ipstack, sockfd, &ttl);
     if (ttl_status <= 0)
         return;
-    if (!msg->msg_control || msg->msg_controllen < (socklen_t)CMSG_SPACE(sizeof(int)))
+    if (!msg->msg_control || ctrl_len < (socklen_t)CMSG_SPACE(sizeof(int)))
         return;
     cmsg = (struct cmsghdr *)msg->msg_control;
     cmsg->cmsg_level = SOL_IP;

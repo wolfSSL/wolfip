@@ -24,6 +24,22 @@ typedef unsigned long size_t;
 #  define __size_t_defined
 #endif
 
+#ifndef WOLFIP_SOL_IP
+#  ifdef SOL_IP
+#    define WOLFIP_SOL_IP SOL_IP
+#  else
+#    define WOLFIP_SOL_IP 0
+#  endif
+#endif
+
+#ifndef WOLFIP_IP_RECVTTL
+#  ifdef IP_RECVTTL
+#    define WOLFIP_IP_RECVTTL IP_RECVTTL
+#  else
+#    define WOLFIP_IP_RECVTTL 12
+#  endif
+#endif
+
 /* Types */
 struct wolfIP;
 typedef uint32_t ip4;
