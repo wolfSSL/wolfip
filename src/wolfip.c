@@ -22,6 +22,12 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#include <unistd.h>
+#ifdef WOLF_POSIX
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#endif
 #include "wolfip.h"
 #include "config.h"
 
@@ -2010,6 +2016,26 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
                 ts->local_ip = primary->ip;
         }
         return 0;
+    } else if (sockfd & MARK_ICMP_SOCKET) {
+        struct ipconf *conf;
+        if ((sockfd & ~MARK_ICMP_SOCKET) >= MAX_ICMPSOCKETS)
+            return -WOLFIP_EINVAL;
+
+        ts = &s->icmpsockets[sockfd & ~MARK_ICMP_SOCKET];
+        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
+            return -WOLFIP_EINVAL;
+        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+        conf = wolfIP_ipconf_at(s, if_idx);
+        ts->if_idx = (uint8_t)if_idx;
+        if (ts->local_ip == 0 && conf && conf->ip != IPADDR_ANY)
+            ts->local_ip = conf->ip;
+        else if (ts->local_ip == 0) {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            if (primary && primary->ip != IPADDR_ANY)
+                ts->local_ip = primary->ip;
+        }
+        return 0;
     }
 
     if ((sockfd & MARK_TCP_SOCKET) == 0)
@@ -2409,10 +2435,6 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         ts->recv_ttl = enable ? 1 : 0;
         return 0;
     }
-    (void)level;
-    (void)optname;
-    (void)optval;
-    (void)optlen;
     return 0;
 }
 
@@ -2442,10 +2464,6 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         *optlen = sizeof(int);
         return 0;
     }
-    (void)level;
-    (void)optname;
-    (void)optval;
-    (void)optlen;
     return 0;
 }
 int wolfIP_sock_close(struct wolfIP *s, int sockfd)
@@ -2647,6 +2665,38 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         }
         ts->bound_local_ip = ts->local_ip;
         ts->src_port = ee16(sin->sin_port);
+        return 0;
+    } else if (sockfd & MARK_ICMP_SOCKET) {
+        if ((sockfd & ~MARK_ICMP_SOCKET) >= MAX_ICMPSOCKETS)
+            return -WOLFIP_EINVAL;
+        ts = &s->icmpsockets[sockfd & ~MARK_ICMP_SOCKET];
+        if (ts->src_port != 0)
+            return -1;
+        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
+            return -1;
+        {
+            ip4 prev_ip = ts->local_ip;
+            uint16_t prev_id = ts->src_port;
+            uint16_t new_id = ee16(sin->sin_port);
+            ts->if_idx = (uint8_t)if_idx;
+            if (bind_ip != IPADDR_ANY)
+                ts->local_ip = bind_ip;
+            else if (conf && conf->ip != IPADDR_ANY)
+                ts->local_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    ts->local_ip = primary->ip;
+            }
+            ts->src_port = new_id;
+            if (wolfIP_filter_notify_socket_event(
+                    WOLFIP_FILT_BINDING, s, ts,
+                    ts->local_ip, new_id, IPADDR_ANY, 0) != 0) {
+                ts->local_ip = prev_ip;
+                ts->src_port = prev_id;
+                return -1;
+            }
+        }
         return 0;
     } else if (sockfd & MARK_ICMP_SOCKET) {
         if ((sockfd & ~MARK_ICMP_SOCKET) >= MAX_ICMPSOCKETS)
