@@ -102,6 +102,56 @@ static void reset_heap(void) {
     heap.size = 0;
 }
 
+static void setup_stack_with_two_ifaces(struct wolfIP *s, ip4 primary_ip, ip4 secondary_ip)
+{
+    wolfIP_init(s);
+    mock_link_init(s);
+    mock_link_init_idx(s, TEST_SECOND_IF, NULL);
+    wolfIP_ipconfig_set(s, primary_ip, 0xFFFFFF00U, 0);
+    wolfIP_ipconfig_set_ex(s, TEST_SECOND_IF, secondary_ip, 0xFFFFFF00U, 0);
+}
+
+static void inject_tcp_syn(struct wolfIP *s, unsigned int if_idx, ip4 dst_ip, uint16_t dst_port)
+{
+    struct wolfIP_tcp_seg syn;
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, if_idx);
+    union transport_pseudo_header ph;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    ck_assert_ptr_nonnull(ll);
+    memset(&syn, 0, sizeof(syn));
+    memcpy(syn.ip.eth.dst, ll->mac, 6);
+    memcpy(syn.ip.eth.src, src_mac, 6);
+    syn.ip.eth.type = ee16(ETH_TYPE_IP);
+    syn.ip.ver_ihl = 0x45;
+    syn.ip.ttl = 64;
+    syn.ip.proto = WI_IPPROTO_TCP;
+    syn.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    syn.ip.src = ee32(0x0A0000A1U);
+    syn.ip.dst = ee32(dst_ip);
+    syn.ip.csum = 0;
+    iphdr_set_checksum(&syn.ip);
+
+    syn.src_port = ee16(40000);
+    syn.dst_port = ee16(dst_port);
+    syn.seq = ee32(1);
+    syn.ack = 0;
+    syn.hlen = TCP_HEADER_LEN << 2;
+    syn.flags = 0x02;
+    syn.win = ee16(65535);
+    syn.csum = 0;
+    syn.urg = 0;
+
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = syn.ip.src;
+    ph.ph.dst = syn.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    syn.csum = ee16(transport_checksum(&ph, &syn.src_port));
+
+    tcp_input(s, if_idx, &syn, sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
+}
+
 
 START_TEST(test_fifo_init)
 {
@@ -934,6 +984,155 @@ START_TEST(test_loopback_dest_not_forwarded)
 }
 END_TEST
 
+START_TEST(test_tcp_listen_rejects_wrong_interface)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80001U;
+    const ip4 secondary_ip = 0xC0A80101U;
+    const uint16_t listen_port = 12345;
+    int listen_fd;
+    struct wolfIP_sockaddr_in addr;
+    struct tsocket *listener;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    listen_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    listener = &s.tcpsockets[listen_fd & ~MARK_TCP_SOCKET];
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = ee16(listen_port);
+    addr.sin_addr.s_addr = ee32(primary_ip);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_SECOND_IF, secondary_ip, listen_port);
+
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(listener->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_listen_accepts_bound_interface)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80002U;
+    const ip4 secondary_ip = 0xC0A80101U;
+    const uint16_t listen_port = 23456;
+    int listen_fd;
+    int client_fd;
+    struct wolfIP_sockaddr_in addr;
+    struct tsocket *listener;
+    struct tsocket *client;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    listen_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    listener = &s.tcpsockets[listen_fd & ~MARK_TCP_SOCKET];
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = ee16(listen_port);
+    addr.sin_addr.s_addr = ee32(secondary_ip);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_SECOND_IF, secondary_ip, listen_port);
+
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(listener->local_ip, secondary_ip);
+    ck_assert_uint_eq(listener->if_idx, TEST_SECOND_IF);
+
+    client_fd = wolfIP_sock_accept(&s, listen_fd, NULL, NULL);
+    ck_assert_int_ge(client_fd, 0);
+    client = &s.tcpsockets[client_fd & ~MARK_TCP_SOCKET];
+    ck_assert_uint_eq(client->local_ip, secondary_ip);
+    ck_assert_uint_eq(client->bound_local_ip, secondary_ip);
+    ck_assert_int_eq(client->sock.tcp.state, TCP_ESTABLISHED);
+}
+END_TEST
+
+START_TEST(test_tcp_listen_accepts_any_interface)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80005U;
+    const ip4 secondary_ip = 0xC0A80105U;
+    const uint16_t listen_port = 34567;
+    int listen_fd;
+    int client_fd;
+    struct wolfIP_sockaddr_in addr;
+    struct tsocket *listener;
+    struct tsocket *client;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    listen_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    listener = &s.tcpsockets[listen_fd & ~MARK_TCP_SOCKET];
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = ee16(listen_port);
+    addr.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_SECOND_IF, secondary_ip, listen_port);
+
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(listener->local_ip, secondary_ip);
+    ck_assert_uint_eq(listener->if_idx, TEST_SECOND_IF);
+
+    client_fd = wolfIP_sock_accept(&s, listen_fd, NULL, NULL);
+    ck_assert_int_ge(client_fd, 0);
+    client = &s.tcpsockets[client_fd & ~MARK_TCP_SOCKET];
+    ck_assert_uint_eq(client->local_ip, secondary_ip);
+    ck_assert_int_eq(client->sock.tcp.state, TCP_ESTABLISHED);
+}
+END_TEST
+
+START_TEST(test_sock_connect_selects_local_ip_multi_if)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80009U;
+    const ip4 secondary_ip = 0xC0A80109U;
+    const ip4 remote_primary = 0xC0A800AAU;
+    const ip4 remote_secondary = 0xC0A801A1U;
+    int udp_fd;
+    int tcp_fd;
+    struct wolfIP_sockaddr_in dst;
+    struct tsocket *ts;
+    int ret;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    udp_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(udp_fd, 0);
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(5555);
+    dst.sin_addr.s_addr = ee32(remote_secondary);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, udp_fd, (struct wolfIP_sockaddr *)&dst, sizeof(dst)), 0);
+    ts = &s.udpsockets[udp_fd & ~MARK_UDP_SOCKET];
+    ck_assert_uint_eq(ts->local_ip, secondary_ip);
+    ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
+
+    tcp_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(tcp_fd, 0);
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(8080);
+    dst.sin_addr.s_addr = ee32(remote_primary);
+    ret = wolfIP_sock_connect(&s, tcp_fd, (struct wolfIP_sockaddr *)&dst, sizeof(dst));
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+    ts = &s.tcpsockets[tcp_fd & ~MARK_TCP_SOCKET];
+    ck_assert_uint_eq(ts->local_ip, primary_ip);
+    ck_assert_uint_eq(ts->if_idx, TEST_PRIMARY_IF);
+}
+END_TEST
+
 
 // Test for `transport_checksum` calculation
 START_TEST(test_transport_checksum) {
@@ -1135,6 +1334,14 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_wolfip_forwarding_ttl_expired);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_loopback_dest_not_forwarded);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_tcp_listen_rejects_wrong_interface);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_tcp_listen_accepts_bound_interface);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_tcp_listen_accepts_any_interface);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_sock_connect_selects_local_ip_multi_if);
     suite_add_tcase(s, tc_proto);
     
     tcase_add_test(tc_utils, test_transport_checksum);
