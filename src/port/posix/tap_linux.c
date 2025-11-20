@@ -28,7 +28,10 @@
 #include <unistd.h>
 #include <sys/poll.h>
 #include <string.h>
+#define WOLF_POSIX
+#include "config.h"
 #include "wolfip.h"
+#undef WOLF_POSIX
 #include <netinet/in.h>
 #include <arpa/inet.h>
 

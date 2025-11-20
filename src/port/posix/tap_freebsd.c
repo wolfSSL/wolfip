@@ -39,7 +39,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#define WOLF_POSIX
+#include "config.h"
 #include "wolfip.h"
+#undef WOLF_POSIX
 
 static int tap_fd = -1;
 
