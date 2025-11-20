@@ -197,6 +197,7 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
 int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags);
 int wolfIP_sock_sendmsg(struct wolfIP *s, int sockfd, const struct msghdr *msg, int flags);
 int wolfIP_sock_recvmsg(struct wolfIP *s, int sockfd, struct msghdr *msg, int flags);
+int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lookup_cb)(const char *name));
 int wolfIP_sock_get_recv_ttl(struct wolfIP *s, int sockfd, int *ttl);
 int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname, void *optval, socklen_t *optlen);

@@ -835,7 +835,10 @@ struct wolfIP
     ip4 dns_server;
     uint16_t dns_id;
     int dns_udp_sd;
+    uint8_t dns_query_type;
     void (*dns_lookup_cb)(ip4 ip);
+    void (*dns_ptr_cb)(const char *name);
+    char dns_ptr_name[256];
     struct timers_binheap timers;
     struct tsocket tcpsockets[MAX_TCPSOCKETS];
     struct tsocket udpsockets[MAX_UDPSOCKETS];
@@ -3343,6 +3346,11 @@ void wolfIP_init_static(struct wolfIP **s)
     if (!s)
         return;
     wolfIP_init(&wolfIP_static);
+    if (wolfIP_static.dns_server == 0) {
+#ifdef WOLFIP_STATIC_DNS_IP
+        wolfIP_static.dns_server = atoip4(WOLFIP_STATIC_DNS_IP);
+#endif
+    }
     *s = &wolfIP_static;
 }
 #endif
@@ -3474,7 +3482,11 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define DNS_QUERY 0x00
 #define DNS_RESPONSE 0x80
 #define DNS_A 0x01 /* A record only */
+#define DNS_PTR 0x0C
 #define DNS_RD 0x0100 /* Recursion desired */
+#define DNS_QUERY_TYPE_NONE 0
+#define DNS_QUERY_TYPE_A 1
+#define DNS_QUERY_TYPE_PTR 2
 
 struct PACKED dns_header {
     uint16_t id;
@@ -3491,12 +3503,134 @@ struct PACKED dns_question {
 };
 #define MAX_DNS_RESPONSE 512
 
+struct PACKED dns_rr {
+    uint16_t type;
+    uint16_t class;
+    uint32_t ttl;
+    uint16_t rdlength;
+};
+
+static size_t dns_write_u8(char *dst, uint8_t val)
+{
+    char tmp[3];
+    size_t n = 0;
+    if (val >= 100) {
+        tmp[n++] = '0' + (val / 100);
+        val %= 100;
+    }
+    if (val >= 10 || n != 0) {
+        tmp[n++] = '0' + (val / 10);
+        val %= 10;
+    }
+    tmp[n++] = '0' + val;
+    memcpy(dst, tmp, n);
+    return n;
+}
+
+static int dns_format_ptr_name(char *dst, size_t len, uint32_t ip)
+{
+    uint8_t octets[4] = {
+        (uint8_t)(ip & 0xFF),
+        (uint8_t)((ip >> 8) & 0xFF),
+        (uint8_t)((ip >> 16) & 0xFF),
+        (uint8_t)((ip >> 24) & 0xFF)
+    };
+    size_t pos = 0;
+    size_t i;
+    static const char suffix[] = "in-addr.arpa";
+    for (i = 0; i < 4; i++) {
+        uint8_t val = octets[i];
+        size_t written;
+        if (pos + 3 >= len)
+            return -1;
+        written = dns_write_u8(dst + pos, val);
+        pos += written;
+        if (pos + 1 >= len)
+            return -1;
+        dst[pos++] = '.';
+    }
+    {
+        size_t suffix_len = sizeof(suffix);
+        if (pos + suffix_len >= len)
+            return -1;
+        memcpy(dst + pos, suffix, suffix_len);
+        pos += suffix_len - 1;
+        dst[pos] = '\0';
+    }
+    return 0;
+}
+
+static int dns_skip_name(const uint8_t *buf, int len, int offset)
+{
+    int pos = offset;
+    int loop = 0;
+    while (pos < len && loop++ < len) {
+        uint8_t c = buf[pos++];
+        if (c == 0)
+            break;
+        if ((c & 0xC0) == 0xC0) {
+            if (pos >= len)
+                return -1;
+            pos++;
+            break;
+        }
+        pos += c;
+        if (pos > len)
+            return -1;
+    }
+    if (loop >= len)
+        return -1;
+    return pos;
+}
+
+static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out, size_t out_len)
+{
+    int pos = offset;
+    size_t o = 0;
+    int loop = 0;
+    int jumped = 0;
+    while (pos < len && loop++ < len) {
+        uint8_t c = buf[pos];
+        if (c == 0) {
+            if (!jumped)
+                pos++;
+            if (o >= out_len)
+                return -1;
+            out[o] = '\0';
+            return 0;
+        }
+            if ((c & 0xC0) == 0xC0) {
+                if (pos + 1 >= len)
+                    return -1;
+                {
+                    uint16_t ptr = ((c & 0x3F) << 8) | buf[pos + 1];
+                    pos = ptr;
+                }
+            jumped = 1;
+            continue;
+        }
+        pos++;
+        if (pos + c > len)
+            return -1;
+        if (o != 0) {
+            if (o + 1 >= out_len)
+                return -1;
+            out[o++] = '.';
+        }
+        if (o + c >= out_len)
+            return -1;
+        memcpy(out + o, buf + pos, c);
+        o += c;
+        pos += c;
+    }
+    return -1;
+}
+
 void dns_callback(int dns_sd, uint16_t ev, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
     char buf[MAX_DNS_RESPONSE];
     struct dns_header *hdr = (struct dns_header *)buf;
-    struct dns_question *q;
     int dns_len;
     if (!s)
         return;
@@ -3510,29 +3644,59 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
         }
         /* Parse DNS response */
         if ((ee16(hdr->flags) & 0x8100) == 0x8100) {
-            /* Skip the question */
-            char *q_name = buf + sizeof(struct dns_header);
-            uint32_t ip;
-            while (*q_name) q_name++;
-            if (q_name - buf > dns_len) {
-                s->dns_id = 0;
-                return;
+            int pos = sizeof(struct dns_header);
+            int qcount = ee16(hdr->qdcount);
+            int ancount = ee16(hdr->ancount);
+            while (qcount-- > 0) {
+                pos = dns_skip_name((const uint8_t *)buf, dns_len, pos);
+                if (pos < 0 || pos + (int)sizeof(struct dns_question) > dns_len) {
+                    s->dns_id = 0;
+                    return;
+                }
+                pos += sizeof(struct dns_question);
             }
-            q_name++; /* Skip the null terminator */
-            q = (struct dns_question *)q_name;
-            if (ee16(q->qtype) == DNS_A) {
-                uint8_t *ip_ptr = (uint8_t *)(buf + dns_len - 4);
-                ip = ip_ptr[3] | (ip_ptr[2] << 8) | (ip_ptr[1] << 16) | (ip_ptr[0] << 24);
-                if(s->dns_lookup_cb)
-                    s->dns_lookup_cb(ee32(ip));
-                LOG("DNS response: %u.%u.%u.%u\n", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
-                s->dns_id = 0;
+            while (ancount-- > 0) {
+                struct dns_rr *rr;
+                uint16_t rdlen;
+                pos = dns_skip_name((const uint8_t *)buf, dns_len, pos);
+                if (pos < 0 || pos + (int)sizeof(struct dns_rr) > dns_len) {
+                    s->dns_id = 0;
+                    return;
+                }
+                rr = (struct dns_rr *)(buf + pos);
+                pos += sizeof(struct dns_rr);
+                rdlen = ee16(rr->rdlength);
+                if (pos + rdlen > dns_len) {
+                    s->dns_id = 0;
+                    return;
+                }
+                if (s->dns_query_type == DNS_QUERY_TYPE_A && ee16(rr->type) == DNS_A && rdlen >= 4) {
+                    uint32_t ip = (buf[pos + 3] & 0xFF) |
+                            ((buf[pos + 2] & 0xFF) << 8) |
+                            ((buf[pos + 1] & 0xFF) << 16) |
+                            ((buf[pos + 0] & 0xFF) << 24);
+                    if (s->dns_lookup_cb)
+                        s->dns_lookup_cb(ee32(ip));
+                    s->dns_id = 0;
+                    s->dns_query_type = DNS_QUERY_TYPE_NONE;
+                    return;
+                } else if (s->dns_query_type == DNS_QUERY_TYPE_PTR && ee16(rr->type) == DNS_PTR) {
+                    if (dns_copy_name((const uint8_t *)buf, dns_len, pos,
+                            s->dns_ptr_name, sizeof(s->dns_ptr_name)) == 0) {
+                        if (s->dns_ptr_cb)
+                            s->dns_ptr_cb(s->dns_ptr_name);
+                        s->dns_id = 0;
+                        s->dns_query_type = DNS_QUERY_TYPE_NONE;
+                        return;
+                    }
+                }
+                pos += rdlen;
             }
         }
     }
 }
 
-int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb)(uint32_t ip))
+static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id, uint16_t qtype)
 {
     uint8_t buf[512];
     struct dns_header *hdr;
@@ -3540,7 +3704,7 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
     char *q_name, *tok_start, *tok_end;
     struct wolfIP_sockaddr_in dns_srv;
     uint32_t tok_len = 0;
-    if (!dname || !id || !lookup_cb) return -22; /* Invalid arguments */
+    if (!dname || !id) return -22;
     if (strlen(dname) > 256) return -22; /* Invalid arguments */
     if (s->dns_server == 0) return -101; /* Network unreachable: No DNS server configured */
     if (s->dns_id != 0) return -16; /* DNS query already in progress */
@@ -3550,10 +3714,10 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
             return -1;
         wolfIP_register_callback(s, s->dns_udp_sd, dns_callback, s);
     }
-    s->dns_lookup_cb = lookup_cb;
     s->dns_id = wolfIP_getrandom();
     *id = s->dns_id;
     memset(buf, 0, 512);
+    s->dns_query_type = (qtype == DNS_PTR) ? DNS_QUERY_TYPE_PTR : DNS_QUERY_TYPE_A;
     hdr = (struct dns_header *)buf;
     hdr->id = ee16(s->dns_id);
     hdr->flags = ee16(DNS_QUERY);
@@ -3579,7 +3743,7 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
     *q_name = 0;
     tok_len++;
     q = (struct dns_question *)(buf + sizeof(struct dns_header) + tok_len);
-    q->qtype = ee16(DNS_A);
+    q->qtype = ee16(qtype);
     q->qclass = ee16(1);
     memset(&dns_srv, 0, sizeof(struct wolfIP_sockaddr_in));
     dns_srv.sin_family = AF_INET;
@@ -3587,6 +3751,32 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
     dns_srv.sin_addr.s_addr = ee32(s->dns_server);
     wolfIP_sock_sendto(s, s->dns_udp_sd, buf, sizeof(struct dns_header) + tok_len + sizeof(struct dns_question), 0, (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
     return 0;
+}
+
+int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb)(uint32_t ip))
+{
+    if (!s || !dname || !id || !lookup_cb)
+        return -22;
+    s->dns_lookup_cb = lookup_cb;
+    s->dns_ptr_cb = NULL;
+    s->dns_query_type = DNS_QUERY_TYPE_A;
+    return dns_send_query(s, dname, id, DNS_A);
+}
+
+int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lookup_cb)(const char *name))
+{
+    char ptr_name[128];
+    if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
+        return -22;
+    if (!s || !id || !lookup_cb)
+        return -22;
+    snprintf(ptr_name, sizeof(ptr_name), "%u.%u.%u.%u.in-addr.arpa",
+            ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
+    s->dns_ptr_cb = lookup_cb;
+    s->dns_lookup_cb = NULL;
+    s->dns_ptr_name[0] = '\0';
+    s->dns_query_type = DNS_QUERY_TYPE_PTR;
+    return dns_send_query(s, ptr_name, id, DNS_PTR);
 }
 
 /* wolfIP_poll: poll the network stack for incoming packets

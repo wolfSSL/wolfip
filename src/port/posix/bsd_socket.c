@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <dlfcn.h>
 #include <sys/time.h>
+#include <time.h>
 #include <poll.h>
 #include <string.h>
 #include <stdlib.h>
@@ -94,6 +95,8 @@ static ssize_t (*host_send    ) (int sockfd, const void *buf, size_t len, int fl
 static ssize_t (*host_write   ) (int sockfd, const void *buf, size_t len);
 static ssize_t (*host_sendmsg ) (int sockfd, const struct msghdr *msg, int flags);
 static ssize_t (*host_recvmsg ) (int sockfd, struct msghdr *msg, int flags);
+static int (*host_getaddrinfo) (const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
+static void (*host_freeaddrinfo) (struct addrinfo *res);
 static int (*host_close   ) (int sockfd);
 static int (*host_setsockopt) (int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 static int (*host_getsockopt) (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
@@ -103,6 +106,40 @@ static int (*host_getpeername) (int sockfd, struct sockaddr *addr, socklen_t *ad
 static int (*host_poll) (struct pollfd *fds, nfds_t nfds, int timeout);
 static int (*host_select) (int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
 static int (*host_fcntl) (int fd, int cmd, ...);
+
+enum wolfip_dns_wait_type {
+    DNS_WAIT_NONE = 0,
+    DNS_WAIT_FORWARD,
+    DNS_WAIT_PTR
+};
+
+struct wolfip_dns_wait_ctx {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int pending;
+    enum wolfip_dns_wait_type type;
+    int status;
+    uint32_t ip;
+    char name[256];
+};
+
+static struct wolfip_dns_wait_ctx dns_wait_ctx = {
+    PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_COND_INITIALIZER,
+    0,
+    DNS_WAIT_NONE,
+    0,
+    0,
+    {0}
+};
+
+struct wolfip_gai_alloc {
+    struct addrinfo *res;
+    struct wolfip_gai_alloc *next;
+};
+
+static pthread_mutex_t wolfip_gai_alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct wolfip_gai_alloc *wolfip_gai_alloc_head;
 
 #define swap_socketcall(call, name) \
 { \
@@ -254,6 +291,255 @@ static void wolfip_fill_ttl_control(struct wolfIP *ipstack, int sockfd, struct m
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
     *((int *)CMSG_DATA(cmsg)) = ttl;
     msg->msg_controllen = cmsg->cmsg_len;
+}
+
+static size_t wolfip_strlcpy(char *dst, const char *src, size_t size)
+{
+    size_t len = 0;
+    if (!dst || size == 0)
+        return 0;
+    if (src) {
+        while (src[len] && len + 1 < size) {
+            dst[len] = src[len];
+            len++;
+        }
+        dst[len] = '\0';
+        while (src[len])
+            len++;
+    } else {
+        dst[0] = '\0';
+    }
+    return len;
+}
+
+static int wolfip_dns_error_to_eai(int err)
+{
+    switch (err) {
+        case 0:
+            return 0;
+        case -16:
+            return EAI_AGAIN;
+        case -22:
+            return EAI_NONAME;
+        case -101:
+            return EAI_FAIL;
+        default:
+            return EAI_FAIL;
+    }
+}
+
+static int wolfip_dns_begin_wait(enum wolfip_dns_wait_type type)
+{
+    pthread_mutex_lock(&dns_wait_ctx.mutex);
+    if (dns_wait_ctx.pending) {
+        pthread_mutex_unlock(&dns_wait_ctx.mutex);
+        return EAI_AGAIN;
+    }
+    dns_wait_ctx.pending = 1;
+    dns_wait_ctx.type = type;
+    dns_wait_ctx.status = EAI_FAIL;
+    dns_wait_ctx.name[0] = '\0';
+    pthread_mutex_unlock(&dns_wait_ctx.mutex);
+    return 0;
+}
+
+static void wolfip_dns_abort_wait(int status)
+{
+    pthread_mutex_lock(&dns_wait_ctx.mutex);
+    dns_wait_ctx.pending = 0;
+    dns_wait_ctx.type = DNS_WAIT_NONE;
+    dns_wait_ctx.status = status;
+    pthread_cond_signal(&dns_wait_ctx.cond);
+    pthread_mutex_unlock(&dns_wait_ctx.mutex);
+}
+
+static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, char *name_out, size_t name_len)
+{
+    struct timespec ts;
+    int status;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 5;
+    pthread_mutex_lock(&dns_wait_ctx.mutex);
+    while (dns_wait_ctx.pending && dns_wait_ctx.type == type) {
+        int err = pthread_cond_timedwait(&dns_wait_ctx.cond, &dns_wait_ctx.mutex, &ts);
+        if (err == ETIMEDOUT) {
+            dns_wait_ctx.pending = 0;
+            dns_wait_ctx.type = DNS_WAIT_NONE;
+            pthread_mutex_unlock(&dns_wait_ctx.mutex);
+            return EAI_AGAIN;
+        }
+    }
+    if (dns_wait_ctx.type != type) {
+        int status = dns_wait_ctx.status ? dns_wait_ctx.status : EAI_FAIL;
+        pthread_mutex_unlock(&dns_wait_ctx.mutex);
+        return status;
+    }
+    status = dns_wait_ctx.status;
+    if (status == 0) {
+        if (ip_out)
+            *ip_out = dns_wait_ctx.ip;
+        if (name_out && name_len)
+            wolfip_strlcpy(name_out, dns_wait_ctx.name, name_len);
+    }
+    dns_wait_ctx.type = DNS_WAIT_NONE;
+    pthread_mutex_unlock(&dns_wait_ctx.mutex);
+    return status;
+}
+
+static void wolfip_dns_forward_cb(ip4 ip)
+{
+    pthread_mutex_lock(&dns_wait_ctx.mutex);
+    if (dns_wait_ctx.pending && dns_wait_ctx.type == DNS_WAIT_FORWARD) {
+        dns_wait_ctx.ip = ip;
+        dns_wait_ctx.status = 0;
+        dns_wait_ctx.pending = 0;
+        pthread_cond_signal(&dns_wait_ctx.cond);
+    }
+    pthread_mutex_unlock(&dns_wait_ctx.mutex);
+}
+
+static void wolfip_dns_reverse_cb(const char *name)
+{
+    pthread_mutex_lock(&dns_wait_ctx.mutex);
+    if (dns_wait_ctx.pending && dns_wait_ctx.type == DNS_WAIT_PTR) {
+        wolfip_strlcpy(dns_wait_ctx.name, name, sizeof(dns_wait_ctx.name));
+        dns_wait_ctx.status = 0;
+        dns_wait_ctx.pending = 0;
+        pthread_cond_signal(&dns_wait_ctx.cond);
+    }
+    pthread_mutex_unlock(&dns_wait_ctx.mutex);
+}
+
+static int wolfip_dns_forward_query(const char *node, uint32_t *ip_out)
+{
+    uint16_t dns_id;
+    int err = wolfip_dns_begin_wait(DNS_WAIT_FORWARD);
+    if (err != 0)
+        return err;
+    pthread_mutex_lock(&wolfIP_mutex);
+    err = nslookup(IPSTACK, node, &dns_id, wolfip_dns_forward_cb);
+    pthread_mutex_unlock(&wolfIP_mutex);
+    if (err < 0) {
+        int eai = wolfip_dns_error_to_eai(err);
+        wolfip_dns_abort_wait(eai);
+        return eai;
+    }
+    return wolfip_dns_wait(DNS_WAIT_FORWARD, ip_out, NULL, 0);
+}
+
+static int wolfip_dns_reverse_query(uint32_t ip, char *name, size_t name_len)
+{
+    uint16_t dns_id;
+    int err = wolfip_dns_begin_wait(DNS_WAIT_PTR);
+    if (err != 0)
+        return err;
+    pthread_mutex_lock(&wolfIP_mutex);
+    err = wolfIP_dns_ptr_lookup(IPSTACK, ip, &dns_id, wolfip_dns_reverse_cb);
+    pthread_mutex_unlock(&wolfIP_mutex);
+    if (err < 0) {
+        int eai = wolfip_dns_error_to_eai(err);
+        wolfip_dns_abort_wait(eai);
+        return eai;
+    }
+    return wolfip_dns_wait(DNS_WAIT_PTR, NULL, name, name_len);
+}
+
+static int wolfip_parse_service(const char *service, uint16_t *port)
+{
+    char *end;
+    long value;
+    if (!port)
+        return EAI_FAIL;
+    if (!service) {
+        *port = 0;
+        return 0;
+    }
+    value = strtol(service, &end, 10);
+    if (*end != '\0' || value < 0 || value > 65535)
+        return EAI_SERVICE;
+    *port = (uint16_t)value;
+    return 0;
+}
+
+static struct addrinfo *wolfip_alloc_addrinfo(void)
+{
+    return (struct addrinfo *)calloc(1, sizeof(struct addrinfo));
+}
+
+static int wolfip_build_addrinfo(uint32_t ip, uint16_t port, const char *canon,
+        const struct addrinfo *hints, struct addrinfo **res)
+{
+    struct addrinfo *ai = wolfip_alloc_addrinfo();
+    struct sockaddr_in *sa = (struct sockaddr_in *)calloc(1, sizeof(struct sockaddr_in));
+    if (!ai || !sa) {
+        free(ai);
+        free(sa);
+        return EAI_MEMORY;
+    }
+    ai->ai_family = AF_INET;
+    ai->ai_socktype = hints ? hints->ai_socktype : 0;
+    ai->ai_protocol = hints ? hints->ai_protocol : 0;
+    ai->ai_addrlen = sizeof(struct sockaddr_in);
+    ai->ai_flags = hints ? hints->ai_flags : 0;
+    sa->sin_family = AF_INET;
+    sa->sin_port = htons(port);
+    sa->sin_addr.s_addr = htonl(ip);
+    ai->ai_addr = (struct sockaddr *)sa;
+    if (canon) {
+        ai->ai_canonname = strdup(canon);
+        if (!ai->ai_canonname) {
+            free(sa);
+            free(ai);
+            return EAI_MEMORY;
+        }
+    }
+    *res = ai;
+    return 0;
+}
+
+static void wolfip_free_addrinfo_list(struct addrinfo *res)
+{
+    while (res) {
+        struct addrinfo *next = res->ai_next;
+        free(res->ai_canonname);
+        free(res->ai_addr);
+        free(res);
+        res = next;
+    }
+}
+
+static int wolfip_register_gai_alloc(struct addrinfo *res)
+{
+    struct wolfip_gai_alloc *node = (struct wolfip_gai_alloc *)malloc(sizeof(struct wolfip_gai_alloc));
+    if (!node) {
+        wolfip_free_addrinfo_list(res);
+        return EAI_MEMORY;
+    }
+    node->res = res;
+    pthread_mutex_lock(&wolfip_gai_alloc_mutex);
+    node->next = wolfip_gai_alloc_head;
+    wolfip_gai_alloc_head = node;
+    pthread_mutex_unlock(&wolfip_gai_alloc_mutex);
+    return 0;
+}
+
+static int wolfip_take_gai_alloc(struct addrinfo *res)
+{
+    struct wolfip_gai_alloc **pp;
+    struct wolfip_gai_alloc *cur;
+    pthread_mutex_lock(&wolfip_gai_alloc_mutex);
+    pp = &wolfip_gai_alloc_head;
+    while ((cur = *pp) != NULL) {
+        if (cur->res == res) {
+            *pp = cur->next;
+            pthread_mutex_unlock(&wolfip_gai_alloc_mutex);
+            free(cur);
+            return 1;
+        }
+        pp = &cur->next;
+    }
+    pthread_mutex_unlock(&wolfip_gai_alloc_mutex);
+    return 0;
 }
 
 int wolfIP_sock_sendmsg(struct wolfIP *ipstack, int sockfd, const struct msghdr *msg, int flags)
@@ -795,6 +1081,71 @@ ssize_t read(int sockfd, void *buf, size_t len) {
     conditional_steal_blocking_call(read, sockfd, buf, len);
 }
 
+int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    uint16_t port;
+    struct addrinfo *ai;
+    int ret;
+    struct in_addr ipv4;
+    char canon[256];
+    if (in_the_stack || !res || !node) {
+        return host_getaddrinfo(node, service, hints, res);
+    }
+    if (hints && (hints->ai_family != AF_UNSPEC) && (hints->ai_family != AF_INET))
+        return host_getaddrinfo(node, service, hints, res);
+    ret = wolfip_parse_service(service, &port);
+    if (ret != 0)
+        return ret;
+    if (inet_pton(AF_INET, node, &ipv4) == 1) {
+        uint32_t ip_host = ntohl(ipv4.s_addr);
+        canon[0] = '\0';
+        if (hints && (hints->ai_flags & AI_CANONNAME) && !(hints->ai_flags & AI_NUMERICHOST)) {
+            if (wolfip_dns_reverse_query(ip_host, canon, sizeof(canon)) != 0)
+                wolfip_strlcpy(canon, node, sizeof(canon));
+        } else if (hints && (hints->ai_flags & AI_CANONNAME)) {
+            wolfip_strlcpy(canon, node, sizeof(canon));
+        }
+        ret = wolfip_build_addrinfo(ip_host, port, canon[0] ? canon : NULL, hints, &ai);
+        if (ret != 0)
+            return ret;
+        ret = wolfip_register_gai_alloc(ai);
+        if (ret != 0)
+            return ret;
+        *res = ai;
+        return 0;
+    }
+    {
+        uint32_t ip_host;
+        ret = wolfip_dns_forward_query(node, &ip_host);
+        if (ret != 0)
+            return ret;
+        if (hints && (hints->ai_flags & AI_CANONNAME))
+            wolfip_strlcpy(canon, node, sizeof(canon));
+        else
+            canon[0] = '\0';
+        ret = wolfip_build_addrinfo(ip_host, port,
+                (hints && (hints->ai_flags & AI_CANONNAME)) ? canon : NULL,
+                hints, &ai);
+        if (ret != 0)
+            return ret;
+        ret = wolfip_register_gai_alloc(ai);
+        if (ret != 0)
+            return ret;
+        *res = ai;
+        return 0;
+    }
+}
+
+void freeaddrinfo(struct addrinfo *res) {
+    if (!res) {
+        return;
+    }
+    if (wolfip_take_gai_alloc(res)) {
+        wolfip_free_addrinfo_list(res);
+    } else {
+        host_freeaddrinfo(res);
+    }
+}
+
 ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *addr, socklen_t addrlen) {
     conditional_steal_blocking_call(sendto, sockfd, buf, len, flags, addr, addrlen);
 }
@@ -874,6 +1225,8 @@ void __attribute__((constructor)) init_wolfip_posix() {
     swap_socketcall(getpeername, "getpeername");
     swap_socketcall(setsockopt, "setsockopt");
     swap_socketcall(getsockopt, "getsockopt");
+    swap_socketcall(getaddrinfo, "getaddrinfo");
+    swap_socketcall(freeaddrinfo, "freeaddrinfo");
     swap_socketcall(poll, "poll");
     swap_socketcall(select, "select");
     swap_socketcall(fcntl, "fcntl");
