@@ -84,6 +84,7 @@ static int (*host_socket  ) (int domain, int type, int protocol) = NULL;
 static int (*host_bind    ) (int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 static int (*host_connect ) (int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 static int (*host_accept  ) (int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+static int (*host_accept4 ) (int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags);
 static int (*host_listen  ) (int sockfd, int backlog);
 static ssize_t (*host_recvfrom) (int sockfd, void *buf, size_t len, int flags, struct sockaddr *addr, socklen_t *addrlen);
 static ssize_t (*host_recv    ) (int sockfd, void *buf, size_t len, int flags);
@@ -747,6 +748,33 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     conditional_steal_blocking_call(accept, sockfd, addr, addrlen);
 }
 
+int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+    if (in_the_stack) {
+        return host_accept4(sockfd, addr, addrlen, flags);
+    } else {
+        pthread_mutex_lock(&wolfIP_mutex);
+        if ((sockfd & (MARK_TCP_SOCKET | MARK_UDP_SOCKET | MARK_ICMP_SOCKET)) != 0) {
+            int __wolfip_retval;
+            do {
+                __wolfip_retval = wolfIP_sock_accept(IPSTACK, sockfd, addr, addrlen);
+                if (__wolfip_retval == -EAGAIN) {
+                    usleep(1000);
+                }
+            } while (__wolfip_retval == -EAGAIN);
+            if (__wolfip_retval < 0) {
+                errno = __wolfip_retval;
+                pthread_mutex_unlock(&wolfIP_mutex);
+                return -1;
+            }
+            pthread_mutex_unlock(&wolfIP_mutex);
+            return __wolfip_retval;
+        } else {
+            pthread_mutex_unlock(&wolfIP_mutex);
+            return host_accept4(sockfd, addr, addrlen, flags);
+        }
+    }
+}
+
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     conditional_steal_blocking_call(connect, sockfd, addr, addrlen);
 }
@@ -831,6 +859,7 @@ void __attribute__((constructor)) init_wolfip_posix() {
     swap_socketcall(bind, "bind");
     swap_socketcall(listen, "listen");
     swap_socketcall(accept, "accept");
+    swap_socketcall(accept4, "accept4");
     swap_socketcall(connect, "connect");
     swap_socketcall(sendto, "sendto");
     swap_socketcall(sendmsg, "sendmsg");
@@ -843,8 +872,8 @@ void __attribute__((constructor)) init_wolfip_posix() {
     swap_socketcall(read, "read");
     swap_socketcall(getsockname, "getsockname");
     swap_socketcall(getpeername, "getpeername");
-    swap_socketcall(setsockopt, "getaddrinfo");
-    swap_socketcall(getsockopt, "freeaddrinfo");
+    swap_socketcall(setsockopt, "setsockopt");
+    swap_socketcall(getsockopt, "getsockopt");
     swap_socketcall(poll, "poll");
     swap_socketcall(select, "select");
     swap_socketcall(fcntl, "fcntl");
