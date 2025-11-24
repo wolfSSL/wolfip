@@ -79,18 +79,31 @@ int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
     struct sockaddr_in *addr;
     int sock_fd;
 
-    if ((tap_fd = open("/dev/net/tun", O_RDWR)) < 0) {
-        perror("accessing /dev/net/tun");
-        return -1;
-    }
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
     ifr.ifr_name[IFNAMSIZ-1] = '\0';
-    if (ioctl(tap_fd, TUNSETIFF, (void *)&ifr) < 0) {
+
+    tap_fd = open("/dev/net/tun", O_RDWR);
+    if (tap_fd >= 0 && ioctl(tap_fd, TUNSETIFF, (void *)&ifr) == 0) {
+        /* created successfully */
+    } else {
         perror("ioctl TUNSETIFF");
-        close(tap_fd);
-        return -1;
+        if (tap_fd >= 0) {
+            close(tap_fd);
+            tap_fd = -1;
+        }
+        /* try to reuse existing device */
+        tap_fd = open("/dev/net/tun", O_RDWR);
+        if (tap_fd >= 0) {
+            if (ioctl(tap_fd, TUNSETIFF, (void *)&ifr) != 0) {
+                close(tap_fd);
+                tap_fd = -1;
+            }
+        }
+        if (tap_fd < 0) {
+            return -1;
+        }
     }
     /* Get mac address */
     if (ioctl(tap_fd, SIOCGIFHWADDR, &ifr) < 0) {

@@ -1396,11 +1396,6 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
             TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN);
 }
 
-static void tcp_send_synack(struct tsocket *t)
-{
-    return tcp_send_syn(t, 0x12);
-}
-
 /* Add a segment to the rx buffer for the application to consume */
 static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
 {
@@ -2118,10 +2113,6 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             return -1;
 
         if (ts->sock.tcp.state == TCP_SYN_RCVD) {
-            ip4 conn_local = ts->local_ip;
-            uint8_t conn_if = ts->if_idx;
-
-            tcp_send_synack(ts);
             newts = tcp_new_socket(s);
             if (!newts)
                 return -1;
@@ -2129,15 +2120,23 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->events |= CB_EVENT_WRITABLE;
             newts->callback = ts->callback;
             newts->callback_arg = ts->callback_arg;
-            newts->local_ip = conn_local;
-            newts->bound_local_ip = conn_local;
-            newts->if_idx = conn_if;
+            newts->local_ip = ts->local_ip;
+            newts->bound_local_ip = (ts->bound_local_ip != IPADDR_ANY) ? ts->bound_local_ip : ts->local_ip;
+            newts->if_idx = ts->if_idx;
             newts->remote_ip = ts->remote_ip;
             newts->src_port = ts->src_port;
             newts->dst_port = ts->dst_port;
             newts->sock.tcp.ack = ts->sock.tcp.ack;
-            newts->sock.tcp.seq = ts->sock.tcp.seq + 1;
+            newts->sock.tcp.seq = ts->sock.tcp.seq;
+            newts->sock.tcp.last_ts = ts->sock.tcp.last_ts;
             newts->sock.tcp.state = TCP_ESTABLISHED;
+            /* Send SYN-ACK to accept connection.
+             * Send the syn-ack from the newly established socket:
+             * the caller could still close the listening socket
+             * while we're still accepting.
+             */
+            tcp_send_syn(newts, 0x12);
+            newts->sock.tcp.seq++;
             if (sin) {
                 sin->sin_family = AF_INET;
                 sin->sin_port = ee16(ts->dst_port);
@@ -2150,9 +2149,6 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
                 ts->if_idx = bound_match ? (uint8_t)bound_if : ts->if_idx;
                 ts->local_ip = ts->bound_local_ip;
-            } else {
-                ts->local_ip = conn_local;
-                ts->if_idx = conn_if;
             }
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_ACCEPTING, s, newts,
@@ -2410,6 +2406,7 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         }
         memcpy(buf, &icmp->type, seg_len);
         fifo_pop(&ts->sock.udp.rxbuf);
+        ts->events &= ~CB_EVENT_READABLE;
         return (int)seg_len;
     } else
         return -WOLFIP_EINVAL;
@@ -3897,8 +3894,9 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 #endif
                         {
                             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                            if (ll && ll->send)
+                            if (ll && ll->send) {
                                 ll->send(ll, tcp, desc->len);
+                            }
                         }
                         desc->flags |= PKT_FLAG_SENT;
                         desc->time_sent = now;
