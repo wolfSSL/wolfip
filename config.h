@@ -10,8 +10,13 @@
 
 #define MAX_TCPSOCKETS 4
 #define MAX_UDPSOCKETS 2
+#define MAX_ICMPSOCKETS 2
 #define RXBUF_SIZE LINK_MTU * 16
 #define TXBUF_SIZE LINK_MTU * 16
+
+#ifndef WOLFIP_POSIX_TCPDUMP
+#define WOLFIP_POSIX_TCPDUMP 0
+#endif
 
 #define MAX_NEIGHBORS 16
 
@@ -34,5 +39,6 @@
 /* Linux test configuration */
 #define WOLFIP_IP "10.10.10.2"
 #define HOST_STACK_IP "10.10.10.1"
+#define WOLFIP_STATIC_DNS_IP "9.9.9.9"
 
 #endif

@@ -2,6 +2,44 @@
 #define WOLFIP_H
 #include <stdint.h>
 
+#if !defined(_SIZE_T) && !defined(_SIZE_T_DEFINED) && !defined(_SIZE_T_DECLARED) && \
+    !defined(_BSD_SIZE_T_DEFINED_) && !defined(__DEFINED_size_t) && \
+    !defined(__size_t_defined)
+#if defined(__SIZE_TYPE__)
+typedef __SIZE_TYPE__ size_t;
+#elif defined(_MSC_VER)
+#ifdef _WIN64
+typedef unsigned __int64 size_t;
+#else
+typedef unsigned int size_t;
+#endif
+#else
+typedef unsigned long size_t;
+#endif
+#define _SIZE_T
+#define _SIZE_T_DEFINED
+#define _SIZE_T_DECLARED
+#define _BSD_SIZE_T_DEFINED_
+#define __DEFINED_size_t
+#define __size_t_defined
+#endif
+
+#ifndef WOLFIP_SOL_IP
+#ifdef SOL_IP
+#define WOLFIP_SOL_IP SOL_IP
+#else
+#define WOLFIP_SOL_IP 0
+#endif
+#endif
+
+#ifndef WOLFIP_IP_RECVTTL
+#ifdef IP_RECVTTL
+#define WOLFIP_IP_RECVTTL IP_RECVTTL
+#else
+#define WOLFIP_IP_RECVTTL 12
+#endif
+#endif
+
 /* Types */
 struct wolfIP;
 typedef uint32_t ip4;
@@ -25,6 +63,14 @@ typedef uint32_t ip4;
 #define WOLFIP_EINVAL EINVAL
 #else
 #define WOLFIP_EINVAL (22)
+#endif
+#endif
+
+#ifndef WOLFIP_ENOMEM
+#ifdef ENOMEM
+#define WOLFIP_ENOMEM ENOMEM
+#else
+#define WOLFIP_ENOMEM (12)
 #endif
 #endif
 
@@ -67,11 +113,20 @@ struct ipconf {
 /* Socket interface */
 #define MARK_TCP_SOCKET 0x100 /* Mark a socket as TCP */
 #define MARK_UDP_SOCKET 0x200 /* Mark a socket as UDP */
+#define MARK_ICMP_SOCKET 0x400 /* Mark a socket as ICMP */
 
+#define IS_SOCKET_TCP(fd) (((fd) & MARK_TCP_SOCKET) == MARK_TCP_SOCKET)
+#define IS_SOCKET_UDP(fd) (((fd) & MARK_UDP_SOCKET) == MARK_UDP_SOCKET)
+#define IS_SOCKET_ICMP(fd)(((fd) & MARK_ICMP_SOCKET) == MARK_ICMP_SOCKET)
+#define SOCKET_UNMARK(fd) ((fd) & 0xFF)
 
 /* Compile-time sanity check for socket marks & number of sockets */
 #if (MARK_TCP_SOCKET >= MARK_UDP_SOCKET)
 #error "MARK_TCP_SOCKET must be less than MARK_UDP_SOCKET"
+#endif
+
+#if (MARK_UDP_SOCKET >= MARK_ICMP_SOCKET)
+#error "MARK_UDP_SOCKET must be less than MARK_ICMP_SOCKET"
 #endif
 
 #if MAX_TCPSOCKETS > 255
@@ -82,6 +137,9 @@ struct ipconf {
 #error "MAX_UDPSOCKETS must be less than 256"
 #endif
 
+#if MAX_ICMPSOCKETS > 255
+#error "MAX_ICMPSOCKETS must be less than 256"
+#endif
 
 
 
@@ -97,6 +155,28 @@ struct wolfIP_sockaddr_in {
 };
 struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
+
+#if defined(__has_include)
+#if __has_include(<sys/socket.h>)
+#include <sys/socket.h>
+#include <sys/uio.h>
+#define WOLFIP_HAVE_POSIX_TYPES 1
+#endif
+#endif
+
+#ifndef WOLFIP_HAVE_POSIX_TYPES
+struct iovec { void *iov_base; size_t iov_len; };
+struct msghdr {
+    void *msg_name;
+    socklen_t msg_namelen;
+    struct iovec *msg_iov;
+    size_t msg_iovlen;
+    void *msg_control;
+    size_t msg_controllen;
+    int msg_flags;
+};
+#endif
+
 #ifndef AF_INET
 #define AF_INET 2
 #endif
@@ -105,6 +185,7 @@ typedef uint32_t socklen_t;
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <sys/uio.h>
 #define wolfIP_sockaddr_in sockaddr_in
 #define wolfIP_sockaddr sockaddr
 #endif
@@ -119,6 +200,12 @@ int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, 
 int wolfIP_sock_write(struct wolfIP *s, int sockfd, const void *buf, size_t len);
 int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags, struct wolfIP_sockaddr *src_addr, socklen_t *addrlen);
 int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags);
+int wolfIP_sock_sendmsg(struct wolfIP *s, int sockfd, const struct msghdr *msg, int flags);
+int wolfIP_sock_recvmsg(struct wolfIP *s, int sockfd, struct msghdr *msg, int flags);
+int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lookup_cb)(const char *name));
+int wolfIP_sock_get_recv_ttl(struct wolfIP *s, int sockfd, int *ttl);
+int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname, void *optval, socklen_t *optlen);
 int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len);
 int wolfIP_sock_close(struct wolfIP *s, int sockfd);
 int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, const socklen_t *addrlen);
