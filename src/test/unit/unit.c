@@ -946,7 +946,8 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     ck_assert_uint_eq(ee32(icmp->ip.dst), ee32(frame.src));
     ck_assert_mem_eq(icmp->orig_packet,
             ((uint8_t *)&frame) + ETH_HEADER_LEN,
-            TTL_EXCEEDED_ORIG_PACKET_SIZE);
+            ee16(frame.len) < TTL_EXCEEDED_ORIG_PACKET_SIZE ?
+            ee16(frame.len) : TTL_EXCEEDED_ORIG_PACKET_SIZE);
     ck_assert_uint_eq(frame.ttl, 1); /* original packet should remain unchanged */
 }
 END_TEST
