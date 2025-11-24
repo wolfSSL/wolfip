@@ -115,6 +115,10 @@ struct ipconf {
 #define MARK_UDP_SOCKET 0x200 /* Mark a socket as UDP */
 #define MARK_ICMP_SOCKET 0x400 /* Mark a socket as ICMP */
 
+#define IS_SOCKET_TCP(fd) (((fd) & MARK_TCP_SOCKET) == MARK_TCP_SOCKET)
+#define IS_SOCKET_UDP(fd) (((fd) & MARK_UDP_SOCKET) == MARK_UDP_SOCKET)
+#define IS_SOCKET_ICMP(fd)(((fd) & MARK_ICMP_SOCKET) == MARK_ICMP_SOCKET)
+#define SOCKET_UNMARK(fd) ((fd) & 0xFF)
 
 /* Compile-time sanity check for socket marks & number of sockets */
 #if (MARK_TCP_SOCKET >= MARK_UDP_SOCKET)

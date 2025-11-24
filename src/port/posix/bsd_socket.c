@@ -184,18 +184,18 @@ static void wolfip_fd_pool_init(void)
 static struct wolfip_fd_entry *wolfip_entry_from_internal(int internal_fd)
 {
     int idx;
-    if (internal_fd & MARK_TCP_SOCKET) {
-        int pos = internal_fd & ~MARK_TCP_SOCKET;
+    if (IS_SOCKET_TCP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos < 0 || pos >= MAX_TCPSOCKETS)
             return NULL;
         idx = tcp_entry_for_slot[pos];
-    } else if (internal_fd & MARK_UDP_SOCKET) {
-        int pos = internal_fd & ~MARK_UDP_SOCKET;
+    } else if (IS_SOCKET_UDP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos < 0 || pos >= MAX_UDPSOCKETS)
             return NULL;
         idx = udp_entry_for_slot[pos];
-    } else if (internal_fd & MARK_ICMP_SOCKET) {
-        int pos = internal_fd & ~MARK_ICMP_SOCKET;
+    } else if (IS_SOCKET_ICMP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos < 0 || pos >= MAX_ICMPSOCKETS)
             return NULL;
         idx = icmp_entry_for_slot[pos];
@@ -220,16 +220,16 @@ static struct wolfip_fd_entry *wolfip_entry_from_public(int public_fd)
 
 static void wolfip_fd_detach_internal(int internal_fd)
 {
-    if (internal_fd & MARK_TCP_SOCKET) {
-        int pos = internal_fd & ~MARK_TCP_SOCKET;
+    if (IS_SOCKET_TCP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_TCPSOCKETS)
             tcp_entry_for_slot[pos] = -1;
-    } else if (internal_fd & MARK_UDP_SOCKET) {
-        int pos = internal_fd & ~MARK_UDP_SOCKET;
+    } else if (IS_SOCKET_UDP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_UDPSOCKETS)
             udp_entry_for_slot[pos] = -1;
-    } else if (internal_fd & MARK_ICMP_SOCKET) {
-        int pos = internal_fd & ~MARK_ICMP_SOCKET;
+    } else if (IS_SOCKET_ICMP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_ICMPSOCKETS)
             icmp_entry_for_slot[pos] = -1;
     }
@@ -237,16 +237,16 @@ static void wolfip_fd_detach_internal(int internal_fd)
 
 static void wolfip_fd_attach_internal(int internal_fd, int entry_idx)
 {
-    if (internal_fd & MARK_TCP_SOCKET) {
-        int pos = internal_fd & ~MARK_TCP_SOCKET;
+    if (IS_SOCKET_TCP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_TCPSOCKETS)
             tcp_entry_for_slot[pos] = entry_idx;
-    } else if (internal_fd & MARK_UDP_SOCKET) {
-        int pos = internal_fd & ~MARK_UDP_SOCKET;
+    } else if (IS_SOCKET_UDP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_UDPSOCKETS)
             udp_entry_for_slot[pos] = entry_idx;
-    } else if (internal_fd & MARK_ICMP_SOCKET) {
-        int pos = internal_fd & ~MARK_ICMP_SOCKET;
+    } else if (IS_SOCKET_ICMP(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_ICMPSOCKETS)
             icmp_entry_for_slot[pos] = entry_idx;
     }
