@@ -387,7 +387,7 @@ static int wolfip_fd_is_nonblock(int public_fd)
                         __entry->events = (wait_events); \
                         wolfIP_register_callback(IPSTACK, __entry->internal_fd, poller_callback, IPSTACK); \
                         __pfd.fd = __entry->public_fd; \
-                        __pfd.events = __entry->events; \
+                        __pfd.events = POLLIN; \
                         __pfd.revents = 0; \
                         pthread_mutex_unlock(&wolfIP_mutex); \
                         host_poll(&__pfd, 1, -1); \
