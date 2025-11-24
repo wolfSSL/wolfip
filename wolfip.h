@@ -5,39 +5,39 @@
 #if !defined(_SIZE_T) && !defined(_SIZE_T_DEFINED) && !defined(_SIZE_T_DECLARED) && \
     !defined(_BSD_SIZE_T_DEFINED_) && !defined(__DEFINED_size_t) && \
     !defined(__size_t_defined)
-#  if defined(__SIZE_TYPE__)
+#if defined(__SIZE_TYPE__)
 typedef __SIZE_TYPE__ size_t;
-#  elif defined(_MSC_VER)
-#    ifdef _WIN64
+#elif defined(_MSC_VER)
+#ifdef _WIN64
 typedef unsigned __int64 size_t;
-#    else
+#else
 typedef unsigned int size_t;
-#    endif
-#  else
+#endif
+#else
 typedef unsigned long size_t;
-#  endif
-#  define _SIZE_T
-#  define _SIZE_T_DEFINED
-#  define _SIZE_T_DECLARED
-#  define _BSD_SIZE_T_DEFINED_
-#  define __DEFINED_size_t
-#  define __size_t_defined
+#endif
+#define _SIZE_T
+#define _SIZE_T_DEFINED
+#define _SIZE_T_DECLARED
+#define _BSD_SIZE_T_DEFINED_
+#define __DEFINED_size_t
+#define __size_t_defined
 #endif
 
 #ifndef WOLFIP_SOL_IP
-#  ifdef SOL_IP
-#    define WOLFIP_SOL_IP SOL_IP
-#  else
-#    define WOLFIP_SOL_IP 0
-#  endif
+#ifdef SOL_IP
+#define WOLFIP_SOL_IP SOL_IP
+#else
+#define WOLFIP_SOL_IP 0
+#endif
 #endif
 
 #ifndef WOLFIP_IP_RECVTTL
-#  ifdef IP_RECVTTL
-#    define WOLFIP_IP_RECVTTL IP_RECVTTL
-#  else
-#    define WOLFIP_IP_RECVTTL 12
-#  endif
+#ifdef IP_RECVTTL
+#define WOLFIP_IP_RECVTTL IP_RECVTTL
+#else
+#define WOLFIP_IP_RECVTTL 12
+#endif
 #endif
 
 /* Types */
@@ -151,7 +151,7 @@ struct wolfIP_sockaddr_in {
 };
 struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
-#ifndef WOLF_POSIX
+
 #if defined(__has_include)
 #if __has_include(<sys/socket.h>)
 #include <sys/socket.h>
@@ -159,6 +159,7 @@ typedef uint32_t socklen_t;
 #define WOLFIP_HAVE_POSIX_TYPES 1
 #endif
 #endif
+
 #ifndef WOLFIP_HAVE_POSIX_TYPES
 struct iovec { void *iov_base; size_t iov_len; };
 struct msghdr {
@@ -171,7 +172,7 @@ struct msghdr {
     int msg_flags;
 };
 #endif
-#endif
+
 #ifndef AF_INET
 #define AF_INET 2
 #endif
