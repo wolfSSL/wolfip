@@ -2014,26 +2014,6 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
                 ts->local_ip = primary->ip;
         }
         return 0;
-    } else if (sockfd & MARK_ICMP_SOCKET) {
-        struct ipconf *conf;
-        if ((sockfd & ~MARK_ICMP_SOCKET) >= MAX_ICMPSOCKETS)
-            return -WOLFIP_EINVAL;
-
-        ts = &s->icmpsockets[sockfd & ~MARK_ICMP_SOCKET];
-        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
-            return -WOLFIP_EINVAL;
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
-        if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
-        conf = wolfIP_ipconf_at(s, if_idx);
-        ts->if_idx = (uint8_t)if_idx;
-        if (ts->local_ip == 0 && conf && conf->ip != IPADDR_ANY)
-            ts->local_ip = conf->ip;
-        else if (ts->local_ip == 0) {
-            struct ipconf *primary = wolfIP_primary_ipconf(s);
-            if (primary && primary->ip != IPADDR_ANY)
-                ts->local_ip = primary->ip;
-        }
-        return 0;
     }
 
     if ((sockfd & MARK_TCP_SOCKET) == 0)
