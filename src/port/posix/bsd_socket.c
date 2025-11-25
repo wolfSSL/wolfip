@@ -129,6 +129,9 @@ static struct wolfip_fd_entry wolfip_fd_entries[WOLFIP_MAX_PUBLIC_FDS];
 static int tcp_entry_for_slot[MAX_TCPSOCKETS];
 static int udp_entry_for_slot[MAX_UDPSOCKETS];
 static int icmp_entry_for_slot[MAX_ICMPSOCKETS];
+#if WOLFIP_RAWSOCKETS
+static int raw_entry_for_slot[WOLFIP_MAX_RAWSOCKETS];
+#endif
 
 enum wolfip_dns_wait_type {
     DNS_WAIT_NONE = 0,
@@ -178,6 +181,10 @@ static void wolfip_fd_pool_init(void)
         udp_entry_for_slot[i] = -1;
     for (i = 0; i < MAX_ICMPSOCKETS; i++)
         icmp_entry_for_slot[i] = -1;
+#if WOLFIP_RAWSOCKETS
+    for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++)
+        raw_entry_for_slot[i] = -1;
+#endif
     init_done = 1;
 }
 
@@ -199,6 +206,13 @@ static struct wolfip_fd_entry *wolfip_entry_from_internal(int internal_fd)
         if (pos < 0 || pos >= MAX_ICMPSOCKETS)
             return NULL;
         idx = icmp_entry_for_slot[pos];
+#if WOLFIP_RAWSOCKETS
+    } else if (IS_SOCKET_RAW(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
+        if (pos < 0 || pos >= WOLFIP_MAX_RAWSOCKETS)
+            return NULL;
+        idx = raw_entry_for_slot[pos];
+#endif
     } else {
         return NULL;
     }
@@ -232,6 +246,12 @@ static void wolfip_fd_detach_internal(int internal_fd)
         int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_ICMPSOCKETS)
             icmp_entry_for_slot[pos] = -1;
+#if WOLFIP_RAWSOCKETS
+    } else if (IS_SOCKET_RAW(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
+        if (pos >= 0 && pos < WOLFIP_MAX_RAWSOCKETS)
+            raw_entry_for_slot[pos] = -1;
+#endif
     }
 }
 
@@ -249,6 +269,12 @@ static void wolfip_fd_attach_internal(int internal_fd, int entry_idx)
         int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_ICMPSOCKETS)
             icmp_entry_for_slot[pos] = entry_idx;
+#if WOLFIP_RAWSOCKETS
+    } else if (IS_SOCKET_RAW(internal_fd)) {
+        int pos = SOCKET_UNMARK(internal_fd);
+        if (pos >= 0 && pos < WOLFIP_MAX_RAWSOCKETS)
+            raw_entry_for_slot[pos] = entry_idx;
+#endif
     }
 }
 
@@ -1237,7 +1263,7 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     int ret;
     struct in_addr ipv4;
     char canon[256];
-    fprintf(stderr, "wolfIP getaddrinfo: in_stack=%d node=%s service=%s\n",
+    WOLFIP_DBG("wolfIP getaddrinfo: in_stack=%d node=%s service=%s\n",
             in_the_stack, node ? node : "(null)", service ? service : "(null)");
     if (in_the_stack || !res) {
         return host_getaddrinfo(node, service, hints, res);
@@ -1315,7 +1341,7 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
 }
 
 void freeaddrinfo(struct addrinfo *res) {
-    fprintf(stderr, "wolfIP freeaddrinfo: in_stack=%d res=%p\n", in_the_stack, (void *)res);
+    WOLFIP_DBG("wolfIP freeaddrinfo: in_stack=%d res=%p\n", in_the_stack, (void *)res);
     if (!res) {
         return;
     }

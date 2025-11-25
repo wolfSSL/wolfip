@@ -3,13 +3,19 @@ CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
 LDFLAGS+=-pthread
 
+
+# Identify host system (defaults to Linux)
 UNAME_S:=$(shell uname -s)
 UNAME_M:=$(shell uname -m)
 UNAME_LC:=$(shell echo $(UNAME_S) | tr 'A-Z' 'a-z')
+
+# FreeBSD
 ifeq ($(UNAME_S),FreeBSD)
   CFLAGS+=-I/usr/local/include
   LDFLAGS+=-L/usr/local/lib
 endif
+
+# MacOS
 ifeq ($(UNAME_S),Darwin)
   BREW_PREFIX?=$(shell brew --prefix 2>/dev/null)
   ifeq ($(filter command\ line environment,$(origin BREW_PREFIX)),)
@@ -119,7 +125,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/ipfilter-logger
+	build/ipfilter-logger build/raw_ping
 LIB=libwolfip.so
 
 PREFIX=/usr/local
@@ -180,6 +186,10 @@ build/tcpecho: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_echo.o
 	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
 
 build/tcp_netcat_poll: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_netcat_poll.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+
+build/raw_ping: $(OBJ) build/port/posix/bsd_socket.o build/test/raw_ping.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
 

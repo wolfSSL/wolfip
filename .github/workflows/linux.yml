@@ -48,6 +48,10 @@ jobs:
         run: |
           sudo LD_PRELOAD=$PWD/libwolfip.so ping -c 5 10.10.10.1
 
+      - name: Testing RAW sockets via raw_ping
+        run: |
+          sudo ./build/raw_ping 10.10.10.1
+
       - name: Install check
         run: |
           sudo apt-get install -y check
