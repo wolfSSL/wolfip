@@ -30,6 +30,8 @@
 #endif
 #undef WOLFIP_RAWSOCKETS
 #define WOLFIP_RAWSOCKETS 1
+#undef WOLFIP_PACKET_SOCKETS
+#define WOLFIP_PACKET_SOCKETS 1
 #if WOLFIP_ENABLE_LOOPBACK
 #define TEST_LOOPBACK_IF 0U
 #define TEST_PRIMARY_IF 1U
@@ -1500,6 +1502,198 @@ START_TEST(test_raw_socket_send_builds_ip_header)
 }
 END_TEST
 
+START_TEST(test_packet_socket_recv_frame)
+{
+#if WOLFIP_PACKET_SOCKETS
+    struct wolfIP s;
+    int sd;
+    uint8_t frame_buf[ETH_HEADER_LEN + 6];
+    struct wolfIP_eth_frame *frame = (struct wolfIP_eth_frame *)frame_buf;
+    uint8_t payload[6] = {0, 1, 2, 3, 4, 5};
+    struct wolfIP_sockaddr_ll sll;
+    struct wolfIP_sockaddr_ll bind_sll;
+    socklen_t sll_len = sizeof(sll);
+    uint8_t rxbuf[sizeof(struct wolfIP_eth_frame) + sizeof(payload)];
+    struct wolfIP_ll_dev *ll;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ETH_TYPE_IP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&bind_sll, 0, sizeof(bind_sll));
+    bind_sll.sll_family = AF_PACKET;
+    bind_sll.sll_protocol = ETH_TYPE_IP;
+    bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+    bind_sll.sll_halen = 6;
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+
+    memset(frame, 0, sizeof(frame_buf));
+    memcpy(frame->dst, ll->mac, 6);
+    memcpy(frame->src, "\xaa\xbb\xcc\xdd\xee\xff", 6);
+    frame->type = ETH_TYPE_IP;
+    memcpy(frame->data, payload, sizeof(payload));
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, (uint32_t)(ETH_HEADER_LEN + sizeof(payload)));
+
+    memset(&sll, 0, sizeof(sll));
+    sll_len = sizeof(sll);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                (struct wolfIP_sockaddr *)&sll, &sll_len), (int)(ETH_HEADER_LEN + sizeof(payload)));
+    ck_assert_mem_eq(rxbuf, frame, ETH_HEADER_LEN + sizeof(payload));
+    ck_assert_uint_eq(sll.sll_family, AF_PACKET);
+    ck_assert_uint_eq(sll.sll_protocol, frame->type);
+    ck_assert_int_eq(sll.sll_ifindex, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(sll.sll_halen, 6);
+    ck_assert_mem_eq(sll.sll_addr, frame->src, 6);
+#else
+    ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
+#endif
+}
+END_TEST
+
+START_TEST(test_packet_socket_send_frame)
+{
+#if WOLFIP_PACKET_SOCKETS
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_ll sll;
+    uint8_t frame_buf[ETH_HEADER_LEN + 8];
+    struct wolfIP_eth_frame *ethf = (struct wolfIP_eth_frame *)frame_buf;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_sockaddr_ll bind_sll;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ETH_TYPE_IP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&bind_sll, 0, sizeof(bind_sll));
+    bind_sll.sll_family = AF_PACKET;
+    bind_sll.sll_protocol = ETH_TYPE_IP;
+    bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+    bind_sll.sll_halen = 6;
+    memset(bind_sll.sll_addr, 0xFF, 6);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+
+    memset(&sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = ETH_TYPE_IP;
+    sll.sll_ifindex = TEST_PRIMARY_IF;
+    sll.sll_halen = 6;
+    memset(sll.sll_addr, 0xFF, 6);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(ethf->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(ethf->src, "\x00\x00\x00\x00\x00\x01", 6);
+    ethf->type = ETH_TYPE_IP;
+    memset(ethf->data, 0xAB, 8);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_buf, sizeof(frame_buf), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)), (int)sizeof(frame_buf));
+    {
+        struct packetsocket *ps = &s.packetsockets[SOCKET_UNMARK(sd)];
+        struct pkt_desc *desc = fifo_peek(&ps->txbuf);
+        if (desc) {
+            struct wolfIP_eth_frame *queued =
+                (struct wolfIP_eth_frame *)(ps->txmem + desc->pos + sizeof(*desc));
+            ck_assert_uint_eq(desc->len, sizeof(frame_buf));
+            ck_assert_mem_eq(queued->dst, "\xff\xff\xff\xff\xff\xff", 6);
+            ck_assert_mem_eq(queued->src, ll->mac, 6);
+            ck_assert_uint_eq(queued->type, ETH_TYPE_IP);
+            ck_assert_mem_eq(queued->data, ethf->data, 8);
+        }
+        ck_assert_uint_eq(ps->if_idx, TEST_PRIMARY_IF);
+    }
+#else
+    ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
+#endif
+}
+END_TEST
+
+START_TEST(test_packet_socket_recv_wrong_proto_ignored)
+{
+#if WOLFIP_PACKET_SOCKETS
+    struct wolfIP s;
+    int sd;
+    uint8_t frame_buf[ETH_HEADER_LEN + 6];
+    struct wolfIP_eth_frame *frame = (struct wolfIP_eth_frame *)frame_buf;
+    struct wolfIP_ll_dev *ll;
+    uint8_t rxbuf[64];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ETH_TYPE_IP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(frame, 0, sizeof(frame_buf));
+    memcpy(frame->dst, ll->mac, 6);
+    memcpy(frame->src, "\xaa\xbb\xcc\xdd\xee\xff", 6);
+    frame->type = ee16(ETH_TYPE_ARP); /* different protocol */
+    memset(frame->data, 0xAA, 6);
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, (uint32_t)(ETH_HEADER_LEN + 6));
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL),
+            -WOLFIP_EAGAIN);
+#else
+    ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
+#endif
+}
+END_TEST
+
+START_TEST(test_packet_socket_recv_other_interface_ignored)
+{
+#if WOLFIP_PACKET_SOCKETS
+    struct wolfIP s;
+    int sd;
+    uint8_t frame_buf[ETH_HEADER_LEN + 6];
+    struct wolfIP_eth_frame *frame = (struct wolfIP_eth_frame *)frame_buf;
+    uint8_t rxbuf[64];
+    uint8_t other_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, other_mac);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ETH_TYPE_IP);
+    ck_assert_int_ge(sd, 0);
+
+    {
+        struct wolfIP_sockaddr_ll bind_sll;
+        memset(&bind_sll, 0, sizeof(bind_sll));
+        bind_sll.sll_family = AF_PACKET;
+        bind_sll.sll_protocol = ETH_TYPE_IP;
+        bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+        bind_sll.sll_halen = 6;
+        ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+    }
+
+    memset(frame, 0, sizeof(frame_buf));
+    memcpy(frame->dst, other_mac, 6);
+    memcpy(frame->src, "\xaa\xbb\xcc\xdd\xee\xff", 6);
+    frame->type = ETH_TYPE_IP;
+    memset(frame->data, 0xBB, 6);
+
+    wolfIP_recv_ex(&s, TEST_SECOND_IF, frame, (uint32_t)(ETH_HEADER_LEN + 6));
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL),
+            -WOLFIP_EAGAIN);
+#else
+    ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
+#endif
+}
+END_TEST
+
 START_TEST(test_raw_socket_recv_protocol_mismatch)
 {
     struct wolfIP s;
@@ -1647,6 +1841,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_raw_socket_send_hdrincl_respected);
     tcase_add_test(tc_proto, test_raw_socket_send_builds_ip_header);
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
+    tcase_add_test(tc_proto, test_packet_socket_recv_frame);
+    tcase_add_test(tc_proto, test_packet_socket_send_frame);
+    tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
+    tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
     suite_add_tcase(s, tc_proto);
     
     tcase_add_test(tc_utils, test_transport_checksum);

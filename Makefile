@@ -125,7 +125,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/ipfilter-logger build/raw_ping
+	build/ipfilter-logger build/raw_ping build/packet_ping 
 LIB=libwolfip.so
 
 PREFIX=/usr/local
@@ -190,6 +190,10 @@ build/tcp_netcat_poll: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_netca
 	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
 
 build/raw_ping: $(OBJ) build/port/posix/bsd_socket.o build/test/raw_ping.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+
+build/packet_ping: $(OBJ) build/port/posix/bsd_socket.o build/test/packet_ping.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
 
