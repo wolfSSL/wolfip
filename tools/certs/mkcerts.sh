@@ -1,6 +1,9 @@
 #!/bin/sh
 #
-OUT_DIR=build/certs
+OUT_DIR=${1:=build/certs}
+OUT_DIR_CVAR=$(echo $OUT_DIR | sed -e 's/\//_/g')
+
+echo ${OUT_DIR_CVAR}
 
 : "${COUNTRY:=US}"
 : "${STATE:=State}"
@@ -26,7 +29,7 @@ openssl req -x509 -new -key "$OUT_DIR/ca.key" -sha256 -days "$DAYS_CA" -out "$OU
 # 3. Convert CA certificate to DER format
 openssl x509 -in "$OUT_DIR/ca.crt" -outform DER -out "$OUT_DIR/ca.der"
 
-xxd -i "$OUT_DIR/ca.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/build_certs_//g"  > "$OUT_DIR/ca_cert.c"
+xxd -i "$OUT_DIR/ca.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/${OUT_DIR_CVAR}_//g"  > "$OUT_DIR/ca_cert.c"
 
 
 echo "==== Generating server private key ===="
@@ -37,7 +40,7 @@ openssl ecparam -name "$ECC_CURVE" -genkey -noout -out "$OUT_DIR/server.key"
 # 5. Convert server private key to DER format
 openssl pkcs8 -topk8 -nocrypt -in "$OUT_DIR/server.key" -outform DER -out "$OUT_DIR/server.key.der"
 
-xxd -i "$OUT_DIR/server.key.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/build_certs_//g" > "$OUT_DIR/server_key.c"
+xxd -i "$OUT_DIR/server.key.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/${OUT_DIR_CVAR}_//g" > "$OUT_DIR/server_key.c"
 
 
 echo "==== Generating server Certificate Signing Request (CSR) ===="
@@ -55,6 +58,6 @@ openssl x509 -req -in "$OUT_DIR/server.csr" -CA "$OUT_DIR/ca.crt" -CAkey "$OUT_D
 # 8. Convert server certificate to DER format
 openssl x509 -in "$OUT_DIR/server.crt" -outform DER -out "$OUT_DIR/server.der"
 
-xxd -i "$OUT_DIR/server.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/build_certs_//g" > "$OUT_DIR/server_cert.c"
+xxd -i "$OUT_DIR/server.der" |sed -e "s/unsigned/const unsigned/g" | sed -e "s/${OUT_DIR_CVAR}_//g" > "$OUT_DIR/server_cert.c"
 
 echo "==== Done ===="
