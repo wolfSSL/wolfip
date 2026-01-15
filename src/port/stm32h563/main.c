@@ -27,24 +27,56 @@
 #define ECHO_PORT 7
 #define RX_BUF_SIZE 1024
 
-#define RCC_BASE 0x44020C00u
+#if TZEN_ENABLED
+#define RCC_BASE 0x54020C00u  /* Secure alias */
+#define ETH_BASE_DBG 0x50028000u  /* Secure ETH for debug */
+#else
+#define RCC_BASE 0x44020C00u  /* Non-secure alias */
+#define ETH_BASE_DBG 0x40028000u  /* Non-secure ETH for debug */
+#endif
 #define RCC_AHB1ENR  (*(volatile uint32_t *)(RCC_BASE + 0x88u))
 #define RCC_AHB2ENR  (*(volatile uint32_t *)(RCC_BASE + 0x8Cu))
 #define RCC_APB3ENR  (*(volatile uint32_t *)(RCC_BASE + 0xA8u))
 #define RCC_AHB1RSTR (*(volatile uint32_t *)(RCC_BASE + 0x60u))
 #define RCC_AHB1RSTR_ETHRST (1u << 19)
 
+/* SAU (Security Attribution Unit) - mark memory regions as non-secure */
+#define SAU_CTRL   (*(volatile uint32_t *)0xE000EDD0u)
+#define SAU_RNR    (*(volatile uint32_t *)0xE000EDD8u)
+#define SAU_RBAR   (*(volatile uint32_t *)0xE000EDDCu)
+#define SAU_RLAR   (*(volatile uint32_t *)0xE000EDE0u)
+
 /* GTZC (Global TrustZone Controller) - unlock SRAM for DMA access */
+#if TZEN_ENABLED
+/* Secure addresses when running in secure mode with TZEN=1 */
+#define GTZC1_BASE         0x50032400u  /* Secure alias */
+#else
 #define GTZC1_BASE         0x40032400u  /* Non-secure alias */
+#endif
 #define GTZC1_MPCBB1_CR    (*(volatile uint32_t *)(GTZC1_BASE + 0x800u))
 #define GTZC1_MPCBB2_CR    (*(volatile uint32_t *)(GTZC1_BASE + 0xC00u))
 #define GTZC1_MPCBB3_CR    (*(volatile uint32_t *)(GTZC1_BASE + 0x1000u))
+/* MPCBB SECCFGR registers - each bit controls 256 bytes of SRAM */
+#define GTZC1_MPCBB3_SECCFGR(n) (*(volatile uint32_t *)(GTZC1_BASE + 0x1000u + 0x100u + ((n) * 4u)))
+/* MPCBB PRIVCFGR registers - each bit controls privilege for 256 bytes of SRAM */
+#define GTZC1_MPCBB3_PRIVCFGR(n) (*(volatile uint32_t *)(GTZC1_BASE + 0x1000u + 0x200u + ((n) * 4u)))
+/* TZSC SECCFGR registers - control peripheral security */
+#define GTZC1_TZSC_SECCFGR1 (*(volatile uint32_t *)(GTZC1_BASE + 0x010u))
+#define GTZC1_TZSC_SECCFGR2 (*(volatile uint32_t *)(GTZC1_BASE + 0x014u))
+#define GTZC1_TZSC_SECCFGR3 (*(volatile uint32_t *)(GTZC1_BASE + 0x018u))
 
 /* GPIO base addresses */
-#define GPIOA_BASE 0x42020000u
+#if TZEN_ENABLED
+#define GPIOA_BASE 0x52020000u  /* Secure alias */
+#define GPIOB_BASE 0x52020400u
+#define GPIOC_BASE 0x52020800u
+#define GPIOG_BASE 0x52021800u
+#else
+#define GPIOA_BASE 0x42020000u  /* Non-secure alias */
 #define GPIOB_BASE 0x42020400u
 #define GPIOC_BASE 0x42020800u
 #define GPIOG_BASE 0x42021800u
+#endif
 
 /* GPIO register offsets */
 #define GPIO_MODER(base)   (*(volatile uint32_t *)((base) + 0x00u))
@@ -55,7 +87,11 @@
 
 /* SBS (System Bus Security) for RMII selection */
 /* SBS register definitions - PMCR is at offset 0x100 in SBS structure */
-#define SBS_BASE        0x44000400u
+#if TZEN_ENABLED
+#define SBS_BASE        0x54000400u  /* Secure alias */
+#else
+#define SBS_BASE        0x44000400u  /* Non-secure alias */
+#endif
 #define SBS_PMCR        (*(volatile uint32_t *)(SBS_BASE + 0x100u))
 #define SBS_PMCR_ETH_SEL_RMII (4u << 21)
 
@@ -238,16 +274,8 @@ static void eth_gpio_init(void)
     /* Enable SBS clock for RMII selection - bit 1 in APB3ENR (RCC_APB3ENR_SBSEN) */
     RCC_APB3ENR |= (1u << 1);
 
-    /* Longer delay for clock to stabilize */
+    /* Delay for clock to stabilize */
     for (volatile int i = 0; i < 10000; i++) { }
-
-    /* Debug: read registers to verify structure layout */
-    uart_puts("  SBS@0x500 (PMCR) = ");
-    uart_puthex(*(volatile uint32_t *)(0x44000500u));
-    uart_puts("\n");
-    uart_puts("  SBS@0x504 (FPUIMR) = ");
-    uart_puthex(*(volatile uint32_t *)(0x44000504u));
-    uart_puts("\n");
 
     /* Set RMII mode: read-modify-write to preserve other bits */
     val = *sbs_pmcr;
@@ -255,10 +283,6 @@ static void eth_gpio_init(void)
     val |= (0x4u << 21);   /* Set ETH_SEL = 100 for RMII */
     *sbs_pmcr = val;
     for (volatile int i = 0; i < 1000; i++) { }
-
-    uart_puts("  After RMW = ");
-    uart_puthex(*sbs_pmcr);
-    uart_puts("\n");
 
     /* Configure RMII pins for NUCLEO-H563ZI (from ST HAL):
      * PA1  - ETH_REF_CLK (AF11)
@@ -336,23 +360,29 @@ int main(void)
 
     uart_puts("\n\n=== wolfIP STM32H563 Echo Server ===\n");
 
-    /* Check GTZC MPCBB status (read-only - writing causes fault with TZEN=1) */
-    uart_puts("Checking GTZC MPCBB (read-only)...\n");
+#if TZEN_ENABLED
+    /* Configure TrustZone for Ethernet DMA access */
+    uart_puts("Configuring TrustZone for Ethernet DMA...\n");
     {
-        volatile uint32_t *mpcbb1_seccfgr = (volatile uint32_t *)(GTZC1_BASE + 0x800u + 0x100u);
+        uint32_t i;
 
-        uart_puts("  MPCBB1_CR = ");
-        uart_puthex(GTZC1_MPCBB1_CR);
-        uart_puts("\n");
+        /* Enable SAU with ALLNS mode (all undefined regions are non-secure) */
+        SAU_CTRL = 0x03u;  /* ENABLE + ALLNS */
+        __asm volatile ("dsb sy" ::: "memory");
+        __asm volatile ("isb sy" ::: "memory");
 
-        /* Read first SECCFGR to see if SRAM is marked secure */
-        uart_puts("  MPCBB1_SECCFGR[0] = ");
-        uart_puthex(mpcbb1_seccfgr[0]);
-        uart_puts("\n");
+        /* Mark MPCBB3 registers 36-39 as non-secure for ETHMEM */
+        for (i = 36; i <= 39; i++) {
+            GTZC1_MPCBB3_SECCFGR(i) = 0x00000000u;
+            GTZC1_MPCBB3_PRIVCFGR(i) = 0x00000000u;
+        }
+        __asm volatile ("dsb sy" ::: "memory");
 
-        /* Note: If TZEN=1, we cannot modify GTZC from non-secure code! */
-        /* The board needs TZEN=0 (disabled) or a secure supervisor. */
+        /* Mark Ethernet MAC as non-secure in TZSC */
+        GTZC1_TZSC_SECCFGR3 &= ~(1u << 11);
+        __asm volatile ("dsb sy" ::: "memory");
     }
+#endif
 
     uart_puts("Initializing wolfIP stack...\n");
     wolfIP_init_static(&IPStack);
@@ -361,42 +391,13 @@ int main(void)
     uart_puts("Configuring GPIO for RMII...\n");
     eth_gpio_init();
 
-    /* Debug: Print register values */
-    uart_puts("  RCC_APB3ENR = ");
-    uart_puthex(RCC_APB3ENR);
-    uart_puts("\n");
-    uart_puts("  SBS_PMCR = ");
-    uart_puthex(SBS_PMCR);
-    uart_puts("\n");
-    uart_puts("  GPIOA_MODER = ");
-    uart_puthex(GPIO_MODER(GPIOA_BASE));
-    uart_puts("\n");
-    uart_puts("  GPIOG_MODER = ");
-    uart_puthex(GPIO_MODER(GPIOG_BASE));
-    uart_puts("\n");
-    uart_puts("  GPIOG_AFRH = ");
-    uart_puthex(GPIO_AFRH(GPIOG_BASE));
-    uart_puts("\n");
-    uart_puts("  GPIOB_MODER = ");
-    uart_puthex(GPIO_MODER(GPIOB_BASE));
-    uart_puts("\n");
-    uart_puts("  GPIOB_AFRH = ");
-    uart_puthex(GPIO_AFRH(GPIOB_BASE));
-    uart_puts("\n");
-    uart_puts("  GPIOC_MODER = ");
-    uart_puthex(GPIO_MODER(GPIOC_BASE));
-    uart_puts("\n");
-    uart_puts("  GPIOC_AFRL = ");
-    uart_puthex(GPIO_AFRL(GPIOC_BASE));
-    uart_puts("\n");
-
     /* Enable Ethernet MAC, TX, RX clocks AFTER RMII mode is selected */
     uart_puts("Enabling Ethernet clocks...\n");
     RCC_AHB1ENR |= (1u << 19) | (1u << 20) | (1u << 21);
     delay(10000);  /* Allow clocks to stabilize */
 
     /* Reset Ethernet MAC via RCC - this is CRITICAL! (from FrostZone) */
-    uart_puts("Resetting Ethernet MAC via RCC...\n");
+    uart_puts("Resetting Ethernet MAC...\n");
     RCC_AHB1RSTR |= RCC_AHB1RSTR_ETHRST;
     __asm volatile ("dsb sy" ::: "memory");
     delay(1000);
@@ -404,35 +405,20 @@ int main(void)
     __asm volatile ("dsb sy" ::: "memory");
     delay(10000);
 
-    uart_puts("  RCC_AHB1ENR = ");
-    uart_puthex(RCC_AHB1ENR);
-    uart_puts("\n");
-
-    /* Check ETH registers before init */
-    uart_puts("  ETH_DMAMR(0x1000) = ");
-    uart_puthex(*(volatile uint32_t *)(0x40028000u + 0x1000u));
-    uart_puts("\n");
-    uart_puts("  ETH_MACCR(0x0000) = ");
-    uart_puthex(*(volatile uint32_t *)(0x40028000u));
-    uart_puts("\n");
-
     uart_puts("Initializing Ethernet MAC...\n");
     ll = wolfIP_getdev(IPStack);
     ret = stm32h5_eth_init(ll, NULL);
-    uart_puts("  stm32h5_eth_init returned: ");
-    uart_puthex((uint32_t)ret);
-    uart_puts("\n");
-
-    /* Debug: Show ETH registers after init */
-    uart_puts("  ETH_MACCR = ");
-    uart_puthex(*(volatile uint32_t *)(0x40028000u));
-    uart_puts("\n");
-    uart_puts("  ETH_DMASR = ");
-    uart_puthex(*(volatile uint32_t *)(0x40028000u + 0x1008u));
-    uart_puts("\n");
-    uart_puts("  ETH_DMACRXCR = ");
-    uart_puthex(*(volatile uint32_t *)(0x40028000u + 0x1108u));
-    uart_puts("\n");
+    if (ret < 0) {
+        uart_puts("  ERROR: stm32h5_eth_init failed (");
+        uart_puthex((uint32_t)ret);
+        uart_puts(")\n");
+    } else {
+        uart_puts("  PHY link: ");
+        uart_puts((ret & 0x100) ? "UP" : "DOWN");
+        uart_puts(", PHY addr: ");
+        uart_puthex(ret & 0xFF);
+        uart_puts("\n");
+    }
 
     uart_puts("Setting IP configuration:\n");
     uart_puts("  IP: " WOLFIP_IP "\n");
@@ -459,26 +445,9 @@ int main(void)
 
     for (;;) {
         (void)wolfIP_poll(IPStack, tick++);
-        /* Toggle LED and print stats every 256K iterations */
+        /* Toggle LED every ~256K iterations as heartbeat */
         if ((tick & 0x3FFFF) == 0) {
-            uint32_t polls, pkts;
             led_toggle();
-            stm32h5_eth_get_stats(&polls, &pkts);
-            uart_puts(".");
-            if (pkts > 0) {
-                uart_puts(" RX! pkts=");
-                uart_puthex(pkts);
-                uart_puts("\n");
-            }
-            /* Dump all 4 descriptors */
-            {
-                volatile uint32_t *d = (volatile uint32_t *)stm32h5_eth_get_rx_ring_addr();
-                uart_puts("\n");
-                uart_puts("D0:"); uart_puthex(d[0]); uart_puts(","); uart_puthex(d[3]); uart_puts("\n");
-                uart_puts("D1:"); uart_puthex(d[4]); uart_puts(","); uart_puthex(d[7]); uart_puts("\n");
-                uart_puts("D2:"); uart_puthex(d[8]); uart_puts(","); uart_puthex(d[11]); uart_puts("\n");
-                uart_puts("D3:"); uart_puthex(d[12]); uart_puts(","); uart_puthex(d[15]); uart_puts("\n");
-            }
         }
     }
     return 0;

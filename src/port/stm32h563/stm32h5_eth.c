@@ -23,7 +23,11 @@
 #include "config.h"
 #include "stm32h5_eth.h"
 
-#define ETH_BASE            0x40028000UL
+#if TZEN_ENABLED
+#define ETH_BASE            0x50028000UL  /* Secure alias */
+#else
+#define ETH_BASE            0x40028000UL  /* Non-secure alias */
+#endif
 #define ETH_REG(offset)     (*(volatile uint32_t *)(ETH_BASE + (offset)))
 #define ETH_TPDR            ETH_REG(0x1180U)
 
@@ -141,10 +145,17 @@ struct eth_desc {
 #define DMA_TPBL       32U
 #define DMA_RPBL       32U
 
-static struct eth_desc rx_ring[RX_DESC_COUNT] __attribute__((aligned(32)));
-static struct eth_desc tx_ring[TX_DESC_COUNT] __attribute__((aligned(32)));
-static uint8_t rx_buffers[RX_DESC_COUNT][RX_BUF_SIZE] __attribute__((aligned(32)));
-static uint8_t tx_buffers[TX_DESC_COUNT][TX_BUF_SIZE] __attribute__((aligned(32)));
+/* When TZEN=1, place Ethernet buffers in non-secure SRAM section for DMA access */
+#if TZEN_ENABLED
+#define ETH_SECTION __attribute__((section(".eth_buffers")))
+#else
+#define ETH_SECTION
+#endif
+
+static struct eth_desc rx_ring[RX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
+static struct eth_desc tx_ring[TX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
+static uint8_t rx_buffers[RX_DESC_COUNT][RX_BUF_SIZE] __attribute__((aligned(32))) ETH_SECTION;
+static uint8_t tx_buffers[TX_DESC_COUNT][TX_BUF_SIZE] __attribute__((aligned(32))) ETH_SECTION;
 static uint8_t rx_staging_buffer[RX_BUF_SIZE] __attribute__((aligned(32)));
 
 static uint32_t rx_idx;
@@ -490,10 +501,9 @@ uint32_t stm32h5_eth_get_rx_ring_addr(void)
 uint32_t stm32h5_eth_get_dmacsr(void)
 {
     /* ETH_DMAC0SR at offset 0x1160 - clear RBU by writing 1 to bit 7 */
-    volatile uint32_t *csr = (volatile uint32_t *)(0x40028000u + 0x1160u);
-    uint32_t val = *csr;
+    uint32_t val = ETH_DMACSR;
     if (val & 0x80) {
-        *csr = 0x80;  /* Clear RBU by writing 1 */
+        ETH_DMACSR = 0x80;  /* Clear RBU by writing 1 */
     }
     return val;
 }
@@ -512,13 +522,13 @@ uint32_t stm32h5_eth_get_macpfr(void)
 uint32_t stm32h5_eth_get_mac_debug(void)
 {
     /* ETH_MTLRXQDR - MTL Rx Queue Debug */
-    return *(volatile uint32_t *)(0x40028000u + 0x0C38u);
+    return *(volatile uint32_t *)(ETH_BASE + 0x0C38u);
 }
 
 uint32_t stm32h5_eth_get_dma_debug(void)
 {
     /* ETH_DMADSR - DMA Debug Status */
-    return *(volatile uint32_t *)(0x40028000u + 0x100Cu);
+    return *(volatile uint32_t *)(ETH_BASE + 0x100Cu);
 }
 
 uint32_t stm32h5_eth_get_rx_list_addr(void)
@@ -536,7 +546,7 @@ uint32_t stm32h5_eth_get_rx_ring_len(void)
 uint32_t stm32h5_eth_get_rx_curr_desc(void)
 {
     /* ETH_DMAC0CXRXLAR - Current RX Descriptor, offset 0x114C */
-    return *(volatile uint32_t *)(0x40028000u + 0x114Cu);
+    return *(volatile uint32_t *)(ETH_BASE + 0x114Cu);
 }
 
 uint32_t stm32h5_eth_read_desc_at_addr(uint32_t addr)
