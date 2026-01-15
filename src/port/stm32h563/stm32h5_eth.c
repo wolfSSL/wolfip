@@ -127,6 +127,7 @@ struct eth_desc {
 #define ETH_TDES3_FL_MASK  (0x7FFFU)
 
 #define ETH_RDES3_OWN      (1U << 31)
+#define ETH_RDES3_IOC      (1U << 30)
 #define ETH_RDES3_BUF1V    (1U << 24)
 #define ETH_RDES3_FS       (1U << 29)
 #define ETH_RDES3_LS       (1U << 28)
@@ -150,11 +151,16 @@ static uint32_t rx_idx;
 static uint32_t tx_idx;
 static int32_t phy_addr = -1;
 
-static void eth_hw_reset(void)
+static int eth_hw_reset(void)
 {
+    uint32_t timeout = 1000000U;
+
+    /* DMA software reset */
     ETH_DMAMR |= ETH_DMAMR_SWR;
-    while (ETH_DMAMR & ETH_DMAMR_SWR) {
+    while ((ETH_DMAMR & ETH_DMAMR_SWR) && (timeout > 0U)) {
+        timeout--;
     }
+    return (timeout > 0U) ? 0 : -1;
 }
 
 static void eth_trigger_tx(void)
@@ -172,7 +178,8 @@ static void eth_config_mac(const uint8_t mac[6])
     maccr &= ~(ETH_MACCR_DM | ETH_MACCR_FES);
     maccr |= ETH_MACCR_DM | ETH_MACCR_FES;
     ETH_MACCR = maccr;
-    ETH_MACPFR = 0U;
+    /* Enable promiscuous mode for debugging (bit 0 = PR) */
+    ETH_MACPFR = (1u << 0);  /* Promiscuous mode */
     ETH_MACA0HR = ((uint32_t)mac[5] << 8) | (uint32_t)mac[4];
     ETH_MACA0LR = ((uint32_t)mac[3] << 24) |
                   ((uint32_t)mac[2] << 16) |
@@ -219,37 +226,69 @@ static void eth_config_mtl(void)
 static void eth_init_desc(void)
 {
     uint32_t i;
+
+    /* Step 1: Clear all descriptors (like HAL does) */
     for (i = 0; i < TX_DESC_COUNT; i++) {
-        tx_ring[i].des0 = (uint32_t)tx_buffers[i];
+        tx_ring[i].des0 = 0;
         tx_ring[i].des1 = 0;
         tx_ring[i].des2 = 0;
         tx_ring[i].des3 = 0;
     }
     for (i = 0; i < RX_DESC_COUNT; i++) {
-        rx_ring[i].des0 = (uint32_t)rx_buffers[i];
+        rx_ring[i].des0 = 0;
         rx_ring[i].des1 = 0;
         rx_ring[i].des2 = 0;
-        rx_ring[i].des3 = (RX_BUF_SIZE & ETH_RDES3_PL_MASK) |
-                          ETH_RDES3_OWN |
-                          ETH_RDES3_BUF1V;
+        rx_ring[i].des3 = 0;
     }
     rx_idx = 0;
     tx_idx = 0;
+
+    /* Step 2: Configure DMA registers */
+    __asm volatile ("dsb sy" ::: "memory");
     ETH_DMACTXDLAR = (uint32_t)&tx_ring[0];
     ETH_DMACRXDLAR = (uint32_t)&rx_ring[0];
     ETH_DMACTXRLR = TX_DESC_COUNT - 1U;
     ETH_DMACRXRLR = RX_DESC_COUNT - 1U;
     ETH_DMACTXDTPR = (uint32_t)&tx_ring[0];
     ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    __asm volatile ("dsb sy" ::: "memory");
+
+    /* Step 3: Now set buffer addresses and OWN bit */
+    for (i = 0; i < TX_DESC_COUNT; i++) {
+        *(volatile uint32_t *)&tx_ring[i].des0 = (uint32_t)tx_buffers[i];
+    }
+    for (i = 0; i < RX_DESC_COUNT; i++) {
+        *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
+        *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
+    }
+
+    /* Data synchronization barrier before updating tail pointer */
+    __asm volatile ("dsb sy" ::: "memory");
+    __asm volatile ("isb sy" ::: "memory");
+
+    /* Step 4: Update tail pointer to signal DMA that descriptors are ready */
+    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+
+    /* Final barrier */
+    __asm volatile ("dsb sy" ::: "memory");
 }
+
+/* ETH_DMACCR - DMA Channel Control Register at offset 0x1100 */
+#define ETH_DMACCR      (*(volatile uint32_t *)(ETH_BASE + 0x1100u))
+#define ETH_DMACCR_DSL_0BIT  (0x00000000u)  /* No skip between descriptors */
 
 static void eth_config_dma(void)
 {
     ETH_DMASBMR = ETH_DMASBMR_FB | ETH_DMASBMR_AAL;
+    /* Set DSL=0 for 16-byte descriptors (no skip) */
+    ETH_DMACCR = ETH_DMACCR_DSL_0BIT;
     ETH_DMACRXCR = ((RX_BUF_SIZE & ETH_RDES3_PL_MASK) << ETH_DMACRXCR_RBSZ_SHIFT) |
                    ETH_DMACRXCR_RPBL(DMA_RPBL);
     ETH_DMACTXCR = ETH_DMACTXCR_OSF | ETH_DMACTXCR_TPBL(DMA_TPBL);
 }
+
+#define ETH_DMACSR_TPS  (1U << 1)   /* TX Process Stopped */
+#define ETH_DMACSR_RPS  (1U << 8)   /* RX Process Stopped */
 
 static void eth_start(void)
 {
@@ -257,6 +296,14 @@ static void eth_start(void)
     ETH_MTLTXQOMR |= ETH_MTLTXQOMR_FTQ;
     ETH_DMACTXCR |= ETH_DMACTXCR_ST;
     ETH_DMACRXCR |= ETH_DMACRXCR_SR;
+
+    /* Clear TX and RX process stopped flags (like HAL does) */
+    ETH_DMACSR = ETH_DMACSR_TPS | ETH_DMACSR_RPS;
+
+    __asm volatile ("dsb sy" ::: "memory");
+
+    /* Write tail pointer to start RX DMA processing */
+    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
 }
 
 static void eth_stop(void)
@@ -349,6 +396,9 @@ static void eth_phy_init(void)
     } while ((bsr & PHY_BSR_LINK_STATUS) == 0U && --timeout != 0U);
 }
 
+static uint32_t rx_poll_count = 0;
+static uint32_t rx_pkt_count = 0;
+
 static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 {
     struct eth_desc *desc;
@@ -356,8 +406,10 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     uint32_t frame_len = 0;
 
     (void)dev;
+    rx_poll_count++;
     desc = &rx_ring[rx_idx];
     if (desc->des3 & ETH_RDES3_OWN) return 0;
+    rx_pkt_count++;
     status = desc->des3;
     if ((status & (ETH_RDES3_FS | ETH_RDES3_LS)) ==
             (ETH_RDES3_FS | ETH_RDES3_LS)) {
@@ -367,9 +419,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
         memcpy(frame, rx_staging_buffer, frame_len);
     }
     desc->des1 = 0;
-    desc->des3 = (RX_BUF_SIZE & ETH_RDES3_PL_MASK) |
-                 ETH_RDES3_OWN |
-                 ETH_RDES3_BUF1V;
+    desc->des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     __asm volatile ("dsb sy" ::: "memory");
     ETH_DMACRXDTPR = (uint32_t)desc;
     rx_idx = (rx_idx + 1U) % RX_DESC_COUNT;
@@ -416,9 +466,105 @@ static void stm32h5_eth_generate_mac(uint8_t mac[6])
     mac[5] = 0x33;
 }
 
+void stm32h5_eth_get_stats(uint32_t *polls, uint32_t *pkts)
+{
+    if (polls) *polls = rx_poll_count;
+    if (pkts) *pkts = rx_pkt_count;
+}
+
+uint32_t stm32h5_eth_get_rx_des3(void)
+{
+    return rx_ring[0].des3;
+}
+
+uint32_t stm32h5_eth_get_rx_des0(void)
+{
+    return rx_ring[0].des0;
+}
+
+uint32_t stm32h5_eth_get_rx_ring_addr(void)
+{
+    return (uint32_t)&rx_ring[0];
+}
+
+uint32_t stm32h5_eth_get_dmacsr(void)
+{
+    /* ETH_DMAC0SR at offset 0x1160 - clear RBU by writing 1 to bit 7 */
+    volatile uint32_t *csr = (volatile uint32_t *)(0x40028000u + 0x1160u);
+    uint32_t val = *csr;
+    if (val & 0x80) {
+        *csr = 0x80;  /* Clear RBU by writing 1 */
+    }
+    return val;
+}
+
+uint32_t stm32h5_eth_get_rx_tail(void)
+{
+    /* ETH_DMAC0RXDTPR */
+    return ETH_DMACRXDTPR;
+}
+
+uint32_t stm32h5_eth_get_macpfr(void)
+{
+    return ETH_MACPFR;
+}
+
+uint32_t stm32h5_eth_get_mac_debug(void)
+{
+    /* ETH_MTLRXQDR - MTL Rx Queue Debug */
+    return *(volatile uint32_t *)(0x40028000u + 0x0C38u);
+}
+
+uint32_t stm32h5_eth_get_dma_debug(void)
+{
+    /* ETH_DMADSR - DMA Debug Status */
+    return *(volatile uint32_t *)(0x40028000u + 0x100Cu);
+}
+
+uint32_t stm32h5_eth_get_rx_list_addr(void)
+{
+    /* ETH_DMAC0RXDLAR - RX Descriptor List Address */
+    return ETH_DMACRXDLAR;
+}
+
+uint32_t stm32h5_eth_get_rx_ring_len(void)
+{
+    /* ETH_DMAC0RXRLR - RX Ring Length */
+    return ETH_DMACRXRLR;
+}
+
+uint32_t stm32h5_eth_get_rx_curr_desc(void)
+{
+    /* ETH_DMAC0CXRXLAR - Current RX Descriptor, offset 0x114C */
+    return *(volatile uint32_t *)(0x40028000u + 0x114Cu);
+}
+
+uint32_t stm32h5_eth_read_desc_at_addr(uint32_t addr)
+{
+    /* Read DES3 at the given descriptor address + 12 bytes (offset of des3) */
+    return *(volatile uint32_t *)(addr + 12u);
+}
+
+void stm32h5_eth_kick_rx(void)
+{
+    uint32_t i;
+    /* Reinitialize all RX descriptors and kick DMA */
+    for (i = 0; i < RX_DESC_COUNT; i++) {
+        *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
+        *(volatile uint32_t *)&rx_ring[i].des1 = 0;
+        *(volatile uint32_t *)&rx_ring[i].des2 = 0;
+        *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
+    }
+    __asm volatile ("dsb sy" ::: "memory");
+    __asm volatile ("isb sy" ::: "memory");
+    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+}
+
 int stm32h5_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 {
     uint8_t local_mac[6];
+    uint16_t phy_id1, phy_bsr;
+
     if (ll == NULL) return -1;
     if (mac == NULL) {
         stm32h5_eth_generate_mac(local_mac);
@@ -431,7 +577,9 @@ int stm32h5_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     ll->send = eth_send;
 
     eth_stop();
-    eth_hw_reset();
+    if (eth_hw_reset() != 0) {
+        return -2;  /* DMA reset timeout - check RMII clock */
+    }
     eth_config_mac(mac);
     eth_config_mtl();
     eth_init_desc();
@@ -439,5 +587,10 @@ int stm32h5_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     eth_phy_init();
     eth_config_speed_duplex();
     eth_start();
-    return 0;
+
+    /* Read PHY info for debug */
+    phy_id1 = eth_mdio_read((uint32_t)phy_addr, PHY_REG_ID1);
+    phy_bsr = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
+    /* Pack debug info: PHY_ADDR in bits 0-7, link in bit 8, id1 high byte in 16-23 */
+    return ((phy_id1 & 0xFF00u) << 8) | ((phy_bsr & 0x04u) ? 0x100 : 0) | (phy_addr & 0xFF);
 }

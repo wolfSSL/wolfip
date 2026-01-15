@@ -1,7 +1,8 @@
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x0C000000, LENGTH = 0x00200000
-    RAM   (rwx) : ORIGIN = 0x30000000, LENGTH = 0x000A0000
+    /* Non-secure addresses (TrustZone disabled) */
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 0x00200000
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 0x000A0000
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

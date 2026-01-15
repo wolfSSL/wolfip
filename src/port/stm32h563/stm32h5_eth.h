@@ -25,5 +25,19 @@
 #include "wolfip.h"
 
 int stm32h5_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac);
+void stm32h5_eth_get_stats(uint32_t *polls, uint32_t *pkts);
+uint32_t stm32h5_eth_get_rx_des3(void);
+uint32_t stm32h5_eth_get_rx_des0(void);
+uint32_t stm32h5_eth_get_rx_ring_addr(void);
+uint32_t stm32h5_eth_get_dmacsr(void);
+uint32_t stm32h5_eth_get_rx_tail(void);
+uint32_t stm32h5_eth_get_macpfr(void);
+uint32_t stm32h5_eth_get_mac_debug(void);
+uint32_t stm32h5_eth_get_dma_debug(void);
+uint32_t stm32h5_eth_get_rx_list_addr(void);
+uint32_t stm32h5_eth_get_rx_ring_len(void);
+uint32_t stm32h5_eth_get_rx_curr_desc(void);
+uint32_t stm32h5_eth_read_desc_at_addr(uint32_t addr);
+void stm32h5_eth_kick_rx(void);
 
 #endif
