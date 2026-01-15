@@ -1067,14 +1067,13 @@ static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *ma
 static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *orig)
 {
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-    struct wolfIP_icmp_ttl_exceeded_packet icmp;
+    struct wolfIP_icmp_ttl_exceeded_packet icmp = {0};
     struct wolfIP_icmp_packet *icmp_pkt = (struct wolfIP_icmp_packet *)&icmp;
 #if !CONFIG_IPFILTER
     (void)icmp_pkt;
 #endif
     if (!ll || !ll->send)
         return;
-    memset(&icmp, 0, sizeof(icmp));
     icmp.type = ICMP_TTL_EXCEEDED;
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN,
             TTL_EXCEEDED_ORIG_PACKET_SIZE);

@@ -88,6 +88,8 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=constParameterCallback \
 			   --suppress=toomanyconfigs \
 			   --suppress=unmatchedSuppression --inconclusive \
+			   --suppress=comparePointers:src/port/stm32h563/startup.c \
+			   --suppress=comparePointers:src/port/stm32h563/syscalls.c \
 			   --disable=style \
 			   --std=c99 --language=c \
 			   --platform=unix64 \
