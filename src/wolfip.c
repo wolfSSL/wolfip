@@ -1067,14 +1067,13 @@ static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *ma
 static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *orig)
 {
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-    struct wolfIP_icmp_ttl_exceeded_packet icmp;
+    struct wolfIP_icmp_ttl_exceeded_packet icmp = {0};
     struct wolfIP_icmp_packet *icmp_pkt = (struct wolfIP_icmp_packet *)&icmp;
 #if !CONFIG_IPFILTER
     (void)icmp_pkt;
 #endif
     if (!ll || !ll->send)
         return;
-    memset(&icmp, 0, sizeof(icmp));
     icmp.type = ICMP_TTL_EXCEEDED;
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN,
             TTL_EXCEEDED_ORIG_PACKET_SIZE);
@@ -2925,12 +2924,12 @@ static int dhcp_poll(struct wolfIP *s)
         struct ipconf *primary = wolfIP_primary_ipconf(s);
         LOG("DHCP configuration received.\n");
         if (primary) {
-            LOG("IP Address: %u.%u.%u.%u\n", (primary->ip >> 24) & 0xFF, (primary->ip >> 16) & 0xFF, (primary->ip >> 8) & 0xFF, (primary->ip >> 0) & 0xFF);
-            LOG("Subnet Mask: %u.%u.%u.%u\n", (primary->mask >> 24) & 0xFF, (primary->mask >> 16) & 0xFF, (primary->mask >> 8) & 0xFF, (primary->mask >> 0) & 0xFF);
-            LOG("Gateway: %u.%u.%u.%u\n", (primary->gw >> 24) & 0xFF, (primary->gw >> 16) & 0xFF, (primary->gw >> 8) & 0xFF, (primary->gw >> 0) & 0xFF);
+            LOG("IP Address: %u.%u.%u.%u\n", (unsigned int)((primary->ip >> 24) & 0xFF), (unsigned int)((primary->ip >> 16) & 0xFF), (unsigned int)((primary->ip >> 8) & 0xFF), (unsigned int)((primary->ip >> 0) & 0xFF));
+            LOG("Subnet Mask: %u.%u.%u.%u\n", (unsigned int)((primary->mask >> 24) & 0xFF), (unsigned int)((primary->mask >> 16) & 0xFF), (unsigned int)((primary->mask >> 8) & 0xFF), (unsigned int)((primary->mask >> 0) & 0xFF));
+            LOG("Gateway: %u.%u.%u.%u\n", (unsigned int)((primary->gw >> 24) & 0xFF), (unsigned int)((primary->gw >> 16) & 0xFF), (unsigned int)((primary->gw >> 8) & 0xFF), (unsigned int)((primary->gw >> 0) & 0xFF));
         }
         if (s->dns_server)
-            LOG("DNS Server: %u.%u.%u.%u\n", (s->dns_server >> 24) & 0xFF, (s->dns_server >> 16) & 0xFF, (s->dns_server >> 8) & 0xFF, (s->dns_server >> 0) & 0xFF);
+            LOG("DNS Server: %u.%u.%u.%u\n", (unsigned int)((s->dns_server >> 24) & 0xFF), (unsigned int)((s->dns_server >> 16) & 0xFF), (unsigned int)((s->dns_server >> 8) & 0xFF), (unsigned int)((s->dns_server >> 0) & 0xFF));
     }
     return 0;
 }
@@ -3748,7 +3747,7 @@ int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lo
     if (!s || !id || !lookup_cb)
         return -22;
     snprintf(ptr_name, sizeof(ptr_name), "%u.%u.%u.%u.in-addr.arpa",
-            ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
+            (unsigned int)(ip & 0xFF), (unsigned int)((ip >> 8) & 0xFF), (unsigned int)((ip >> 16) & 0xFF), (unsigned int)((ip >> 24) & 0xFF));
     s->dns_ptr_cb = lookup_cb;
     s->dns_lookup_cb = NULL;
     s->dns_ptr_name[0] = '\0';

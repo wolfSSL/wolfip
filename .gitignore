@@ -13,3 +13,4 @@ build/*
 test/unit/unit
 tags
 cppcheck_results.xml
+src/port/stm32h563/app.elf
