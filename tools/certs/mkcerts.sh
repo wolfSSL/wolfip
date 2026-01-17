@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-OUT_DIR=${1:=build/certs}
+OUT_DIR=${1:-build/certs}
 OUT_DIR_CVAR=$(echo $OUT_DIR | sed -e 's/\//_/g')
 
 echo ${OUT_DIR_CVAR}
