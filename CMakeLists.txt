@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 
+#---------------------------------------------------------------------------------------------
+# First, ensure no in-source build occurs.
+#---------------------------------------------------------------------------------------------
+if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
+    message(FATAL_ERROR
+            "In-source builds are not allowed for wolfIP.\
+             Run cmake from a separate directory from where CMakeLists.txt lives.")
+endif()
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 set(CMAKE_C_FLAGS "-Wall -Werror -Wextra -Wdeclaration-after-statement")
