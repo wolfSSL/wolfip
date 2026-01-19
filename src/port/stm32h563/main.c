@@ -455,16 +455,7 @@ int main(void)
 
         dhcp_timeout = 30000;  /* 30 seconds timeout */
 
-        (void)wolfIP_poll(IPStack, tick);
         if (dhcp_client_init(IPStack) >= 0) {
-            /* Poll immediately to send the DHCP discover packet */
-            (void)wolfIP_poll(IPStack, tick);
-            tick++;
-            delay(1000);
-            (void)wolfIP_poll(IPStack, tick);
-            tick++;
-            delay(1000);
-
             /* Wait for DHCP to complete - poll frequently */
             dhcp_start_tick = tick;
             while (!dhcp_bound(IPStack)) {

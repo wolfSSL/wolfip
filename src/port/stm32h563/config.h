@@ -22,22 +22,22 @@
 #define WOLF_CONFIG_H
 
 #ifndef CONFIG_IPFILTER
-#define CONFIG_IPFILTER 0
+#define CONFIG_IPFILTER         0
 #endif
 
 #define ETHERNET
-#define LINK_MTU 1536
+#define LINK_MTU                1536
 
-#define MAX_TCPSOCKETS 4
-#define MAX_UDPSOCKETS 2
-#define MAX_ICMPSOCKETS 2
-#define RXBUF_SIZE (LINK_MTU * 16)
-#define TXBUF_SIZE (LINK_MTU * 16)
+#define MAX_TCPSOCKETS          4
+#define MAX_UDPSOCKETS          2
+#define MAX_ICMPSOCKETS         2
+#define RXBUF_SIZE              (LINK_MTU * 16)
+#define TXBUF_SIZE              (LINK_MTU * 16)
 
-#define MAX_NEIGHBORS 16
+#define MAX_NEIGHBORS            16
 
 #ifndef WOLFIP_MAX_INTERFACES
-#define WOLFIP_MAX_INTERFACES 1
+#define WOLFIP_MAX_INTERFACES    1
 #endif
 
 #ifndef WOLFIP_ENABLE_FORWARDING
@@ -45,20 +45,20 @@
 #endif
 
 #ifndef WOLFIP_ENABLE_LOOPBACK
-#define WOLFIP_ENABLE_LOOPBACK 0
+#define WOLFIP_ENABLE_LOOPBACK   0
 #endif
 
 #ifndef WOLFIP_ENABLE_DHCP
-#define WOLFIP_ENABLE_DHCP 1
+#define WOLFIP_ENABLE_DHCP       1
 #endif
 
 #if WOLFIP_ENABLE_DHCP
 #define DHCP
 #else
-#define WOLFIP_IP "192.168.12.11"
-#define WOLFIP_NETMASK "255.255.255.0"
-#define WOLFIP_GW "192.168.12.1"
-#define WOLFIP_STATIC_DNS_IP "9.9.9.9"
+#define WOLFIP_IP                "192.168.12.11"
+#define WOLFIP_NETMASK           "255.255.255.0"
+#define WOLFIP_GW                "192.168.12.1"
+#define WOLFIP_STATIC_DNS_IP     "9.9.9.9"
 #endif
 
-#endif
+#endif /* WOLF_CONFIG_H */
