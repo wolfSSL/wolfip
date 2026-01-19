@@ -1235,15 +1235,18 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ud
         return;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
-        if (t->src_port == ee16(udp->dst_port) && t->dst_port == ee16(udp->src_port) &&
+        uint32_t expected_len;
+        if (t->src_port == ee16(udp->dst_port) && (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == dst_ip && t->remote_ip != local_ip)) ) {
+                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip != local_ip))) ) {
 
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
 
             /* UDP datagram sanity checks */
-            if ((int)frame_len != ee16(udp->len) + IP_HEADER_LEN + ETH_HEADER_LEN)
+            /* Allow some tolerance for padding/alignment (up to 4 bytes) */
+            expected_len = ee16(udp->len) + IP_HEADER_LEN + ETH_HEADER_LEN;
+            if ((int)frame_len < (int)expected_len)
                 return;
             /* Insert into socket buffer */
             fifo_push(&t->sock.udp.rxbuf, udp, frame_len);

@@ -27,7 +27,7 @@ sudo apt install gcc-arm-none-eabi openocd
 
 ```bash
 cd src/port/stm32h563
-make TZEN=0
+make
 ```
 
 This produces `app.elf` and `app.bin` for use with TZEN=0 (TrustZone disabled).
@@ -94,7 +94,7 @@ picocom -b 115200 /dev/ttyACM0
 
 ## Example Output
 
-When the firmware boots successfully, you should see output similar to:
+When the firmware boots successfully with DHCP (default), you should see output similar to:
 
 ```
 === wolfIP STM32H563 Echo Server ===
@@ -113,11 +113,35 @@ Entering main loop. Ready for connections!
 Loop starting...
 ```
 
+When static IP is enabled, the output will show "Setting IP configuration:" instead of "DHCP configuration received:".
+
 The "PHY link: UP" message indicates the Ethernet PHY has established a link with the network.
 
 ## Network Configuration
 
-The example configures the following static IP:
+The example can be configured to use either DHCP or static IP. By default, DHCP is enabled.
+
+### DHCP Configuration (Default)
+
+By default, the device uses DHCP to automatically obtain IP address, subnet mask, gateway, and DNS server from a DHCP server on the network. The obtained configuration will be displayed on the serial console.
+
+**Note:** When DHCP is enabled, the device will wait up to 30 seconds for a DHCP server response during initialization. If no DHCP server is available, the device will timeout and continue without network configuration.
+
+### Static IP Configuration
+
+To use static IP instead of DHCP, set `WOLFIP_ENABLE_DHCP` to `0` in `config.h`:
+
+```c
+#define WOLFIP_ENABLE_DHCP 0
+```
+
+Or compile with:
+
+```bash
+make CFLAGS+="-DWOLFIP_ENABLE_DHCP=0"
+```
+
+When static IP is enabled, the example configures the following:
 
 | Setting | Value |
 |---------|-------|

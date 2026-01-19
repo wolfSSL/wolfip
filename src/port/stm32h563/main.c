@@ -230,6 +230,34 @@ static void uart_puthex(uint32_t val)
     }
 }
 
+static void uart_putdec(uint32_t val)
+{
+    char buf[12];
+    int i = 0;
+    if (val == 0) {
+        uart_putc('0');
+        return;
+    }
+    while (val > 0 && i < 11) {
+        buf[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+    while (i > 0) {
+        uart_putc(buf[--i]);
+    }
+}
+
+static void uart_putip4(ip4 ip)
+{
+    uart_putdec((ip >> 24) & 0xFF);
+    uart_putc('.');
+    uart_putdec((ip >> 16) & 0xFF);
+    uart_putc('.');
+    uart_putdec((ip >> 8) & 0xFF);
+    uart_putc('.');
+    uart_putdec(ip & 0xFF);
+}
+
 /* Configure GPIO pin for Ethernet alternate function (AF11) */
 static void gpio_eth_pin(uint32_t base, uint32_t pin)
 {
@@ -420,14 +448,57 @@ int main(void)
         uart_puts("\n");
     }
 
-    uart_puts("Setting IP configuration:\n");
-    uart_puts("  IP: " WOLFIP_IP "\n");
-    uart_puts("  Mask: " WOLFIP_NETMASK "\n");
-    uart_puts("  GW: " WOLFIP_GW "\n");
-    wolfIP_ipconfig_set(IPStack,
-                        atoip4(WOLFIP_IP),
-                        atoip4(WOLFIP_NETMASK),
-                        atoip4(WOLFIP_GW));
+#ifdef DHCP
+    {
+        uint32_t dhcp_start_tick;
+        uint32_t dhcp_timeout;
+
+        dhcp_timeout = 30000;  /* 30 seconds timeout */
+
+        if (dhcp_client_init(IPStack) >= 0) {
+            /* Wait for DHCP to complete - poll frequently */
+            dhcp_start_tick = tick;
+            while (!dhcp_bound(IPStack)) {
+                /* Poll the stack - this processes received packets and sends pending data */
+                (void)wolfIP_poll(IPStack, tick);
+                /* Increment tick counter (approximate 1ms per iteration) */
+                tick++;
+                /* Small delay to allow Ethernet DMA to work */
+                delay(1000);
+                /* Check for timeout */
+                if ((tick - dhcp_start_tick) > dhcp_timeout)
+                    break;
+            }
+            if (dhcp_bound(IPStack)) {
+                ip4 ip = 0, nm = 0, gw = 0;
+                wolfIP_ipconfig_get(IPStack, &ip, &nm, &gw);
+                uart_puts("DHCP configuration received:\n");
+                uart_puts("  IP: ");
+                uart_putip4(ip);
+                uart_puts("\n  Mask: ");
+                uart_putip4(nm);
+                uart_puts("\n  GW: ");
+                uart_putip4(gw);
+                uart_puts("\n");
+            }
+        }
+    }
+#else
+    {
+        ip4 ip = atoip4(WOLFIP_IP);
+        ip4 nm = atoip4(WOLFIP_NETMASK);
+        ip4 gw = atoip4(WOLFIP_GW);
+        uart_puts("Setting IP configuration:\n");
+        uart_puts("  IP: ");
+        uart_putip4(ip);
+        uart_puts("\n  Mask: ");
+        uart_putip4(nm);
+        uart_puts("\n  GW: ");
+        uart_putip4(gw);
+        uart_puts("\n");
+        wolfIP_ipconfig_set(IPStack, ip, nm, gw);
+    }
+#endif
 
     uart_puts("Creating TCP socket on port 7...\n");
     listen_fd = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
