@@ -32,13 +32,13 @@ make
 
 This produces `app.elf` and `app.bin` for use with TZEN=0 (TrustZone disabled).
 
-### TrustZone Enabled Build (Experimental)
+### TrustZone Enabled Build
 
 ```bash
 make TZEN=1
 ```
 
-> **Note:** TZEN=1 support is experimental. The Ethernet driver currently has issues receiving packets when TrustZone is enabled.
+This builds firmware for execution in TrustZone secure mode with proper SAU, GTZC, and MPCBB configuration for Ethernet DMA access.
 
 ## Disabling TrustZone (Option Bytes)
 
@@ -51,6 +51,27 @@ If your board has TrustZone enabled, you must disable it via option bytes before
 3. Go to **Option Bytes** tab
 4. Find **TZEN** under "User Configuration"
 5. Set TZEN to **0xC3** (disabled)
+6. Click **Apply**
+
+## TrustZone Support (TZEN=1)
+
+The TZEN=1 build provides full TrustZone support for running wolfIP in secure mode:
+
+- **SAU Configuration:** Enables ALLNS mode for non-secure DMA access to all undefined regions
+- **GTZC/MPCBB:** Configures SRAM3 blocks (registers 36-39) as non-secure for Ethernet DMA buffers
+- **TZSC:** Marks Ethernet MAC peripheral as non-secure for DMA operation
+- **Secure Aliases:** Uses secure peripheral addresses (0x5xxxxxxx) for RCC, GPIO, GTZC
+- **Separate ETHMEM:** Places Ethernet TX/RX buffers in dedicated non-secure SRAM region
+
+### Enabling TrustZone (Option Bytes)
+
+To use the TZEN=1 build, TrustZone must be enabled in the option bytes:
+
+1. Open STM32CubeProgrammer
+2. Connect to the target
+3. Go to **Option Bytes** tab
+4. Find **TZEN** under "User Configuration"
+5. Set TZEN to **0xB4** (enabled)
 6. Click **Apply**
 
 ### Using OpenOCD
@@ -170,6 +191,145 @@ echo "Hello wolfIP!" | nc 192.168.12.11 7
 ping 192.168.12.11
 ```
 
+## TLS Support (wolfSSL)
+
+The port includes optional TLS 1.3 support using wolfSSL. This enables secure encrypted communication.
+
+### Prerequisites
+
+Clone wolfSSL alongside wolfip:
+
+```bash
+cd /path/to/parent
+git clone https://github.com/wolfSSL/wolfssl.git
+# wolfip should be at /path/to/parent/wolfip
+```
+
+### Building with TLS
+
+```bash
+make ENABLE_TLS=1
+```
+
+Or specify a custom wolfSSL path:
+
+```bash
+make ENABLE_TLS=1 WOLFSSL_ROOT=/path/to/wolfssl
+```
+
+### TLS Example Output
+
+With TLS enabled, you'll see additional output including the TLS server startup and TLS client test:
+
+```
+=== wolfIP STM32H563 Echo Server ===
+Initializing wolfIP stack...
+...
+DHCP configuration received:
+  IP: 192.168.0.197
+  Mask: 192.168.0.1
+  GW: 192.168.0.1
+Creating TCP socket on port 7...
+Initializing TLS server on port 8443...
+TLS: Initializing wolfSSL
+TLS: Loading certificate
+TLS: Loading private key
+TLS: Server ready on port 8443
+Initializing TLS client...
+TLS Client: Initializing wolfSSL
+TLS Client: Initialized
+Entering main loop. Ready for connections!
+Loop starting...
+
+--- TLS Client Test: Connecting to Google ---
+Target: 142.250.189.174:443
+TLS Client: Connecting...
+TLS Client: TLS handshake...
+TLS Client: Connected!
+TLS Client: Sending HTTP GET request...
+TLS Client received 851 bytes:
+HTTP/1.1 301 Moved Permanently
+...
+TLS Client: Passed! Connection closed after response
+```
+
+### Testing the TLS Server
+
+The TLS echo server listens on port 8443. Test with OpenSSL:
+
+```bash
+# Basic TLS connection test
+(echo "Hello TLS!"; sleep 2) | openssl s_client -connect <device-ip>:8443 -quiet
+
+# View full handshake details
+openssl s_client -connect <device-ip>:8443 -tls1_3
+```
+
+Expected output:
+```
+depth=0 CN = wolfIP-STM32H563, O = wolfSSL, C = US
+verify error:num=18:self-signed certificate
+Hello TLS!
+```
+
+### TLS Client (Google Test)
+
+The TLS build includes a client example that connects to Google over HTTPS to verify outbound TLS connectivity. This runs automatically ~5 seconds after boot.
+
+**Example Output:**
+```
+--- TLS Client Test: Connecting to Google ---
+Target: 142.250.189.174:443
+TLS Client: Connecting...
+TLS Client: Connection initiated
+TLS Client: TLS handshake...
+TLS Client: Connected!
+TLS Client: Sending HTTP GET request...
+TLS Client: Request sent
+TLS Client received 851 bytes:
+HTTP/1.1 301 Moved Permanently
+Location: https://www.google.com/
+...
+TLS Client: Passed! Connection closed after response
+```
+
+The 301 redirect is expected - Google redirects `google.com` to `www.google.com`. The "Passed!" message confirms the full TLS 1.3 handshake completed successfully.
+
+### TLS Configuration
+
+The TLS configuration is in `user_settings.h`:
+
+| Setting | Description |
+|---------|-------------|
+| TLS 1.3 only | `WOLFSSL_TLS13`, `NO_OLD_TLS` |
+| Key Exchange | ECDHE with P-256 (secp256r1) |
+| Cert Verify | RSA (most servers use RSA certs) |
+| Ciphers | AES-GCM, ChaCha20-Poly1305 |
+| SNI | Server Name Indication enabled |
+
+### TLS Files
+
+| File | Description |
+|------|-------------|
+| `user_settings.h` | wolfSSL compile-time configuration |
+| `certs.h` | Embedded ECC P-256 test certificate |
+| `tls_server.c/h` | TLS echo server implementation |
+| `tls_client.c/h` | TLS client (for outbound connections) |
+
+### Generating Custom Certificates
+
+The included test certificate is for development only. Generate your own:
+
+```bash
+# Generate ECC P-256 key and self-signed certificate
+openssl ecparam -genkey -name prime256v1 -out server_key.pem
+openssl req -new -x509 -key server_key.pem -out server_cert.pem \
+    -days 3650 -subj "/CN=my-device/O=my-org/C=US"
+
+# Convert to C header (update certs.h)
+# Copy PEM content into certs.h as string literals
+```
+
 ## Files
 
 | File | Description |
@@ -184,19 +344,10 @@ ping 192.168.12.11
 | `target_tzen.ld` | Linker script for TZEN=1 |
 | `config.h` | Build configuration |
 | `Makefile` | Build system |
-
-## TrustZone Support (TZEN=1) - Experimental
-
-The TZEN=1 build adds TrustZone support:
-
-- **SAU Configuration:** Marks memory regions for non-secure DMA access
-- **GTZC/MPCBB:** Configures SRAM3 blocks for Ethernet DMA
-- **Secure Aliases:** Uses secure peripheral addresses (0x5xxxxxxx)
-- **Separate ETHMEM:** Places Ethernet buffers in dedicated non-secure SRAM
-
-### Current Limitations
-
-The TZEN=1 build compiles and runs, but the Ethernet driver experiences RBU (Receive Buffer Unavailable) errors. This appears to be a DMA access issue that requires further investigation.
+| `user_settings.h` | wolfSSL configuration (TLS builds only) |
+| `certs.h` | Embedded TLS certificates (TLS builds only) |
+| `tls_server.c/h` | TLS echo server (TLS builds only) |
+| `tls_client.c/h` | TLS client for outbound connections (TLS builds only) |
 
 ## Troubleshooting
 
