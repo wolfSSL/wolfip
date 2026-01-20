@@ -24,6 +24,20 @@
 #include "wolfip.h"
 #include "stm32h5_eth.h"
 
+#ifdef ENABLE_TLS
+#include "tls_server.h"
+#include "tls_client.h"
+#define TLS_PORT 8443
+
+/* Google IP for TLS client test (run: dig +short google.com) */
+#define GOOGLE_IP "142.250.189.174"
+#define HTTPS_PORT 443
+
+/* TLS client test state */
+static int tls_client_test_started = 0;
+static int tls_client_test_done = 0;
+#endif
+
 #define ECHO_PORT 7
 #define RX_BUF_SIZE 1024
 
@@ -334,6 +348,26 @@ static void eth_gpio_init(void)
     gpio_eth_pin(GPIOG_BASE, 13);  /* TXD0 */
 }
 
+#ifdef ENABLE_TLS
+/* Callback for TLS client responses */
+static void tls_response_cb(const char *data, int len, void *ctx)
+{
+    (void)ctx;
+    uart_puts("TLS Client received ");
+    uart_putdec((uint32_t)len);
+    uart_puts(" bytes:\n");
+    /* Print first 200 chars of response */
+    for (int i = 0; i < len && i < 200; i++) {
+        uart_putc(data[i]);
+    }
+    if (len > 200) {
+        uart_puts("\n... (truncated)\n");
+    }
+    uart_puts("\n");
+    tls_client_test_done = 1;
+}
+#endif
+
 static void echo_cb(int fd, uint16_t event, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
@@ -511,11 +545,63 @@ int main(void)
     (void)wolfIP_sock_bind(IPStack, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr));
     (void)wolfIP_sock_listen(IPStack, listen_fd, 1);
 
+#ifdef ENABLE_TLS
+    uart_puts("Initializing TLS server on port 8443...\n");
+    if (tls_server_init(IPStack, TLS_PORT, uart_puts) < 0) {
+        uart_puts("ERROR: TLS server init failed\n");
+    }
+
+    uart_puts("Initializing TLS client...\n");
+    if (tls_client_init(IPStack, uart_puts) < 0) {
+        uart_puts("ERROR: TLS client init failed\n");
+    }
+#endif
+
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("Loop starting...\n");
 
     for (;;) {
         (void)wolfIP_poll(IPStack, tick++);
+
+#ifdef ENABLE_TLS
+        /* TLS client test: connect to Google after network settles */
+        if (!tls_client_test_started && tick > 5000) {
+            uart_puts("\n--- TLS Client Test: Connecting to Google ---\n");
+            uart_puts("Target: ");
+            uart_puts(GOOGLE_IP);
+            uart_puts(":");
+            uart_putdec(HTTPS_PORT);
+            uart_puts("\n");
+
+            if (tls_client_connect(GOOGLE_IP, HTTPS_PORT, tls_response_cb, NULL) == 0) {
+                uart_puts("TLS Client: Connection initiated\n");
+            } else {
+                uart_puts("TLS Client: Failed to start connection\n");
+            }
+            tls_client_test_started = 1;
+        }
+
+        /* Poll TLS client state machine */
+        tls_client_poll();
+
+        /* Send HTTP request once TLS handshake completes */
+        if (tls_client_is_connected() && !tls_client_test_done) {
+            static int request_sent = 0;
+            if (!request_sent) {
+                const char *http_req = "GET / HTTP/1.1\r\n"
+                                       "Host: google.com\r\n"
+                                       "Connection: close\r\n\r\n";
+                uart_puts("TLS Client: Sending HTTP GET request...\n");
+                if (tls_client_send(http_req, (int)strlen(http_req)) > 0) {
+                    uart_puts("TLS Client: Request sent\n");
+                } else {
+                    uart_puts("TLS Client: Send failed\n");
+                }
+                request_sent = 1;
+            }
+        }
+#endif
+
         /* Toggle LED every ~256K iterations as heartbeat */
         if ((tick & 0x3FFFF) == 0) {
             led_toggle();
