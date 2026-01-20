@@ -28,7 +28,7 @@
 #define ETHERNET
 #define LINK_MTU                1536
 
-#define MAX_TCPSOCKETS          4
+#define MAX_TCPSOCKETS          8
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         2
 #define RXBUF_SIZE              (LINK_MTU * 16)

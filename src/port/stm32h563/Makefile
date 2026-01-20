@@ -11,8 +11,15 @@ TZEN ?= 0
 # Requires wolfSSL cloned alongside wolfip (or set WOLFSSL_ROOT)
 ENABLE_TLS ?= 0
 
+# HTTPS web server: set ENABLE_HTTPS=1 to include HTTPS web server (requires TLS)
+ENABLE_HTTPS ?= 0
+
+# SSH support: set ENABLE_SSH=1 to include wolfSSH server (requires TLS)
+ENABLE_SSH ?= 0
+
 # Library paths - default to sibling directories (clone alongside pattern)
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
+WOLFSSH_ROOT ?= $(ROOT)/../wolfssh
 
 # Base compiler flags
 CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ffunction-sections
@@ -53,10 +60,16 @@ CFLAGS += -DWOLFSSL_USER_SETTINGS
 CFLAGS += -DWOLFSSL_WOLFIP
 CFLAGS += -I$(WOLFSSL_ROOT)
 
-# TLS server, client, and wolfIP-wolfSSL glue
+# TLS server, client and wolfIP-wolfSSL glue
 SRCS += tls_server.c
 SRCS += tls_client.c
 SRCS += $(ROOT)/src/port/wolfssl_io.c
+
+# HTTPS web server (requires TLS)
+ifeq ($(ENABLE_HTTPS),1)
+CFLAGS += -DENABLE_HTTPS
+SRCS += https_server.c
+endif
 
 # wolfSSL source files (minimal set for TLS 1.3 server with ECC)
 WOLFSSL_SRCS := \
@@ -97,14 +110,57 @@ SRCS += $(WOLFSSL_SRCS)
 endif # ENABLE_TLS
 
 # -----------------------------------------------------------------------------
+# SSH Support (wolfSSH) - requires TLS
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_SSH),1)
+
+# SSH requires TLS
+ifeq ($(ENABLE_TLS),0)
+  $(error ENABLE_SSH=1 requires ENABLE_TLS=1)
+endif
+
+# Validate wolfSSH exists
+ifeq ($(wildcard $(WOLFSSH_ROOT)/wolfssh/ssh.h),)
+  $(error wolfSSH not found at $(WOLFSSH_ROOT). Clone it: git clone https://github.com/wolfSSL/wolfssh.git)
+endif
+
+CFLAGS += -DENABLE_SSH
+CFLAGS += -DWOLFSSH_USER_SETTINGS
+CFLAGS += -I$(WOLFSSH_ROOT)
+
+# SSH server and wolfSSH-wolfIP glue
+SRCS += ssh_server.c
+SRCS += $(ROOT)/src/port/wolfssh_io.c
+
+# wolfSSH source files (minimal set for SSH server)
+WOLFSSH_SRCS := \
+    $(WOLFSSH_ROOT)/src/ssh.c \
+    $(WOLFSSH_ROOT)/src/internal.c \
+    $(WOLFSSH_ROOT)/src/io.c \
+    $(WOLFSSH_ROOT)/src/keygen.c \
+    $(WOLFSSH_ROOT)/src/log.c \
+    $(WOLFSSH_ROOT)/src/port.c
+
+SRCS += $(WOLFSSH_SRCS)
+
+# wolfSSH objects use relaxed warnings
+$(WOLFSSH_ROOT)/%.o: $(WOLFSSH_ROOT)/%.c
+	$(CC) $(CFLAGS_WOLFSSL) -c $< -o $@
+
+endif # ENABLE_SSH
+
+# -----------------------------------------------------------------------------
 # Build rules
 # -----------------------------------------------------------------------------
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS)"
+	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
+endif
+ifeq ($(ENABLE_SSH),1)
+	@echo "  wolfSSH: $(WOLFSSH_ROOT)"
 endif
 
 app.elf: $(OBJS) $(LDSCRIPT)
@@ -128,6 +184,9 @@ ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o
 endif
+ifeq ($(ENABLE_SSH),1)
+	rm -f $(WOLFSSH_ROOT)/src/*.o
+endif
 
 .PHONY: all clean
 
@@ -145,17 +204,24 @@ help:
 	@echo "  help     Show this help"
 	@echo ""
 	@echo "Options:"
-	@echo "  TZEN=1         Enable TrustZone support"
-	@echo "  ENABLE_TLS=1   Enable TLS server (requires wolfSSL)"
-	@echo "  WOLFSSL_ROOT=  Path to wolfSSL (default: ../wolfssl)"
+	@echo "  TZEN=1          Enable TrustZone support"
+	@echo "  ENABLE_TLS=1    Enable TLS server (requires wolfSSL)"
+	@echo "  ENABLE_HTTPS=1  Enable HTTPS web server (requires TLS)"
+	@echo "  ENABLE_SSH=1    Enable SSH server (requires TLS + wolfSSH)"
+	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
+	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make                          # Basic build"
-	@echo "  make TZEN=1                   # TrustZone enabled"
-	@echo "  make ENABLE_TLS=1             # With TLS server"
-	@echo "  make TZEN=1 ENABLE_TLS=1      # Both"
+	@echo "  make                                           # Basic TCP echo (port 7)"
+	@echo "  make ENABLE_TLS=1                              # TLS echo server (port 8443)"
+	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1               # TLS + HTTPS web (port 443)"
+	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                 # TLS + SSH shell (port 22)"
+	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1  # Full featured"
 	@echo ""
-	@echo "Testing TLS server:"
-	@echo "  echo 'Hello' | openssl s_client -connect <ip>:8443 -quiet"
+	@echo "Testing:"
+	@echo "  nc <ip> 7                                      # TCP echo"
+	@echo "  echo 'Hello' | openssl s_client -connect <ip>:8443 -quiet  # TLS echo"
+	@echo "  curl -k https://<ip>/                          # HTTPS web server"
+	@echo "  ssh admin@<ip>                                 # SSH (password: wolfip)"
 
 .PHONY: help

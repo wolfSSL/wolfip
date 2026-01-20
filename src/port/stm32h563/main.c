@@ -28,10 +28,23 @@
 #include "tls_server.h"
 #include "tls_client.h"
 #define TLS_PORT 8443
+#endif
+
+#ifdef ENABLE_HTTPS
+#include "https_server.h"
+#define HTTPS_WEB_PORT 443
+#endif
+
+#ifdef ENABLE_SSH
+#include "ssh_server.h"
+#define SSH_PORT 22
+#endif
+
+#ifdef ENABLE_TLS
 
 /* Google IP for TLS client test (run: dig +short google.com) */
 #define GOOGLE_IP "142.250.189.174"
-#define HTTPS_PORT 443
+#define GOOGLE_HTTPS_PORT 443
 
 /* TLS client test state */
 static int tls_client_test_started = 0;
@@ -557,11 +570,42 @@ int main(void)
     }
 #endif
 
+#ifdef ENABLE_HTTPS
+    uart_puts("Initializing HTTPS server on port 443...\n");
+    if (https_server_init(IPStack, HTTPS_WEB_PORT, uart_puts) < 0) {
+        uart_puts("ERROR: HTTPS server init failed\n");
+    }
+#endif
+
+#ifdef ENABLE_SSH
+    uart_puts("Initializing SSH server on port 22...\n");
+    if (ssh_server_init(IPStack, SSH_PORT, uart_puts) < 0) {
+        uart_puts("ERROR: SSH server init failed\n");
+    }
+#endif
+
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("Loop starting...\n");
 
     for (;;) {
         (void)wolfIP_poll(IPStack, tick++);
+
+#ifdef ENABLE_HTTPS
+        /* Update HTTPS server status info */
+        {
+            ip4 ip = 0, nm = 0, gw = 0;
+            wolfIP_ipconfig_get(IPStack, &ip, &nm, &gw);
+            https_server_set_info(ip, (uint32_t)(tick / 1000));
+        }
+
+        /* Poll HTTPS server */
+        https_server_poll();
+#endif
+
+#ifdef ENABLE_SSH
+        /* Poll SSH server */
+        ssh_server_poll();
+#endif
 
 #ifdef ENABLE_TLS
         /* TLS client test: connect to Google after network settles */
@@ -570,10 +614,10 @@ int main(void)
             uart_puts("Target: ");
             uart_puts(GOOGLE_IP);
             uart_puts(":");
-            uart_putdec(HTTPS_PORT);
+            uart_putdec(GOOGLE_HTTPS_PORT);
             uart_puts("\n");
 
-            if (tls_client_connect(GOOGLE_IP, HTTPS_PORT, tls_response_cb, NULL) == 0) {
+            if (tls_client_connect(GOOGLE_IP, GOOGLE_HTTPS_PORT, tls_response_cb, NULL) == 0) {
                 uart_puts("TLS Client: Connection initiated\n");
             } else {
                 uart_puts("TLS Client: Failed to start connection\n");

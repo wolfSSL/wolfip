@@ -179,19 +179,52 @@ sudo ip link set <interface> up
 
 Replace `<interface>` with your Ethernet interface name (e.g., `eth0`, `enp5s0`).
 
-## Testing
+## Testing TCP Echo Server
 
-Once running, the echo server listens on TCP port 7:
+The default build provides a TCP echo server on port 7.
+
+### Building default build
 
 ```bash
-# Test with netcat
-echo "Hello wolfIP!" | nc 192.168.12.11 7
-
-# Test with ping
-ping 192.168.12.11
+make
 ```
 
-## TLS Support (wolfSSL)
+### Expected Serial Output
+
+```
+=== wolfIP STM32H563 Echo Server ===
+Initializing wolfIP stack...
+Configuring GPIO for RMII...
+Enabling Ethernet clocks...
+Resetting Ethernet MAC...
+Initializing Ethernet MAC...
+  PHY link: UP, PHY addr: 0x00000000
+DHCP configuration received:
+  IP: 192.168.0.197
+  Mask: 255.255.255.0
+  GW: 192.168.0.1
+Creating TCP socket on port 7...
+Entering main loop. Ready for connections!
+```
+
+### Testing Echo Server
+
+```bash
+# Get the device IP from serial output (DHCP) or use static IP
+
+# Test ICMP connectivity
+ping <device-ip>
+
+# Test TCP echo server (port 7)
+echo "Hello wolfIP!" | nc <device-ip> 7
+# Expected: "Hello wolfIP!" echoed back
+
+# Interactive TCP test
+nc <device-ip> 7
+# Type messages and see them echoed back
+```
+
+## TLS
 
 The port includes optional TLS 1.3 support using wolfSSL. This enables secure encrypted communication.
 
@@ -217,6 +250,47 @@ Or specify a custom wolfSSL path:
 make ENABLE_TLS=1 WOLFSSL_ROOT=/path/to/wolfssl
 ```
 
+### Building with HTTPS Web Server
+
+The HTTPS web server provides a status page accessible via browser:
+
+```bash
+make ENABLE_TLS=1 ENABLE_HTTPS=1
+```
+
+### Building with SSH Server
+
+SSH server requires both wolfSSL and wolfSSH:
+
+```bash
+# Clone wolfSSH alongside wolfip
+cd /path/to/parent
+git clone https://github.com/wolfSSL/wolfssh.git
+
+# Build with SSH support
+make ENABLE_TLS=1 ENABLE_SSH=1
+```
+
+Or specify a custom wolfSSH path:
+
+```bash
+make ENABLE_TLS=1 ENABLE_SSH=1 WOLFSSH_ROOT=/path/to/wolfssh
+```
+
+### Full Featured Build
+
+Build with all features (TLS echo, HTTPS web server, and SSH shell):
+
+```bash
+make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1
+```
+
+This provides:
+- TCP echo server on port 7
+- TLS echo server on port 8443
+- HTTPS web server on port 443
+- SSH shell on port 22
+
 ### TLS Example Output
 
 With TLS enabled, you'll see additional output including the TLS server startup and TLS client test:
@@ -227,7 +301,7 @@ Initializing wolfIP stack...
 ...
 DHCP configuration received:
   IP: 192.168.0.197
-  Mask: 192.168.0.1
+  Mask: 255.255.255.0
   GW: 192.168.0.1
 Creating TCP socket on port 7...
 Initializing TLS server on port 8443...
@@ -235,6 +309,11 @@ TLS: Initializing wolfSSL
 TLS: Loading certificate
 TLS: Loading private key
 TLS: Server ready on port 8443
+Initializing HTTPS server on port 443...
+HTTPS: Initializing wolfSSL
+HTTPS: Loading certificate
+HTTPS: Loading private key
+HTTPS: Server ready
 Initializing TLS client...
 TLS Client: Initializing wolfSSL
 TLS Client: Initialized
@@ -253,6 +332,12 @@ HTTP/1.1 301 Moved Permanently
 TLS Client: Passed! Connection closed after response
 ```
 
+### Building TLS Mode
+
+```bash
+make ENABLE_TLS=1
+```
+
 ### Testing the TLS Server
 
 The TLS echo server listens on port 8443. Test with OpenSSL:
@@ -263,14 +348,20 @@ The TLS echo server listens on port 8443. Test with OpenSSL:
 
 # View full handshake details
 openssl s_client -connect <device-ip>:8443 -tls1_3
+
+# View TLS session details
+openssl s_client -connect <device-ip>:8443 -tls1_3 -brief
 ```
 
-Expected output:
+### Expected TLS Test Output
+
 ```
 depth=0 CN = wolfIP-STM32H563, O = wolfSSL, C = US
 verify error:num=18:self-signed certificate
 Hello TLS!
 ```
+
+The self-signed certificate warning is expected for development. Replace with a valid certificate for production.
 
 ### TLS Client (Google Test)
 
@@ -330,6 +421,172 @@ openssl req -new -x509 -key server_key.pem -out server_cert.pem \
 # Copy PEM content into certs.h as string literals
 ```
 
+## HTTPS Web Server
+
+When built with `ENABLE_HTTPS=1`, the device serves a status web page on port 443.
+
+### Building HTTPS Mode
+
+```bash
+make ENABLE_TLS=1 ENABLE_HTTPS=1
+```
+
+### Expected Serial Output (HTTPS Mode)
+
+```
+=== wolfIP STM32H563 Echo Server ===
+...
+DHCP configuration received:
+  IP: 192.168.0.197
+  Mask: 255.255.255.0
+  GW: 192.168.0.1
+Creating TCP socket on port 7...
+Initializing TLS server on port 8443...
+TLS: Server ready on port 8443
+Initializing HTTPS server on port 443...
+HTTPS: Initializing wolfSSL
+HTTPS: Loading certificate
+HTTPS: Loading private key
+HTTPS: Server ready
+Entering main loop. Ready for connections!
+```
+
+### Testing HTTPS
+
+```bash
+# Using curl (skip certificate verification for self-signed cert)
+curl -k https://<device-ip>/
+
+# Using openssl to see TLS details
+openssl s_client -connect <device-ip>:443 -tls1_3
+
+# Using a browser
+# Navigate to https://<device-ip>/ and accept the self-signed certificate warning
+```
+
+### Expected HTTPS Response
+
+```html
+<!DOCTYPE html><html><head><title>wolfIP STM32H563</title>
+...
+<h1>wolfIP Status</h1>
+<table>
+<tr><td class="label">Device</td><td class="value">STM32H563</td></tr>
+<tr><td class="label">IP Address</td><td class="value">192.168.0.197</td></tr>
+<tr><td class="label">Uptime</td><td class="value">1234 sec</td></tr>
+<tr><td class="label">TLS</td><td class="value">TLS 1.3</td></tr>
+<tr><td class="label">Cipher</td><td class="value">ECC P-256</td></tr>
+</table>
+...
+```
+
+### HTTPS Status Page
+
+The status page displays:
+- Device type (STM32H563)
+- IP address (dynamically updated from DHCP or static config)
+- Uptime in seconds (continuously updated)
+- TLS version (TLS 1.3)
+- Cipher suite (ECC P-256)
+
+## SSH Server
+
+When built with `ENABLE_SSH=1`, the device provides an SSH shell on port 22.
+
+### Building SSH Mode
+
+```bash
+# First, clone wolfSSH alongside wolfip
+cd /path/to/parent
+git clone https://github.com/wolfSSL/wolfssh.git
+
+# Build with SSH support (requires TLS)
+cd wolfip/src/port/stm32h563
+make ENABLE_TLS=1 ENABLE_SSH=1
+```
+
+### Expected Serial Output (SSH Mode)
+
+```
+=== wolfIP STM32H563 Echo Server ===
+...
+Initializing TLS server on port 8443...
+TLS: Server ready on port 8443
+Initializing SSH server on port 22...
+SSH: Initializing wolfSSH
+SSH: Loading host key
+SSH: Server ready on port 22
+Entering main loop. Ready for connections!
+```
+
+### SSH Credentials
+
+| Username | Password |
+|----------|----------|
+| admin    | wolfip   |
+
+**Warning:** These are default credentials for testing. Change them in `ssh_server.c` for production use.
+
+### Testing SSH
+
+```bash
+# Connect via SSH
+ssh admin@<device-ip>
+
+# Enter password: wolfip
+```
+
+### SSH Shell Commands
+
+Once connected, the following commands are available:
+
+| Command | Description |
+|---------|-------------|
+| help    | Show available commands |
+| info    | Show device information |
+| uptime  | Show uptime in seconds |
+| exit    | Close SSH session |
+
+### SSH Example Session
+
+```
+$ ssh admin@192.168.0.197
+admin@192.168.0.197's password:
+=== wolfIP SSH Shell ===
+Type 'help' for available commands.
+
+wolfip> info
+
+Device: STM32H563
+Stack:  wolfIP
+SSH:    wolfSSH
+TLS:    wolfSSL TLS 1.3
+
+wolfip> uptime
+
+Uptime: 1234 seconds
+
+wolfip> exit
+
+Goodbye!
+Connection to 192.168.0.197 closed.
+```
+
+### Generating Custom SSH Host Key
+
+The included test host key is for development only. Generate your own:
+
+```bash
+# Generate ECC P-256 key
+openssl ecparam -genkey -name prime256v1 -out ssh_host_key.pem
+openssl ec -in ssh_host_key.pem -outform DER -out ssh_host_key.der
+
+# Convert to C header
+xxd -i ssh_host_key.der > ssh_keys.h
+
+# Update the array name in ssh_keys.h to ssh_host_key_der
+```
+
 ## Files
 
 | File | Description |
@@ -344,10 +601,13 @@ openssl req -new -x509 -key server_key.pem -out server_cert.pem \
 | `target_tzen.ld` | Linker script for TZEN=1 |
 | `config.h` | Build configuration |
 | `Makefile` | Build system |
-| `user_settings.h` | wolfSSL configuration (TLS builds only) |
+| `user_settings.h` | wolfSSL/wolfSSH configuration |
 | `certs.h` | Embedded TLS certificates (TLS builds only) |
 | `tls_server.c/h` | TLS echo server (TLS builds only) |
 | `tls_client.c/h` | TLS client for outbound connections (TLS builds only) |
+| `https_server.c/h` | HTTPS web server (HTTPS builds only) |
+| `ssh_server.c/h` | SSH shell server (SSH builds only) |
+| `ssh_keys.h` | Embedded SSH host key (SSH builds only) |
 
 ## Troubleshooting
 
