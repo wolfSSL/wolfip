@@ -158,11 +158,28 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* wolfSSH Settings (when ENABLE_SSH=1) */
 /* ------------------------------------------------------------------------- */
 #ifdef ENABLE_SSH
+/* Disable features not needed for basic shell */
 #define WOLFSSH_NO_TIMESTAMP
 #define WOLFSSH_NO_AGENT
 #define WOLFSSH_NO_SFTP
+#define WOLFSSH_NO_SCP
+
+/* Memory optimization */
 #define WOLFSSH_SMALL_STACK
+#define DEFAULT_WINDOW_SZ (16 * 1024)
+#define DEFAULT_HIGHWATER_MARK ((DEFAULT_WINDOW_SZ * 3) / 4)
+
+/* Terminal support for shell */
 #define WOLFSSH_TERM
+
+/* Custom I/O - we use wolfIP sockets */
+#define WOLFSSH_USER_IO
+
+/* No certificate-based auth files */
+#define NO_WOLFSSH_CERTS_FROM_FILE
+
+/* ECC key support (matches our host key) */
+#define WOLFSSH_KEYGEN
 #endif
 
 /* ------------------------------------------------------------------------- */
