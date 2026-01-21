@@ -153,24 +153,30 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* ------------------------------------------------------------------------- */
 /* #define DEBUG_WOLFSSL */
 /* #define WOLFSSL_DEBUG_TLS */
+/* #define DEBUG_WOLFSSH */       /* Enable wolfSSH debug output */
 
 /* ------------------------------------------------------------------------- */
 /* wolfSSH Settings (when ENABLE_SSH=1) */
 /* ------------------------------------------------------------------------- */
 #ifdef ENABLE_SSH
+/* Enable wolfSSL features needed for wolfSSH */
+#define WOLFSSL_WOLFSSH           /* Enable wc_SSH_KDF function */
+#define WOLFSSL_KEY_GEN           /* Key generation for wolfSSH keygen */
+
 /* Disable features not needed for basic shell */
 #define WOLFSSH_NO_TIMESTAMP
 #define WOLFSSH_NO_AGENT
 #define WOLFSSH_NO_SFTP
 #define WOLFSSH_NO_SCP
 
-/* Memory optimization */
-#define WOLFSSH_SMALL_STACK
-#define DEFAULT_WINDOW_SZ (16 * 1024)
-#define DEFAULT_HIGHWATER_MARK ((DEFAULT_WINDOW_SZ * 3) / 4)
+/* Bare-metal: no termios/pty support */
+#define WOLFSSH_NO_TERM
 
-/* Terminal support for shell */
-#define WOLFSSH_TERM
+/* Memory optimization - reduced for embedded */
+#define WOLFSSH_SMALL_STACK
+#define DEFAULT_WINDOW_SZ (4 * 1024)   /* Reduced from 16KB to 4KB */
+#define DEFAULT_HIGHWATER_MARK ((DEFAULT_WINDOW_SZ * 3) / 4)
+#define MAX_PACKET_SZ (DEFAULT_WINDOW_SZ + 256)
 
 /* Custom I/O - we use wolfIP sockets */
 #define WOLFSSH_USER_IO
