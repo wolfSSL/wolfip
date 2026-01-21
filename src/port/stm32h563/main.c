@@ -40,6 +40,10 @@
 #define SSH_PORT 22
 #endif
 
+#ifdef ENABLE_MQTT
+#include "mqtt_client.h"
+#endif
+
 #ifdef ENABLE_TLS
 
 /* Google IP for TLS client test (run: dig +short google.com) */
@@ -584,6 +588,22 @@ int main(void)
     }
 #endif
 
+#ifdef ENABLE_MQTT
+    uart_puts("Initializing MQTT client...\n");
+    {
+        mqtt_client_config_t mqtt_config = {
+            .broker_ip = "54.36.178.49",  /* test.mosquitto.org IP (updated) */
+            .broker_port = 8883,           /* TLS port */
+            .client_id = "wolfip-stm32h563",
+            .publish_topic = "wolfip/status",
+            .keep_alive_sec = 60
+        };
+        if (mqtt_client_init(IPStack, &mqtt_config, uart_puts) < 0) {
+            uart_puts("ERROR: MQTT client init failed\n");
+        }
+    }
+#endif
+
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("Loop starting...\n");
 
@@ -605,6 +625,51 @@ int main(void)
 #ifdef ENABLE_SSH
         /* Poll SSH server */
         ssh_server_poll();
+#endif
+
+#ifdef ENABLE_MQTT
+        /* Poll MQTT client */
+        mqtt_client_poll();
+
+        /* Publish status periodically (every ~60 seconds) */
+        {
+            static uint64_t last_publish_tick = 0;
+            if (mqtt_client_is_connected() &&
+                (tick - last_publish_tick) > 60000) {
+                char status_msg[64];
+                ip4 ip = 0;
+                wolfIP_ipconfig_get(IPStack, &ip, NULL, NULL);
+
+                /* Format: "STM32H563 online, IP: x.x.x.x, uptime: XXXXX" */
+                strcpy(status_msg, "STM32H563 online, uptime: ");
+                {
+                    char num_buf[12];
+                    uint32_t uptime = (uint32_t)(tick / 1000);
+                    int i = 0, j;
+                    char tmp[12];
+
+                    if (uptime == 0) {
+                        num_buf[0] = '0';
+                        num_buf[1] = '\0';
+                    } else {
+                        while (uptime > 0 && i < 11) {
+                            tmp[i++] = '0' + (uptime % 10);
+                            uptime /= 10;
+                        }
+                        j = 0;
+                        while (i > 0) {
+                            num_buf[j++] = tmp[--i];
+                        }
+                        num_buf[j] = '\0';
+                    }
+                    strcat(status_msg, num_buf);
+                }
+                strcat(status_msg, "s");
+
+                mqtt_client_publish(status_msg);
+                last_publish_tick = tick;
+            }
+        }
 #endif
 
 #ifdef ENABLE_TLS
