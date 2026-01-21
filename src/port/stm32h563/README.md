@@ -587,6 +587,100 @@ xxd -i ssh_host_key.der > ssh_keys.h
 # Update the array name in ssh_keys.h to ssh_host_key_der
 ```
 
+## MQTT Client
+
+When built with `ENABLE_MQTT=1`, the device includes an MQTT client that publishes status messages to a broker.
+
+### Prerequisites
+
+Clone wolfMQTT alongside wolfip:
+
+```bash
+cd /path/to/parent
+git clone https://github.com/wolfSSL/wolfMQTT.git
+# wolfip should be at /path/to/parent/wolfip
+```
+
+### Building MQTT Mode
+
+```bash
+# MQTT requires TLS
+make ENABLE_TLS=1 ENABLE_MQTT=1
+```
+
+Or specify a custom wolfMQTT path:
+
+```bash
+make ENABLE_TLS=1 ENABLE_MQTT=1 WOLFMQTT_ROOT=/path/to/wolfmqtt
+```
+
+### Expected Serial Output (MQTT Mode)
+
+```
+=== wolfIP STM32H563 Echo Server ===
+...
+Initializing TLS server on port 8443...
+TLS: Server ready on port 8443
+Initializing MQTT client...
+MQTT: Initializing client
+MQTT: Initialized, connecting to 54.36.178.49:8883
+Entering main loop. Ready for connections!
+Loop starting...
+MQTT: Connecting...
+MQTT: TCP connected
+MQTT: TLS handshake...
+MQTT: TLS connected
+MQTT: Sending CONNECT...
+MQTT: Connected to broker
+```
+
+### MQTT Configuration
+
+| Setting | Default Value |
+|---------|--------------|
+| Broker IP | 54.36.178.49 (test.mosquitto.org) |
+| Broker Port | 8883 (TLS) |
+| Client ID | wolfip-stm32h563 |
+| Publish Topic | wolfip/status |
+| Keep-alive | 60 seconds |
+| QoS | 0 (fire and forget) |
+
+### Subscribing to Device Messages
+
+To see messages published by the device:
+
+```bash
+# Subscribe to the status topic
+mosquitto_sub -h test.mosquitto.org -t "wolfip/status" -v
+
+# Expected output (every 60 seconds):
+# wolfip/status STM32H563 online, uptime: 60s
+# wolfip/status STM32H563 online, uptime: 120s
+```
+
+### Full Featured Build
+
+Build with all features (TLS, HTTPS, SSH, and MQTT):
+
+```bash
+make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+```
+
+This provides:
+- TCP echo server on port 7
+- TLS echo server on port 8443
+- HTTPS web server on port 443
+- SSH shell on port 22
+- MQTT client publishing to test.mosquitto.org
+
+### MQTT Files
+
+| File | Description |
+|------|-------------|
+| `mqtt_client.c/h` | MQTT client state machine and API |
+| `../wolfmqtt_io.c` | wolfMQTT I/O glue layer for wolfIP sockets |
+| `user_settings.h` | wolfMQTT compile-time configuration |
+
 ## Files
 
 | File | Description |
@@ -608,6 +702,8 @@ xxd -i ssh_host_key.der > ssh_keys.h
 | `https_server.c/h` | HTTPS web server (HTTPS builds only) |
 | `ssh_server.c/h` | SSH shell server (SSH builds only) |
 | `ssh_keys.h` | Embedded SSH host key (SSH builds only) |
+| `mqtt_client.c/h` | MQTT client state machine (MQTT builds only) |
+| `../wolfmqtt_io.c` | wolfMQTT I/O callbacks for wolfIP (MQTT builds only) |
 
 ## Troubleshooting
 

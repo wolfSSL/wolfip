@@ -17,9 +17,13 @@ ENABLE_HTTPS ?= 0
 # SSH support: set ENABLE_SSH=1 to include wolfSSH server (requires TLS)
 ENABLE_SSH ?= 0
 
+# MQTT support: set ENABLE_MQTT=1 to include wolfMQTT client (requires TLS)
+ENABLE_MQTT ?= 0
+
 # Library paths - default to sibling directories (clone alongside pattern)
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
 WOLFSSH_ROOT ?= $(ROOT)/../wolfssh
+WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
 
 # Base compiler flags
 CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ffunction-sections
@@ -156,17 +160,57 @@ $(WOLFSSH_ROOT)/%.o: $(WOLFSSH_ROOT)/%.c
 endif # ENABLE_SSH
 
 # -----------------------------------------------------------------------------
+# MQTT Support (wolfMQTT) - requires TLS
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_MQTT),1)
+
+# MQTT requires TLS
+ifeq ($(ENABLE_TLS),0)
+  $(error ENABLE_MQTT=1 requires ENABLE_TLS=1)
+endif
+
+# Validate wolfMQTT exists
+ifeq ($(wildcard $(WOLFMQTT_ROOT)/wolfmqtt/mqtt_client.h),)
+  $(error wolfMQTT not found at $(WOLFMQTT_ROOT). Clone it: git clone https://github.com/wolfSSL/wolfMQTT.git)
+endif
+
+CFLAGS += -DENABLE_MQTT
+CFLAGS += -DWOLFMQTT_USER_SETTINGS
+CFLAGS += -I$(WOLFMQTT_ROOT)
+
+# MQTT client and wolfMQTT-wolfIP glue
+SRCS += mqtt_client.c
+SRCS += $(ROOT)/src/port/wolfmqtt_io.c
+
+# wolfMQTT source files (minimal set for MQTT client)
+WOLFMQTT_SRCS := \
+    $(WOLFMQTT_ROOT)/src/mqtt_client.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_packet.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_socket.c
+
+SRCS += $(WOLFMQTT_SRCS)
+
+# wolfMQTT objects use relaxed warnings + MQTT/SSL include paths + user_settings.h
+$(WOLFMQTT_ROOT)/%.o: $(WOLFMQTT_ROOT)/%.c
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -c $< -o $@
+
+endif # ENABLE_MQTT
+
+# -----------------------------------------------------------------------------
 # Build rules
 # -----------------------------------------------------------------------------
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH)"
+	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
 endif
 ifeq ($(ENABLE_SSH),1)
 	@echo "  wolfSSH: $(WOLFSSH_ROOT)"
+endif
+ifeq ($(ENABLE_MQTT),1)
+	@echo "  wolfMQTT: $(WOLFMQTT_ROOT)"
 endif
 
 app.elf: $(OBJS) $(LDSCRIPT)
@@ -193,6 +237,9 @@ endif
 ifeq ($(ENABLE_SSH),1)
 	rm -f $(WOLFSSH_ROOT)/src/*.o
 endif
+ifeq ($(ENABLE_MQTT),1)
+	rm -f $(WOLFMQTT_ROOT)/src/*.o
+endif
 
 .PHONY: all clean
 
@@ -214,20 +261,24 @@ help:
 	@echo "  ENABLE_TLS=1    Enable TLS server (requires wolfSSL)"
 	@echo "  ENABLE_HTTPS=1  Enable HTTPS web server (requires TLS)"
 	@echo "  ENABLE_SSH=1    Enable SSH server (requires TLS + wolfSSH)"
+	@echo "  ENABLE_MQTT=1   Enable MQTT client (requires TLS + wolfMQTT)"
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
 	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
+	@echo "  WOLFMQTT_ROOT=  Path to wolfMQTT (default: ../wolfmqtt)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make                                           # Basic TCP echo (port 7)"
-	@echo "  make ENABLE_TLS=1                              # TLS echo server (port 8443)"
-	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1               # TLS + HTTPS web (port 443)"
-	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                 # TLS + SSH shell (port 22)"
-	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1  # Full featured"
+	@echo "  make                                                        # Basic TCP echo (port 7)"
+	@echo "  make ENABLE_TLS=1                                           # TLS echo server (port 8443)"
+	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1                            # TLS + HTTPS web (port 443)"
+	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                              # TLS + SSH shell (port 22)"
+	@echo "  make ENABLE_TLS=1 ENABLE_MQTT=1                             # TLS + MQTT client"
+	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 # Full featured"
 	@echo ""
 	@echo "Testing:"
 	@echo "  nc <ip> 7                                      # TCP echo"
 	@echo "  echo 'Hello' | openssl s_client -connect <ip>:8443 -quiet  # TLS echo"
 	@echo "  curl -k https://<ip>/                          # HTTPS web server"
 	@echo "  ssh admin@<ip>                                 # SSH (password: wolfip)"
+	@echo "  mosquitto_sub -h test.mosquitto.org -t 'wolfip/status' -v  # MQTT subscribe"
 
 .PHONY: help

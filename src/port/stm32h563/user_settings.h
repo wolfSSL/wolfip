@@ -192,8 +192,28 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* wolfMQTT Settings (when ENABLE_MQTT=1) */
 /* ------------------------------------------------------------------------- */
 #ifdef ENABLE_MQTT
+/* Non-blocking mode for integration with wolfIP event loop */
 #define WOLFMQTT_NONBLOCK
+
+/* No standard I/O available on bare-metal */
 #define WOLFMQTT_NO_STDIO
+
+/* Custom I/O callbacks - we use wolfIP sockets via wolfmqtt_io.c */
+#define WOLFMQTT_USER_IO
+
+/* Disable error strings to save space */
+#define WOLFMQTT_NO_ERROR_STRINGS
+
+/* Use TLS for secure MQTT connections */
+#define ENABLE_MQTT_TLS
+
+/* Define POSIX error codes for bare-metal */
+#ifndef EWOULDBLOCK
+#define EWOULDBLOCK 11
+#endif
+#ifndef EAGAIN
+#define EAGAIN 11
+#endif
 #endif
 
 #ifdef __cplusplus
