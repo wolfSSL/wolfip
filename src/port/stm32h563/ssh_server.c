@@ -62,7 +62,20 @@ static struct {
 } server;
 
 /* External functions from wolfssh_io.c */
+extern void wolfSSH_CTX_SetIO_wolfIP(WOLFSSH_CTX *ctx);
 extern int wolfSSH_SetIO_wolfIP(WOLFSSH *ssh, struct wolfIP *stack, int fd);
+
+#ifdef DEBUG_WOLFSSH
+/* wolfSSH logging callback */
+static void ssh_log_cb(enum wolfSSH_LogLevel level, const char *msg)
+{
+    (void)level;
+    if (server.debug_cb && msg) {
+        server.debug_cb(msg);
+        server.debug_cb("\n");
+    }
+}
+#endif
 
 /* Debug output helper */
 static void debug_print(const char *msg)
@@ -82,16 +95,16 @@ static int ssh_userauth_cb(byte authType, WS_UserAuthData *authData, void *ctx)
     }
 
     /* Check username */
-    if (authData->usernameLen != strlen(SSH_USERNAME) ||
-        memcmp(authData->username, SSH_USERNAME, authData->usernameLen) != 0) {
+    if (authData->usernameSz != strlen(SSH_USERNAME) ||
+        memcmp(authData->username, SSH_USERNAME, authData->usernameSz) != 0) {
         debug_print("SSH: Invalid username\n");
         return WOLFSSH_USERAUTH_INVALID_USER;
     }
 
     /* Check password */
-    if (authData->sf.password.passwordLen != strlen(SSH_PASSWORD) ||
+    if (authData->sf.password.passwordSz != strlen(SSH_PASSWORD) ||
         memcmp(authData->sf.password.password, SSH_PASSWORD,
-               authData->sf.password.passwordLen) != 0) {
+               authData->sf.password.passwordSz) != 0) {
         debug_print("SSH: Invalid password\n");
         return WOLFSSH_USERAUTH_INVALID_PASSWORD;
     }
@@ -212,12 +225,21 @@ int ssh_server_init(struct wolfIP *stack, uint16_t port, ssh_debug_cb debug)
         return -1;
     }
 
+#ifdef DEBUG_WOLFSSH
+    /* Enable wolfSSH debug logging */
+    wolfSSH_Debugging_ON();
+    wolfSSH_SetLoggingCb(ssh_log_cb);
+#endif
+
     /* Create SSH server context */
     server.ctx = wolfSSH_CTX_new(WOLFSSH_ENDPOINT_SERVER, NULL);
     if (server.ctx == NULL) {
         debug_print("SSH: CTX_new failed\n");
         return -1;
     }
+
+    /* Set I/O callbacks on context */
+    wolfSSH_CTX_SetIO_wolfIP(server.ctx);
 
     /* Set user authentication callback */
     wolfSSH_SetUserAuth(server.ctx, ssh_userauth_cb);
@@ -235,7 +257,6 @@ int ssh_server_init(struct wolfIP *stack, uint16_t port, ssh_debug_cb debug)
     }
 
     /* Create listen socket */
-    debug_print("SSH: Creating listen socket\n");
     server.listen_fd = wolfIP_sock_socket(stack, AF_INET, IPSTACK_SOCK_STREAM, 0);
     if (server.listen_fd < 0) {
         debug_print("SSH: socket() failed\n");

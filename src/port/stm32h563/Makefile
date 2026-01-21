@@ -105,6 +105,12 @@ WOLFSSL_SRCS += \
 WOLFSSL_SRCS += \
     $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c
 
+# Signature verification (required for wolfSSH)
+ifeq ($(ENABLE_SSH),1)
+WOLFSSL_SRCS += \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/signature.c
+endif
+
 SRCS += $(WOLFSSL_SRCS)
 
 endif # ENABLE_TLS
@@ -143,9 +149,9 @@ WOLFSSH_SRCS := \
 
 SRCS += $(WOLFSSH_SRCS)
 
-# wolfSSH objects use relaxed warnings
+# wolfSSH objects use relaxed warnings + SSH/SSL include paths + user_settings.h
 $(WOLFSSH_ROOT)/%.o: $(WOLFSSH_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_SSH -DWOLFSSL_USER_SETTINGS -DWOLFSSH_USER_SETTINGS -I$(WOLFSSH_ROOT) -I$(WOLFSSL_ROOT) -c $< -o $@
 
 endif # ENABLE_SSH
 
@@ -172,9 +178,9 @@ app.bin: app.elf
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# wolfSSL objects use relaxed warnings
+# wolfSSL objects use relaxed warnings + user_settings.h + include paths
 $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH) -I$(WOLFSSL_ROOT) -c $< -o $@
 
 clean:
 	rm -f *.o app.elf app.bin

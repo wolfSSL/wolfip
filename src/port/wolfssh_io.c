@@ -106,7 +106,16 @@ static int wolfssh_io_send(WOLFSSH *ssh, void *buf, word32 sz, void *ctx)
     return ret;
 }
 
-/* Set up wolfSSH I/O callbacks for a wolfIP socket */
+/* Set up wolfSSH I/O callbacks on the context (call once during init) */
+void wolfSSH_CTX_SetIO_wolfIP(WOLFSSH_CTX *ctx)
+{
+    if (ctx) {
+        wolfSSH_SetIORecv(ctx, wolfssh_io_recv);
+        wolfSSH_SetIOSend(ctx, wolfssh_io_send);
+    }
+}
+
+/* Set up wolfSSH I/O context for a wolfIP socket (call per-session) */
 int wolfSSH_SetIO_wolfIP(WOLFSSH *ssh, struct wolfIP *stack, int fd)
 {
     struct wolfssh_io_desc *desc;
@@ -123,8 +132,6 @@ int wolfSSH_SetIO_wolfIP(WOLFSSH *ssh, struct wolfIP *stack, int fd)
     desc->stack = stack;
     desc->fd = fd;
 
-    wolfSSH_SetIORecv(ssh, wolfssh_io_recv);
-    wolfSSH_SetIOSend(ssh, wolfssh_io_send);
     wolfSSH_SetIOReadCtx(ssh, desc);
     wolfSSH_SetIOWriteCtx(ssh, desc);
 
