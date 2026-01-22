@@ -71,6 +71,12 @@ SRCS += $(ROOT)/src/port/wolfssl_io.c
 
 # HTTPS web server (requires TLS) - uses existing wolfIP httpd
 ifeq ($(ENABLE_HTTPS),1)
+
+# HTTPS requires TLS
+ifeq ($(ENABLE_TLS),0)
+  $(error ENABLE_HTTPS=1 requires ENABLE_TLS=1)
+endif
+
 CFLAGS += -DENABLE_HTTPS
 SRCS += $(ROOT)/src/http/httpd.c
 endif
@@ -241,7 +247,27 @@ ifeq ($(ENABLE_MQTT),1)
 	rm -f $(WOLFMQTT_ROOT)/src/*.o
 endif
 
-.PHONY: all clean
+# Verify what features are compiled into the binary
+verify: app.bin
+	@echo "=== Build Verification ==="
+	@echo "Checking compiled features in app.bin..."
+	@strings app.bin | grep -q "Initializing TLS server" && echo "  ✓ TLS server enabled" || echo "  ✗ TLS server disabled"
+	@strings app.bin | grep -q "Initializing HTTPS server" && echo "  ✓ HTTPS server enabled" || echo "  ✗ HTTPS server disabled"
+	@strings app.bin | grep -q "Initializing SSH server" && echo "  ✓ SSH server enabled" || echo "  ✗ SSH server disabled"
+	@strings app.bin | grep -q "Initializing MQTT client" && echo "  ✓ MQTT client enabled" || echo "  ✗ MQTT client disabled"
+	@echo ""
+	@echo "Binary size: $$(ls -lh app.bin | awk '{print $$5}')"
+	@echo "Build flags: TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT)"
+
+# Show memory usage
+size: app.elf
+	@echo "=== Memory Usage ==="
+	@arm-none-eabi-size app.elf
+	@echo ""
+	@echo "Flash usage: $$(arm-none-eabi-size app.elf | awk 'NR==2{printf "%.1f%% (%d / %d bytes)", ($$1+$$2)*100/2097152, $$1+$$2, 2097152}')"
+	@echo "RAM usage (static): $$(arm-none-eabi-size app.elf | awk 'NR==2{printf "%.1f%% (%d / %d bytes)", ($$2+$$3)*100/655360, $$2+$$3, 655360}')"
+
+.PHONY: all clean verify size
 
 # -----------------------------------------------------------------------------
 # Help
@@ -254,6 +280,8 @@ help:
 	@echo "Targets:"
 	@echo "  all      Build app.bin (default)"
 	@echo "  clean    Remove build artifacts"
+	@echo "  verify   Check which features are compiled in"
+	@echo "  size     Show memory usage statistics"
 	@echo "  help     Show this help"
 	@echo ""
 	@echo "Options:"
@@ -265,6 +293,8 @@ help:
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
 	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
 	@echo "  WOLFMQTT_ROOT=  Path to wolfMQTT (default: ../wolfmqtt)"
+	@echo "  CC=             C compiler (default: arm-none-eabi-gcc)"
+	@echo "  OBJCOPY=        Objcopy tool (default: arm-none-eabi-objcopy)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make                                                        # Basic TCP echo (port 7)"
@@ -273,6 +303,10 @@ help:
 	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                              # TLS + SSH shell (port 22)"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT=1                             # TLS + MQTT client"
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 # Full featured"
+	@echo ""
+	@echo "Full Build Command (recommended):"
+	@echo "  CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \\"
+	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1"
 	@echo ""
 	@echo "Testing:"
 	@echo "  nc <ip> 7                                      # TCP echo"

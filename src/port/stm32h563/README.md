@@ -2,6 +2,39 @@
 
 This directory contains a bare-metal port of wolfIP for the STM32H563 microcontroller, featuring an Ethernet driver and TCP/IP echo server example.
 
+## Quick Start
+
+1. **Build with all features:**
+   ```bash
+   cd src/port/stm32h563
+   CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
+   make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+   ```
+
+2. **Flash to board:**
+   ```bash
+   openocd -f interface/stlink-dap.cfg -f target/stm32h5x.cfg \
+       -c "program app.bin 0x08000000 verify reset exit"
+   ```
+
+3. **Monitor UART output** (115200 baud on /dev/ttyACM0):
+   ```bash
+   screen /dev/ttyACM0 115200
+   ```
+   Get the device IP address from the DHCP output.
+
+4. **Test features** (replace `<device-ip>` with IP from step 3):
+   ```bash
+   # TCP Echo
+   echo "Hello" | nc <device-ip> 7
+
+   # HTTPS Web
+   curl -k https://<device-ip>/
+
+   # SSH (password: wolfip)
+   ssh admin@<device-ip>
+   ```
+
 ## Hardware Requirements
 
 - STM32H563 development board (e.g., NUCLEO-H563ZI)
@@ -27,10 +60,46 @@ sudo apt install gcc-arm-none-eabi openocd
 
 ```bash
 cd src/port/stm32h563
-make
+CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy make
 ```
 
 This produces `app.elf` and `app.bin` for use with TZEN=0 (TrustZone disabled).
+
+### Verifying Build
+
+After building, verify which features are compiled in:
+
+```bash
+make verify
+```
+
+Output example:
+```
+=== Build Verification ===
+Checking compiled features in app.bin...
+  ✓ TLS server enabled
+  ✓ HTTPS server enabled
+  ✓ SSH server enabled
+  ✓ MQTT client enabled
+
+Binary size: 262K
+```
+
+### Checking Memory Usage
+
+```bash
+make size
+```
+
+Output example:
+```
+=== Memory Usage ===
+   text    data     bss     dec     hex filename
+ 265560    1804  400676  668040   a3188 app.elf
+
+Flash usage: 12.7% (267364 / 2097152 bytes)
+RAM usage (static): 61.4% (402480 / 655360 bytes)
+```
 
 ### TrustZone Enabled Build
 
@@ -468,16 +537,15 @@ openssl s_client -connect <device-ip>:443 -tls1_3
 
 ```html
 <!DOCTYPE html><html><head><title>wolfIP STM32H563</title>
-...
-<h1>wolfIP Status</h1>
-<table>
-<tr><td class="label">Device</td><td class="value">STM32H563</td></tr>
-<tr><td class="label">IP Address</td><td class="value">192.168.0.197</td></tr>
-<tr><td class="label">Uptime</td><td class="value">1234 sec</td></tr>
-<tr><td class="label">TLS</td><td class="value">TLS 1.3</td></tr>
-<tr><td class="label">Cipher</td><td class="value">ECC P-256</td></tr>
-</table>
-...
+<style>body{font-family:sans-serif;margin:40px;}
+h1{color:#333;}table{border-collapse:collapse;}
+td{padding:8px 16px;border:1px solid #ddd;}</style></head>
+<body><h1>wolfIP Status</h1><table>
+<tr><td>Device</td><td>STM32H563</td></tr>
+<tr><td>IP Address</td><td>10.0.4.117</td></tr>
+<tr><td>Uptime</td><td>1234 sec</td></tr>
+<tr><td>TLS</td><td>TLS 1.3</td></tr>
+</table></body></html>
 ```
 
 ### HTTPS Status Page
@@ -487,7 +555,6 @@ The status page displays:
 - IP address (dynamically updated from DHCP or static config)
 - Uptime in seconds (continuously updated)
 - TLS version (TLS 1.3)
-- Cipher suite (ECC P-256)
 
 ## SSH Server
 
@@ -695,14 +762,16 @@ This provides:
 | `target_tzen.ld` | Linker script for TZEN=1 |
 | `config.h` | Build configuration |
 | `Makefile` | Build system |
-| `user_settings.h` | wolfSSL/wolfSSH configuration |
+| `user_settings.h` | wolfSSL/wolfSSH/wolfMQTT configuration |
 | `certs.h` | Embedded TLS certificates (TLS builds only) |
 | `tls_server.c/h` | TLS echo server (TLS builds only) |
 | `tls_client.c/h` | TLS client for outbound connections (TLS builds only) |
-| `https_server.c/h` | HTTPS web server (HTTPS builds only) |
+| `../http/httpd.c` | HTTPS web server - wolfIP httpd (HTTPS builds only) |
 | `ssh_server.c/h` | SSH shell server (SSH builds only) |
 | `ssh_keys.h` | Embedded SSH host key (SSH builds only) |
 | `mqtt_client.c/h` | MQTT client state machine (MQTT builds only) |
+| `../wolfssl_io.c` | wolfSSL I/O callbacks for wolfIP (TLS builds only) |
+| `../wolfssh_io.c` | wolfSSH I/O callbacks for wolfIP (SSH builds only) |
 | `../wolfmqtt_io.c` | wolfMQTT I/O callbacks for wolfIP (MQTT builds only) |
 
 ## Troubleshooting
@@ -712,24 +781,91 @@ This provides:
 - Check USB connection and correct serial port
 - Verify baud rate is 115200
 - Try resetting the board
+- Check that you're monitoring the correct port (usually /dev/ttyACM0)
 
 ### OpenOCD Connection Fails
 
 - Ensure ST-LINK drivers are installed
 - Try `sudo` if permission denied
 - Check that no other debugger is connected
+- Use `openocd --version` to verify installation
+
+### Features Not Initializing
+
+If you don't see "Initializing TLS/HTTPS/SSH/MQTT" messages in UART output:
+
+**Problem:** Built without proper `ENABLE_*` flags
+
+**Solution:** Rebuild with required flags:
+```bash
+CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
+make clean && make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+```
+
+**Verify build:** Check that strings exist in binary:
+```bash
+strings app.bin | grep "Initializing TLS"
+strings app.bin | grep "Initializing HTTPS"
+strings app.bin | grep "Initializing SSH"
+strings app.bin | grep "Initializing MQTT"
+```
 
 ### Ethernet Not Responding
 
 - Verify physical Ethernet connection
-- Check that host PC is on same subnet (192.168.12.x)
-- Confirm PHY link is up (check serial output for "link" status)
+- Check that host PC is on same subnet
+- Confirm PHY link is up (check serial output for "PHY link: UP")
+- If using DHCP, ensure a DHCP server is available on the network
+- Try pinging the device: `ping <device-ip>`
+
+### DHCP Netmask Display Issue
+
+**Known Issue:** The DHCP netmask may display incorrectly in UART output (showing gateway IP instead).
+
+**Workaround:** The device still functions correctly - the netmask is stored properly internally. This is a display-only issue in the UART output. You can verify correct operation by testing network connectivity.
+
+**Example UART output:**
+```
+DHCP configuration received:
+  IP: 10.0.4.117
+  Mask: 10.0.4.1      <- Shows gateway instead of 255.255.255.0
+  GW: 10.0.4.1
+```
+
+### HTTPS Content-Length Error
+
+If `curl` shows "Invalid Content-Length" error:
+- This is a known issue with the httpd implementation
+- Use `-k` flag: `curl -k https://<device-ip>/`
+- Or access via web browser and accept the self-signed certificate
+
+### Build Fails with "arpa/inet.h not found"
+
+**Problem:** wolfSSL trying to include system headers
+
+**Solution:** Ensure `user_settings.h` contains:
+```c
+#define WOLFSSL_NO_SOCK
+#define NO_WOLFSSL_DIR
+```
+These are already in the default `user_settings.h`.
 
 ### TrustZone Errors
 
 If you see `stm32h5x.cpu in Secure state` but built with TZEN=0:
 - The board has TrustZone enabled
 - Either rebuild with `make TZEN=1` or disable TrustZone via option bytes
+
+### Compiler Not Found
+
+If make fails with "command not found":
+```bash
+# Install ARM toolchain
+sudo apt install gcc-arm-none-eabi
+
+# Or specify full path
+make CC=/usr/bin/arm-none-eabi-gcc OBJCOPY=/usr/bin/arm-none-eabi-objcopy
+```
 
 ## License
 

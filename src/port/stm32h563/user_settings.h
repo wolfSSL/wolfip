@@ -39,6 +39,10 @@ extern "C" {
 #define NO_WRITEV
 #define NO_MAIN_DRIVER
 
+/* Bare-metal: no system headers */
+#define WOLFSSL_NO_SOCK
+#define NO_WOLFSSL_DIR
+
 /* ------------------------------------------------------------------------- */
 /* Math - Portable C implementation */
 /* ------------------------------------------------------------------------- */
