@@ -31,7 +31,8 @@
 #endif
 
 #ifdef ENABLE_HTTPS
-#include "https_server.h"
+#include "http/httpd.h"
+#include "certs.h"
 #define HTTPS_WEB_PORT 443
 #endif
 
@@ -53,6 +54,72 @@
 /* TLS client test state */
 static int tls_client_test_started = 0;
 static int tls_client_test_done = 0;
+#endif
+
+#ifdef ENABLE_HTTPS
+/* HTTPS server using wolfIP httpd */
+static struct httpd https_server;
+static WOLFSSL_CTX *https_ssl_ctx;
+static uint32_t https_uptime_sec;
+static ip4 https_device_ip;
+
+/* Status page handler */
+static int https_status_handler(struct httpd *httpd, struct http_client *hc,
+    struct http_request *req)
+{
+    char response[512];
+    char ip_str[16];
+    char uptime_str[12];
+    int len;
+
+    (void)httpd;
+    (void)req;
+
+    /* Format IP address (stored in network byte order) */
+    {
+        uint8_t *b = (uint8_t *)&https_device_ip;
+        char *p = ip_str;
+        for (int i = 3; i >= 0; i--) {  /* Reverse order for network byte order */
+            int val = b[i];
+            if (val >= 100) { *p++ = '0' + val / 100; val %= 100; }
+            if (val >= 10 || b[i] >= 100) { *p++ = '0' + val / 10; val %= 10; }
+            *p++ = '0' + val;
+            if (i > 0) *p++ = '.';
+        }
+        *p = '\0';
+    }
+
+    /* Format uptime */
+    {
+        uint32_t val = https_uptime_sec;
+        char tmp[12];
+        int i = 0, j = 0;
+        if (val == 0) { uptime_str[0] = '0'; uptime_str[1] = '\0'; }
+        else {
+            while (val > 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
+            while (i > 0) { uptime_str[j++] = tmp[--i]; }
+            uptime_str[j] = '\0';
+        }
+    }
+
+    /* Build HTML response */
+    len = snprintf(response, sizeof(response),
+        "<!DOCTYPE html><html><head><title>wolfIP STM32H563</title>"
+        "<style>body{font-family:sans-serif;margin:40px;}"
+        "h1{color:#333;}table{border-collapse:collapse;}"
+        "td{padding:8px 16px;border:1px solid #ddd;}</style></head>"
+        "<body><h1>wolfIP Status</h1><table>"
+        "<tr><td>Device</td><td>STM32H563</td></tr>"
+        "<tr><td>IP Address</td><td>%s</td></tr>"
+        "<tr><td>Uptime</td><td>%s sec</td></tr>"
+        "<tr><td>TLS</td><td>TLS 1.3</td></tr>"
+        "</table></body></html>",
+        ip_str, uptime_str);
+
+    http_send_response_headers(hc, HTTP_STATUS_OK, "OK", "text/html", len);
+    http_send_response_body(hc, response, len);
+    return 0;
+}
 #endif
 
 #define ECHO_PORT 7
@@ -576,8 +643,25 @@ int main(void)
 
 #ifdef ENABLE_HTTPS
     uart_puts("Initializing HTTPS server on port 443...\n");
-    if (https_server_init(IPStack, HTTPS_WEB_PORT, uart_puts) < 0) {
-        uart_puts("ERROR: HTTPS server init failed\n");
+
+    /* Create SSL context for HTTPS */
+    https_ssl_ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
+    if (https_ssl_ctx) {
+        wolfSSL_CTX_use_certificate_buffer(https_ssl_ctx,
+            (const unsigned char *)server_cert_pem, strlen(server_cert_pem),
+            SSL_FILETYPE_PEM);
+        wolfSSL_CTX_use_PrivateKey_buffer(https_ssl_ctx,
+            (const unsigned char *)server_key_pem, strlen(server_key_pem),
+            SSL_FILETYPE_PEM);
+
+        if (httpd_init(&https_server, IPStack, HTTPS_WEB_PORT, https_ssl_ctx) == 0) {
+            httpd_register_handler(&https_server, "/", https_status_handler);
+            uart_puts("HTTPS: Server ready on port 443\n");
+        } else {
+            uart_puts("ERROR: HTTPS server init failed\n");
+        }
+    } else {
+        uart_puts("ERROR: HTTPS SSL context failed\n");
     }
 #endif
 
@@ -611,15 +695,9 @@ int main(void)
         (void)wolfIP_poll(IPStack, tick++);
 
 #ifdef ENABLE_HTTPS
-        /* Update HTTPS server status info */
-        {
-            ip4 ip = 0, nm = 0, gw = 0;
-            wolfIP_ipconfig_get(IPStack, &ip, &nm, &gw);
-            https_server_set_info(ip, (uint32_t)(tick / 1000));
-        }
-
-        /* Poll HTTPS server */
-        https_server_poll();
+        /* Update HTTPS server status info for handler */
+        wolfIP_ipconfig_get(IPStack, &https_device_ip, NULL, NULL);
+        https_uptime_sec = (uint32_t)(tick / 1000);
 #endif
 
 #ifdef ENABLE_SSH

@@ -69,10 +69,10 @@ SRCS += tls_server.c
 SRCS += tls_client.c
 SRCS += $(ROOT)/src/port/wolfssl_io.c
 
-# HTTPS web server (requires TLS)
+# HTTPS web server (requires TLS) - uses existing wolfIP httpd
 ifeq ($(ENABLE_HTTPS),1)
 CFLAGS += -DENABLE_HTTPS
-SRCS += https_server.c
+SRCS += $(ROOT)/src/http/httpd.c
 endif
 
 # wolfSSL source files (minimal set for TLS 1.3 server with ECC)

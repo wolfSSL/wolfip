@@ -300,10 +300,6 @@ static int handle_net_connect(void)
 
     if (ret == -WOLFIP_EAGAIN || ret == -11) {
         connect_polls++;
-        /* Print status every ~50000 polls */
-        if ((connect_polls % 50000) == 0) {
-            debug_print("MQTT: Waiting for TCP...\n");
-        }
         return 0; /* Still connecting (EAGAIN/EINPROGRESS) */
     }
 
