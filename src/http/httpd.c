@@ -501,14 +501,14 @@ int httpd_init(struct httpd *httpd, struct wolfIP *s, uint16_t port, void *ssl_c
     struct wolfIP_sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
+    addr.sin_port = ee16(port);
     if (!httpd) {
         return -1;
     }
     memset(httpd, 0, sizeof(struct httpd));
     httpd->ipstack = s;
     httpd->port = port;
-    httpd->listen_sd = wolfIP_sock_socket(s, AF_INET, SOCK_STREAM, 0);
+    httpd->listen_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     if (httpd->listen_sd < 0) {
         return -1;
     }

@@ -28,7 +28,7 @@
 #define ETHERNET
 #define LINK_MTU                1536
 
-#define MAX_TCPSOCKETS          6    /* Need enough for listen + accepted sockets */
+#define MAX_TCPSOCKETS          12   /* Need enough for listen + accepted sockets */
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         1    /* Reduced from 2 */
 #define RXBUF_SIZE              (LINK_MTU * 8)   /* Reduced from 16 */
