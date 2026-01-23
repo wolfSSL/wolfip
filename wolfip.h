@@ -32,11 +32,43 @@ typedef unsigned long size_t;
 #endif
 #endif
 
+#ifndef WOLFIP_SOL_SOCKET
+#ifdef SOL_SOCKET
+#define WOLFIP_SOL_SOCKET SOL_SOCKET
+#else
+#define WOLFIP_SOL_SOCKET 1
+#endif
+#endif
+
+#ifndef WOLFIP_SO_DONTROUTE
+#ifdef SO_DONTROUTE
+#define WOLFIP_SO_DONTROUTE SO_DONTROUTE
+#else
+#define WOLFIP_SO_DONTROUTE 5
+#endif
+#endif
+
 #ifndef WOLFIP_IP_RECVTTL
 #ifdef IP_RECVTTL
 #define WOLFIP_IP_RECVTTL IP_RECVTTL
 #else
 #define WOLFIP_IP_RECVTTL 12
+#endif
+#endif
+
+#ifndef WOLFIP_IP_HDRINCL
+#ifdef IP_HDRINCL
+#define WOLFIP_IP_HDRINCL IP_HDRINCL
+#else
+#define WOLFIP_IP_HDRINCL 3
+#endif
+#endif
+
+#ifndef WOLFIP_SOL_PACKET
+#ifdef SOL_PACKET
+#define WOLFIP_SOL_PACKET SOL_PACKET
+#else
+#define WOLFIP_SOL_PACKET 263
 #endif
 #endif
 
@@ -114,10 +146,14 @@ struct ipconf {
 #define MARK_TCP_SOCKET 0x100 /* Mark a socket as TCP */
 #define MARK_UDP_SOCKET 0x200 /* Mark a socket as UDP */
 #define MARK_ICMP_SOCKET 0x400 /* Mark a socket as ICMP */
+#define MARK_RAW_SOCKET 0x800 /* Mark a socket as RAW */
+#define MARK_PACKET_SOCKET 0x1000 /* Mark a socket as PACKET */
 
 #define IS_SOCKET_TCP(fd) (((fd) & MARK_TCP_SOCKET) == MARK_TCP_SOCKET)
 #define IS_SOCKET_UDP(fd) (((fd) & MARK_UDP_SOCKET) == MARK_UDP_SOCKET)
 #define IS_SOCKET_ICMP(fd)(((fd) & MARK_ICMP_SOCKET) == MARK_ICMP_SOCKET)
+#define IS_SOCKET_RAW(fd) (((fd) & MARK_RAW_SOCKET) == MARK_RAW_SOCKET)
+#define IS_SOCKET_PACKET(fd) (((fd) & MARK_PACKET_SOCKET) == MARK_PACKET_SOCKET)
 #define SOCKET_UNMARK(fd) ((fd) & 0xFF)
 
 /* Compile-time sanity check for socket marks & number of sockets */
@@ -127,6 +163,14 @@ struct ipconf {
 
 #if (MARK_UDP_SOCKET >= MARK_ICMP_SOCKET)
 #error "MARK_UDP_SOCKET must be less than MARK_ICMP_SOCKET"
+#endif
+
+#if (MARK_ICMP_SOCKET >= MARK_RAW_SOCKET)
+#error "MARK_ICMP_SOCKET must be less than MARK_RAW_SOCKET"
+#endif
+
+#if (MARK_RAW_SOCKET >= MARK_PACKET_SOCKET)
+#error "MARK_RAW_SOCKET must be less than MARK_PACKET_SOCKET"
 #endif
 
 #if MAX_TCPSOCKETS > 255
@@ -141,11 +185,26 @@ struct ipconf {
 #error "MAX_ICMPSOCKETS must be less than 256"
 #endif
 
+#if WOLFIP_RAWSOCKETS
+#if WOLFIP_MAX_RAWSOCKETS > 255
+#error "WOLFIP_MAX_RAWSOCKETS must be less than 256"
+#endif
+#endif
+
+#if WOLFIP_PACKET_SOCKETS
+#if WOLFIP_MAX_PACKETSOCKETS > 255
+#error "WOLFIP_MAX_PACKETSOCKETS must be less than 256"
+#endif
+#endif
 
 
 #ifndef WOLF_POSIX
 #define IPSTACK_SOCK_STREAM 1
 #define IPSTACK_SOCK_DGRAM 2
+#define IPSTACK_SOCK_RAW 3
+#ifndef AF_PACKET
+#define AF_PACKET 17
+#endif
 
 
 struct wolfIP_sockaddr_in {
@@ -180,14 +239,38 @@ struct msghdr {
 #ifndef AF_INET
 #define AF_INET 2
 #endif
+#ifndef AF_PACKET
+#define AF_PACKET 17
+#endif
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/uio.h>
+#include <net/if.h>
+#ifdef __has_include
+#if __has_include(<netpacket/packet.h>)
+#include <netpacket/packet.h>
+#define wolfIP_sockaddr_ll sockaddr_ll
+#endif
+#endif
 #define wolfIP_sockaddr_in sockaddr_in
 #define wolfIP_sockaddr sockaddr
+#define IPSTACK_SOCK_RAW SOCK_RAW
+#endif
+
+#ifndef wolfIP_sockaddr_ll
+struct wolfIP_sockaddr_ll {
+    unsigned short sll_family;
+    unsigned short sll_protocol;
+    int sll_ifindex;
+    unsigned short sll_hatype;
+    unsigned char sll_pkttype;
+    unsigned char sll_halen;
+    unsigned char sll_addr[8];
+};
+typedef struct wolfIP_sockaddr_ll wolfIP_sockaddr_ll;
 #endif
 
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol);
