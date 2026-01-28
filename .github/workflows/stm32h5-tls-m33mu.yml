@@ -27,7 +27,6 @@ jobs:
       - name: Build TLS Server Binary
         working-directory: src/port/stm32h563
         run: |
-          make clean
           CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
             make test-server WOLFSSL_ROOT=/tmp/wolfssl
           ls -lh app-server.bin
@@ -36,7 +35,6 @@ jobs:
       - name: Build TLS Client Binary
         working-directory: src/port/stm32h563
         run: |
-          make clean
           CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
             make test-client WOLFSSL_ROOT=/tmp/wolfssl
           ls -lh app-client.bin

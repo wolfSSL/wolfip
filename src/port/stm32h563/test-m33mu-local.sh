@@ -62,7 +62,6 @@ echo ""
 
 # Build binaries
 echo "Building TLS server binary..."
-make clean > /dev/null
 if ! CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
      make test-server WOLFSSL_ROOT="$WOLFSSL_ROOT"; then
     echo -e "${RED}ERROR: Server build failed${NC}"
@@ -71,7 +70,6 @@ fi
 echo -e "${GREEN}✓ Server binary built: $(ls -lh app-server.bin | awk '{print $5}')${NC}"
 
 echo "Building TLS client binary..."
-make clean > /dev/null
 if ! CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
      make test-client WOLFSSL_ROOT="$WOLFSSL_ROOT"; then
     echo -e "${RED}ERROR: Client build failed${NC}"
