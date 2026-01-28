@@ -1,0 +1,7 @@
+#!/bin/bash
+echo "ip xfrm policy show"
+sudo ip xfrm policy show
+
+echo ""
+echo "ip xfrm state show"
+sudo ip xfrm state show

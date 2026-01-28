@@ -1,7 +1,25 @@
 CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
+CFLAGS+=-Wno-error=unterminated-string-initialization
 LDFLAGS+=-pthread
+
+# Debug flags:
+# CFLAGS+=-DDEBUG_TAP
+# print ethernet headers
+# CFLAGS+=-DDEBUG_ETH
+# print ip headers
+#CFLAGS+=-DDEBUG_IP
+# print tcp headers
+# CFLAGS+=-DDEBUG_TCP
+# print esp header data
+#FLAGS+=-DWOLFIP_DEBUG_ESP
+#CFLAGS+=-DWOLFIP_DEBUG_ESP_VERBOSE
+
+# ESP support
+#CFLAGS+=-DWOLFIP_ESP
+#CFLAGS+=-DWOLFSSL_WOLFIP
+#LDFLAGS+=-lwolfssl
 
 UNAME_S:=$(shell uname -s)
 UNAME_M:=$(shell uname -m)

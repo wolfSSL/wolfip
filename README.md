@@ -2,10 +2,10 @@
 
 ## Description and project goals
 
-wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be 
+wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be
 used in resource-constrained embedded systems.
 
-Endpoint only mode is supported, which means that wolfip can be used to 
+Endpoint only mode is supported, which means that wolfip can be used to
 establish network connections but it does not route traffic between different
 network interfaces.
 
@@ -19,7 +19,7 @@ A single network interface can be associated with the device.
 - DHCP (RFC 2131): client only
 - DNS  (RFC 1035): client only
 - UDP (RFC 768): unicast only
-- TCP (RFC 793) 
+- TCP (RFC 793)
   - TCP options supported: Timestamps, Maximum Segment Size
 - BSD-like, non blocking socket API, with custom callbacks
 - No dynamic memory allocation
