@@ -359,7 +359,14 @@ static void tls_client_cb(int fd, uint16_t event, void *arg)
             if (ret > 0) {
                 /* Echo data back */
                 ret = wolfSSL_write(client->ssl, server.rx_buf, ret);
-                if (ret <= 0) {
+                if (ret > 0) {
+#ifdef M33MU_TEST
+                    debug_print("M33MU_TEST: TLS server echoed data successfully\n");
+                    debug_print("M33MU_TEST: TLS server test PASSED\n");
+                    /* Trigger breakpoint for m33mu to detect success */
+                    __asm volatile("bkpt #0x7f");
+#endif
+                } else {
                     err = wolfSSL_get_error(client->ssl, ret);
                     if (err != WOLFSSL_ERROR_WANT_WRITE) {
                         debug_print("TLS: Write error\n");
