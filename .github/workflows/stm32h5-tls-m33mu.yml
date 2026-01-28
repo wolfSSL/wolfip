@@ -49,10 +49,7 @@ jobs:
       - name: Run TLS Server (m33mu)
         working-directory: src/port/stm32h563
         run: |
-          m33mu --vde /tmp/vde_switch.ctl \
-                --expect-bkpt 0x7f \
-                --timeout 60 \
-                app-server.bin > server.log 2>&1 &
+          m33mu --vde /tmp/vde_switch.ctl --expect-bkpt 0x7f --timeout 60 app-server.bin > server.log 2>&1 &
           SERVER_PID=$!
           echo "Server started with PID $SERVER_PID"
           echo $SERVER_PID > /tmp/server.pid
@@ -63,17 +60,14 @@ jobs:
       - name: Run TLS Client (m33mu)
         working-directory: src/port/stm32h563
         run: |
-          m33mu --vde /tmp/vde_switch.ctl \
-                --expect-bkpt 0x7f \
-                --timeout 60 \
-                app-client.bin > client.log 2>&1
+          m33mu --vde /tmp/vde_switch.ctl --expect-bkpt 0x7f --timeout 60 app-client.bin > client.log 2>&1
           CLIENT_EXIT=$?
           echo "Client exit code: $CLIENT_EXIT"
           echo "Client log:"
           cat client.log
           if [ $CLIENT_EXIT -ne 0 ]; then
             echo "ERROR: Client test failed!"
-            exit 1
+            exit $CLIENT_EXIT
           fi
 
       - name: Check Server Result
