@@ -19,14 +19,14 @@ jobs:
           submodules: false
 
       - name: Clone wolfSSL
+        working-directory: /tmp
         run: |
-          cd /tmp
           git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
           echo "wolfSSL cloned to /tmp/wolfssl"
 
       - name: Build TLS Server Binary
+        working-directory: src/port/stm32h563
         run: |
-          cd src/port/stm32h563
           make clean
           CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
             make test-server WOLFSSL_ROOT=/tmp/wolfssl
@@ -34,8 +34,8 @@ jobs:
           echo "Server binary size: $(stat -c%s app-server.bin) bytes"
 
       - name: Build TLS Client Binary
+        working-directory: src/port/stm32h563
         run: |
-          cd src/port/stm32h563
           make clean
           CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
             make test-client WOLFSSL_ROOT=/tmp/wolfssl
@@ -49,8 +49,8 @@ jobs:
           echo "VDE switch started"
 
       - name: Run TLS Server (m33mu)
+        working-directory: src/port/stm32h563
         run: |
-          cd src/port/stm32h563
           m33mu --vde /tmp/vde_switch.ctl \
                 --expect-bkpt 0x7f \
                 --timeout 60 \
@@ -63,8 +63,8 @@ jobs:
           head -50 server.log || true
 
       - name: Run TLS Client (m33mu)
+        working-directory: src/port/stm32h563
         run: |
-          cd src/port/stm32h563
           m33mu --vde /tmp/vde_switch.ctl \
                 --expect-bkpt 0x7f \
                 --timeout 60 \
@@ -79,8 +79,8 @@ jobs:
           fi
 
       - name: Check Server Result
+        working-directory: src/port/stm32h563
         run: |
-          cd src/port/stm32h563
           SERVER_PID=$(cat /tmp/server.pid)
           # Wait a bit for server to finish
           sleep 2
