@@ -1495,6 +1495,10 @@ static int eth_output_add_header(struct wolfIP *S, unsigned int if_idx, const ui
 }
 #endif
 
+#ifdef  WOLFIP_ESP
+#include "src/wolfesp.c"
+#endif /* WOLFIP_ESP */
+
 #if WOLFIP_ENABLE_FORWARDING
 static int wolfIP_forward_prepare(struct wolfIP *s, unsigned int out_if, ip4 dest, uint8_t *mac, int *broadcast)
 {
@@ -3306,6 +3310,10 @@ void wolfIP_init(struct wolfIP *s)
         }
     }
 #endif
+
+    #ifdef WOLFIP_ESP
+    esp_init();
+    #endif /* WOLFIP_ESP */
 }
 
 struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s)
@@ -3322,6 +3330,10 @@ struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx)
 static struct wolfIP wolfIP_static;
 void wolfIP_init_static(struct wolfIP **s)
 {
+    #ifdef WOLFIP_ESP
+    esp_init();
+    #endif /* WOLFIP_ESP */
+
     if (!s)
         return;
     wolfIP_init(&wolfIP_static);
@@ -3339,12 +3351,42 @@ size_t wolfIP_instance_size(void)
     return sizeof(struct wolfIP);
 }
 
+#ifdef DEBUG_IP
+static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
+{
+    char src[32];
+    char dst[32];
+    memset(src, 0, sizeof(src));
+    memset(dst, 0, sizeof(dst));
+    iptoa(ee32(ip->src), src);
+    iptoa(ee32(ip->dst), dst);
+
+    printf("ip hdr:\n");
+    printf("+-----------------------------+\n");
+    printf("| 0x%02x | 0x%02x | 0x%02x |   %4d | (ipv, hdr_len, tos, ip_len)\n",
+           0x04, ip->ver_ihl, ip->tos, ee16(ip->len));
+    printf("+-----------------------------+\n");
+    printf("|    0x%04x    |    0x%04x    | (id, flags_fo)\n",
+           ee16(ip->id), ee16(ip->flags_fo));
+    printf("+-----------------------------+\n");
+    printf("|  %3d  | 0x%02x |    0x%04x    | (ttl, proto, chksum)\n",
+           ip->ttl, ip->proto, ee16(ip->csum));
+    printf("+-----------------------------+\n");
+    printf("|           %15s   | (src)\n", src);
+    printf("+-----------------------------+\n");
+    printf("|           %15s   | (dst)\n", dst);
+    printf("+-----------------------------+\n");
+    printf("\n");
+}
+#endif /* DEBUG_IP*/
+
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *ip,
         uint32_t len)
 {
 #if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
 #endif
+
 #if WOLFIP_ENABLE_LOOPBACK
     if (!wolfIP_is_loopback_if(if_idx)) {
         ip4 dest = ee32(ip->dst);
@@ -3395,6 +3437,22 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_
         }
     }
 #endif
+    #ifdef DEBUG_IP
+    wolfIP_print_ip(ip);
+    #endif /* DEBUG_IP*/
+
+    #ifdef WOLFIP_ESP
+    if (ip->proto == 0x32) {
+        /* proto is ESP 0x32 (50), try to unwrap. */
+        int esp_rc = 0;
+        esp_rc = esp_unwrap(s, ip, &len);
+        if (esp_rc) {
+            printf("info: failed to unwrap esp packet, dropping.\n");
+            return;
+        }
+    }
+    #endif /* WOLFIP_ESP */
+
     if (ip->ver_ihl == 0x45 && ip->proto == 0x06) {
         struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)ip;
         tcp_input(s, if_idx, tcp, len);
@@ -3402,10 +3460,36 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_
     else if (ip->ver_ihl == 0x45 && ip->proto == 0x11) {
         struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
         udp_try_recv(s, if_idx, udp, len);
-    } else if (ip->ver_ihl == 0x45 && ip->proto == 0x01) {
+    }
+    else if (ip->ver_ihl == 0x45 && ip->proto == 0x01) {
         icmp_input(s, if_idx, ip, len);
     }
+    #ifdef DEBUG_IP
+    else {
+        printf("info: dropping ip packet: 0x%02x\n", ip->proto);
+    }
+    #endif
 }
+
+#ifdef DEBUG_ETH
+static void wolfIP_print_eth(struct wolfIP_eth_frame * eth, uint32_t len)
+{
+    uint8_t * dst = eth->dst;
+    uint8_t * src = eth->src;
+    uint8_t * type = (uint8_t *) &eth->type;
+    printf("eth hdr:\n");
+    printf("+---------------------------------------+\n");
+    printf("| %02x:%02x:%02x:%02x:%02x:%02x "
+           "| %02x:%02x:%02x:%02x:%02x:%02x | (src, dst) \n",
+           src[0], src[1], src[2], src[3], src[4], src[5],
+           dst[0], dst[1], dst[2], dst[3], dst[4], dst[5]);
+    printf("+---------------------------------------+\n");
+    printf("| 0x%02x%02x | %5lu bytes data             | (eth type, payload) \n",
+           type[0], type[1], (unsigned long)len);
+    printf("+---------------------------------------+\n");
+    printf("\n");
+}
+#endif /* DEBUG_ETH */
 
 static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len)
 {
@@ -3877,7 +3961,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         {
                             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
                             if (ll && ll->send) {
+                                #ifdef WOLFIP_ESP
+                                esp_output(ll, (struct wolfIP_ip_packet *)tcp, size);
+                                #else
                                 ll->send(ll, tcp, desc->len);
+                                #endif /* WOLFIP_ESP */
                             }
                         }
                         desc->flags |= PKT_FLAG_SENT;

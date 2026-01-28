@@ -287,15 +287,21 @@ static inline void iptoa(ip4 ip, char *buf)
 }
 
 #ifdef WOLFSSL_WOLFIP
-#ifdef WOLFSSL_USER_SETTINGS
-#include "user_settings.h"
-#else
-#include <wolfssl/options.h>
-#endif
-#include <wolfssl/wolfcrypt/settings.h>
-#include <wolfssl/ssl.h>
-int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd);
-int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
-#endif
+    #ifdef WOLFSSL_USER_SETTINGS
+        #include "user_settings.h"
+    #else
+        #include <wolfssl/options.h>
+    #endif /* WOLFSSL_USER_SETTINGS */
+    #include <wolfssl/wolfcrypt/settings.h>
+    #include <wolfssl/ssl.h>
+    int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd);
+    int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 
-#endif
+    #ifdef  WOLFIP_ESP
+        #include <wolfssl/wolfcrypt/aes.h>
+        #include <wolfssl/wolfcrypt/des3.h>
+        #include <wolfssl/wolfcrypt/hmac.h>
+    #endif /* WOLFIP_ESP */
+#endif /* WOLFSSL_WOLFIP */
+
+#endif /* !WOLFIP_H */
