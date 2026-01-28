@@ -1,7 +1,6 @@
 CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
-CFLAGS+=-Wno-error=unterminated-string-initialization
 LDFLAGS+=-pthread
 
 # Debug flags:
