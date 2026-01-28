@@ -3484,8 +3484,8 @@ static void wolfIP_print_eth(struct wolfIP_eth_frame * eth, uint32_t len)
            src[0], src[1], src[2], src[3], src[4], src[5],
            dst[0], dst[1], dst[2], dst[3], dst[4], dst[5]);
     printf("+---------------------------------------+\n");
-    printf("| 0x%02x%02x | %5d bytes data             | (eth type, payload) \n",
-           type[0], type[1], len);
+    printf("| 0x%02x%02x | %5lu bytes data             | (eth type, payload) \n",
+           type[0], type[1], (unsigned long)len);
     printf("+---------------------------------------+\n");
     printf("\n");
 }
