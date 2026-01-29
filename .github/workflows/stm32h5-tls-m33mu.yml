@@ -24,19 +24,13 @@ jobs:
           git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
           echo "wolfSSL cloned to /tmp/wolfssl"
 
-      - name: Build TLS Server Binary
+      - name: Build TLS Server + Client Binaries
         working-directory: src/port/stm32h563
         run: |
           CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
-            make test-server WOLFSSL_ROOT=/tmp/wolfssl
+            make test-m33mu WOLFSSL_ROOT=/tmp/wolfssl
           ls -lh app-server.bin
           echo "Server binary size: $(stat -c%s app-server.bin) bytes"
-
-      - name: Build TLS Client Binary
-        working-directory: src/port/stm32h563
-        run: |
-          CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
-            make test-client WOLFSSL_ROOT=/tmp/wolfssl
           ls -lh app-client.bin
           echo "Client binary size: $(stat -c%s app-client.bin) bytes"
 

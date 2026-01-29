@@ -1,5 +1,5 @@
-CC ?= arm-none-eabi-gcc
-OBJCOPY ?= arm-none-eabi-objcopy
+CC:=arm-none-eabi-gcc
+OBJCOPY:=arm-none-eabi-objcopy
 
 ROOT := ../../..
 
@@ -258,15 +258,15 @@ $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
 # m33mu Test Targets
 # -----------------------------------------------------------------------------
 
-# Build TLS server for m33mu testing
-test-server:
-	$(MAKE) clean
-	$(MAKE) app-server.bin ENABLE_TLS=1 BUILD_MODE=SERVER M33MU_TEST=1
+# Build TLS server/client for m33mu testing (same recipe)
+test-server test-client:
+	$(MAKE) app-$(subst test-,,$@).bin ENABLE_TLS=1 M33MU_TEST=1 BUILD_MODE=$(if $(findstring server,$@),SERVER,CLIENT)
 
-# Build TLS client for m33mu testing
-test-client:
+# Build both TLS server and client for m33mu testing
+test-m33mu:
 	$(MAKE) clean
-	$(MAKE) app-client.bin ENABLE_TLS=1 BUILD_MODE=CLIENT M33MU_TEST=1
+	$(MAKE) app-server.bin ENABLE_TLS=1 M33MU_TEST=1 BUILD_MODE=SERVER
+	$(MAKE) app-client.bin ENABLE_TLS=1 M33MU_TEST=1 BUILD_MODE=CLIENT
 
 app-server.elf: $(OBJS) $(LDSCRIPT)
 	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -Wl,--start-group -lc -lm -lgcc -lnosys -Wl,--end-group -o $@
@@ -315,7 +315,7 @@ size: app.elf
 	@echo "Flash usage: $$(arm-none-eabi-size app.elf | awk 'NR==2{printf "%.1f%% (%d / %d bytes)", ($$1+$$2)*100/2097152, $$1+$$2, 2097152}')"
 	@echo "RAM usage (static): $$(arm-none-eabi-size app.elf | awk 'NR==2{printf "%.1f%% (%d / %d bytes)", ($$2+$$3)*100/655360, $$2+$$3, 655360}')"
 
-.PHONY: all clean verify size test-server test-client
+.PHONY: all clean verify size test-server test-client test-m33mu
 
 # -----------------------------------------------------------------------------
 # Help
