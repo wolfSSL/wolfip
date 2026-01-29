@@ -209,7 +209,9 @@ int tls_client_poll(void)
             }
 
             /* Set SNI (Server Name Indication) - required by most servers */
+#ifndef M33MU_TEST
             wolfSSL_UseSNI(client.ssl, WOLFSSL_SNI_HOST_NAME, "google.com", 10);
+#endif
 
             /* Associate SSL with socket */
             ret = wolfSSL_SetIO_wolfIP(client.ssl, client.fd);

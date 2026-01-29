@@ -45,7 +45,20 @@
 #include "mqtt_client.h"
 #endif
 
-#ifdef ENABLE_TLS
+#ifdef M33MU_TEST
+/* Test mode configuration for m33mu emulator */
+  #ifdef BUILD_TLS_SERVER_ONLY
+    #define TEST_SERVER_IP "192.168.100.10"
+  #endif
+  #ifdef BUILD_TLS_CLIENT_ONLY
+    #define TEST_SERVER_IP "192.168.100.10"
+    #define TEST_CLIENT_IP "192.168.100.20"
+  #endif
+  #define TEST_NETMASK "255.255.255.0"
+  #define TEST_GATEWAY "192.168.100.1"
+#endif
+
+#if defined(ENABLE_TLS) && !defined(BUILD_TLS_SERVER_ONLY)
 
 /* Google IP for TLS client test (run: dig +short google.com) */
 #define GOOGLE_IP "142.250.189.174"
@@ -209,9 +222,11 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define LED2_PIN 4u
 
 static struct wolfIP *IPStack;
+#ifndef BUILD_TLS_CLIENT_ONLY
 static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
+#endif
 
 uint32_t wolfIP_getrandom(void)
 {
@@ -432,7 +447,7 @@ static void eth_gpio_init(void)
     gpio_eth_pin(GPIOG_BASE, 13);  /* TXD0 */
 }
 
-#ifdef ENABLE_TLS
+#if defined(ENABLE_TLS) && !defined(BUILD_TLS_SERVER_ONLY)
 /* Callback for TLS client responses */
 static void tls_response_cb(const char *data, int len, void *ctx)
 {
@@ -449,9 +464,17 @@ static void tls_response_cb(const char *data, int len, void *ctx)
     }
     uart_puts("\n");
     tls_client_test_done = 1;
+
+#ifdef M33MU_TEST
+    /* In test mode, receiving response means success */
+    uart_puts("M33MU_TEST: TLS client test PASSED\n");
+    /* Trigger breakpoint for m33mu to detect success */
+    __asm volatile("bkpt #0x7f");
+#endif
 }
 #endif
 
+#ifndef BUILD_TLS_CLIENT_ONLY
 static void echo_cb(int fd, uint16_t event, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
@@ -480,11 +503,14 @@ static void echo_cb(int fd, uint16_t event, void *arg)
         client_fd = -1;
     }
 }
+#endif
 
 int main(void)
 {
     struct wolfIP_ll_dev *ll;
+#ifndef BUILD_TLS_CLIENT_ONLY
     struct wolfIP_sockaddr_in addr;
+#endif
     uint64_t tick = 0;
     int ret;
 
@@ -603,10 +629,22 @@ int main(void)
     }
 #else
     {
+#ifdef M33MU_TEST
+        /* Use test-specific IPs for m33mu emulator */
+      #ifdef BUILD_TLS_CLIENT_ONLY
+        ip4 ip = atoip4(TEST_CLIENT_IP);
+      #else
+        ip4 ip = atoip4(TEST_SERVER_IP);
+      #endif
+        ip4 nm = atoip4(TEST_NETMASK);
+        ip4 gw = atoip4(TEST_GATEWAY);
+        uart_puts("M33MU_TEST: Setting static IP configuration:\n");
+#else
         ip4 ip = atoip4(WOLFIP_IP);
         ip4 nm = atoip4(WOLFIP_NETMASK);
         ip4 gw = atoip4(WOLFIP_GW);
         uart_puts("Setting IP configuration:\n");
+#endif
         uart_puts("  IP: ");
         uart_putip4(ip);
         uart_puts("\n  Mask: ");
@@ -618,6 +656,7 @@ int main(void)
     }
 #endif
 
+#ifndef BUILD_TLS_CLIENT_ONLY
     uart_puts("Creating TCP socket on port 7...\n");
     listen_fd = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
     wolfIP_register_callback(IPStack, listen_fd, echo_cb, IPStack);
@@ -628,20 +667,25 @@ int main(void)
     addr.sin_addr.s_addr = 0;
     (void)wolfIP_sock_bind(IPStack, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr));
     (void)wolfIP_sock_listen(IPStack, listen_fd, 1);
+#endif
 
 #ifdef ENABLE_TLS
+  #ifndef BUILD_TLS_CLIENT_ONLY
     uart_puts("Initializing TLS server on port 8443...\n");
     if (tls_server_init(IPStack, TLS_PORT, uart_puts) < 0) {
         uart_puts("ERROR: TLS server init failed\n");
     }
+  #endif
 
+  #ifndef BUILD_TLS_SERVER_ONLY
     uart_puts("Initializing TLS client...\n");
     if (tls_client_init(IPStack, uart_puts) < 0) {
         uart_puts("ERROR: TLS client init failed\n");
     }
+  #endif
 #endif
 
-#ifdef ENABLE_HTTPS
+#if defined(ENABLE_HTTPS) && !defined(BUILD_TLS_SERVER_ONLY) && !defined(BUILD_TLS_CLIENT_ONLY)
     uart_puts("Initializing HTTPS server on port 443...\n");
 
     /* Create SSL context for HTTPS */
@@ -665,14 +709,14 @@ int main(void)
     }
 #endif
 
-#ifdef ENABLE_SSH
+#if defined(ENABLE_SSH) && !defined(BUILD_TLS_SERVER_ONLY) && !defined(BUILD_TLS_CLIENT_ONLY)
     uart_puts("Initializing SSH server on port 22...\n");
     if (ssh_server_init(IPStack, SSH_PORT, uart_puts) < 0) {
         uart_puts("ERROR: SSH server init failed\n");
     }
 #endif
 
-#ifdef ENABLE_MQTT
+#if defined(ENABLE_MQTT) && !defined(BUILD_TLS_SERVER_ONLY) && !defined(BUILD_TLS_CLIENT_ONLY)
     uart_puts("Initializing MQTT client...\n");
     {
         mqtt_client_config_t mqtt_config = {
@@ -751,8 +795,23 @@ int main(void)
 #endif
 
 #ifdef ENABLE_TLS
-        /* TLS client test: connect to Google after network settles */
+  #ifndef BUILD_TLS_SERVER_ONLY
+        /* TLS client test: connect after network settles */
         if (!tls_client_test_started && tick > 5000) {
+#ifdef M33MU_TEST
+            uart_puts("\n--- M33MU TLS Client Test: Connecting to TLS server ---\n");
+            uart_puts("Target: ");
+            uart_puts(TEST_SERVER_IP);
+            uart_puts(":8443\n");
+
+            if (tls_client_connect(TEST_SERVER_IP, TLS_PORT, tls_response_cb, NULL) == 0) {
+                uart_puts("TLS Client: Connection initiated\n");
+            } else {
+                uart_puts("TLS Client: Failed to start connection\n");
+                uart_puts("M33MU_TEST: TLS client test FAILED\n");
+                __asm volatile("bkpt #0x7e"); /* Failure breakpoint */
+            }
+#else
             uart_puts("\n--- TLS Client Test: Connecting to Google ---\n");
             uart_puts("Target: ");
             uart_puts(GOOGLE_IP);
@@ -765,16 +824,28 @@ int main(void)
             } else {
                 uart_puts("TLS Client: Failed to start connection\n");
             }
+#endif
             tls_client_test_started = 1;
         }
 
         /* Poll TLS client state machine */
         tls_client_poll();
 
-        /* Send HTTP request once TLS handshake completes */
+        /* Send test data once TLS handshake completes */
         if (tls_client_is_connected() && !tls_client_test_done) {
             static int request_sent = 0;
             if (!request_sent) {
+#ifdef M33MU_TEST
+                const char *test_msg = "Hello TLS Server!\n";
+                uart_puts("TLS Client: Sending test message...\n");
+                if (tls_client_send(test_msg, (int)strlen(test_msg)) > 0) {
+                    uart_puts("TLS Client: Message sent\n");
+                } else {
+                    uart_puts("TLS Client: Send failed\n");
+                    uart_puts("M33MU_TEST: TLS client test FAILED\n");
+                    __asm volatile("bkpt #0x7e"); /* Failure breakpoint */
+                }
+#else
                 const char *http_req = "GET / HTTP/1.1\r\n"
                                        "Host: google.com\r\n"
                                        "Connection: close\r\n\r\n";
@@ -784,9 +855,11 @@ int main(void)
                 } else {
                     uart_puts("TLS Client: Send failed\n");
                 }
+#endif
                 request_sent = 1;
             }
         }
+  #endif
 #endif
 
         /* Toggle LED every ~256K iterations as heartbeat */
