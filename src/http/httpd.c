@@ -265,7 +265,7 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
     char *p = buf;
     char *q = NULL;
     while (p < buf + len) {
-        q = strchr(p, ' ');
+        q = memchr(p, ' ', len - (size_t)(p - buf));
         if (!q) {
             break;
         }
