@@ -3362,6 +3362,10 @@ size_t wolfIP_instance_size(void)
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *ip,
         uint32_t len)
 {
+    /* validate minimum packet length
+     * (ethernet header+ ip header, with no options) */
+    if (len < sizeof(struct wolfIP_ip_packet))
+        return;
 #if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
 #endif
