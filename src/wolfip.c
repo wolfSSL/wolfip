@@ -1230,8 +1230,16 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ud
 {
     struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
     int i;
-    ip4 local_ip = conf ? conf->ip : IPADDR_ANY;
-    ip4 dst_ip = ee32(udp->ip.dst);
+    ip4 local_ip;
+    ip4 dst_ip;
+
+    /* validate minimum UDP datagram length */
+    if (frame_len < sizeof(struct wolfIP_udp_datagram))
+        return;
+
+    local_ip = conf ? conf->ip : IPADDR_ANY;
+    dst_ip = ee32(udp->ip.dst);
+
     if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len) != 0)
         return;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
