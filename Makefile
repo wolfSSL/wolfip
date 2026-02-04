@@ -65,9 +65,11 @@ TAP_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(TAP_SRC))
 ifeq ($(UNAME_S),Darwin)
   BEGIN_GROUP:=
   END_GROUP:=
+  OPEN_CMD?=open
 else
   BEGIN_GROUP:=-Wl,--start-group
   END_GROUP:=-Wl,--end-group
+  OPEN_CMD?=xdg-open
 endif
 
 CHECK_PKG_CFLAGS:=$(shell pkg-config --cflags check 2>/dev/null)
@@ -76,6 +78,7 @@ CHECK_PKG_LIBS:=$(shell pkg-config --libs check 2>/dev/null)
 ifneq ($(CHECK_PKG_CFLAGS),)
   UNIT_CFLAGS+=$(CHECK_PKG_CFLAGS)
 endif
+UNIT_CFLAGS+=-Isrc/test/unit/mocks
 
 CPPCHECK=cppcheck
 CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
@@ -271,9 +274,32 @@ unit: build/test/unit
 build/test/unit:
 	@mkdir -p build/test/
 	@echo "[CC] unit.c"
-	@$(CC) $(CFLAGS) $(UNIT_CFLAGS) -c src/test/unit/unit.c -o build/test/unit.o
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) -c src/test/unit/unit.c -o build/test/unit.o
 	@echo "[LD] $@"
 	@$(CC) build/test/unit.o -o build/test/unit $(UNIT_LDFLAGS) $(LDFLAGS)
+
+COV_DIR:=build/coverage
+COV_UNIT:=$(COV_DIR)/unit
+COV_UNIT_O:=$(COV_DIR)/unit.o
+
+$(COV_UNIT_O): src/test/unit/unit.c
+	@mkdir -p $(COV_DIR)
+	@echo "[CC] unit.c (coverage)"
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) --coverage -c src/test/unit/unit.c -o $(COV_UNIT_O)
+
+$(COV_UNIT): LDFLAGS+=--coverage $(UNIT_LIBS)
+$(COV_UNIT): $(COV_UNIT_O)
+	@echo "[LD] $@"
+	@$(CC) $(COV_UNIT_O) -o $(COV_UNIT) $(UNIT_LDFLAGS) $(LDFLAGS)
+
+cov: unit $(COV_UNIT)
+	@echo "[RUN] unit (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_UNIT)
+	@echo "[COV] gcovr html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/unit.c" --html-details -o build/coverage/index.html
+	@$(OPEN_CMD) build/coverage/index.html
 
 # Install dynamic library to re-link linux applications
 #
@@ -281,7 +307,7 @@ install:
 	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
-.PHONY: clean all static cppcheck
+.PHONY: clean all static cppcheck cov
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml

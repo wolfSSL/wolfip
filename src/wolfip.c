@@ -311,9 +311,10 @@ static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
 {
     uint32_t pos;
     int diff;
-    if ((len > queue_space(q)) || (len > q->size)) {
+    if (len > q->size)
         return -1;
-    }
+    if (len > queue_space(q))
+        return -1;
     if (queue_len(q) == 0) {
         q->tail = q->head = 0;
         memcpy(q->data, data, len);
@@ -1621,8 +1622,8 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             ts = (const struct tcp_opt_ts *)opt;
             if (ts->opt == TCP_OPTION_TS) {
                 t->sock.tcp.last_ts = ts->val;
-                if (ts->ecr != 0)
-                    return -1;
+                if (ts->ecr == 0)
+                    return -1; /* No echoed timestamp; fall back to coarse RTT. */
                 if (t->sock.tcp.rtt == 0)
                     t->sock.tcp.rtt = (uint32_t)(t->S->last_tick - ee32(ts->ecr));
                 else {
@@ -1766,6 +1767,19 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
             /* Check if RST */
             if (tcp->flags & 0x04) {
+                if (t->sock.tcp.state == TCP_LISTEN) {
+                    /* RFC 793: ignore RSTs in LISTEN to keep the server open. */
+                    continue;
+                }
+                if (t->sock.tcp.state == TCP_SYN_RCVD) {
+                    /* RST on a half-open connection: fall back to listening state. */
+                    t->sock.tcp.state = TCP_LISTEN;
+                    t->events &= ~CB_EVENT_READABLE;
+                    t->remote_ip = IPADDR_ANY;
+                    t->dst_port = 0;
+                    t->sock.tcp.ack = 0;
+                    continue;
+                }
                 (void)wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_REMOTE_RESET, S, t,
                     t->local_ip, t->src_port, t->remote_ip, t->dst_port);
@@ -3205,9 +3219,12 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
 {
     struct arp_packet arp;
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-    struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
+    struct ipconf *conf;
 
-    if (!ll || !conf)
+    if (!ll)
+        return;
+    conf = wolfIP_ipconf_at(s, if_idx);
+    if (!conf)
         return;
 
     if (s->arp.last_arp[if_idx] + 1000 > s->last_tick) {
@@ -3236,9 +3253,12 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
 {
     struct arp_packet *arp = (struct arp_packet *)buf;
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-    struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
+    struct ipconf *conf;
 
-    if (!ll || !conf)
+    if (!ll)
+        return;
+    conf = wolfIP_ipconf_at(s, if_idx);
+    if (!conf)
         return;
 
     if (arp->opcode == ee16(ARP_REQUEST) && arp->tip == ee32(conf->ip)) {

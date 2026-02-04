@@ -25,7 +25,6 @@
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-
 #ifndef MAX_WOLFIP_CTX
     #define MAX_WOLFIP_CTX 8 /* Default value */
 #endif
