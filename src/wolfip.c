@@ -3255,6 +3255,11 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
     struct ipconf *conf;
 
+
+    /* validate minimum ARP packet length */
+    if (len < (int)sizeof(struct arp_packet))
+        return;
+
     if (!ll)
         return;
     conf = wolfIP_ipconf_at(s, if_idx);
