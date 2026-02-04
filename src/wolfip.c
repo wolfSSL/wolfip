@@ -2783,6 +2783,12 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)ip;
     uint32_t tmp;
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+
+    /* validate minimum ICMP packet length */
+    if (len < sizeof(struct wolfIP_icmp_packet))
+        return;
+
+
     if (wolfIP_filter_notify_icmp(WOLFIP_FILT_RECEIVING, s, if_idx, icmp, len) != 0)
         return;
     if (icmp->type == ICMP_ECHO_REPLY) {
