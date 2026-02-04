@@ -42,7 +42,9 @@
 #include <stdio.h>
 #include "../../wolfip.c"
 #include <stdlib.h> /* for random() */
-#include "wolfssl/ssl.h"
+#include "mocks/wolfssl/wolfcrypt/settings.h"
+#include "mocks/wolfssl/wolfcrypt/memory.h"
+#include "mocks/wolfssl/ssl.h"
 
 /* MOCKS */
 /* pseudo random number generator to mock the random number generator */
