@@ -3386,13 +3386,13 @@ size_t wolfIP_instance_size(void)
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *ip,
         uint32_t len)
 {
+#if WOLFIP_ENABLE_FORWARDING
+    unsigned int i;
+#endif
     /* validate minimum packet length
      * (ethernet header+ ip header, with no options) */
     if (len < sizeof(struct wolfIP_ip_packet))
         return;
-#if WOLFIP_ENABLE_FORWARDING
-    unsigned int i;
-#endif
 #if WOLFIP_ENABLE_LOOPBACK
     if (!wolfIP_is_loopback_if(if_idx)) {
         ip4 dest = ee32(ip->dst);
