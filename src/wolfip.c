@@ -1739,6 +1739,11 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
 {
     int i;
+
+    /* validate minimum TCP segment length */
+    if (frame_len < sizeof(struct wolfIP_tcp_seg))
+        return;
+
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len) != 0)
         return;
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
