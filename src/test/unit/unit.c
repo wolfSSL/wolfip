@@ -5525,6 +5525,12 @@ START_TEST(test_arp_request_missing_conf)
 }
 END_TEST
 
+START_TEST(test_arp_request_null_stack)
+{
+    arp_request(NULL, TEST_PRIMARY_IF, 0x0A000002U);
+}
+END_TEST
+
 START_TEST(test_arp_recv_request_other_ip_no_reply)
 {
     struct wolfIP s;
@@ -5543,6 +5549,18 @@ START_TEST(test_arp_recv_request_other_ip_no_reply)
 
     arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
     ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+START_TEST(test_arp_recv_null_stack)
+{
+    struct arp_packet arp_req;
+
+    memset(&arp_req, 0, sizeof(arp_req));
+    arp_req.opcode = ee16(ARP_REQUEST);
+    arp_req.tip = ee32(0x0A000001U);
+
+    arp_recv(NULL, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
 }
 END_TEST
 
@@ -10504,7 +10522,11 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_arp_request_missing_conf);
     suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_arp_request_null_stack);
+    suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_arp_recv_request_other_ip_no_reply);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_arp_recv_null_stack);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_arp_recv_request_sends_reply);
     suite_add_tcase(s, tc_proto);

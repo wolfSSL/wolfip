@@ -3224,6 +3224,8 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
     if (!ll)
         return;
     conf = wolfIP_ipconf_at(s, if_idx);
+    if (!conf)
+        return;
 
     if (s->arp.last_arp[if_idx] + 1000 > s->last_tick) {
         return;
@@ -3256,6 +3258,8 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     if (!ll)
         return;
     conf = wolfIP_ipconf_at(s, if_idx);
+    if (!conf)
+        return;
 
     if (arp->opcode == ee16(ARP_REQUEST) && arp->tip == ee32(conf->ip)) {
         arp->opcode = ee16(ARP_REPLY);
