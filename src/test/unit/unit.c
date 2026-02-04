@@ -121,6 +121,11 @@ static int timer_cb_calls;
 static uint32_t dns_lookup_ip;
 static int dns_lookup_calls;
 
+struct tcp_seg_buf {
+    struct wolfIP_tcp_seg seg;
+    uint8_t pad[TCP_HEADER_LEN];
+};
+
 int wolfSSL_SetIORecv(WOLFSSL_CTX *ctx, CallbackIORecv cb)
 {
     g_last_ctx = ctx;
@@ -3120,7 +3125,10 @@ START_TEST(test_sock_recvfrom_icmp_paths)
     struct wolfIP s;
     int icmp_sd;
     struct tsocket *ts;
-    struct wolfIP_icmp_packet icmp;
+    struct {
+        struct wolfIP_icmp_packet icmp;
+        uint8_t payload[2];
+    } icmp_frame;
     struct pkt_desc *desc;
     uint8_t rxbuf[ICMP_HEADER_LEN + 2];
     int ret;
@@ -3136,16 +3144,16 @@ START_TEST(test_sock_recvfrom_icmp_paths)
     ret = wolfIP_sock_recvfrom(&s, icmp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
 
-    memset(&icmp, 0, sizeof(icmp));
-    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN + 2);
-    icmp.type = ICMP_ECHO_REPLY;
-    icmp.code = 0;
+    memset(&icmp_frame, 0, sizeof(icmp_frame));
+    icmp_frame.icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN + sizeof(icmp_frame.payload));
+    icmp_frame.icmp.type = ICMP_ECHO_REPLY;
+    icmp_frame.icmp.code = 0;
     {
-        uint8_t *payload = ((uint8_t *)&icmp.type) + ICMP_HEADER_LEN;
+        uint8_t *payload = ((uint8_t *)&icmp_frame.icmp.type) + ICMP_HEADER_LEN;
         payload[0] = 0xAA;
         payload[1] = 0xBB;
     }
-    fifo_push(&ts->sock.udp.rxbuf, &icmp, sizeof(icmp));
+    ck_assert_int_eq(fifo_push(&ts->sock.udp.rxbuf, &icmp_frame, sizeof(icmp_frame)), 0);
     desc = fifo_peek(&ts->sock.udp.rxbuf);
     ck_assert_ptr_nonnull(desc);
 
@@ -6342,7 +6350,7 @@ START_TEST(test_tcp_process_ts_uses_ecr)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTION_TS_LEN];
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
     struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
     struct tcp_opt_ts *opt = (struct tcp_opt_ts *)tcp->data;
 
@@ -6353,7 +6361,7 @@ START_TEST(test_tcp_process_ts_uses_ecr)
     ts->S = &s;
 
     memset(tcp, 0, sizeof(buf));
-    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTION_TS_LEN) << 2;
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
     opt->opt = TCP_OPTION_TS;
     opt->len = TCP_OPTION_TS_LEN;
     opt->val = ee32(1000);
@@ -6371,7 +6379,7 @@ START_TEST(test_tcp_process_ts_nop_then_ts)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTION_TS_LEN + 1];
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 1];
     struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
     struct tcp_opt_ts *opt;
 
@@ -6382,7 +6390,7 @@ START_TEST(test_tcp_process_ts_nop_then_ts)
     ts->S = &s;
 
     memset(tcp, 0, sizeof(buf));
-    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTION_TS_LEN + 1) << 2;
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN + 1) << 2;
     tcp->data[0] = TCP_OPTION_NOP;
     opt = (struct tcp_opt_ts *)&tcp->data[1];
     opt->opt = TCP_OPTION_TS;
@@ -6401,7 +6409,7 @@ START_TEST(test_tcp_process_ts_skips_unknown_option)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTION_TS_LEN + 4];
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 4];
     struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
     struct tcp_opt_ts *opt;
 
@@ -6412,7 +6420,7 @@ START_TEST(test_tcp_process_ts_skips_unknown_option)
     ts->S = &s;
 
     memset(tcp, 0, sizeof(buf));
-    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTION_TS_LEN + 4) << 2;
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN + 4) << 2;
     tcp->data[0] = 0x22;
     tcp->data[1] = 4;
     tcp->data[2] = 0;
@@ -6434,7 +6442,7 @@ START_TEST(test_tcp_process_ts_no_ecr)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTION_TS_LEN];
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
     struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
     struct tcp_opt_ts *opt = (struct tcp_opt_ts *)tcp->data;
 
@@ -6445,7 +6453,7 @@ START_TEST(test_tcp_process_ts_no_ecr)
     ts->S = &s;
 
     memset(tcp, 0, sizeof(buf));
-    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTION_TS_LEN) << 2;
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
     opt->opt = TCP_OPTION_TS;
     opt->len = TCP_OPTION_TS_LEN;
     opt->val = ee32(100);
@@ -6461,7 +6469,7 @@ START_TEST(test_tcp_process_ts_updates_rtt_when_set)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTION_TS_LEN];
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
     struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
     struct tcp_opt_ts *opt = (struct tcp_opt_ts *)tcp->data;
     uint32_t old_rtt;
@@ -6475,7 +6483,7 @@ START_TEST(test_tcp_process_ts_updates_rtt_when_set)
     old_rtt = ts->sock.tcp.rtt;
 
     memset(tcp, 0, sizeof(buf));
-    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTION_TS_LEN) << 2;
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
     opt->opt = TCP_OPTION_TS;
     opt->len = TCP_OPTION_TS_LEN;
     opt->val = ee32(100);
@@ -6687,7 +6695,8 @@ START_TEST(test_tcp_ack_discards_zero_len_segment)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -6699,11 +6708,12 @@ START_TEST(test_tcp_ack_discards_zero_len_segment)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -6722,7 +6732,8 @@ START_TEST(test_tcp_ack_closes_last_ack_socket)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
     uint32_t seq = 100;
@@ -6736,11 +6747,12 @@ START_TEST(test_tcp_ack_closes_last_ack_socket)
     ts->sock.tcp.last = seq;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(seq);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -6759,7 +6771,8 @@ START_TEST(test_tcp_ack_last_seq_match_no_close)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
     uint32_t seq = 200;
@@ -6773,11 +6786,12 @@ START_TEST(test_tcp_ack_last_seq_match_no_close)
     ts->sock.tcp.last = seq;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(seq);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -6796,7 +6810,8 @@ START_TEST(test_tcp_ack_fresh_desc_updates_rtt_existing)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
     uint32_t seq = 300;
@@ -6813,12 +6828,13 @@ START_TEST(test_tcp_ack_fresh_desc_updates_rtt_existing)
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
     s.last_tick = 1000;
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(seq);
-    seg.data[0] = 0xaa;
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    seg->data[0] = TCP_OPTION_EOO;
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -6839,8 +6855,10 @@ START_TEST(test_tcp_ack_duplicate_zero_len_segment_large_ack)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg1;
-    struct wolfIP_tcp_seg seg2;
+    struct tcp_seg_buf segbuf1;
+    struct tcp_seg_buf segbuf2;
+    struct wolfIP_tcp_seg *seg1;
+    struct wolfIP_tcp_seg *seg2;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -6854,17 +6872,19 @@ START_TEST(test_tcp_ack_duplicate_zero_len_segment_large_ack)
     ts->sock.tcp.ssthresh = TCP_MSS * 4;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg1, 0, sizeof(seg1));
-    seg1.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 2000);
-    seg1.hlen = TCP_HEADER_LEN << 2;
-    seg1.seq = ee32(400);
-    fifo_push(&ts->sock.tcp.txbuf, &seg1, sizeof(seg1));
+    memset(&segbuf1, 0, sizeof(segbuf1));
+    seg1 = &segbuf1.seg;
+    seg1->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 2000);
+    seg1->hlen = TCP_HEADER_LEN << 2;
+    seg1->seq = ee32(400);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf1, sizeof(segbuf1)), 0);
 
-    memset(&seg2, 0, sizeof(seg2));
-    seg2.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
-    seg2.hlen = TCP_HEADER_LEN << 2;
-    seg2.seq = ee32(500);
-    fifo_push(&ts->sock.tcp.txbuf, &seg2, sizeof(seg2));
+    memset(&segbuf2, 0, sizeof(segbuf2));
+    seg2 = &segbuf2.seg;
+    seg2->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg2->hlen = TCP_HEADER_LEN << 2;
+    seg2->seq = ee32(500);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2, sizeof(segbuf2)), 0);
 
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
@@ -6889,7 +6909,8 @@ START_TEST(test_tcp_ack_duplicate_seq_match_large_seg_len)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
     uint32_t seq = 500;
@@ -6903,11 +6924,12 @@ START_TEST(test_tcp_ack_duplicate_seq_match_large_seg_len)
     ts->sock.tcp.cwnd = TCP_MSS * 4;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 2000);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(seq);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 2000);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -6926,8 +6948,10 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_flag)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg1;
-    struct wolfIP_tcp_seg seg2;
+    struct tcp_seg_buf segbuf1;
+    struct tcp_seg_buf segbuf2;
+    struct wolfIP_tcp_seg *seg1;
+    struct wolfIP_tcp_seg *seg2;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
     uint32_t seq1 = 100;
@@ -6942,20 +6966,22 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_flag)
     ts->sock.tcp.cwnd = TCP_MSS * 4;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg1, 0, sizeof(seg1));
-    seg1.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg1.hlen = TCP_HEADER_LEN << 2;
-    seg1.seq = ee32(seq1);
-    fifo_push(&ts->sock.tcp.txbuf, &seg1, sizeof(seg1));
+    memset(&segbuf1, 0, sizeof(segbuf1));
+    seg1 = &segbuf1.seg;
+    seg1->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg1->hlen = TCP_HEADER_LEN << 2;
+    seg1->seq = ee32(seq1);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf1, sizeof(segbuf1)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
 
-    memset(&seg2, 0, sizeof(seg2));
-    seg2.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg2.hlen = TCP_HEADER_LEN << 2;
-    seg2.seq = ee32(seq2);
-    fifo_push(&ts->sock.tcp.txbuf, &seg2, sizeof(seg2));
+    memset(&segbuf2, 0, sizeof(segbuf2));
+    seg2 = &segbuf2.seg;
+    seg2->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg2->hlen = TCP_HEADER_LEN << 2;
+    seg2->seq = ee32(seq2);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2, sizeof(segbuf2)), 0);
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(seq1);
@@ -6973,8 +6999,10 @@ START_TEST(test_tcp_ack_duplicate_discards_zero_len_segment)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg1;
-    struct wolfIP_tcp_seg seg2;
+    struct tcp_seg_buf segbuf1;
+    struct tcp_seg_buf segbuf2;
+    struct wolfIP_tcp_seg *seg1;
+    struct wolfIP_tcp_seg *seg2;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -6986,20 +7014,22 @@ START_TEST(test_tcp_ack_duplicate_discards_zero_len_segment)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg1, 0, sizeof(seg1));
-    seg1.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
-    seg1.hlen = TCP_HEADER_LEN << 2;
-    seg1.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg1, sizeof(seg1));
+    memset(&segbuf1, 0, sizeof(segbuf1));
+    seg1 = &segbuf1.seg;
+    seg1->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg1->hlen = TCP_HEADER_LEN << 2;
+    seg1->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf1, sizeof(segbuf1)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
 
-    memset(&seg2, 0, sizeof(seg2));
-    seg2.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg2.hlen = TCP_HEADER_LEN << 2;
-    seg2.seq = ee32(200);
-    fifo_push(&ts->sock.tcp.txbuf, &seg2, sizeof(seg2));
+    memset(&segbuf2, 0, sizeof(segbuf2));
+    seg2 = &segbuf2.seg;
+    seg2->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg2->hlen = TCP_HEADER_LEN << 2;
+    seg2->seq = ee32(200);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2, sizeof(segbuf2)), 0);
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(50);
@@ -7207,7 +7237,8 @@ START_TEST(test_tcp_ack_cwnd_count_wrap)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -7222,11 +7253,12 @@ START_TEST(test_tcp_ack_cwnd_count_wrap)
     ts->sock.tcp.cwnd_count = ts->sock.tcp.cwnd - 1;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -7294,7 +7326,8 @@ START_TEST(test_tcp_ack_last_seq_not_last_ack_state)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -7307,11 +7340,12 @@ START_TEST(test_tcp_ack_last_seq_not_last_ack_state)
     ts->sock.tcp.last = 100;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -7330,7 +7364,8 @@ START_TEST(test_tcp_ack_no_progress_when_ack_far_ahead)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
     uint32_t seq = 100;
@@ -7343,11 +7378,12 @@ START_TEST(test_tcp_ack_no_progress_when_ack_far_ahead)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(seq);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -7366,7 +7402,8 @@ START_TEST(test_tcp_ack_coarse_rtt_sets_writable)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -7381,11 +7418,12 @@ START_TEST(test_tcp_ack_coarse_rtt_sets_writable)
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
     s.last_tick = 1000;
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -7406,7 +7444,8 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_large_seg_len)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -7418,11 +7457,12 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_large_seg_len)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 2000);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(500);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 2000);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(500);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -7443,7 +7483,8 @@ START_TEST(test_tcp_ack_duplicate_discards_zero_len_segment_far_ack)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -7455,11 +7496,12 @@ START_TEST(test_tcp_ack_duplicate_discards_zero_len_segment_far_ack)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
@@ -7478,7 +7520,8 @@ START_TEST(test_tcp_ack_duplicate_ssthresh_min)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
     struct wolfIP_tcp_seg ackseg;
     struct pkt_desc *desc;
 
@@ -7491,11 +7534,12 @@ START_TEST(test_tcp_ack_duplicate_ssthresh_min)
     ts->sock.tcp.cwnd = TCP_MSS;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(100);
-    fifo_push(&ts->sock.tcp.txbuf, &seg, sizeof(seg));
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
