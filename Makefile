@@ -274,7 +274,7 @@ unit: build/test/unit
 build/test/unit:
 	@mkdir -p build/test/
 	@echo "[CC] unit.c"
-	@$(CC) $(CFLAGS) $(UNIT_CFLAGS) -c src/test/unit/unit.c -o build/test/unit.o
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) -c src/test/unit/unit.c -o build/test/unit.o
 	@echo "[LD] $@"
 	@$(CC) build/test/unit.o -o build/test/unit $(UNIT_LDFLAGS) $(LDFLAGS)
 
@@ -285,7 +285,7 @@ COV_UNIT_O:=$(COV_DIR)/unit.o
 $(COV_UNIT_O): src/test/unit/unit.c
 	@mkdir -p $(COV_DIR)
 	@echo "[CC] unit.c (coverage)"
-	@$(CC) $(CFLAGS) $(UNIT_CFLAGS) --coverage -c src/test/unit/unit.c -o $(COV_UNIT_O)
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) --coverage -c src/test/unit/unit.c -o $(COV_UNIT_O)
 
 $(COV_UNIT): LDFLAGS+=--coverage $(UNIT_LIBS)
 $(COV_UNIT): $(COV_UNIT_O)
