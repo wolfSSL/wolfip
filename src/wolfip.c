@@ -235,8 +235,21 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
         head += 4 - (head % 4);
     if (head >= f->size)
         head = 0;
-    if (fifo_space(f) < needed) {
-        return -1;
+    {
+        uint32_t space;
+        if (head == tail)
+            space = f->size;
+        else if (h_wrap) {
+            if (head < tail)
+                space = tail - head;
+            else
+                space = 0;
+        } else if (head >= tail)
+            space = f->size - (head - tail);
+        else
+            space = tail - head;
+        if (space < needed)
+            return -1;
     }
     if (h_wrap && head == h_wrap)
         head = 0;
