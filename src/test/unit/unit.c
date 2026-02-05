@@ -4741,6 +4741,9 @@ START_TEST(test_poll_tcp_ack_only_skips_send)
     ts->sock.tcp.ack = 10;
     ts->sock.tcp.last_ack = 10;
     ts->sock.tcp.rto = 100;
+    /* Ensure send window allows processing of the queued ACK-only segment. */
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     ck_assert_int_eq(enqueue_tcp_tx(ts, 0, 0x10), 0);
@@ -4783,6 +4786,9 @@ START_TEST(test_poll_tcp_send_on_arp_hit)
     ts->sock.tcp.ack = 20;
     ts->sock.tcp.last_ack = 0;
     ts->sock.tcp.rto = 100;
+    /* Ensure send window allows emitting the queued data segment. */
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     ck_assert_int_eq(enqueue_tcp_tx(ts, 1, 0x18), 0);
