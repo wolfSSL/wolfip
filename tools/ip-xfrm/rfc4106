@@ -1,0 +1,58 @@
+#!/bin/bash
+#
+# rfc4106(gcm(aes)) example: aes-gcm encryption + auth.
+#
+# The 4 byte nonce is placed at end of key, forming 20 bytes
+# of key material.
+#
+
+print_usage_and_die() {
+  echo "usage:"
+  echo "  rfc4106 [icv_len]"
+  echo ""
+  echo "  icv_len = 128"
+  echo ""
+  echo "examples:"
+  echo "  ./tools/ip-xfrm/rfc4106 128"
+  echo "  ./tools/ip-xfrm/rfc4106"
+  exit 1
+}
+
+alg="rfc4106(gcm(aes))"
+nonce=0a0b0c0d
+ip_proto=tcp
+len=128
+
+if [ $# -eq 0 ]; then
+  print_usage_and_die
+fi
+
+if [ $# -eq 1 ]; then
+  len=$1
+fi
+
+# State
+# ipv4
+sudo ip xfrm state add \
+  src 10.10.10.1 dst 10.10.10.2 \
+  proto esp \
+  spi 0x01010101 \
+  mode transport \
+  replay-window 64 \
+  aead $alg 0x0303030303030303030303030303030303030303030303030303030303030303$nonce $len \
+  sel src 10.10.10.1 dst 10.10.10.2
+
+sudo ip xfrm state add \
+  src 10.10.10.2 dst 10.10.10.1 \
+  proto esp \
+  spi 0x02020202 \
+  mode transport \
+  replay-window 64 \
+  aead $alg 0x0404040404040404040404040404040404040404040404040404040404040404$nonce $len \
+  sel src 10.10.10.2 dst 10.10.10.1
+
+# Policies
+# ipv4
+sudo ip xfrm policy add \
+  dst 10.10.10.2 proto $ip_proto dir out tmpl proto esp spi 0x01010101 mode transport
+
