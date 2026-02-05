@@ -1757,18 +1757,44 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, 
 }
 
 /* Process timestamp option, calculate RTT */
-static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
+static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
 {
     const struct tcp_opt_ts *ts;
     const uint8_t *opt = tcp->data;
-    while (opt < ((const uint8_t *)tcp->data + (tcp->hlen >> 2))) {
-        if (*opt == TCP_OPTION_NOP)
+    int claimed_opt_len = (tcp->hlen >> 2) - 20;
+    int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
+    int opt_len;
+    const uint8_t *opt_end;
+
+    /* Sanity checks */
+    if (claimed_opt_len <= 0 || available_bytes <= 0)
+        return -1;
+
+    /* Use minimum of claimed vs actual available */
+    opt_len = (claimed_opt_len < available_bytes) ? claimed_opt_len : available_bytes;
+    opt_end = opt + opt_len;
+
+    while (opt < opt_end) {
+        if (*opt == TCP_OPTION_NOP) {
             opt++;
-        else if (*opt == TCP_OPTION_EOO)
+        } else if (*opt == TCP_OPTION_EOO) {
             break;
-        else {
+        } else {
+            /* Need at least 2 bytes for kind + length */
+            if (opt + 2 > opt_end)
+                break;
+
             ts = (const struct tcp_opt_ts *)opt;
+
+            /* Validate length: minimum 2, must not exceed remaining space */
+            if (ts->len < 2 || opt + ts->len > opt_end)
+                break;
+
             if (ts->opt == TCP_OPTION_TS) {
+                /* Need full timestamp option (10 bytes) */
+                if (ts->len < TCP_OPTION_TS_LEN)
+                    return -1;
                 t->sock.tcp.last_ts = ts->val;
                 if (ts->ecr == 0)
                     return -1; /* No echoed timestamp; fall back to coarse RTT. */
@@ -1854,7 +1880,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         if (fresh_desc) {
             seg = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
             /* Update rtt */
-            if (tcp_process_ts(t, seg) < 0) {
+            if (tcp_process_ts(t, seg, fresh_desc->len) < 0) {
                 /* No timestamp option, use coarse RTT estimation */
                 int rtt = t->S->last_tick - fresh_desc->time_sent;
                 if (t->sock.tcp.rtt == 0) {
@@ -2036,7 +2062,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
-                    tcp_process_ts(t, tcp);
+                    tcp_process_ts(t, tcp, frame_len);
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     if (tcp->flags == 0x12) {
@@ -2045,7 +2071,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
                         t->events |= CB_EVENT_WRITABLE;
-                        tcp_process_ts(t, tcp);
+                        tcp_process_ts(t, tcp, frame_len);
                         tcp_send_ack(t);
                     }
                 }
@@ -2081,7 +2107,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                 }
                 if (tcp->flags & 0x10) {
                     tcp_ack(t, tcp);
-                    tcp_process_ts(t, tcp);
+                    tcp_process_ts(t, tcp, frame_len);
                 }
                 if (tcplen == 0)
                     return;
