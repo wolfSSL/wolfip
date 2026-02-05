@@ -159,18 +159,6 @@ static inline void fifo_align_tail(struct fifo *f)
         f->tail = 0;
 }
 
-static struct wolfIP_stats {
-    uint64_t poll_calls;
-    uint64_t tx_desc_seen;
-    uint64_t tx_sent;
-    uint64_t tx_bytes;
-    uint64_t tx_filter_block;
-    uint64_t tx_arp_block;
-    uint64_t tx_cwnd_block;
-    uint64_t tx_eagain;
-    uint64_t tx_push_fail;
-} wolfip_stats;
-
 /* TCP TX is a circular buffer and contains an array of full packets */
 /* TCP RX only contains application data */
 
@@ -1800,6 +1788,10 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 }
 
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
+
+/* Return true if a <= b 
+ * Take into account wrapping.
+ */
 static inline int tcp_seq_leq(uint32_t a, uint32_t b)
 {
     return (int32_t)(a - b) <= 0;
@@ -2128,7 +2120,7 @@ static void tcp_rto_cb(void *arg)
         ts->sock.tcp.tmr_rto = NO_TIMER;
     }
     if (pending) {
-    ts->sock.tcp.rto_backoff++;
+        ts->sock.tcp.rto_backoff++;
         ts->sock.tcp.cwnd = TCP_MSS;
         ts->sock.tcp.ssthresh = ts->sock.tcp.cwnd / 2;
 
@@ -2453,7 +2445,6 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             ts->sock.tcp.seq += payload_len;
         }
         if (sent == 0) {
-            wolfip_stats.tx_eagain++;
             return -WOLFIP_EAGAIN;
         } else
             return sent;
@@ -4052,7 +4043,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     struct wolfIP_timer tmr;
     memset(buf, 0, LINK_MTU);
 
-    wolfip_stats.poll_calls++;
     s->last_tick = now;
 
     /* Step 1: Poll the device */
@@ -4108,7 +4098,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         desc = fifo_peek(&ts->sock.tcp.txbuf);
         while (desc) {
             unsigned int tx_if = wolfIP_socket_if_idx(ts);
-            wolfip_stats.tx_desc_seen++;
             tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
             if (desc->flags & PKT_FLAG_SENT) {
                 desc = fifo_next(&ts->sock.tcp.txbuf, desc);
@@ -4123,7 +4112,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         memcpy(ts->nexthop_mac, loop->mac, 6);
                 } else if (arp_lookup(s, tx_if, nexthop, ts->nexthop_mac) < 0) {
                     /* Send ARP request */
-                    wolfip_stats.tx_arp_block++;
                     arp_request(s, tx_if, nexthop);
                     break;
                 }
@@ -4150,16 +4138,13 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         tcp->win = ee16(tcp_adv_win(ts));
                         ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
                         if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
-                            wolfip_stats.tx_filter_block++;
                             break;
                         }
                         if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip, desc->len) != 0) {
-                            wolfip_stats.tx_filter_block++;
                             break;
                         }
 #ifdef ETHERNET
                         if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip.eth, desc->len) != 0) {
-                            wolfip_stats.tx_filter_block++;
                             break;
                         }
 #endif
@@ -4169,8 +4154,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                                 ll->send(ll, tcp, desc->len);
                             }
                         }
-                        wolfip_stats.tx_sent++;
-                        wolfip_stats.tx_bytes += desc->len;
                         desc->flags |= PKT_FLAG_SENT;
                         desc->time_sent = now;
                         if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
@@ -4190,7 +4173,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                             desc = fifo_next(&ts->sock.tcp.txbuf, desc);
                         }
                     } else {
-                        wolfip_stats.tx_cwnd_block++;
                         break;
                     }
                     }
