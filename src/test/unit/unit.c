@@ -48,9 +48,14 @@
 
 /* MOCKS */
 /* pseudo random number generator to mock the random number generator */
+static int test_rand_override_enabled;
+static uint32_t test_rand_override_value;
+
 uint32_t wolfIP_getrandom(void)
 {
     unsigned int seed = 0xDAC0FFEE;
+    if (test_rand_override_enabled)
+        return test_rand_override_value;
     srandom(seed);
     return random();
 }
@@ -808,6 +813,52 @@ START_TEST(test_filter_socket_event_unknown_proto)
 }
 END_TEST
 
+START_TEST(test_filter_socket_event_proto_variants)
+{
+    struct wolfIP s;
+    struct tsocket ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint16_t local_port = 1234;
+    uint16_t remote_port = 4321;
+
+    wolfIP_init(&s);
+    memset(&ts, 0, sizeof(ts));
+    ts.S = &s;
+    ts.if_idx = TEST_PRIMARY_IF;
+
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_CONNECTING));
+    filter_cb_calls = 0;
+
+    ts.proto = WI_IPPROTO_TCP;
+    (void)wolfIP_filter_notify_socket_event(WOLFIP_FILT_CONNECTING, &s, &ts,
+            local_ip, local_port, remote_ip, remote_port);
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_TCP);
+    ck_assert_uint_eq(filter_last_event.meta.l4.tcp.src_port, ee16(local_port));
+    ck_assert_uint_eq(filter_last_event.meta.l4.tcp.dst_port, ee16(remote_port));
+
+    ts.proto = WI_IPPROTO_UDP;
+    (void)wolfIP_filter_notify_socket_event(WOLFIP_FILT_CONNECTING, &s, &ts,
+            local_ip, local_port, remote_ip, remote_port);
+    ck_assert_int_eq(filter_cb_calls, 2);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_UDP);
+    ck_assert_uint_eq(filter_last_event.meta.l4.udp.src_port, ee16(local_port));
+    ck_assert_uint_eq(filter_last_event.meta.l4.udp.dst_port, ee16(remote_port));
+
+    ts.proto = WI_IPPROTO_ICMP;
+    (void)wolfIP_filter_notify_socket_event(WOLFIP_FILT_CONNECTING, &s, &ts,
+            local_ip, local_port, remote_ip, remote_port);
+    ck_assert_int_eq(filter_cb_calls, 3);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_ICMP);
+    ck_assert_uint_eq(filter_last_event.meta.l4.icmp.type, 0);
+    ck_assert_uint_eq(filter_last_event.meta.l4.icmp.code, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
 START_TEST(test_filter_setters_and_get_mask)
 {
     wolfIP_filter_set_mask(0x1234U);
@@ -1129,6 +1180,176 @@ START_TEST(test_sock_bind_wrong_family)
 }
 END_TEST
 
+START_TEST(test_sock_bind_invalid_fd)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, -1, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, MARK_TCP_SOCKET | MAX_TCPSOCKETS,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, MARK_UDP_SOCKET | MAX_UDPSOCKETS,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, MARK_ICMP_SOCKET | MAX_ICMPSOCKETS,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+}
+END_TEST
+
+START_TEST(test_sock_bind_tcp_state_not_closed)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+}
+END_TEST
+
+START_TEST(test_sock_bind_tcp_filter_blocks)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+    ts->local_ip = 0;
+    ts->src_port = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    filter_block_reason = WOLFIP_FILT_BINDING;
+    filter_block_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_BINDING));
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+    ck_assert_uint_eq(ts->local_ip, 0U);
+    ck_assert_uint_eq(ts->src_port, 0U);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
+START_TEST(test_sock_bind_udp_src_port_nonzero)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 1234;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5678);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+}
+END_TEST
+
+START_TEST(test_sock_bind_udp_filter_blocks)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 0;
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(2222);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    filter_block_reason = WOLFIP_FILT_BINDING;
+    filter_block_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_BINDING));
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+    ck_assert_uint_eq(ts->local_ip, 0U);
+    ck_assert_uint_eq(ts->src_port, 0U);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
+START_TEST(test_sock_bind_icmp_success)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->src_port = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->src_port, 7U);
+}
+END_TEST
+
 START_TEST(test_sock_connect_wrong_family)
 {
     struct wolfIP s;
@@ -1168,6 +1389,41 @@ START_TEST(test_sock_accept_error_paths)
     ck_assert_int_eq(wolfIP_sock_accept(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
     ck_assert_int_eq(wolfIP_sock_accept(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, NULL), -WOLFIP_EINVAL);
     ck_assert_int_eq(wolfIP_sock_accept(&s, tcp_sd, NULL, NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+START_TEST(test_sock_accept_non_tcp_socket_sets_addrlen)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t alen = sizeof(sin);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    ck_assert_int_eq(wolfIP_sock_accept(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(alen, sizeof(sin));
+}
+END_TEST
+
+START_TEST(test_sock_accept_null_addr_with_addrlen)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    socklen_t alen = 123;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+
+    ck_assert_int_eq(wolfIP_sock_accept(&s, tcp_sd, NULL, &alen), -1);
+    ck_assert_uint_eq(alen, sizeof(struct wolfIP_sockaddr_in));
 }
 END_TEST
 
@@ -1302,6 +1558,26 @@ START_TEST(test_sock_connect_bad_addrlen)
     udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(udp_sd, 0);
     ck_assert_int_eq(wolfIP_sock_connect(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, (socklen_t)1), 0);
+}
+END_TEST
+
+START_TEST(test_sock_connect_tcp_bad_addrlen)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, (socklen_t)1), -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -1479,6 +1755,34 @@ START_TEST(test_sock_connect_udp_bound_local_ip_no_match)
 }
 END_TEST
 
+START_TEST(test_sock_connect_udp_bound_local_ip_match)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    ip4 local_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->bound_local_ip = local_ip;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, local_ip);
+    ck_assert_uint_eq(ts->if_idx, TEST_PRIMARY_IF);
+}
+END_TEST
+
 START_TEST(test_sock_connect_icmp_sets_local_ip_from_conf)
 {
     struct wolfIP s;
@@ -1501,6 +1805,74 @@ START_TEST(test_sock_connect_icmp_sets_local_ip_from_conf)
 
     ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
     ck_assert_uint_eq(ts->local_ip, local_ip);
+}
+END_TEST
+
+START_TEST(test_sock_connect_icmp_wrong_family)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = 0;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_connect_icmp_local_ip_pre_set)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0x0A000001U;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, 0x0A000001U);
+}
+END_TEST
+
+START_TEST(test_sock_connect_icmp_conf_null)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = 0;
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, IPADDR_ANY);
 }
 END_TEST
 
@@ -1527,6 +1899,60 @@ START_TEST(test_sock_connect_icmp_falls_back_to_primary)
 }
 END_TEST
 
+START_TEST(test_sock_connect_icmp_primary_ip_any)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, IPADDR_ANY);
+}
+END_TEST
+
+START_TEST(test_sock_connect_icmp_primary_ip_fallback)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    ip4 primary_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = TEST_SECOND_IF + 1;
+    s.ipconf[TEST_PRIMARY_IF].ip = primary_ip;
+    s.ipconf[TEST_PRIMARY_IF].mask = 0xFFFFFF00U;
+    s.ipconf[TEST_SECOND_IF].ip = IPADDR_ANY;
+    s.ipconf[TEST_SECOND_IF].gw = 0xC0A801FEU;
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0B000001U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, primary_ip);
+}
+END_TEST
+
 START_TEST(test_sock_connect_tcp_established_returns_zero)
 {
     struct wolfIP s;
@@ -1548,6 +1974,35 @@ START_TEST(test_sock_connect_tcp_established_returns_zero)
     sin.sin_addr.s_addr = ee32(0x0A000002U);
 
     ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+}
+END_TEST
+
+START_TEST(test_sock_connect_tcp_bound_local_ip_match)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    ip4 local_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+    ts->bound_local_ip = local_ip;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->local_ip, local_ip);
+    ck_assert_uint_eq(ts->if_idx, TEST_PRIMARY_IF);
 }
 END_TEST
 
@@ -1577,6 +2032,38 @@ START_TEST(test_sock_connect_tcp_bound_local_ip_no_match)
 }
 END_TEST
 
+START_TEST(test_sock_connect_tcp_filter_blocks)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    filter_block_reason = WOLFIP_FILT_CONNECTING;
+    filter_block_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_CONNECTING));
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
 START_TEST(test_sock_connect_tcp_local_ip_from_conf)
 {
     struct wolfIP s;
@@ -1629,6 +2116,36 @@ START_TEST(test_sock_connect_tcp_local_ip_from_primary)
 }
 END_TEST
 
+START_TEST(test_sock_connect_tcp_primary_ip_fallback)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    ip4 primary_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = TEST_SECOND_IF + 1;
+    s.ipconf[TEST_PRIMARY_IF].ip = primary_ip;
+    s.ipconf[TEST_PRIMARY_IF].mask = 0xFFFFFF00U;
+    s.ipconf[TEST_SECOND_IF].ip = IPADDR_ANY;
+    s.ipconf[TEST_SECOND_IF].gw = 0xC0A801FEU;
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0B000001U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->local_ip, primary_ip);
+}
+END_TEST
 START_TEST(test_sock_accept_negative_fd)
 {
     struct wolfIP s;
@@ -1640,6 +2157,55 @@ START_TEST(test_sock_accept_negative_fd)
 }
 END_TEST
 
+START_TEST(test_sock_connect_tcp_conf_null_primary_null)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = 0;
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->local_ip, IPADDR_ANY);
+}
+END_TEST
+
+START_TEST(test_sock_connect_tcp_state_not_closed)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_LISTEN;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+}
+END_TEST
 START_TEST(test_sock_accept_invalid_tcp_fd)
 {
     struct wolfIP s;
@@ -1968,6 +2534,18 @@ START_TEST(test_sock_sendto_invalid_socket_ids)
 }
 END_TEST
 
+START_TEST(test_sock_sendto_non_socket_returns_minus_one)
+{
+    struct wolfIP s;
+    uint8_t buf[1] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, 1, buf, sizeof(buf), 0, NULL, 0), -1);
+}
+END_TEST
+
 START_TEST(test_sock_sendto_udp_remote_ip_zero)
 {
     struct wolfIP s;
@@ -2019,6 +2597,340 @@ START_TEST(test_sock_sendto_udp_primary_ip_fallback)
 }
 END_TEST
 
+START_TEST(test_sock_sendto_udp_zero_port_in_addr)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[4] = {1,2,3,4};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 1234;
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = 0;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, buf, sizeof(buf), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_udp_src_port_low_adjusts)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[4] = {1,2,3,4};
+    ip4 local_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 0;
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(9999);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 5;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, buf, sizeof(buf), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(buf));
+    test_rand_override_enabled = 0;
+
+    ck_assert_uint_eq(ts->src_port, 5U + 1024U);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_udp_local_ip_conf_null)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[4] = {1,2,3,4};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = 0;
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 1234;
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7777);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, buf, sizeof(buf), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(buf));
+    ck_assert_uint_eq(ts->local_ip, 0U);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_udp_local_ip_from_primary)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[4] = {1,2,3,4};
+    ip4 primary_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = TEST_SECOND_IF + 1;
+    s.ipconf[TEST_PRIMARY_IF].ip = primary_ip;
+    s.ipconf[TEST_PRIMARY_IF].mask = 0xFFFFFF00U;
+    s.ipconf[TEST_SECOND_IF].ip = IPADDR_ANY;
+    s.ipconf[TEST_SECOND_IF].gw = 0xC0A801FEU;
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 1234;
+    ts->local_ip = 0;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7777);
+    sin.sin_addr.s_addr = ee32(0x0B000001U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, buf, sizeof(buf), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(buf));
+    ck_assert_uint_eq(ts->local_ip, primary_ip);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_tcp_multiple_segments_flags)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    size_t seg_payload = TCP_MSS - TCP_OPTIONS_LEN;
+    size_t payload_len = seg_payload * 2;
+    uint8_t buf[TCP_MSS * 2];
+    uint8_t txbuf[4096];
+    struct pkt_desc *first;
+    struct pkt_desc *second;
+    struct wolfIP_tcp_seg *tcp1;
+    struct wolfIP_tcp_seg *tcp2;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+    fifo_init(&ts->sock.tcp.txbuf, txbuf, sizeof(txbuf));
+
+    memset(buf, 0xAA, payload_len);
+    ret = wolfIP_sock_sendto(&s, tcp_sd, buf, payload_len, 0, NULL, 0);
+    ck_assert_int_eq(ret, (int)payload_len);
+
+    first = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(first);
+    tcp1 = (struct wolfIP_tcp_seg *)(txbuf + first->pos + sizeof(*first));
+    ck_assert_uint_eq(tcp1->flags & 0x18, 0x18);
+
+    second = fifo_next(&ts->sock.tcp.txbuf, first);
+    ck_assert_ptr_nonnull(second);
+    tcp2 = (struct wolfIP_tcp_seg *)(txbuf + second->pos + sizeof(*second));
+    ck_assert_uint_eq(tcp2->flags & 0x18, 0x10);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_icmp_src_port_zero_random_zero_sets_one)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->src_port = 0;
+    ts->local_ip = 0;
+
+    payload[0] = ICMP_ECHO_REQUEST;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+    test_rand_override_enabled = 0;
+
+    ck_assert_uint_eq(ts->src_port, 1U);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_icmp_non_echo_no_set_id)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+    struct pkt_desc *desc;
+    struct wolfIP_icmp_packet *icmp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->src_port = 1234;
+    ts->local_ip = 0;
+
+    payload[0] = ICMP_ECHO_REPLY;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+
+    desc = fifo_peek(&ts->sock.udp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    icmp = (struct wolfIP_icmp_packet *)(ts->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(icmp_echo_id(icmp), 0U);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_icmp_local_ip_from_primary)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+    ip4 primary_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = TEST_SECOND_IF + 1;
+    s.ipconf[TEST_PRIMARY_IF].ip = primary_ip;
+    s.ipconf[TEST_PRIMARY_IF].mask = 0xFFFFFF00U;
+    s.ipconf[TEST_SECOND_IF].ip = IPADDR_ANY;
+    s.ipconf[TEST_SECOND_IF].gw = 0xC0A801FEU;
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;
+    ts->src_port = 1234;
+
+    payload[0] = ICMP_ECHO_REQUEST;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0B000001U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+    ck_assert_uint_eq(ts->local_ip, primary_ip);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_icmp_local_ip_pre_set)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0x0A000001U;
+    ts->src_port = 1234;
+
+    payload[0] = ICMP_ECHO_REQUEST;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+    ck_assert_uint_eq(ts->local_ip, 0x0A000001U);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_icmp_conf_null_primary_null)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.if_count = 0;
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;
+    ts->src_port = 1234;
+
+    payload[0] = ICMP_ECHO_REQUEST;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+    ck_assert_uint_eq(ts->local_ip, 0U);
+}
+END_TEST
 START_TEST(test_sock_recvfrom_tcp_close_wait_empty_returns_zero)
 {
     struct wolfIP s;
@@ -2119,6 +3031,18 @@ START_TEST(test_sock_recvfrom_invalid_socket_ids)
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, MARK_TCP_SOCKET | MAX_TCPSOCKETS, buf, sizeof(buf), 0, NULL, NULL), -WOLFIP_EINVAL);
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, MARK_UDP_SOCKET | MAX_UDPSOCKETS, buf, sizeof(buf), 0, NULL, NULL), -WOLFIP_EINVAL);
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, MARK_ICMP_SOCKET | MAX_ICMPSOCKETS, buf, sizeof(buf), 0, NULL, NULL), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_recvfrom_non_socket)
+{
+    struct wolfIP s;
+    uint8_t buf[4];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, 1, buf, sizeof(buf), 0, NULL, NULL), -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -2394,6 +3318,24 @@ START_TEST(test_sock_opts_unknown_level)
 }
 END_TEST
 
+START_TEST(test_sock_opts_sol_ip_unknown_optname)
+{
+    struct wolfIP s;
+    int udp_sd;
+    int value = 1;
+    socklen_t len = sizeof(value);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, udp_sd, WOLFIP_SOL_IP, 0xFFFF, &value, len), 0);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, udp_sd, WOLFIP_SOL_IP, 0xFFFF, &value, &len), 0);
+}
+END_TEST
+
 START_TEST(test_sock_accept_wrong_state)
 {
     struct wolfIP s;
@@ -2493,6 +3435,23 @@ START_TEST(test_sock_get_recv_ttl_disabled)
     ck_assert_int_eq(wolfIP_sock_get_recv_ttl(&s, udp_sd, &ttl), 0);
     ck_assert_int_eq(wolfIP_sock_getsockopt(&s, udp_sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL, &ttl, &len), 0);
     ck_assert_int_eq(ttl, 0);
+}
+END_TEST
+
+START_TEST(test_sock_get_recv_ttl_null)
+{
+    struct wolfIP s;
+    int udp_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    s.udpsockets[SOCKET_UNMARK(udp_sd)].recv_ttl = 1;
+    s.udpsockets[SOCKET_UNMARK(udp_sd)].last_pkt_ttl = 99;
+
+    ck_assert_int_eq(wolfIP_sock_get_recv_ttl(&s, udp_sd, NULL), 1);
 }
 END_TEST
 
@@ -2602,6 +3561,63 @@ START_TEST(test_sock_getsockname_errors)
     udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(udp_sd, 0);
     ck_assert_int_eq(wolfIP_sock_getsockname(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, &len), -1);
+}
+END_TEST
+
+START_TEST(test_sock_getsockname_null_addr)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    socklen_t len = sizeof(struct wolfIP_sockaddr_in);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, tcp_sd, NULL, &len), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_getsockname_invalid_socket_ids)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t len = sizeof(sin);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, MARK_TCP_SOCKET | MAX_TCPSOCKETS,
+            (struct wolfIP_sockaddr *)&sin, &len), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, MARK_UDP_SOCKET | MAX_UDPSOCKETS,
+            (struct wolfIP_sockaddr *)&sin, &len), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, MARK_ICMP_SOCKET | MAX_ICMPSOCKETS,
+            (struct wolfIP_sockaddr *)&sin, &len), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_getsockname_icmp_success)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t len = sizeof(sin);
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->src_port = 7;
+    ts->local_ip = 0x0A000001U;
+
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, &len), 0);
+    ck_assert_uint_eq(sin.sin_family, AF_INET);
+    ck_assert_uint_eq(sin.sin_port, ee16(7));
+    ck_assert_uint_eq(sin.sin_addr.s_addr, ee32(0x0A000001U));
 }
 END_TEST
 
@@ -3116,7 +4132,77 @@ START_TEST(test_sock_sendto_tcp_partial_send)
 
     memset(buf, 0xAB, sizeof(buf));
     ret = wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
-    ck_assert_int_gt(ret, 0);
+    ck_assert_msg(ret > 0 || ret == -WOLFIP_EAGAIN,
+        "expected partial send or EAGAIN, got %d", ret);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_udp_fifo_push_fails_returns_eagain)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    uint8_t txbuf[4096];
+    enum { UDP_PAYLOAD_LEN =
+        (WI_IP_MTU - IP_HEADER_LEN - UDP_HEADER_LEN) > 1000
+            ? 1000
+            : (WI_IP_MTU - IP_HEADER_LEN - UDP_HEADER_LEN)
+    };
+    uint8_t payload[UDP_PAYLOAD_LEN];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->dst_port = 4321;
+    ts->remote_ip = 0x0A000002U;
+    ts->local_ip = 0x0A000001U;
+
+    fifo_init(&ts->sock.udp.txbuf, txbuf, sizeof(txbuf));
+    ts->sock.udp.txbuf.head = 100;
+    ts->sock.udp.txbuf.tail = 100 + UDP_PAYLOAD_LEN;
+    ts->sock.udp.txbuf.h_wrap = 3000;
+
+    memset(payload, 0xEE, sizeof(payload));
+    ret = wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload), 0, NULL, 0);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_icmp_fifo_push_fails_returns_eagain)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    uint8_t txbuf[4096];
+    enum { ICMP_PAYLOAD_LEN =
+        (WI_IP_MTU - IP_HEADER_LEN) > 1000
+            ? 1000
+            : (WI_IP_MTU - IP_HEADER_LEN)
+    };
+    uint8_t payload[ICMP_PAYLOAD_LEN];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->remote_ip = 0x0A000002U;
+
+    fifo_init(&ts->sock.udp.txbuf, txbuf, sizeof(txbuf));
+    ts->sock.udp.txbuf.head = 100;
+    ts->sock.udp.txbuf.tail = 100 + ICMP_PAYLOAD_LEN;
+    ts->sock.udp.txbuf.h_wrap = 3000;
+
+    memset(payload, 0xEE, sizeof(payload));
+    payload[0] = ICMP_ECHO_REQUEST;
+    ret = wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0, NULL, 0);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
 }
 END_TEST
 
@@ -4012,6 +5098,77 @@ START_TEST(test_sock_close_udp_icmp)
     ck_assert_int_eq(ts->proto, 0);
 }
 END_TEST
+
+START_TEST(test_sock_close_invalid_fds)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, -1), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_close(&s, MARK_TCP_SOCKET | MAX_TCPSOCKETS), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_close(&s, MARK_UDP_SOCKET | MAX_UDPSOCKETS), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_close(&s, MARK_ICMP_SOCKET | MAX_ICMPSOCKETS), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_close(&s, 1), -1);
+}
+END_TEST
+
+START_TEST(test_sock_close_tcp_fin_wait_1)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    int sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
+}
+END_TEST
+
+START_TEST(test_sock_close_tcp_other_state_closes)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    int sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->sock.tcp.state = TCP_SYN_SENT;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+START_TEST(test_sock_close_tcp_closed_returns_minus_one)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    int sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -1);
+}
+END_TEST
 START_TEST(test_fifo_push_and_pop_multiple) {
     struct fifo f;
     uint8_t data[] = {1, 2, 3, 4, 5};
@@ -4884,6 +6041,19 @@ START_TEST(test_route_for_ip_variants)
 }
 END_TEST
 
+START_TEST(test_route_for_ip_dest_matches_iface_ip)
+{
+    struct wolfIP s;
+    ip4 primary_ip = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    ck_assert_uint_eq(wolfIP_route_for_ip(&s, primary_ip), TEST_PRIMARY_IF);
+    ck_assert_uint_eq(wolfIP_route_for_ip(&s, secondary_ip), TEST_SECOND_IF);
+}
+END_TEST
+
 START_TEST(test_route_for_ip_gw_and_nonloop_fallback)
 {
     struct wolfIP s;
@@ -4953,6 +6123,20 @@ START_TEST(test_forward_interface_variants)
 
     s.if_count = 1;
     ck_assert_uint_eq(wolfIP_forward_interface(&s, TEST_PRIMARY_IF, 0x0A000099U), 1U);
+}
+END_TEST
+
+START_TEST(test_forward_interface_skips_ipaddr_any)
+{
+    struct wolfIP s;
+    ip4 primary_ip = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    s.ipconf[TEST_SECOND_IF].ip = IPADDR_ANY;
+    s.ipconf[TEST_SECOND_IF].mask = 0xFFFFFF00U;
+
+    ck_assert_int_eq((int)wolfIP_forward_interface(&s, TEST_PRIMARY_IF, 0xC0A80199U), -1);
 }
 END_TEST
 
@@ -8222,7 +9406,58 @@ START_TEST(test_fifo_space_with_hwrap)
     f.h_wrap = 300;
 
     space = fifo_space(&f);
-    ck_assert_uint_eq(space, f.size - (f.tail - f.head));
+    ck_assert_uint_eq(space, f.tail - f.head);
+}
+END_TEST
+
+START_TEST(test_fifo_space_hwrap_head_hits_wrap)
+{
+    struct fifo f;
+    uint8_t buf[512];
+    uint32_t space;
+
+    fifo_init(&f, buf, sizeof(buf));
+    f.head = 300;
+    f.tail = 200;
+    f.h_wrap = 300;
+
+    space = fifo_space(&f);
+    ck_assert_uint_eq(space, f.tail - f.head);
+    ck_assert_uint_eq(f.head, 0);
+}
+END_TEST
+
+START_TEST(test_fifo_space_hwrap_head_ge_tail_returns_zero)
+{
+    struct fifo f;
+    uint8_t buf[512];
+    uint32_t space;
+
+    fifo_init(&f, buf, sizeof(buf));
+    f.head = 220;
+    f.tail = 200;
+    f.h_wrap = 300;
+
+    space = fifo_space(&f);
+    ck_assert_uint_eq(space, 0);
+}
+END_TEST
+
+START_TEST(test_fifo_push_no_contiguous_space_even_with_space)
+{
+    struct fifo f;
+    uint8_t buf[4096];
+    uint8_t payload[1592];
+    int ret;
+
+    fifo_init(&f, buf, sizeof(buf));
+    f.head = 2506;
+    f.tail = 1500;
+    f.h_wrap = 0;
+
+    memset(payload, 0xCD, sizeof(payload));
+    ret = fifo_push(&f, payload, sizeof(payload));
+    ck_assert_int_eq(ret, -1);
 }
 END_TEST
 
@@ -8679,6 +9914,58 @@ START_TEST(test_timer_pop_reorders_heap)
 
     popped = timers_binheap_pop(&h);
     ck_assert_uint_eq(popped.expires, 10);
+}
+END_TEST
+
+START_TEST(test_timer_pop_right_child_swap)
+{
+    struct timers_binheap h;
+    struct wolfIP_timer popped;
+
+    memset(&h, 0, sizeof(h));
+    h.size = 4;
+    h.timers[0].expires = 10;
+    h.timers[1].expires = 40;
+    h.timers[2].expires = 20;
+    h.timers[3].expires = 30;
+
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 10);
+    ck_assert_uint_eq(h.size, 3);
+    ck_assert_uint_eq(h.timers[0].expires, 20);
+}
+END_TEST
+
+START_TEST(test_timer_pop_break_when_root_small)
+{
+    struct timers_binheap h;
+    struct wolfIP_timer popped;
+
+    memset(&h, 0, sizeof(h));
+    h.size = 4;
+    h.timers[0].expires = 10;
+    h.timers[1].expires = 20;
+    h.timers[2].expires = 30;
+    h.timers[3].expires = 15;
+
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 10);
+    ck_assert_uint_eq(h.size, 3);
+    ck_assert_uint_eq(h.timers[0].expires, 15);
+}
+END_TEST
+
+START_TEST(test_is_timer_expired_skips_zero_head)
+{
+    struct timers_binheap h;
+
+    memset(&h, 0, sizeof(h));
+    h.size = 2;
+    h.timers[0].expires = 0;
+    h.timers[1].expires = 50;
+
+    ck_assert_int_eq(is_timer_expired(&h, 10), 0);
+    ck_assert_uint_eq(h.size, 0);
 }
 END_TEST
 
@@ -9962,8 +11249,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_space_head_lt_tail);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_space_with_hwrap);
+    tcase_add_test(tc_core, test_fifo_space_hwrap_head_hits_wrap);
+    tcase_add_test(tc_core, test_fifo_space_hwrap_head_ge_tail_returns_zero);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_next_hits_hwrap);
+    tcase_add_test(tc_core, test_fifo_push_no_contiguous_space_even_with_space);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_len_tail_gt_head_no_hwrap);
     suite_add_tcase(s, tc_core);
@@ -10031,6 +11321,12 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_timer_pop_reorders_heap);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_timer_pop_right_child_swap);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_timer_pop_break_when_root_small);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_is_timer_expired_skips_zero_head);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_wolfip_getdev_ex_api);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_wolfip_ll_at_and_ipconf_at_invalid);
@@ -10063,6 +11359,8 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_filter_socket_event_unknown_proto);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_filter_socket_event_proto_variants);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_filter_setters_and_get_mask);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_socket_errors);
@@ -10085,9 +11383,25 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_bind_wrong_family);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_bind_invalid_fd);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_bind_tcp_state_not_closed);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_bind_tcp_filter_blocks);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_bind_udp_src_port_nonzero);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_bind_udp_filter_blocks);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_bind_icmp_success);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_wrong_family);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_accept_error_paths);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_accept_non_tcp_socket_sets_addrlen);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_accept_null_addr_with_addrlen);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_recvfrom_short_addrlen);
     suite_add_tcase(s, tc_utils);
@@ -10098,6 +11412,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_bind_non_local_ip_fails);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_bad_addrlen);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_bad_addrlen);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_invalid_args);
     suite_add_tcase(s, tc_utils);
@@ -10115,17 +11431,39 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_local_ip_no_match);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_udp_bound_local_ip_match);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_icmp_sets_local_ip_from_conf);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_icmp_wrong_family);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_icmp_local_ip_pre_set);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_icmp_conf_null);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_icmp_falls_back_to_primary);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_icmp_primary_ip_any);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_icmp_primary_ip_fallback);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_tcp_established_returns_zero);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_bound_local_ip_match);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_tcp_bound_local_ip_no_match);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_filter_blocks);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_tcp_local_ip_from_conf);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_tcp_local_ip_from_primary);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_primary_ip_fallback);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_conf_null_primary_null);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_state_not_closed);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_accept_negative_fd);
     suite_add_tcase(s, tc_utils);
@@ -10159,9 +11497,13 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_recvfrom_invalid_socket_ids);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_recvfrom_non_socket);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_success);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_opts_unknown_level);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_opts_sol_ip_unknown_optname);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_setsockopt_recvttl);
     suite_add_tcase(s, tc_utils);
@@ -10181,6 +11523,8 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_get_recv_ttl_disabled);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_get_recv_ttl_null);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_connect_tcp_states);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_listen_errors);
@@ -10188,6 +11532,12 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_getpeername_errors);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_getsockname_errors);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_getsockname_null_addr);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_getsockname_invalid_socket_ids);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_getsockname_icmp_success);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_register_callback_variants);
     suite_add_tcase(s, tc_utils);
@@ -10227,13 +11577,31 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_sendto_invalid_socket_ids);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_sendto_non_socket_returns_minus_one);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_sendto_udp_remote_ip_zero);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_sendto_udp_primary_ip_fallback);
     suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_sendto_udp_zero_port_in_addr);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_sendto_udp_src_port_low_adjusts);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_sendto_udp_local_ip_conf_null);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_sendto_udp_local_ip_from_primary);
+    suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_txbuf_full);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_partial_send);
+    tcase_add_test(tc_utils, test_sock_sendto_tcp_multiple_segments_flags);
+    tcase_add_test(tc_utils, test_sock_sendto_udp_fifo_push_fails_returns_eagain);
+    tcase_add_test(tc_utils, test_sock_sendto_icmp_fifo_push_fails_returns_eagain);
+    tcase_add_test(tc_utils, test_sock_sendto_icmp_src_port_zero_random_zero_sets_one);
+    tcase_add_test(tc_utils, test_sock_sendto_icmp_non_echo_no_set_id);
+    tcase_add_test(tc_utils, test_sock_sendto_icmp_local_ip_from_primary);
+    tcase_add_test(tc_utils, test_sock_sendto_icmp_local_ip_pre_set);
+    tcase_add_test(tc_utils, test_sock_sendto_icmp_conf_null_primary_null);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_paths);
     suite_add_tcase(s, tc_utils);
@@ -10326,6 +11694,14 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_cancels_existing_timer);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_close_udp_icmp);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_close_invalid_fds);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_close_tcp_fin_wait_1);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_close_tcp_other_state_closes);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_close_tcp_closed_returns_minus_one);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_syn_sent_to_established);
     suite_add_tcase(s, tc_utils);
@@ -10562,6 +11938,8 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_route_for_ip_variants);
     suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_route_for_ip_dest_matches_iface_ip);
+    suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_route_for_ip_no_primary_index);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_route_for_ip_null_stack);
@@ -10571,6 +11949,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_inline_ip_helpers);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_forward_interface_variants);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_forward_interface_skips_ipaddr_any);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_forward_interface_dest_is_local_ip);
     suite_add_tcase(s, tc_proto);

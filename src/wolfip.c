@@ -2122,7 +2122,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
 
-    if (addr && addrlen)
+    if (addrlen)
         *addrlen = sizeof(struct wolfIP_sockaddr_in);
 
     if (IS_SOCKET_TCP(sockfd)) {
