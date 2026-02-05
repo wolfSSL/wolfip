@@ -101,9 +101,14 @@ int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
                 tap_fd = -1;
             }
         }
-        if (tap_fd < 0) {
-            return -1;
-        }
+    if (tap_fd < 0) {
+        return -1;
+    }
+    {
+        int flags = fcntl(tap_fd, F_GETFL, 0);
+        if (flags >= 0)
+            (void)fcntl(tap_fd, F_SETFL, flags | O_NONBLOCK);
+    }
     }
     /* Get mac address */
     if (ioctl(tap_fd, SIOCGIFHWADDR, &ifr) < 0) {

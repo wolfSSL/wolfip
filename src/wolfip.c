@@ -173,11 +173,8 @@ static uint32_t fifo_space(struct fifo *f)
     return f->tail - f->head;
 }
 
-/* Check the descriptor of the next packet */
-static struct pkt_desc *fifo_peek(struct fifo *f)
+static void fifo_skip_padding_tail(struct fifo *f)
 {
-    if (f->tail == f->head)
-        return NULL;
     while (f->tail % 4)
         f->tail++;
     if (f->h_wrap && f->tail >= f->h_wrap) {
@@ -191,10 +188,22 @@ static struct pkt_desc *fifo_peek(struct fifo *f)
     }
     if (f->tail >= f->size)
         f->tail %= f->size;
-    if (f->tail == f->head)
-        return NULL;
     if ((f->tail + sizeof(struct pkt_desc)) > f->size)
         f->tail = 0;
+}
+
+/* Check the descriptor of the next packet */
+static struct pkt_desc *fifo_peek(struct fifo *f)
+{
+    if (f->tail == f->head)
+        return NULL;
+    /* Advance tail only to skip alignment/wrap padding, not real packet data.
+     * This is safe because padding bytes are not part of any pkt_desc payload.
+     * We do this right before reading the next descriptor so callers always
+     * see a valid, aligned pkt_desc without dequeuing a packet. */
+    fifo_skip_padding_tail(f);
+    if (f->tail == f->head)
+        return NULL;
     return (struct pkt_desc *)((uint8_t *)f->data + f->tail);
 }
 
@@ -219,9 +228,7 @@ static struct pkt_desc *fifo_next(struct fifo *f, struct pkt_desc *desc)
 /* Return the number of bytes used */
 static uint32_t fifo_len(struct fifo *f)
 {
-    while (f->tail % 4)
-        f->tail++;
-    f->tail %= f->size;
+    fifo_skip_padding_tail(f);
     if (f->tail == f->head)
         return 0;
     if (f->tail > f->head) {
@@ -299,23 +306,9 @@ static struct pkt_desc *fifo_pop(struct fifo *f)
     struct pkt_desc *desc;
     if (f->tail == f->head)
         return NULL;
-    while (f->tail % 4)
-        f->tail++;
-    if (f->h_wrap && f->tail >= f->h_wrap) {
-        f->tail = 0;
-        f->h_wrap = 0;
-    }
-    if (f->h_wrap && (f->tail < f->h_wrap) &&
-            ((f->tail + sizeof(struct pkt_desc)) > f->h_wrap)) {
-        f->tail = 0;
-        f->h_wrap = 0;
-    }
-    if (f->tail >= f->size)
-        f->tail %= f->size;
+    fifo_skip_padding_tail(f);
     if (f->tail == f->head)
         return NULL;
-    if ((f->tail + sizeof(struct pkt_desc)) > f->size)
-        f->tail = 0;
     desc = (struct pkt_desc *)((uint8_t *)f->data + f->tail);
     f->tail += sizeof(struct pkt_desc) + desc->len;
     if (f->h_wrap && f->tail >= f->h_wrap) {
