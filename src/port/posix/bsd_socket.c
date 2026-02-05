@@ -369,7 +369,7 @@ static int wolfip_fd_is_nonblock(int public_fd)
         return host_##call(user_fd, ## __VA_ARGS__); \
     } else { \
         int __wolfip_internal = wolfip_fd_internal_from_public(user_fd); \
-        while (pthread_mutex_trylock(&wolfIP_mutex) != 0) { usleep(1000); } \
+        pthread_mutex_lock(&wolfIP_mutex); \
         if (__wolfip_internal >= 0) { \
             int __wolfip_retval; \
             int __wolfip_nonblock = wolfip_fd_is_nonblock(user_fd); \

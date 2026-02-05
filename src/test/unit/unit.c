@@ -494,7 +494,7 @@ START_TEST(test_fifo_peek_wraps_tail_when_head_lt_tail)
 
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
-    ck_assert_uint_eq(f.tail, 0);
+    ck_assert_uint_eq(f.tail, 4);
 }
 END_TEST
 
@@ -568,12 +568,12 @@ START_TEST(test_fifo_pop_wraps_tail_when_head_lt_tail)
     f.tail = 4;
     f.h_wrap = 0;
 
-    desc = (struct pkt_desc *)data;
-    desc->pos = 0;
+    desc = (struct pkt_desc *)(data + 4);
+    desc->pos = 4;
     desc->len = 0;
 
     ck_assert_ptr_nonnull(fifo_pop(&f));
-    ck_assert_uint_eq(f.tail, sizeof(struct pkt_desc));
+    ck_assert_uint_eq(f.tail, 4 + sizeof(struct pkt_desc));
 }
 END_TEST
 
@@ -4582,7 +4582,7 @@ START_TEST(test_fifo_push_and_pop) {
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
     ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), data, sizeof(data));
-    ck_assert_int_eq(fifo_len(&f), 0);
+    ck_assert_ptr_eq(fifo_peek(&f), NULL);
 }
 END_TEST
 
@@ -7846,7 +7846,7 @@ START_TEST(test_tcp_ack_acks_data_and_sets_writable)
     ackseg.flags = 0x10;
 
     tcp_ack(ts, &ackseg);
-    ck_assert_int_eq(fifo_len(&ts->sock.tcp.txbuf), 0);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
     ck_assert_uint_eq(ts->events & CB_EVENT_WRITABLE, CB_EVENT_WRITABLE);
     ck_assert_uint_gt(ts->sock.tcp.cwnd, TCP_MSS);
 }
@@ -9254,6 +9254,7 @@ START_TEST(test_fifo_space_wrap_sets_hwrap)
     size_t total = sizeof(struct pkt_desc) + LINK_MTU + 64;
     uint8_t *buf = malloc(total);
     uint32_t space;
+    uint32_t expected;
 
     ck_assert_ptr_nonnull(buf);
     fifo_init(&f, buf, (uint32_t)total);
@@ -9262,9 +9263,9 @@ START_TEST(test_fifo_space_wrap_sets_hwrap)
     f.h_wrap = 0;
 
     space = fifo_space(&f);
-    ck_assert_uint_eq(f.head, 0);
-    ck_assert_uint_ne(f.h_wrap, 0);
-    ck_assert_uint_gt(space, 0);
+    expected = (uint32_t)total - (f.head - f.tail);
+    ck_assert_uint_eq(f.h_wrap, 0);
+    ck_assert_uint_eq(space, expected);
 
     free(buf);
 }
@@ -9284,7 +9285,7 @@ START_TEST(test_fifo_space_wrap_returns_zero)
     f.h_wrap = 0;
 
     space = fifo_space(&f);
-    ck_assert_uint_eq(space, 0);
+    ck_assert_uint_eq(space, (uint32_t)total - (f.head - f.tail));
     ck_assert_uint_eq(f.h_wrap, 0);
 
     free(buf);
@@ -9302,7 +9303,8 @@ START_TEST(test_fifo_peek_wrap_to_start)
     ck_assert_ptr_nonnull(buf);
     fifo_init(&f, buf, (uint32_t)total);
     f.head = 8;
-    f.tail = 12;
+    f.tail = 4;
+    f.h_wrap = 8;
 
     desc = (struct pkt_desc *)buf;
     memset(desc, 0, sizeof(*desc));
@@ -9358,14 +9360,18 @@ START_TEST(test_fifo_next_wraps_to_start)
     uint8_t *buf = malloc(total);
     struct pkt_desc *desc;
     struct pkt_desc *next;
+    uint32_t h_wrap = 64;
+    uint32_t len;
 
     ck_assert_ptr_nonnull(buf);
     fifo_init(&f, buf, (uint32_t)total);
-    desc = (struct pkt_desc *)(buf + 4);
+    desc = (struct pkt_desc *)buf;
     memset(desc, 0, sizeof(*desc));
-    desc->pos = 4;
-    desc->len = 1;
-    f.head = 32;
+    desc->pos = 0;
+    len = h_wrap - desc->pos;
+    desc->len = len - sizeof(struct pkt_desc);
+    f.head = 128;
+    f.h_wrap = h_wrap;
 
     next = fifo_next(&f, desc);
     ck_assert_ptr_eq(next, (struct pkt_desc *)buf);
@@ -9422,8 +9428,7 @@ START_TEST(test_fifo_space_hwrap_head_hits_wrap)
     f.h_wrap = 300;
 
     space = fifo_space(&f);
-    ck_assert_uint_eq(space, f.tail - f.head);
-    ck_assert_uint_eq(f.head, 0);
+    ck_assert_uint_eq(space, 0);
 }
 END_TEST
 
@@ -9458,6 +9463,7 @@ START_TEST(test_fifo_push_no_contiguous_space_even_with_space)
     memset(payload, 0xCD, sizeof(payload));
     ret = fifo_push(&f, payload, sizeof(payload));
     ck_assert_int_eq(ret, -1);
+    ck_assert_uint_eq(f.h_wrap, 0);
 }
 END_TEST
 
@@ -9515,7 +9521,8 @@ START_TEST(test_fifo_pop_wrap_to_start)
     ck_assert_ptr_nonnull(buf);
     fifo_init(&f, buf, (uint32_t)total);
     f.head = 8;
-    f.tail = 12;
+    f.tail = 4;
+    f.h_wrap = 8;
 
     desc = (struct pkt_desc *)buf;
     memset(desc, 0, sizeof(*desc));

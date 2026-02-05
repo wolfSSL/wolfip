@@ -148,54 +148,39 @@ static void fifo_init(struct fifo *f, uint8_t *data, uint32_t size)
 /* Return the number of bytes available */
 static uint32_t fifo_space(struct fifo *f)
 {
-    int ret = 0;
-    if (f->head == f->tail) {
-        f->head = 0;
-        f->tail = 0;
+    if (f->head == f->tail)
         return f->size;
-    }
-    if (f->tail == f->h_wrap) {
-        f->tail = 0;
-        f->h_wrap = 0;
-    }
-    if (f->h_wrap == 0) {
-        if (f->head >= f->tail) {
-            ret = f->size - (f->head - f->tail);
-        } else {
-            ret = f->tail - f->head;
-        }
-        /* Take into account the wraparound to always keep the segment contiguous */
-        if ((f->size - f->head) < (sizeof(struct pkt_desc) + LINK_MTU)) {
-            if (f->tail > (sizeof(struct pkt_desc) + LINK_MTU)) {
-                f->h_wrap = f->head;
-                f->head = 0;
-                return f->tail - f->head;
-            } else return 0;
-        }
-    } else {
-        /* When wrapped, only space before tail is contiguous. */
-        if (f->head == f->h_wrap)
-            f->head = 0;
+    if (f->h_wrap) {
         if (f->head < f->tail)
-            ret = f->tail - f->head;
-        else
-            ret = 0;
+            return f->tail - f->head;
+        return 0;
     }
-    return ret;
+    if (f->head >= f->tail)
+        return f->size - (f->head - f->tail);
+    return f->tail - f->head;
 }
 
 /* Check the descriptor of the next packet */
 static struct pkt_desc *fifo_peek(struct fifo *f)
 {
-    if (f->tail == f->h_wrap) {
-        f->tail = 0;
-        f->h_wrap = 0;
-    }
     if (f->tail == f->head)
         return NULL;
     while (f->tail % 4)
         f->tail++;
-    if ((f->head < f->tail) && ((f->tail + sizeof(struct pkt_desc) + LINK_MTU > f->size)))
+    if (f->h_wrap && f->tail >= f->h_wrap) {
+        f->tail = 0;
+        f->h_wrap = 0;
+    }
+    if (f->h_wrap && (f->tail < f->h_wrap) &&
+            ((f->tail + sizeof(struct pkt_desc)) > f->h_wrap)) {
+        f->tail = 0;
+        f->h_wrap = 0;
+    }
+    if (f->tail >= f->size)
+        f->tail %= f->size;
+    if (f->tail == f->head)
+        return NULL;
+    if ((f->tail + sizeof(struct pkt_desc)) > f->size)
         f->tail = 0;
     return (struct pkt_desc *)((uint8_t *)f->data + f->tail);
 }
@@ -211,13 +196,10 @@ static struct pkt_desc *fifo_next(struct fifo *f, struct pkt_desc *desc)
         return NULL;
     while ((desc->pos + len) % 4)
         len++;
-    if ((desc->pos + len + sizeof(struct pkt_desc) + LINK_MTU ) >= f->size)
+    if ((desc->pos + len) >= f->size || (desc->pos + len) == f->h_wrap)
         desc = (struct pkt_desc *)((uint8_t *)f->data);
     else
         desc = (struct pkt_desc *)((uint8_t *)f->data + desc->pos + len);
-    if ((desc->pos + len) == f->h_wrap) {
-        desc = (struct pkt_desc *)((uint8_t *)f->data);
-    }
     return desc;
 }
 
@@ -243,22 +225,45 @@ static uint32_t fifo_len(struct fifo *f)
 static int fifo_push(struct fifo *f, void *data, uint32_t len)
 {
     struct pkt_desc desc;
+    uint32_t needed = sizeof(struct pkt_desc) + len;
+    uint32_t head = f->head;
+    uint32_t tail = f->tail;
+    uint32_t h_wrap = f->h_wrap;
     memset(&desc, 0, sizeof(struct pkt_desc));
     /* Ensure 4-byte alignment in the buffer */
-    if (f->head % 4)
-        f->head += 4 - (f->head % 4);
-    if (fifo_space(f) < (sizeof(struct pkt_desc) + len)) {
+    if (head % 4)
+        head += 4 - (head % 4);
+    if (head >= f->size)
+        head = 0;
+    if (fifo_space(f) < needed) {
         return -1;
     }
-    if ((f->head + sizeof(struct pkt_desc) + len) > f->size) {
-        return -1;
+    if (h_wrap && head == h_wrap)
+        head = 0;
+    if (h_wrap == 0 && head >= tail) {
+        uint32_t end_space = f->size - head;
+        if (end_space < needed) {
+            if (tail <= needed)
+                return -1;
+            h_wrap = head;
+            head = 0;
+        }
     }
-    desc.pos = f->head;
+    if (h_wrap) {
+        if (head + needed > tail)
+            return -1;
+    } else {
+        if (head + needed > f->size)
+            return -1;
+    }
+    desc.pos = head;
     desc.len = len;
-    memcpy((uint8_t *)f->data + f->head, &desc, sizeof(struct pkt_desc));
-    f->head += sizeof(struct pkt_desc);
-    memcpy((uint8_t *)f->data + f->head, data, len);
-    f->head += len;
+    memcpy((uint8_t *)f->data + head, &desc, sizeof(struct pkt_desc));
+    head += sizeof(struct pkt_desc);
+    memcpy((uint8_t *)f->data + head, data, len);
+    head += len;
+    f->head = head;
+    f->h_wrap = h_wrap;
     return 0;
 }
 
@@ -270,14 +275,29 @@ static struct pkt_desc *fifo_pop(struct fifo *f)
         return NULL;
     while (f->tail % 4)
         f->tail++;
-    f->tail %= f->size;
+    if (f->h_wrap && f->tail >= f->h_wrap) {
+        f->tail = 0;
+        f->h_wrap = 0;
+    }
+    if (f->h_wrap && (f->tail < f->h_wrap) &&
+            ((f->tail + sizeof(struct pkt_desc)) > f->h_wrap)) {
+        f->tail = 0;
+        f->h_wrap = 0;
+    }
+    if (f->tail >= f->size)
+        f->tail %= f->size;
     if (f->tail == f->head)
         return NULL;
-    if ((f->head < f->tail) && ((f->tail + sizeof(struct pkt_desc) + LINK_MTU > f->size)))
+    if ((f->tail + sizeof(struct pkt_desc)) > f->size)
         f->tail = 0;
     desc = (struct pkt_desc *)((uint8_t *)f->data + f->tail);
     f->tail += sizeof(struct pkt_desc) + desc->len;
-    f->tail %= f->size;
+    if (f->h_wrap && f->tail >= f->h_wrap) {
+        f->tail -= f->h_wrap;
+        f->h_wrap = 0;
+    }
+    if (f->tail >= f->size)
+        f->tail %= f->size;
     return desc;
 }
 
