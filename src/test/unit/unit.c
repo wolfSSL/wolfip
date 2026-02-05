@@ -492,6 +492,8 @@ START_TEST(test_fifo_peek_wraps_tail_when_head_lt_tail)
     f.tail = 4;
     f.h_wrap = 0;
 
+    /* With head at 0 and tail aligned, peek should return the current tail
+     * descriptor without altering tail or wrap state. */
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_uint_eq(f.tail, 4);
@@ -509,6 +511,7 @@ START_TEST(test_fifo_peek_no_wrap_when_space_available)
     f.tail = 4;
     f.h_wrap = 0;
 
+    /* When no wrap boundary is set, peek must not change tail. */
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_uint_eq(f.tail, 4);
@@ -553,6 +556,7 @@ START_TEST(test_fifo_pop_aligns_tail_to_head_returns_null)
     f.head = 4;
     f.tail = 1;
 
+    /* Aligning tail to head means the FIFO is empty; pop should return NULL. */
     ck_assert_ptr_eq(fifo_pop(&f), NULL);
 }
 END_TEST
@@ -572,6 +576,7 @@ START_TEST(test_fifo_pop_wraps_tail_when_head_lt_tail)
     desc->pos = 4;
     desc->len = 0;
 
+    /* Popping a zero-length packet should advance tail past the descriptor. */
     ck_assert_ptr_nonnull(fifo_pop(&f));
     ck_assert_uint_eq(f.tail, 4 + sizeof(struct pkt_desc));
 }
@@ -594,6 +599,7 @@ START_TEST(test_fifo_pop_no_wrap_when_space_available)
     desc->len = 0;
     expected_tail = 4 + sizeof(struct pkt_desc);
 
+    /* With no wrap, pop should advance tail to the next descriptor. */
     ck_assert_ptr_nonnull(fifo_pop(&f));
     ck_assert_uint_eq(f.tail, expected_tail);
 }
@@ -4104,7 +4110,7 @@ START_TEST(test_sock_sendto_tcp_txbuf_full)
 }
 END_TEST
 
-START_TEST(test_sock_sendto_tcp_partial_send)
+START_TEST(test_sock_sendto_tcp_partial_send_only)
 {
     struct wolfIP s;
     int tcp_sd;
@@ -4112,8 +4118,10 @@ START_TEST(test_sock_sendto_tcp_partial_send)
     size_t seg_payload = TCP_MSS - TCP_OPTIONS_LEN;
     size_t payload_len = seg_payload;
     uint8_t buf[seg_payload * 2];
-    size_t required = sizeof(struct pkt_desc) + IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN + payload_len;
-    uint8_t txbuf[required + 4];
+    size_t required = sizeof(struct pkt_desc) + sizeof(struct wolfIP_tcp_seg) +
+        TCP_OPTIONS_LEN + payload_len;
+    /* Provide a small alignment cushion so one segment fits but two do not. */
+    uint8_t txbuf[required + 8];
     int ret;
 
     wolfIP_init(&s);
@@ -4131,9 +4139,10 @@ START_TEST(test_sock_sendto_tcp_partial_send)
     fifo_init(&ts->sock.tcp.txbuf, txbuf, sizeof(txbuf));
 
     memset(buf, 0xAB, sizeof(buf));
+    /* Expect a partial send because the tx buffer fits only one segment
+     * (includes full TCP/IP header size and alignment padding). */
     ret = wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
-    ck_assert_msg(ret > 0 || ret == -WOLFIP_EAGAIN,
-        "expected partial send or EAGAIN, got %d", ret);
+    ck_assert_msg(ret > 0, "expected partial send, got %d", ret);
 }
 END_TEST
 
@@ -4562,10 +4571,10 @@ START_TEST(test_fifo_push_and_pop) {
     fifo_init(&f, mem, memsz);
 
     ck_assert_int_eq(fifo_space(&f), memsz);
-    // Test push
+    /* Push one payload and verify descriptors reflect its size. */
     ck_assert_int_eq(fifo_push(&f, data, sizeof(data)), 0);
 
-    // Test peek
+    /* Peek should return the current head descriptor without consuming data. */
     desc = fifo_peek(&f);
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->len, sizeof(data));
@@ -4576,7 +4585,7 @@ START_TEST(test_fifo_push_and_pop) {
     ck_assert_int_eq(fifo_len(&f), desc->len + sizeof(struct pkt_desc));
 
 
-    // Test pop
+    /* Pop should consume the packet and restore full space. */
     desc = fifo_pop(&f);
     ck_assert_int_eq(fifo_space(&f), memsz);
     ck_assert_ptr_nonnull(desc);
@@ -7851,6 +7860,7 @@ START_TEST(test_tcp_ack_acks_data_and_sets_writable)
     ackseg.flags = 0x10;
 
     tcp_ack(ts, &ackseg);
+    /* FIFO should be empty after acked data is removed. */
     ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
     ck_assert_uint_eq(ts->events & CB_EVENT_WRITABLE, CB_EVENT_WRITABLE);
     ck_assert_uint_gt(ts->sock.tcp.cwnd, TCP_MSS);
@@ -8111,6 +8121,8 @@ START_TEST(test_tcp_ack_duplicate_zero_len_segment_large_ack)
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = 0x10;
 
+    /* Prime dup-ack counter so a single ACK triggers fast retransmit. */
+    ts->sock.tcp.dup_acks = 2;
     tcp_ack(ts, &ackseg);
     ck_assert_uint_le(fifo_len(&ts->sock.tcp.txbuf), TXBUF_SIZE);
     ck_assert_uint_eq(ts->sock.tcp.ssthresh, TCP_MSS * 2);
@@ -8157,6 +8169,9 @@ START_TEST(test_tcp_ack_duplicate_seq_match_large_seg_len)
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = 0x10;
 
+    /* Trigger fast retransmit by delivering three duplicate ACKs. */
+    tcp_ack(ts, &ackseg);
+    tcp_ack(ts, &ackseg);
     tcp_ack(ts, &ackseg);
     ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, PKT_FLAG_SENT);
 }
@@ -8201,11 +8216,17 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_flag)
     seg2->seq = ee32(seq2);
     ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2, sizeof(segbuf2)), 0);
 
+    /* Force duplicate ACK handling with outstanding bytes. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS * 2;
+    ts->sock.tcp.snd_una = seq1;
+
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(seq1);
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = 0x10;
 
+    /* Prime dup-ack counter so a single ACK triggers fast retransmit. */
+    ts->sock.tcp.dup_acks = 2;
     tcp_ack(ts, &ackseg);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
@@ -8712,6 +8733,9 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_large_seg_len)
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = 0x10;
 
+    /* Trigger fast retransmit by delivering three duplicate ACKs. */
+    tcp_ack(ts, &ackseg);
+    tcp_ack(ts, &ackseg);
     tcp_ack(ts, &ackseg);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
@@ -9354,6 +9378,8 @@ START_TEST(test_fifo_peek_wrap_to_start)
     desc->len = 1;
     desc->pos = 0;
 
+    /* When tail crosses h_wrap, peek should wrap to the start and return
+     * the first descriptor at offset 0. */
     peeked = fifo_peek(&f);
     ck_assert_ptr_eq(peeked, desc);
 
@@ -9390,6 +9416,7 @@ START_TEST(test_fifo_peek_aligns_tail)
     desc->len = 1;
     desc->pos = 4;
 
+    /* Peek aligns tail to 4-byte boundary before reading the descriptor. */
     peeked = fifo_peek(&f);
     ck_assert_ptr_eq(peeked, desc);
     ck_assert_uint_eq(f.tail, 4);
@@ -9572,6 +9599,7 @@ START_TEST(test_fifo_pop_wrap_to_start)
     desc->len = 1;
     desc->pos = 0;
 
+    /* Pop should wrap to start and return the descriptor at offset 0. */
     popped = fifo_pop(&f);
     ck_assert_ptr_eq(popped, desc);
 
@@ -11643,7 +11671,7 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_txbuf_full);
     suite_add_tcase(s, tc_utils);
-    tcase_add_test(tc_utils, test_sock_sendto_tcp_partial_send);
+    tcase_add_test(tc_utils, test_sock_sendto_tcp_partial_send_only);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_multiple_segments_flags);
     tcase_add_test(tc_utils, test_sock_sendto_udp_fifo_push_fails_returns_eagain);
     tcase_add_test(tc_utils, test_sock_sendto_icmp_fifo_push_fails_returns_eagain);
