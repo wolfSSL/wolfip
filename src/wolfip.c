@@ -1575,48 +1575,54 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
 {
     uint32_t sum = 0;
     uint32_t i = 0;
-    uint16_t *ptr = (uint16_t *)ph->buf;
-    uint16_t *data = (uint16_t *)_data;
-    uint8_t *data8 = (uint8_t *)_data;
+    const uint8_t *ptr = (const uint8_t *)ph->buf;
+    const uint8_t *data = (const uint8_t *)_data;
     uint16_t len = ee16(ph->ph.len);
-    for (i = 0; i < 6; i++) {
-        sum += ee16(ptr[i]);
+    uint16_t word;
+    for (i = 0; i < 12; i += 2) {
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
     }
-    for (i = 0; i < (len / 2); i++) {
-        sum += ee16(data[i]);
+    for (i = 0; i < (len & ~1u); i += 2) {
+        memcpy(&word, data + i, sizeof(word));
+        sum += ee16(word);
     }
     if (len & 0x01) {
         uint16_t spare = 0;
-        spare |= (data8[len - 1]) << 8;
+        spare |= data[len - 1] << 8;
         sum += spare;
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    return ~sum;
+    return (uint16_t)~sum;
 }
 
 static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
-    uint16_t *ptr = (uint16_t *)(&icmp->type);
-    for (i = 0; i < len / 2; i++) {
-        sum += ee16(ptr[i]);
+    const uint8_t *ptr = (const uint8_t *)(&icmp->type);
+    uint16_t word;
+    for (i = 0; i < (len & ~1u); i += 2) {
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    return ~sum;
+    return (uint16_t)~sum;
 }
 
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
-    uint16_t *ptr = (uint16_t *)(&ip->ver_ihl);
-    for (i = 0; i < IP_HEADER_LEN / 2; i++) {
-        sum += ee16(ptr[i]);
+    const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
+    for (i = 0; i < IP_HEADER_LEN; i += 2) {
+        uint16_t word;
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
