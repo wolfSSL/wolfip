@@ -7826,6 +7826,8 @@ START_TEST(test_tcp_ack_acks_data_and_sets_writable)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.ssthresh = TCP_MSS * 4;
+    /* Ensure cwnd growth is gated by bytes_in_flight and not rwnd-capped. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(seg, 0, sizeof(seg_buf));
@@ -7839,6 +7841,9 @@ START_TEST(test_tcp_ack_acks_data_and_sets_writable)
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
     desc->time_sent = 10;
+    /* Simulate cwnd-limited flight and initialize snd_una. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.snd_una = seq;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(seq + sizeof(payload));
@@ -7870,6 +7875,8 @@ START_TEST(test_tcp_ack_duplicate_resend_clears_sent)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS * 4;
     ts->sock.tcp.ssthresh = TCP_MSS * 4;
+    /* Allow duplicate-ACK path without rwnd cap. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(seg, 0, sizeof(seg_buf));
@@ -8094,6 +8101,10 @@ START_TEST(test_tcp_ack_duplicate_zero_len_segment_large_ack)
     desc = fifo_next(&ts->sock.tcp.txbuf, desc);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Force duplicate ACK handling with outstanding bytes. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS * 2;
+    /* Treat this ACK as a duplicate (snd_una == ack). */
+    ts->sock.tcp.snd_una = 0xF0000000U;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(0xF0000000U);
@@ -8124,6 +8135,8 @@ START_TEST(test_tcp_ack_duplicate_seq_match_large_seg_len)
     ts->S = &s;
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS * 4;
+    /* Allow duplicate-ACK path without rwnd cap. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf, 0, sizeof(segbuf));
@@ -8135,6 +8148,9 @@ START_TEST(test_tcp_ack_duplicate_seq_match_large_seg_len)
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Force duplicate ACK handling with outstanding bytes. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS * 2;
+    ts->sock.tcp.snd_una = seq;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(seq);
@@ -8453,6 +8469,8 @@ START_TEST(test_tcp_ack_cwnd_count_wrap)
     ts->sock.tcp.cwnd = TCP_MSS * 4;
     ts->sock.tcp.ssthresh = TCP_MSS;
     ts->sock.tcp.cwnd_count = ts->sock.tcp.cwnd - 1;
+    /* Ensure cwnd growth path is taken and not rwnd-capped. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf, 0, sizeof(segbuf));
@@ -8464,6 +8482,10 @@ START_TEST(test_tcp_ack_cwnd_count_wrap)
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Simulate cwnd-limited flight and initialize snd_una. */
+    ts->sock.tcp.bytes_in_flight = ts->sock.tcp.cwnd;
+    /* Advance ACK by 1 byte to exercise cwnd_count wrap. */
+    ts->sock.tcp.snd_una = 100;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(101);
@@ -8471,7 +8493,8 @@ START_TEST(test_tcp_ack_cwnd_count_wrap)
     ackseg.flags = 0x10;
 
     tcp_ack(ts, &ackseg);
-    ck_assert_uint_eq(ts->sock.tcp.cwnd_count, 0);
+    /* Expect cwnd_count to wrap to (cwnd_count + MSS - cwnd). */
+    ck_assert_uint_eq(ts->sock.tcp.cwnd_count, (TCP_MSS - 1));
     ck_assert_uint_eq(ts->sock.tcp.cwnd, (TCP_MSS * 5));
 }
 END_TEST
@@ -8494,6 +8517,8 @@ START_TEST(test_tcp_ack_updates_rtt_and_cwnd)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.ssthresh = TCP_MSS * 4;
+    /* Ensure cwnd growth path is taken and not rwnd-capped. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
     s.last_tick = 1000;
 
@@ -8511,6 +8536,9 @@ START_TEST(test_tcp_ack_updates_rtt_and_cwnd)
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Simulate cwnd-limited flight and initialize snd_una. */
+    ts->sock.tcp.bytes_in_flight = ts->sock.tcp.cwnd;
+    ts->sock.tcp.snd_una = 100;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(101);
@@ -8578,6 +8606,8 @@ START_TEST(test_tcp_ack_no_progress_when_ack_far_ahead)
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
     ts->sock.tcp.state = TCP_ESTABLISHED;
+    /* Allow duplicate-ACK path without rwnd cap. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf, 0, sizeof(segbuf));
@@ -8589,6 +8619,9 @@ START_TEST(test_tcp_ack_no_progress_when_ack_far_ahead)
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Force duplicate ACK handling with outstanding bytes. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS * 2;
+    ts->sock.tcp.snd_una = 500;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(seq + 0x100000U);
@@ -8657,6 +8690,8 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_large_seg_len)
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
     ts->sock.tcp.state = TCP_ESTABLISHED;
+    /* Allow duplicate-ACK path without rwnd cap. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf, 0, sizeof(segbuf));
@@ -8668,6 +8703,9 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_large_seg_len)
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Force duplicate ACK handling with outstanding bytes. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS * 2;
+    ts->sock.tcp.snd_una = 500;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(500);
@@ -8734,6 +8772,8 @@ START_TEST(test_tcp_ack_duplicate_ssthresh_min)
     ts->S = &s;
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS;
+    /* Allow duplicate-ACK path without rwnd cap. */
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf, 0, sizeof(segbuf));
@@ -8745,6 +8785,9 @@ START_TEST(test_tcp_ack_duplicate_ssthresh_min)
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     desc->flags |= PKT_FLAG_SENT;
+    /* Force duplicate ACK handling with outstanding bytes. */
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.snd_una = 50;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(50);
