@@ -1431,7 +1431,7 @@ void __attribute__((constructor)) init_wolfip_posix() {
     wolfIP_ipconfig_set(IPSTACK, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(HOST_STACK_IP));
     printf("IP: manually configured - %s\n", WOLFIP_IP);
-    sleep(1);
+    sleep(2);
     pthread_create(&wolfIP_thread, NULL, wolfIP_sock_posix_ip_loop, IPSTACK);
     in_the_stack = 0;
 }
