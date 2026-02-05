@@ -1621,7 +1621,7 @@ static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    ip->csum = ee16(~sum);
+    ip->csum = ee16((uint16_t)~sum);
 }
 
 #ifdef ETHERNET
@@ -1973,6 +1973,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             if (tcp->ip.ttl == 0) {
                 wolfIP_send_ttl_exceeded(S, if_idx, &tcp->ip);
                 return;
+            }
+            /* Validate TCP header length fits in IP payload */
+            if (iplen < IP_HEADER_LEN + (tcp->hlen >> 2)) {
+                return; /* malformed: TCP header exceeds IP length */
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
             if (tcp->flags & 0x02) {
