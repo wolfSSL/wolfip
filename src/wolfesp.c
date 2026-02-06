@@ -541,7 +541,7 @@ esp_aes_rfc3602_enc(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
     inited = 1;
-    ret = wc_AesSetKey(&cbc_enc, esp_sa->enc_key, AES_BLOCK_SIZE,
+    ret = wc_AesSetKey(&cbc_enc, esp_sa->enc_key, esp_sa->enc_key_len,
                        iv, AES_ENCRYPTION);
 
     if (ret != 0) {

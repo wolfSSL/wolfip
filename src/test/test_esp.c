@@ -38,9 +38,6 @@
 #include "wolfesp.h"
 
 static void __attribute__((noreturn)) print_usage_and_die(void);
-#if 0
-#include "esp_sa_list.c"
-#endif
 
 #define TEST_SIZE (12 * 1024)
 
@@ -606,7 +603,7 @@ int main(int argc, char **argv)
 
             err = wolfIP_esp_sa_new_cbc_sha256(0, out_sa_cbc, atoip4(WOLFIP_IP),
                                                atoip4(HOST_STACK_IP),
-                                               out_enc_key, sizeof(out_enc_key - 4),
+                                               out_enc_key, sizeof(out_enc_key) - 4,
                                                out_auth_key, sizeof(out_auth_key),
                                                ESP_ICVLEN_HMAC_128);
             break;
