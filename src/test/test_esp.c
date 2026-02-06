@@ -1,4 +1,4 @@
-/* test_eventloop.c
+/* test_esp.c
  *
  * Copyright (C) 2024 wolfSSL Inc.
  *
@@ -31,13 +31,18 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <unistd.h>
+/* wolfip includes */
 #include "config.h"
 #include "wolfip.h"
+#include "wolfesp.h"
 
-#define TEST_SIZE (4 * 1024)
+static void __attribute__((noreturn)) print_usage_and_die(void);
 
+#define TEST_SIZE (12 * 1024)
 #define BUFFER_SIZE TEST_SIZE
 
+static int disable_ipsec = 0;
 static int listen_fd = -1, client_fd = -1;
 static int exit_ok = 0, exit_count = 0;
 static uint8_t buf[TEST_SIZE];
@@ -51,6 +56,29 @@ static int client_connected = 0;
 static const uint8_t test_pattern[16] = {0x54, 0x65, 0x73, 0x74, 0x20, 0x70,
                                          0x61, 0x74, 0x74, 0x65, 0x72, 0x6e,
                                          0x20, 0x2d, 0x20, 0x2d};
+static uint8_t in_sa_gcm[ESP_SPI_LEN] = {0x01, 0x01, 0x01, 0x01};
+static uint8_t out_sa_gcm[ESP_SPI_LEN] = {0x02, 0x02, 0x02, 0x02};
+static uint8_t in_sa_cbc[ESP_SPI_LEN] = {0x03, 0x03, 0x03, 0x03};
+static uint8_t out_sa_cbc[ESP_SPI_LEN] = {0x04, 0x04, 0x04, 0x04};
+/* 32 byte key + 4 byte nonce*/
+static uint8_t in_enc_key[36] =
+     {0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+      0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+      0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+      0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+      0x0a, 0x0b, 0x0c, 0x0d};
+static uint8_t out_enc_key[36] =
+     {0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+      0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+      0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+      0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+      0x0a, 0x0b, 0x0c, 0x0d};
+static uint8_t in_auth_key[16] =
+     {0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+      0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01};
+static uint8_t out_auth_key[16] =
+     {0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+      0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02};
 
 
 /* wolfIP: server side callback. */
@@ -58,22 +86,27 @@ static void server_cb(int fd, uint16_t event, void *arg)
 {
     int ret = 0;
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) && (client_fd == -1)) {
-        client_fd = wolfIP_sock_accept((struct wolfIP *)arg, listen_fd, NULL, NULL);
+        client_fd = wolfIP_sock_accept((struct wolfIP *)arg, listen_fd, NULL,
+                                       NULL);
         if (client_fd > 0) {
             printf("accept: %04x\n", client_fd);
         }
-    } else if ((fd == client_fd) && (event & CB_EVENT_READABLE  )) {
-        ret = wolfIP_sock_recvfrom((struct wolfIP *)arg, client_fd, buf, sizeof(buf), 0, NULL, NULL);
+    }
+    else if ((fd == client_fd) && (event & CB_EVENT_READABLE  )) {
+        ret = wolfIP_sock_recvfrom((struct wolfIP *)arg, client_fd, buf,
+                                   sizeof(buf), 0, NULL, NULL);
         if (ret != -EAGAIN) {
             if (ret < 0) {
                 printf("Recv error: %d\n", ret);
                 wolfIP_sock_close((struct wolfIP *)arg, client_fd);
-            } else if (ret == 0) {
+            }
+            else if (ret == 0) {
                 printf("Client side closed the connection.\n");
                 wolfIP_sock_close((struct wolfIP *)arg, client_fd);
                 printf("Server: Exiting.\n");
                 exit_ok = 1;
-            } else if (ret > 0) {
+            }
+            else if (ret > 0) {
                 printf("recv: %d, echoing back\n", ret);
                 tot_recv += ret;
             }
@@ -88,12 +121,15 @@ static void server_cb(int fd, uint16_t event, void *arg)
             exit_ok = 1;
         }
         if ((!closed) && (tot_sent < tot_recv)) {
-            snd_ret = wolfIP_sock_sendto((struct wolfIP *)arg, client_fd, buf + tot_sent, tot_recv - tot_sent, 0, NULL, 0);
+            snd_ret = wolfIP_sock_sendto((struct wolfIP *)arg, client_fd,
+                                         buf + tot_sent, tot_recv - tot_sent,
+                                         0, NULL, 0);
             if (snd_ret != -EAGAIN) {
                 if (snd_ret < 0) {
                     printf("Send error: %d\n", snd_ret);
                     wolfIP_sock_close((struct wolfIP *)arg, client_fd);
-                } else {
+                }
+                else {
                     tot_sent += snd_ret;
                     printf("sent %d bytes\n", snd_ret);
                     if (tot_recv == tot_sent) {
@@ -135,8 +171,10 @@ static void client_cb(int fd, uint16_t event, void *arg)
             memcpy(buf + i, test_pattern, sizeof(test_pattern));
         }
     }
-    if (client_connected && (event & CB_EVENT_WRITABLE) && (total_w < sizeof(buf))) {
-        ret = wolfIP_sock_sendto(s, fd, buf + total_w, sizeof(buf) - total_w, 0, NULL, 0);
+    if (client_connected && (event & CB_EVENT_WRITABLE) &&
+        (total_w < sizeof(buf))) {
+        ret = wolfIP_sock_sendto(s, fd, buf + total_w, sizeof(buf) - total_w,
+                                 0, NULL, 0);
         if (ret <= 0) {
             printf("Test client write: %d\n", ret);
             return;
@@ -145,7 +183,8 @@ static void client_cb(int fd, uint16_t event, void *arg)
     }
 
     while ((total_r < total_w) && (event & CB_EVENT_READABLE)) {
-        ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r, 0, NULL, NULL);
+        ret = wolfIP_sock_recvfrom(s, fd, buf + total_r, sizeof(buf) - total_r,
+                                   0, NULL, NULL);
         if (ret < 0){
             if (ret != -EAGAIN) {
                 printf("Client read: %d\n", ret);
@@ -194,7 +233,7 @@ static int test_loop(struct wolfIP *s, int active_close)
         ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(ms_next * 1000);
         if (exit_ok > 0) {
-            if (exit_count++ < 10)
+            if (exit_count++ < 1)
                 continue;
             else break;
         }
@@ -205,7 +244,7 @@ static int test_loop(struct wolfIP *s, int active_close)
 /* Test code (host side).
  * Thread with client to test the echoserver.
  */
-void *pt_echoclient(void *arg)
+static void *pt_echoclient(void *arg)
 {
     int fd, ret;
     unsigned total_r = 0;
@@ -244,7 +283,8 @@ void *pt_echoclient(void *arg)
     ret = connect(fd, (struct sockaddr *)&remote_sock, sizeof(remote_sock));
     if (ret < 0) {
         err = errno;
-        printf("test client connect returned %d, errno=%d (%s)\n", ret, err, strerror(err));
+        printf("test client connect returned %d, errno=%d (%s)\n", ret, err,
+               strerror(err));
         if (err != EINPROGRESS) {
             perror("connect");
             close(fd);
@@ -281,13 +321,16 @@ void *pt_echoclient(void *arg)
                 printf("connect still in progress after timeout\n");
                 continue;
             }
-            if (err != EINPROGRESS && err != EALREADY && err != EWOULDBLOCK && err != EAGAIN) {
-                printf("connect completed with error: %d (%s)\n", err, strerror(err));
+            if (err != EINPROGRESS && err != EALREADY && err != EWOULDBLOCK &&
+                err != EAGAIN) {
+                printf("connect completed with error: %d (%s)\n", err,
+                       strerror(err));
                 close(fd);
                 return (void *)-1;
             }
         }
-    } else {
+    }
+    else {
         printf("connect returned immediately\n");
     }
     if (fcntl(fd, F_SETFL, old_flags) < 0)
@@ -299,7 +342,8 @@ void *pt_echoclient(void *arg)
     ret = write(fd, local_buf, sizeof(local_buf));
     if (ret < 0) {
         int werr = errno;
-        printf("test client write: %d (errno=%d: %s)\n", ret, werr, strerror(werr));
+        printf("test client write: %d (errno=%d: %s)\n", ret, werr,
+               strerror(werr));
         perror("write");
         return (void *)-1;
     }
@@ -391,15 +435,15 @@ static void *pt_echoserver(void *arg)
     }
 }
 
-
 /* Catch-all function to initialize a new tap device as the network interface.
  * This is defined in port/posix/bsd_socket.c
  * */
-extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
+extern int tap_init(struct wolfIP_ll_dev *dev, const char *name,
+                    uint32_t host_ip);
 
 /* Test cases */
 
-void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
+static void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
 {
     int ret, test_ret = 0;
     pthread_t pt;
@@ -416,7 +460,8 @@ void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
 
     pthread_create(&pt, NULL, pt_echoclient, &srv_ip);
     printf("Starting test: echo server close-wait\n");
-    ret = wolfIP_sock_bind(s, listen_fd, (struct wolfIP_sockaddr *)&local_sock, sizeof(local_sock));
+    ret = wolfIP_sock_bind(s, listen_fd, (struct wolfIP_sockaddr *)&local_sock,
+                           sizeof(local_sock));
     printf("bind: %d\n", ret);
     ret = wolfIP_sock_listen(s, listen_fd, 1);
     printf("listen: %d\n", ret);
@@ -437,7 +482,7 @@ void test_wolfip_echoserver(struct wolfIP *s, uint32_t srv_ip)
     wolfIP_sock_close(s, listen_fd);
 }
 
-void test_wolfip_echoclient(struct wolfIP *s)
+static void test_wolfip_echoclient(struct wolfIP *s)
 {
     int ret, test_ret = 0;
     pthread_t pt;
@@ -451,7 +496,8 @@ void test_wolfip_echoclient(struct wolfIP *s)
     printf("client socket: %04x\n", conn_fd);
     wolfIP_register_callback(s, conn_fd, client_cb, s);
     printf("Connecting to %s:8\n", HOST_STACK_IP);
-    wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock, sizeof(remote_sock));
+    wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock,
+                        sizeof(remote_sock));
     pthread_create(&pt, NULL, pt_echoserver, (void*)1);
     printf("Starting test: echo client active close\n");
     ret = test_loop(s, 1);
@@ -463,50 +509,50 @@ void test_wolfip_echoclient(struct wolfIP *s)
         wolfIP_sock_close(s, conn_fd);
         conn_fd = -1;
     }
-
-    /* Client side test: server is closing the connection */
-    /* Excluded for now because binding twice on port 8 is not supported */
-#if 0
-    conn_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
-    if (conn_fd < 0) {
-        printf("cannot create socket: %d\n", conn_fd);
-    }
-    printf("client socket: %04x\n", conn_fd);
-    wolfIP_register_callback(s, conn_fd, client_cb, s);
-    printf("Connecting to %s:8\n", HOST_STACK_IP);
-    wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock, sizeof(remote_sock));
-    pthread_create(&pt, NULL, pt_echoserver, (void*)0);
-    printf("Starting test: echo client passive close\n");
-    ret = test_loop(s, 0);
-    printf("Test echo client, server closing: %d\n", ret);
-    pthread_join(pt, (void **)&test_ret);
-    printf("Test host server: %d\n", test_ret);
-#endif
-
-
-
 }
 
 /* Main test function. */
 int main(int argc, char **argv)
 {
-    struct wolfIP *s;
-    struct wolfIP_ll_dev *tapdev;
-    struct timeval tv = {0, 0};
-    struct in_addr host_stack_ip;
-    uint32_t srv_ip;
-    ip4 ip = 0, nm = 0, gw = 0;
+    struct wolfIP_ll_dev * tapdev = NULL;
+    struct wolfIP *        s = NULL;
+    struct in_addr         host_stack_ip;
+    uint32_t               srv_ip = 0;
+    int                    err = 0;
+    int                    opt = 0;
+    int                    mode = 0; /* 0 aead example, 1 cbc-auth example*/
 
-    (void)argc;
-    (void)argv;
-    (void)ip;
-    (void)nm;
-    (void)gw;
-    (void)tv;
+    while ((opt = getopt(argc, argv, "pm:?")) != -1) {
+        switch (opt) {
+        case 'p':
+            disable_ipsec = 1;
+            break;
+        case 'm':
+            mode = atoi(optarg);
+            break;
+        case '?':
+            print_usage_and_die();
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!disable_ipsec) {
+        err = wolfIP_esp_init();
+        if (err) {
+            perror("esp_init");
+            return 2;
+        }
+    }
+
     wolfIP_init_static(&s);
     tapdev = wolfIP_getdev(s);
-    if (!tapdev)
+    if (!tapdev) {
+        perror("wolfIP_getdev");
         return 1;
+    }
+
     inet_aton(HOST_STACK_IP, &host_stack_ip);
     if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
@@ -515,32 +561,49 @@ int main(int argc, char **argv)
     {
 #if !defined(__FreeBSD__) && !defined(__APPLE__)
         char cmd[128];
-        snprintf(cmd, sizeof(cmd), "tcpdump -i %s -w test.pcap &", tapdev->ifname);
+        snprintf(cmd, sizeof(cmd), "tcpdump -i %s -w test.pcap &",
+                 tapdev->ifname);
         system(cmd);
 #else
         (void)tapdev;
 #endif
     }
 
-#ifdef DHCP
-    gettimeofday(&tv, NULL);
-    wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
-    dhcp_client_init(s);
-    do {
-        gettimeofday(&tv, NULL);
-        wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
-        usleep(1000);
-        wolfIP_ipconfig_get(s, &ip, &nm, &gw);
-    } while (!dhcp_bound(s));
-    printf("DHCP: obtained IP address.\n");
-    wolfIP_ipconfig_get(s, &ip, &nm, &gw);
-    srv_ip = htonl(ip);
-#else
     wolfIP_ipconfig_set(s, atoip4(WOLFIP_IP), atoip4("255.255.255.0"),
             atoip4(HOST_STACK_IP));
     printf("IP: manually configured\n");
     inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
-#endif
+
+    if (!disable_ipsec) {
+        switch (mode) {
+        case 0:
+            err = wolfIP_esp_sa_new_aead(1, in_sa_gcm, atoip4(HOST_STACK_IP),
+                                         atoip4(WOLFIP_IP),
+                                         in_enc_key, sizeof(in_enc_key));
+
+            err = wolfIP_esp_sa_new_aead(0, out_sa_gcm, atoip4(WOLFIP_IP),
+                                         atoip4(HOST_STACK_IP),
+                                         out_enc_key, sizeof(out_enc_key));
+            break;
+
+        case 1:
+            err = wolfIP_esp_sa_new_cbc_sha256(1, in_sa_cbc, atoip4(HOST_STACK_IP),
+                                               atoip4(WOLFIP_IP),
+                                               in_enc_key, sizeof(in_enc_key) - 4,
+                                               in_auth_key, sizeof(in_auth_key),
+                                               ESP_ICVLEN_HMAC_128);
+
+            err = wolfIP_esp_sa_new_cbc_sha256(0, out_sa_cbc, atoip4(WOLFIP_IP),
+                                               atoip4(HOST_STACK_IP),
+                                               out_enc_key, sizeof(out_enc_key) - 4,
+                                               out_auth_key, sizeof(out_auth_key),
+                                               ESP_ICVLEN_HMAC_128);
+            break;
+
+        default:
+            break;
+        }
+    }
 
     /* Server side test */
     test_wolfip_echoserver(s, srv_ip);
@@ -552,4 +615,15 @@ int main(int argc, char **argv)
     system("killall tcpdump");
 #endif
     return 0;
+}
+
+static void
+print_usage_and_die(void)
+{
+    printf("./test-esp [-m <mode>] [-p]\n");
+    printf("\n");
+    printf("options:\n");
+    printf("  -p         force plaintext (disable ipsec)\n");
+    printf("  -m <mode>  0 aead (default), 1 cbc auth\n");
+    exit(1);
 }

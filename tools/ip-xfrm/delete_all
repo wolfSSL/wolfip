@@ -1,0 +1,3 @@
+#!/bin/bash
+sudo ip xfrm policy deleteall
+sudo ip xfrm state deleteall
