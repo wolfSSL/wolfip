@@ -1874,7 +1874,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         }
     }
     if (t->sock.tcp.snd_una != ack &&
-            tcp_seq_leq(t->sock.tcp.snd_una, ack)) {
+            tcp_seq_leq(t->sock.tcp.snd_una, ack) &&
+            tcp_seq_leq(ack, t->sock.tcp.seq)) {
         uint32_t delta = ack - t->sock.tcp.snd_una;
         if (delta >= t->sock.tcp.bytes_in_flight)
             t->sock.tcp.bytes_in_flight = 0;
