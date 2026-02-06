@@ -2000,7 +2000,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                 return;
             }
             /* Validate TCP header length fits in IP payload */
-            if (iplen < IP_HEADER_LEN + (tcp->hlen >> 2)) {
+            if (iplen < (uint32_t)(IP_HEADER_LEN + (tcp->hlen >> 2))) {
                 return; /* malformed: TCP header exceeds IP length */
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
