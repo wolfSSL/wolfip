@@ -1,9 +1,6 @@
 #if defined(WOLFIP_ESP) && !defined(WOLFESP_SRC)
 #define WOLFESP_SRC
-
 #include "wolfesp.h"
-static uint8_t esp_iv_len_from_enc(esp_enc_t enc);
-
 static WC_RNG          wc_rng;
 static volatile int    rng_inited = 0;
 /* security association static pool*/
@@ -152,20 +149,58 @@ int wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,
     return err;
 }
 
-#ifdef WOLFIP_DEBUG_ESP
-static void
-esp_dump_data(const char * what, const uint8_t * data, size_t data_len)
+static uint8_t
+esp_block_len_from_enc(esp_enc_t enc)
 {
-    printf("info: %s: 0x", what);
+    uint8_t block_len = 0;
 
-    for (size_t i = 0; i < data_len; ++i) {
-        printf("%02x", data[i]);
+    switch (enc) {
+    case ESP_ENC_NONE:
+        block_len = 0;
+        break;
+    case ESP_ENC_CBC_AES:
+        block_len = AES_BLOCK_SIZE;
+        break;
+    #ifndef NO_DES3
+    case ESP_ENC_CBC_DES3:
+        block_len = DES_BLOCK_SIZE;
+        break;
+    #endif /* !NO_DES3 */
+    case ESP_ENC_GCM_RFC4106:
+    case ESP_ENC_GCM_RFC4543:
+    default:
+        block_len = 0;
+        break;
     }
 
-    printf("\n");
-    return;
+    return block_len;
 }
 
+static uint8_t
+esp_iv_len_from_enc(esp_enc_t enc)
+{
+    uint8_t iv_len = 0;
+
+    switch (enc) {
+    case ESP_ENC_CBC_AES:
+        iv_len = ESP_CBC_RFC3602_IV_LEN;
+        break;
+
+    case ESP_ENC_GCM_RFC4106:
+    case ESP_ENC_GCM_RFC4543:
+        iv_len = ESP_GCM_RFC4106_IV_LEN;
+        break;
+
+    case ESP_ENC_NONE:
+    default:
+        iv_len = 0;
+        break;
+    }
+
+    return iv_len;
+}
+
+#ifdef WOLFIP_DEBUG_ESP
 #define esp_print_sep \
     printf("+------------------+\n")
 #define esp_str_4hex \
@@ -205,7 +240,7 @@ esp_print_field(const char * fld, const uint8_t * val,
  *                       |<---- encrypted ----->|
  *                 |<--- integrity checked ---->|
  * */
-static void wolfIP_print_esp(const struct wolfIP_esp_sa * esp_sa,
+static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
                              const uint8_t * esp_data, uint32_t esp_len,
                              uint8_t pad_len, uint8_t nxt_hdr)
 {
@@ -273,63 +308,12 @@ static void wolfIP_print_esp(const struct wolfIP_esp_sa * esp_sa,
 }
 #endif /* WOLFIP_DEBUG_ESP */
 
-static uint8_t
-esp_block_len_from_enc(esp_enc_t enc)
-{
-    uint8_t block_len = 0;
-
-    switch (enc) {
-    case ESP_ENC_NONE:
-        block_len = 0;
-        break;
-    case ESP_ENC_CBC_AES:
-        block_len = AES_BLOCK_SIZE;
-        break;
-    #ifndef NO_DES3
-    case ESP_ENC_CBC_DES3:
-        block_len = DES_BLOCK_SIZE;
-        break;
-    #endif /* !NO_DES3 */
-    case ESP_ENC_GCM_RFC4106:
-    case ESP_ENC_GCM_RFC4543:
-    default:
-        block_len = 0;
-        break;
-    }
-
-    return block_len;
-}
-
-static uint8_t
-esp_iv_len_from_enc(esp_enc_t enc)
-{
-    uint8_t iv_len = 0;
-
-    switch (enc) {
-    case ESP_ENC_CBC_AES:
-        iv_len = ESP_CBC_RFC3602_IV_LEN;
-        break;
-
-    case ESP_ENC_GCM_RFC4106:
-    case ESP_ENC_GCM_RFC4543:
-        iv_len = ESP_GCM_RFC4106_IV_LEN;
-        break;
-
-    case ESP_ENC_NONE:
-    default:
-        iv_len = 0;
-        break;
-    }
-
-    return iv_len;
-}
-
 /*
  * esp_data covers from start of ESP header to end of ESP trailer, but does not
  * include the ESP ICV after trailer.
  * */
 static int
-esp_calc_icv_hmac(uint8_t * hash, const struct wolfIP_esp_sa * esp_sa,
+esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
                   const uint8_t * esp_data, uint32_t esp_len)
 {
     /* SHA1 and MD5 have these digest sizes:
@@ -435,7 +419,7 @@ esp_const_memcmp(const uint8_t * vec_a, const uint8_t * vec_b, uint32_t len)
         (data) + ESP_SPI_LEN + ESP_SEQ_LEN + (iv_len)
 
 static int
-esp_aes_rfc3602_dec(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                     uint32_t esp_len)
 {
     Aes       cbc_dec;
@@ -489,7 +473,7 @@ aes_dec_out:
 }
 
 static int
-esp_aes_rfc3602_enc(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                     uint32_t esp_len)
 {
     Aes          cbc_enc;
@@ -560,7 +544,7 @@ aes_enc_out:
                                  - ESP_GCM_RFC4106_SALT_LEN
 
 static int
-esp_aes_rfc4106_dec(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                     uint32_t esp_len)
 {
     Aes             gcm_dec;
@@ -637,7 +621,7 @@ rfc4106_dec_out:
 }
 
 static int
-esp_aes_rfc4106_enc(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                     uint32_t esp_len)
 {
     Aes             gcm_enc;
@@ -739,7 +723,7 @@ rfc4106_enc_out:
  * include the ESP ICV after trailer.
  * */
 static int
-esp_check_icv_hmac(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+esp_check_icv_hmac(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                    uint32_t esp_len)
 {
     /* SHA and MD5 have these digest sizes:
@@ -760,12 +744,6 @@ esp_check_icv_hmac(const struct wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* compare the first N bits depending on truncation type. */
     rc = esp_const_memcmp(icv, hash, esp_sa->icv_len);
-    if (rc) {
-        #ifdef WOLFIP_DEBUG_ESP
-        esp_dump_data("icv not matched", hash, esp_sa->icv_len);
-        #endif /* WOLFIP_DEBUG_ESP */
-    }
-
     return rc;
 }
 
@@ -869,14 +847,14 @@ static int
 esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
                      uint32_t * frame_len)
 {
-    uint8_t                spi[ESP_SPI_LEN];
-    uint32_t               seq = 0;
-    struct wolfIP_esp_sa * esp_sa = NULL;
-    uint32_t               esp_len = 0;
-    uint8_t                pad_len = 0;
-    uint8_t                nxt_hdr = 0;
-    uint8_t                iv_len = 0;
-    int                    err = 0;
+    uint8_t         spi[ESP_SPI_LEN];
+    uint32_t        seq = 0;
+    wolfIP_esp_sa * esp_sa = NULL;
+    uint32_t        esp_len = 0;
+    uint8_t         pad_len = 0;
+    uint8_t         nxt_hdr = 0;
+    uint8_t         iv_len = 0;
+    int             err = 0;
 
     memset(spi, 0, sizeof(spi));
 
@@ -904,12 +882,6 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
     seq = ee32(seq);
 
     for (size_t i = 0; i < in_sa_num; ++i) {
-        #ifdef WOLFIP_DEBUG_ESP
-        printf("info: sa: 0x%02x%02x%02x%02x\n",
-               in_sa_list[i].spi[0], in_sa_list[i].spi[1],
-               in_sa_list[i].spi[2], in_sa_list[i].spi[3]);
-        #endif /* WOLFIP_DEBUG_ESP */
-
         if (memcmp(spi, in_sa_list[i].spi, sizeof(spi)) == 0) {
             #ifdef WOLFIP_DEBUG_ESP
             printf("info: found sa: 0x%02x%02x%02x%02x\n",
@@ -921,8 +893,7 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
     }
 
     if (esp_sa == NULL) {
-        /**
-         * RFC4303:
+        /* RFC4303:
          *   If no valid Security Association exists for this packet, the
          *   receiver MUST discard the packet; this is an auditable event.
          * */
@@ -976,10 +947,9 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
         }
     }
 
+    /* icv check good, now finish unwrapping esp packet. */
     if (iv_len != 0) {
         /* Decrypt the payload in place. */
-        int err = -1;
-
         switch(esp_sa->enc) {
         case ESP_ENC_CBC_AES:
             err = esp_aes_rfc3602_dec(esp_sa, ip->data, esp_len);
@@ -1001,12 +971,10 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
                    err);
             return -1;
         }
-
-        /* Payload is now decrypted. We can now parse
-         * the ESP trailer for next header and padding. */
     }
 
-    /* icv check good, now finish unwrapping esp packet. */
+    /* Payload is now decrypted. We can now parse
+     * the ESP trailer for next header and padding. */
     pad_len = *(ip->data + esp_len - esp_sa->icv_len - ESP_NEXT_HEADER_LEN
                 - ESP_PADDING_LEN);
     nxt_hdr = *(ip->data + esp_len - esp_sa->icv_len - ESP_NEXT_HEADER_LEN);
@@ -1059,7 +1027,7 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
  *
  *   Returns  0 on success.
  *   Returns -1 on error.
- *   Returns  1 if no ipsec policy not found (send plaintext)
+ *   Returns  1 if no ipsec policy found (send plaintext)
  * */
 static int
 esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
@@ -1101,7 +1069,6 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     }
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
-
    /* move ip payload back to make room for ESP header (SPI, SEQ) + IV. */
     memmove(ip->data + ESP_SPI_LEN + ESP_SEQ_LEN + iv_len,
             ip->data, orig_payload_len);
@@ -1156,6 +1123,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     payload += orig_payload_len;
 
     if (pad_len) {
+        /* rfc4303: monotonic increasing sequence for padding. */
         uint8_t i = 0;
         for (i = 0; i < pad_len; ++i) {
             payload[i] = (i + 1);
@@ -1202,7 +1170,6 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
                    err);
             return -1;
         }
-
         /* Payload is now encrypted. Now calculate ICV.  */
     }
 

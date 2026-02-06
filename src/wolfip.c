@@ -3753,8 +3753,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
      * ip forwarding would require esp tunnel mode. */
     if (ip->proto == 0x32) {
         /* proto is ESP 0x32 (50), try to unwrap. */
-        int err = 0;
-        err = esp_transport_unwrap(s, ip, &len);
+        int err = esp_transport_unwrap(s, ip, &len);
         if (err) {
             printf("info: failed to unwrap esp packet, dropping.\n");
             return;
@@ -4324,8 +4323,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         }
     }
 
-
-    /**
+    /*
      * UDP
      * */
     for (i = 0; i < MAX_UDPSOCKETS; i++) {

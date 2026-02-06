@@ -40,7 +40,6 @@
 static void __attribute__((noreturn)) print_usage_and_die(void);
 
 #define TEST_SIZE (12 * 1024)
-
 #define BUFFER_SIZE TEST_SIZE
 
 static int disable_ipsec = 0;
@@ -54,10 +53,9 @@ static int closed = 0;
 static int conn_fd = -1;
 static int client_connected = 0;
 /* "Test pattern - -" 16 chars without trailing null. */
-static const uint8_t test_pattern[16] =
-    {0x54, 0x65, 0x73, 0x74, 0x20, 0x70,
-     0x61, 0x74, 0x74, 0x65, 0x72, 0x6e,
-     0x20, 0x2d, 0x20, 0x2d};
+static const uint8_t test_pattern[16] = {0x54, 0x65, 0x73, 0x74, 0x20, 0x70,
+                                         0x61, 0x74, 0x74, 0x65, 0x72, 0x6e,
+                                         0x20, 0x2d, 0x20, 0x2d};
 static uint8_t in_sa_gcm[ESP_SPI_LEN] = {0x01, 0x01, 0x01, 0x01};
 static uint8_t out_sa_gcm[ESP_SPI_LEN] = {0x02, 0x02, 0x02, 0x02};
 static uint8_t in_sa_cbc[ESP_SPI_LEN] = {0x03, 0x03, 0x03, 0x03};
@@ -75,7 +73,6 @@ static uint8_t out_enc_key[36] =
       0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
       0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
       0x0a, 0x0b, 0x0c, 0x0d};
-
 static uint8_t in_auth_key[16] =
      {0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
       0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01};
@@ -536,15 +533,10 @@ int main(int argc, char **argv)
         case '?':
             print_usage_and_die();
             break;
-        default: /* '?' */
-            fprintf(stderr, "Usage: %s [-t nsecs] [-n] name\n",
-                    argv[0]);
-            exit(EXIT_FAILURE);
+        default:
+            break;
         }
     }
-
-    (void)argc;
-    (void)argv;
 
     if (!disable_ipsec) {
         err = wolfIP_esp_init();

@@ -3,7 +3,7 @@
 
 /* size of static pool */
 #define WOLFIP_ESP_NUM_SA  3
-
+/* ESP packet parameters */
 #define ESP_SPI_LEN               4
 #define ESP_SEQ_LEN               4
 #define ESP_PADDING_LEN           1
@@ -56,8 +56,7 @@ typedef struct replay_t replay_t;
   (r).bitmap = 0U; (r).hi_seq = ESP_REPLAY_WIN; (r).oseq = 1U; \
 
 /* Minimal ESP Security Association structure.
- * Supports only transport mode.
- * */
+ * Supports only transport mode. */
 struct wolfIP_esp_sa {
     uint8_t    spi[ESP_SPI_LEN]; /* security parameter index */
     ip4        src; /* ip src and dst in network byte order */
@@ -73,7 +72,6 @@ struct wolfIP_esp_sa {
     uint8_t    pre_iv[ESP_GCM_RFC4106_IV_LEN]; /* unique salt that is xor'ed
                                                 * with oseq to generate iv. */
 };
-
 typedef struct wolfIP_esp_sa wolfIP_esp_sa;
 
 int  wolfIP_esp_init(void);
@@ -84,9 +82,4 @@ int  wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,
                                   uint8_t * enc_key, uint8_t enc_key_len,
                                   uint8_t * auth_key, uint8_t auth_key_len,
                                   uint8_t icv_len);
-#if 0
-void wolfIP_esp_load_sa_list(wolfIP_esp_sa * sa_list, uint16_t num,
-                             int in);
-#endif
-
 #endif /* !WOLFESP_H */
