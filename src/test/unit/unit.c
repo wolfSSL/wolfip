@@ -7587,7 +7587,7 @@ START_TEST(test_tcp_process_ts_uses_ecr)
     opt->eoo = TCP_OPTION_EOO;
 
     s.last_tick = 1000;
-    ck_assert_int_eq(tcp_process_ts(ts, tcp), 0);
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), 0);
     ck_assert_uint_eq(ts->sock.tcp.rtt, 100);
 }
 END_TEST
@@ -7618,7 +7618,7 @@ START_TEST(test_tcp_process_ts_nop_then_ts)
     opt->eoo = TCP_OPTION_EOO;
 
     s.last_tick = 120;
-    ck_assert_int_eq(tcp_process_ts(ts, tcp), 0);
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), 0);
 }
 END_TEST
 
@@ -7651,7 +7651,7 @@ START_TEST(test_tcp_process_ts_skips_unknown_option)
     opt->eoo = TCP_OPTION_EOO;
 
     s.last_tick = 250;
-    ck_assert_int_eq(tcp_process_ts(ts, tcp), 0);
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), 0);
 }
 END_TEST
 
@@ -7678,7 +7678,7 @@ START_TEST(test_tcp_process_ts_no_ecr)
     opt->pad = TCP_OPTION_NOP;
     opt->eoo = TCP_OPTION_EOO;
 
-    ck_assert_int_eq(tcp_process_ts(ts, tcp), -1);
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), -1);
 }
 END_TEST
 
@@ -7709,7 +7709,7 @@ START_TEST(test_tcp_process_ts_updates_rtt_when_set)
     opt->eoo = TCP_OPTION_EOO;
 
     s.last_tick = 120;
-    ck_assert_int_eq(tcp_process_ts(ts, tcp), 0);
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), 0);
     ck_assert_uint_ne(ts->sock.tcp.rtt, old_rtt);
 }
 END_TEST
