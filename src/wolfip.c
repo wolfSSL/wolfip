@@ -1828,9 +1828,17 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     return -1;
 }
 
+/* Increment a TCP sequence number (wraps at 2^32) */
+static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
+{
+    if (n > UINT32_MAX - seq)
+        return n - (UINT32_MAX - seq) - 1;
+    return seq + n;
+}
+
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
 
-/* Return true if a <= b 
+/* Return true if a <= b
  * Take into account wrapping.
  */
 static inline int tcp_seq_leq(uint32_t a, uint32_t b)
@@ -2045,7 +2053,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             if (tcp->flags & 0x01) {
                 if (t->sock.tcp.state == TCP_ESTABLISHED) {
                     t->sock.tcp.state = TCP_CLOSE_WAIT;
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     tcp_send_ack(t);
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                     (void)wolfIP_filter_notify_socket_event(
@@ -2054,7 +2062,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                 }
                 else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
                     t->sock.tcp.state = TCP_CLOSING;
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     tcp_send_ack(t);
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                 }
@@ -2078,7 +2086,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                     t->local_ip = syn_dst;
                     t->if_idx = (uint8_t)dst_if;
                     t->sock.tcp.state = TCP_SYN_RCVD;
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->sock.tcp.seq = wolfIP_getrandom();
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
@@ -2088,7 +2096,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     if (tcp->flags == 0x12) {
                         t->sock.tcp.state = TCP_ESTABLISHED;
-                        t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                        t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
                         t->events |= CB_EVENT_WRITABLE;
@@ -2122,7 +2130,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                     } else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
                         t->sock.tcp.state = TCP_CLOSING;
                     }
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                     tcp_send_ack(t);
                 }
@@ -3075,7 +3083,10 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         icmp->type = ICMP_ECHO_REPLY;
-        icmp->csum += 8;
+        {
+            uint32_t sum = (uint16_t)icmp->csum + 8;
+            icmp->csum = (uint16_t)(sum + (sum >> 16));
+        }
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
