@@ -1419,26 +1419,36 @@ static uint16_t tcp_adv_win(const struct tsocket *t)
     return (uint16_t)win;
 }
 
-static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
+static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
 {
     const uint8_t *opt = (const uint8_t *)tcp->data;
-    uint32_t opt_len = (uint32_t)((tcp->hlen >> 2) - TCP_HEADER_LEN);
+    int claimed_opt_len = (tcp->hlen >> 2) - TCP_HEADER_LEN;
+    int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
+    int opt_len;
+    const uint8_t *opt_end;
     int found = 0;
-    while (opt_len > 0) {
+
+    if (claimed_opt_len <= 0 || available_bytes <= 0)
+        return 0;
+
+    opt_len = (claimed_opt_len < available_bytes) ? claimed_opt_len : available_bytes;
+    opt_end = opt + opt_len;
+
+    while (opt < opt_end) {
         if (*opt == TCP_OPTION_NOP) {
             opt++;
-            opt_len--;
             continue;
         } else if (*opt == TCP_OPTION_EOO) {
             break;
         }
-        if (opt_len < 2)
+        if (opt + 2 > opt_end)
             break;
-        if (opt[1] < 2 || opt[1] > opt_len)
+        if (opt[1] < 2 || opt + opt[1] > opt_end)
             break;
         if (*opt == TCP_OPTION_WS && opt[1] == TCP_OPTION_WS_LEN) {
             uint8_t shift;
-            if (opt_len < TCP_OPTION_WS_LEN)
+            if (opt + TCP_OPTION_WS_LEN > opt_end)
                 break;
             shift = opt[2];
             if (shift > 14)
@@ -1446,7 +1456,6 @@ static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             t->sock.tcp.snd_wscale = shift;
             found = 1;
         }
-        opt_len -= opt[1];
         opt += opt[1];
     }
     return found;
@@ -1575,53 +1584,59 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
 {
     uint32_t sum = 0;
     uint32_t i = 0;
-    uint16_t *ptr = (uint16_t *)ph->buf;
-    uint16_t *data = (uint16_t *)_data;
-    uint8_t *data8 = (uint8_t *)_data;
+    const uint8_t *ptr = (const uint8_t *)ph->buf;
+    const uint8_t *data = (const uint8_t *)_data;
     uint16_t len = ee16(ph->ph.len);
-    for (i = 0; i < 6; i++) {
-        sum += ee16(ptr[i]);
+    uint16_t word;
+    for (i = 0; i < 12; i += 2) {
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
     }
-    for (i = 0; i < (len / 2); i++) {
-        sum += ee16(data[i]);
+    for (i = 0; i < (len & ~1u); i += 2) {
+        memcpy(&word, data + i, sizeof(word));
+        sum += ee16(word);
     }
     if (len & 0x01) {
         uint16_t spare = 0;
-        spare |= (data8[len - 1]) << 8;
+        spare |= data[len - 1] << 8;
         sum += spare;
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    return ~sum;
+    return (uint16_t)~sum;
 }
 
 static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
-    uint16_t *ptr = (uint16_t *)(&icmp->type);
-    for (i = 0; i < len / 2; i++) {
-        sum += ee16(ptr[i]);
+    const uint8_t *ptr = (const uint8_t *)(&icmp->type);
+    uint16_t word;
+    for (i = 0; i < (len & ~1u); i += 2) {
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    return ~sum;
+    return (uint16_t)~sum;
 }
 
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
-    uint16_t *ptr = (uint16_t *)(&ip->ver_ihl);
-    for (i = 0; i < IP_HEADER_LEN / 2; i++) {
-        sum += ee16(ptr[i]);
+    const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
+    for (i = 0; i < IP_HEADER_LEN; i += 2) {
+        uint16_t word;
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    ip->csum = ee16(~sum);
+    ip->csum = ee16((uint16_t)~sum);
 }
 
 #ifdef ETHERNET
@@ -1757,18 +1772,44 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, 
 }
 
 /* Process timestamp option, calculate RTT */
-static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
+static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
 {
     const struct tcp_opt_ts *ts;
     const uint8_t *opt = tcp->data;
-    while (opt < ((const uint8_t *)tcp->data + (tcp->hlen >> 2))) {
-        if (*opt == TCP_OPTION_NOP)
+    int claimed_opt_len = (tcp->hlen >> 2) - 20;
+    int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
+    int opt_len;
+    const uint8_t *opt_end;
+
+    /* Sanity checks */
+    if (claimed_opt_len <= 0 || available_bytes <= 0)
+        return -1;
+
+    /* Use minimum of claimed vs actual available */
+    opt_len = (claimed_opt_len < available_bytes) ? claimed_opt_len : available_bytes;
+    opt_end = opt + opt_len;
+
+    while (opt < opt_end) {
+        if (*opt == TCP_OPTION_NOP) {
             opt++;
-        else if (*opt == TCP_OPTION_EOO)
+        } else if (*opt == TCP_OPTION_EOO) {
             break;
-        else {
+        } else {
+            /* Need at least 2 bytes for kind + length */
+            if (opt + 2 > opt_end)
+                break;
+
             ts = (const struct tcp_opt_ts *)opt;
+
+            /* Validate length: minimum 2, must not exceed remaining space */
+            if (ts->len < 2 || opt + ts->len > opt_end)
+                break;
+
             if (ts->opt == TCP_OPTION_TS) {
+                /* Need full timestamp option (10 bytes) */
+                if (ts->len < TCP_OPTION_TS_LEN)
+                    return -1;
                 t->sock.tcp.last_ts = ts->val;
                 if (ts->ecr == 0)
                     return -1; /* No echoed timestamp; fall back to coarse RTT. */
@@ -1787,14 +1828,22 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     return -1;
 }
 
+/* Increment a TCP sequence number (wraps at 2^32) */
+static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
+{
+    if (n > UINT32_MAX - seq)
+        return n - (UINT32_MAX - seq) - 1;
+    return seq + n;
+}
+
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
 
-/* Return true if a <= b 
+/* Return true if a <= b
  * Take into account wrapping.
  */
 static inline int tcp_seq_leq(uint32_t a, uint32_t b)
 {
-    return (int32_t)(a - b) <= 0;
+    return ((int32_t)a - (int32_t)b) <= 0;
 }
 
 /* Receive an ack */
@@ -1832,7 +1881,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             break;
         }
     }
-    if (t->sock.tcp.snd_una != ack) {
+    if (t->sock.tcp.snd_una != ack &&
+            tcp_seq_leq(t->sock.tcp.snd_una, ack) &&
+            tcp_seq_leq(ack, t->sock.tcp.seq)) {
         uint32_t delta = ack - t->sock.tcp.snd_una;
         if (delta >= t->sock.tcp.bytes_in_flight)
             t->sock.tcp.bytes_in_flight = 0;
@@ -1854,7 +1905,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         if (fresh_desc) {
             seg = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
             /* Update rtt */
-            if (tcp_process_ts(t, seg) < 0) {
+            if (tcp_process_ts(t, seg, fresh_desc->len) < 0) {
                 /* No timestamp option, use coarse RTT estimation */
                 int rtt = t->S->last_tick - fresh_desc->time_sent;
                 if (t->sock.tcp.rtt == 0) {
@@ -1948,9 +1999,13 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                 wolfIP_send_ttl_exceeded(S, if_idx, &tcp->ip);
                 return;
             }
+            /* Validate TCP header length fits in IP payload */
+            if (iplen < (uint32_t)(IP_HEADER_LEN + (tcp->hlen >> 2))) {
+                return; /* malformed: TCP header exceeds IP length */
+            }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
             if (tcp->flags & 0x02) {
-                int ws_found = tcp_process_ws(t, tcp);
+                int ws_found = tcp_process_ws(t, tcp, frame_len);
                 /* Window scale is negotiated only during SYN/SYN-ACK. */
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     /* Server side: enable if peer offered WS. */
@@ -1998,7 +2053,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             if (tcp->flags & 0x01) {
                 if (t->sock.tcp.state == TCP_ESTABLISHED) {
                     t->sock.tcp.state = TCP_CLOSE_WAIT;
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     tcp_send_ack(t);
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                     (void)wolfIP_filter_notify_socket_event(
@@ -2007,7 +2062,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                 }
                 else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
                     t->sock.tcp.state = TCP_CLOSING;
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     tcp_send_ack(t);
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                 }
@@ -2031,21 +2086,21 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                     t->local_ip = syn_dst;
                     t->if_idx = (uint8_t)dst_if;
                     t->sock.tcp.state = TCP_SYN_RCVD;
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->sock.tcp.seq = wolfIP_getrandom();
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
-                    tcp_process_ts(t, tcp);
+                    tcp_process_ts(t, tcp, frame_len);
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     if (tcp->flags == 0x12) {
                         t->sock.tcp.state = TCP_ESTABLISHED;
-                        t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                        t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
                         t->events |= CB_EVENT_WRITABLE;
-                        tcp_process_ts(t, tcp);
+                        tcp_process_ts(t, tcp, frame_len);
                         tcp_send_ack(t);
                     }
                 }
@@ -2075,13 +2130,13 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                     } else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
                         t->sock.tcp.state = TCP_CLOSING;
                     }
-                    t->sock.tcp.ack = ee32(tcp->seq) + 1;
+                    t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                     tcp_send_ack(t);
                 }
                 if (tcp->flags & 0x10) {
                     tcp_ack(t, tcp);
-                    tcp_process_ts(t, tcp);
+                    tcp_process_ts(t, tcp, frame_len);
                 }
                 if (tcplen == 0)
                     return;
@@ -3028,7 +3083,10 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         icmp->type = ICMP_ECHO_REPLY;
-        icmp->csum += 8;
+        {
+            uint32_t sum = (uint16_t)icmp->csum + 8;
+            icmp->csum = (uint16_t)(sum + (sum >> 16));
+        }
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
