@@ -1419,26 +1419,36 @@ static uint16_t tcp_adv_win(const struct tsocket *t)
     return (uint16_t)win;
 }
 
-static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
+static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
 {
     const uint8_t *opt = (const uint8_t *)tcp->data;
-    uint32_t opt_len = (uint32_t)((tcp->hlen >> 2) - TCP_HEADER_LEN);
+    int claimed_opt_len = (tcp->hlen >> 2) - TCP_HEADER_LEN;
+    int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
+    int opt_len;
+    const uint8_t *opt_end;
     int found = 0;
-    while (opt_len > 0) {
+
+    if (claimed_opt_len <= 0 || available_bytes <= 0)
+        return 0;
+
+    opt_len = (claimed_opt_len < available_bytes) ? claimed_opt_len : available_bytes;
+    opt_end = opt + opt_len;
+
+    while (opt < opt_end) {
         if (*opt == TCP_OPTION_NOP) {
             opt++;
-            opt_len--;
             continue;
         } else if (*opt == TCP_OPTION_EOO) {
             break;
         }
-        if (opt_len < 2)
+        if (opt + 2 > opt_end)
             break;
-        if (opt[1] < 2 || opt[1] > opt_len)
+        if (opt[1] < 2 || opt + opt[1] > opt_end)
             break;
         if (*opt == TCP_OPTION_WS && opt[1] == TCP_OPTION_WS_LEN) {
             uint8_t shift;
-            if (opt_len < TCP_OPTION_WS_LEN)
+            if (opt + TCP_OPTION_WS_LEN > opt_end)
                 break;
             shift = opt[2];
             if (shift > 14)
@@ -1446,7 +1456,6 @@ static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             t->sock.tcp.snd_wscale = shift;
             found = 1;
         }
-        opt_len -= opt[1];
         opt += opt[1];
     }
     return found;
@@ -1986,7 +1995,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
             if (tcp->flags & 0x02) {
-                int ws_found = tcp_process_ws(t, tcp);
+                int ws_found = tcp_process_ws(t, tcp, frame_len);
                 /* Window scale is negotiated only during SYN/SYN-ACK. */
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     /* Server side: enable if peer offered WS. */
