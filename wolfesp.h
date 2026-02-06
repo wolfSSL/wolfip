@@ -77,6 +77,7 @@ struct wolfIP_esp_sa {
 typedef struct wolfIP_esp_sa wolfIP_esp_sa;
 
 int  wolfIP_esp_init(void);
+void wolfIP_esp_sa_del(void);
 int  wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
                             uint8_t * enc_key, uint8_t enc_key_len);
 int  wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,

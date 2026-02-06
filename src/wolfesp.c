@@ -12,8 +12,7 @@ static wolfIP_esp_sa   out_sa_list[WOLFIP_ESP_NUM_SA];
 static uint16_t        in_sa_num = WOLFIP_ESP_NUM_SA;
 static uint16_t        out_sa_num = WOLFIP_ESP_NUM_SA;
 
-int
-wolfIP_esp_init(void)
+int wolfIP_esp_init(void)
 {
     int err = 0;
 
@@ -34,9 +33,15 @@ wolfIP_esp_init(void)
     return err;
 }
 
-int
-wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
-                       uint8_t * enc_key, uint8_t enc_key_len)
+void wolfIP_esp_sa_del(void)
+{
+    memset(in_sa_list, 0, sizeof(in_sa_list));
+    memset(out_sa_list, 0, sizeof(out_sa_list));
+    return ;
+}
+
+int wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
+                           uint8_t * enc_key, uint8_t enc_key_len)
 {
     wolfIP_esp_sa * new_sa = NULL;
     wolfIP_esp_sa * list = NULL;
@@ -76,7 +81,8 @@ wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->icv_len = ESP_GCM_RFC4106_ICV_LEN;
 
     /* Generate pre-iv for gcm. */
-    err = wc_RNG_GenerateBlock(&wc_rng, new_sa->pre_iv, ESP_GCM_RFC4106_IV_LEN);
+    err = wc_RNG_GenerateBlock(&wc_rng, new_sa->pre_iv,
+                               ESP_GCM_RFC4106_IV_LEN);
     if (err) {
         printf("error: wc_RNG_GenerateBlock: %d\n", err);
     }
@@ -94,11 +100,10 @@ wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
     return err;
 }
 
-int
-wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,
-                             uint8_t * enc_key, uint8_t enc_key_len,
-                             uint8_t * auth_key, uint8_t auth_key_len,
-                             uint8_t icv_len)
+int wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,
+                                 uint8_t * enc_key, uint8_t enc_key_len,
+                                 uint8_t * auth_key, uint8_t auth_key_len,
+                                 uint8_t icv_len)
 {
     wolfIP_esp_sa * new_sa = NULL;
     wolfIP_esp_sa * list = NULL;
@@ -146,27 +151,6 @@ wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,
 
     return err;
 }
-
-#if 0
-void
-wolfIP_esp_load_sa_list(struct wolfIP_esp_sa * sa_list, uint16_t num, int in)
-{
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: esp_load_sa_list: %p, %d, %d\n", sa_list, num, in);
-    #endif /* WOLFIP_DEBUG_ESP */
-
-    if (in == 1) {
-        in_sa_list = sa_list;
-        in_sa_num = num;
-    }
-    else {
-        out_sa_list = sa_list;
-        out_sa_num = num;
-    }
-
-    return;
-}
-#endif
 
 #ifdef WOLFIP_DEBUG_ESP
 static void
@@ -1013,7 +997,8 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
         }
 
         if (err) {
-            printf("error: esp_decrypt(%02x) returned: %d\n", esp_sa->enc, err);
+            printf("error: esp_decrypt(%02x) returned: %d\n", esp_sa->enc,
+                   err);
             return -1;
         }
 
@@ -1074,6 +1059,7 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
  *
  *   Returns  0 on success.
  *   Returns -1 on error.
+ *   Returns  1 if no ipsec policy not found (send plaintext)
  * */
 static int
 esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
@@ -1096,7 +1082,8 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
             esp_sa = &out_sa_list[i];
             #ifdef WOLFIP_DEBUG_ESP
             printf("info: found out sa: 0x%02x%02x%02x%02x\n",
-                   esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2], esp_sa->spi[3]);
+                   esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2],
+                   esp_sa->spi[3]);
             #endif /* WOLFIP_DEBUG_ESP */
             break;
         }
@@ -1110,7 +1097,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
         iptoa(ip->dst, ip_str);
         printf("info: ip dst not found: %s\n", ip_str);
         #endif /* WOLFIP_DEBUG_ESP */
-        return 0;
+        return 1;
     }
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
@@ -1211,7 +1198,8 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
         }
 
         if (err) {
-            printf("error: esp_encrypt(%02x) returned: %d\n", esp_sa->enc, err);
+            printf("error: esp_encrypt(%02x) returned: %d\n", esp_sa->enc,
+                   err);
             return -1;
         }
 
@@ -1263,7 +1251,8 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
  * in the fifo circular buffer for each tcp packet, so we can expand in place.
  * */
 static int
-esp_tcp_output(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
+esp_tcp_output(struct wolfIP_ll_dev * ll_dev,
+               const struct wolfIP_ip_packet *ip,
                uint16_t len)
 {
     /**
@@ -1287,7 +1276,7 @@ esp_tcp_output(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
 
     if (esp_rc) {
         #ifdef WOLFIP_DEBUG_ESP
-        printf("error: esp_wrap returned: %d\n", esp_rc);
+        printf("info: esp_wrap returned: %d\n", esp_rc);
         #endif /* WOLFIP_DEBUG_ESP */
         return esp_rc;
     }

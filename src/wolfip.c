@@ -3816,6 +3816,9 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     if (!ll)
         return;
     eth = (struct wolfIP_eth_frame *)buf;
+    #ifdef DEBUG_ETH
+    wolfIP_print_eth(eth, len);
+    #endif /* DEBUG_ETH */
     if (wolfIP_filter_notify_eth(WOLFIP_FILT_RECEIVING, s, if_idx, eth, len) != 0)
         return;
     if (eth->type == ee16(ETH_TYPE_IP)) {
@@ -4284,7 +4287,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
                             if (ll && ll->send) {
                                 #ifdef WOLFIP_ESP
-                                esp_tcp_output(ll, (struct wolfIP_ip_packet *)tcp, size);
+                                int esp_err = esp_tcp_output(ll, (struct wolfIP_ip_packet *)tcp, size);
+                                if (esp_err == 1) {
+                                    /* ipsec not configured on this interface.
+                                     * send plaintext. */
+                                    ll->send(ll, tcp, desc->len);
+                                }
                                 #else
                                 ll->send(ll, tcp, desc->len);
                                 #endif /* WOLFIP_ESP */
