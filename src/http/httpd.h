@@ -1,5 +1,8 @@
 #ifndef WOLF_HTTPD_H
 #define WOLF_HTTPD_H
+
+#ifdef WOLFIP_CONF_HTTP
+
 #ifdef WOLFSSL_USER_SETTINGS
 #include <user_settings.h>
 #else
@@ -8,6 +11,7 @@
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #define HTTP_METHOD_LEN 8
 #define HTTP_PATH_LEN 128
@@ -86,5 +90,6 @@ void http_send_418_teapot(struct http_client *hc);
 int http_url_decode(char *buf, size_t len);
 int http_url_encode(char *buf, size_t len, size_t max_len);
 
+#endif /* WOLFIP_CONF_HTTP */
 
-#endif
+#endif /* WOLF_HTTPD_H */
