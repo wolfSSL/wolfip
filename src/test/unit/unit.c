@@ -1035,7 +1035,219 @@ START_TEST(test_udp_sendto_and_recvfrom)
             (struct wolfIP_sockaddr *)&from, &from_len);
     ck_assert_int_eq(ret, (int)sizeof(payload));
     ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
-    ck_assert_uint_eq(from.sin_port, remote_port);
+    ck_assert_uint_eq(from.sin_port, ee16(remote_port));
+}
+END_TEST
+
+START_TEST(test_udp_recvfrom_sets_remote_ip)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    uint8_t rxbuf[4] = {0};
+    struct wolfIP_sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    int ret;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint16_t local_port = 4001;
+    uint16_t remote_port = 5001;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ret = wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, 0);
+
+    ts = &s.udpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_uint_eq(ts->remote_ip, 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            payload, sizeof(payload));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    ck_assert_uint_eq(from.sin_addr.s_addr, ee32(remote_ip));
+    ck_assert_uint_eq(ts->remote_ip, remote_ip);
+}
+END_TEST
+
+START_TEST(test_udp_recvfrom_null_src_addr_len)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0x11, 0x22, 0x33, 0x44};
+    uint8_t rxbuf[4] = {0};
+    int ret;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint16_t local_port = 4002;
+    uint16_t remote_port = 5002;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ret = wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            payload, sizeof(payload));
+
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+}
+END_TEST
+
+START_TEST(test_udp_recvfrom_preserves_remote_ip)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0x55, 0x66, 0x77, 0x88};
+    uint8_t rxbuf[4] = {0};
+    struct wolfIP_sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    int ret;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    ip4 preset_remote_ip = 0x0A000099U;
+    uint16_t local_port = 4003;
+    uint16_t remote_port = 5003;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ret = wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, 0);
+
+    ts = &s.udpsockets[SOCKET_UNMARK(sd)];
+    ts->remote_ip = preset_remote_ip;
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            payload, sizeof(payload));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    ck_assert_uint_eq(from.sin_addr.s_addr, ee32(remote_ip));
+    ck_assert_uint_eq(ts->remote_ip, preset_remote_ip);
+}
+END_TEST
+
+START_TEST(test_udp_recvfrom_null_addrlen)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0x9A, 0xBC, 0xDE, 0xF0};
+    uint8_t rxbuf[4] = {0};
+    struct wolfIP_sockaddr_in from;
+    int ret;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint16_t local_port = 4004;
+    uint16_t remote_port = 5004;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ret = wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            payload, sizeof(payload));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_udp_recvfrom_src_equals_local_ip_does_not_persist_remote)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0x01, 0x02, 0x03, 0x04};
+    uint8_t rxbuf[4] = {0};
+    struct wolfIP_sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    int ret;
+    ip4 local_ip = 0x0A000001U;
+    uint16_t local_port = 4005;
+    uint16_t remote_port = 5005;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ret = wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, 0);
+
+    ts = &s.udpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_uint_eq(ts->remote_ip, 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, local_ip, local_ip, remote_port, local_port,
+            payload, sizeof(payload));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    ck_assert_uint_eq(from.sin_addr.s_addr, ee32(local_ip));
+    ck_assert_uint_eq(ts->remote_ip, 0);
 }
 END_TEST
 
@@ -1449,13 +1661,13 @@ START_TEST(test_sock_recvfrom_short_addrlen)
     ck_assert_int_gt(udp_sd, 0);
     alen = (socklen_t)1;
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 
     icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
     ck_assert_int_gt(icmp_sd, 0);
     alen = (socklen_t)1;
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 }
 END_TEST
 START_TEST(test_dns_query_and_callback_a)
@@ -4275,7 +4487,7 @@ START_TEST(test_sock_recvfrom_udp_short_addrlen)
     ck_assert_int_gt(udp_sd, 0);
 
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -4294,7 +4506,7 @@ START_TEST(test_sock_recvfrom_icmp_short_addrlen)
     ck_assert_int_gt(icmp_sd, 0);
 
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -12081,6 +12293,16 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_filter_drop_receiving);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_udp_sendto_and_recvfrom);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_udp_recvfrom_sets_remote_ip);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_udp_recvfrom_null_src_addr_len);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_udp_recvfrom_preserves_remote_ip);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_udp_recvfrom_null_addrlen);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_udp_recvfrom_src_equals_local_ip_does_not_persist_remote);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
     suite_add_tcase(s, tc_proto);
