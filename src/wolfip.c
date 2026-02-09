@@ -142,6 +142,8 @@ static inline uint32_t fifo_align_head_pos(uint32_t head, uint32_t size)
 
 static inline void fifo_align_tail(struct fifo *f)
 {
+    if (f->tail == f->head)
+        return;
     if (f->tail % 4)
         f->tail += 4 - (f->tail % 4);
     if (f->h_wrap && f->tail >= f->h_wrap) {
