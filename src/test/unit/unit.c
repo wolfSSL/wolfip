@@ -1039,6 +1039,52 @@ START_TEST(test_udp_sendto_and_recvfrom)
 }
 END_TEST
 
+START_TEST(test_udp_recvfrom_sets_remote_ip)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    uint8_t rxbuf[4] = {0};
+    struct wolfIP_sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    int ret;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint16_t local_port = 4001;
+    uint16_t remote_port = 5001;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ret = wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, 0);
+
+    ts = &s.udpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_uint_eq(ts->remote_ip, 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            payload, sizeof(payload));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    ck_assert_uint_eq(from.sin_addr.s_addr, ee32(remote_ip));
+    ck_assert_uint_eq(ts->remote_ip, remote_ip);
+}
+END_TEST
+
 START_TEST(test_sock_error_paths)
 {
     struct wolfIP s;
@@ -12081,6 +12127,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_filter_drop_receiving);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_udp_sendto_and_recvfrom);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_udp_recvfrom_sets_remote_ip);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
     suite_add_tcase(s, tc_proto);
