@@ -3752,6 +3752,28 @@ static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
 }
 #endif /* DEBUG_IP*/
 
+#ifdef DEBUG_UDP
+static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
+{
+    char payload_str[32];
+    uint16_t len = ee16(udp->len);
+    uint16_t max_len = 16;
+    printf("udp hdr:\n");
+    printf("+-------------------+\n");
+    printf("|  %5d  |  %5d  | (src_port, dst_port)\n",
+           ee16(udp->src_port), ee16(udp->dst_port));
+    printf("+-------------------+\n");
+    printf("|  %5u  |  0x%04x | (len, chksum)\n",
+           len, ee16(udp->csum));
+    printf("+-------------------+\n");
+    memset(payload_str, '\0', sizeof(payload_str));
+    memcpy(payload_str, udp->data, len < max_len ? len : max_len);
+    printf("| %17s | (payload first 16 bytes)\n", payload_str);
+    printf("+-------------------+\n");
+    printf("\n");
+}
+#endif /* DEBUG_UDP */
+
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                            struct wolfIP_ip_packet *ip, uint32_t len)
 {
@@ -3836,6 +3858,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     }
     else if (ip->ver_ihl == 0x45 && ip->proto == 0x11) {
         struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
+        #ifdef DEBUG_UDP
+        wolfIP_print_udp(udp);
+        #endif /* DEBUG_UDP */
         udp_try_recv(s, if_idx, udp, len);
     }
     else if (ip->ver_ihl == 0x45 && ip->proto == 0x01) {

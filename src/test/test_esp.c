@@ -580,10 +580,12 @@ int main(int argc, char **argv)
             err = wolfIP_esp_sa_new_aead(1, in_sa_gcm, atoip4(HOST_STACK_IP),
                                          atoip4(WOLFIP_IP),
                                          in_enc_key, sizeof(in_enc_key));
+            if (err) { return err; }
 
             err = wolfIP_esp_sa_new_aead(0, out_sa_gcm, atoip4(WOLFIP_IP),
                                          atoip4(HOST_STACK_IP),
                                          out_enc_key, sizeof(out_enc_key));
+            if (err) { return err; }
             break;
 
         case 1:
@@ -592,12 +594,14 @@ int main(int argc, char **argv)
                                                in_enc_key, sizeof(in_enc_key) - 4,
                                                in_auth_key, sizeof(in_auth_key),
                                                ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
 
             err = wolfIP_esp_sa_new_cbc_sha256(0, out_sa_cbc, atoip4(WOLFIP_IP),
                                                atoip4(HOST_STACK_IP),
                                                out_enc_key, sizeof(out_enc_key) - 4,
                                                out_auth_key, sizeof(out_auth_key),
                                                ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
             break;
 
         default:

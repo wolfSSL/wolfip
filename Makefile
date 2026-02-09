@@ -145,7 +145,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/ipfilter-logger build/test-esp
+	build/ipfilter-logger build/test-esp build/esp-server
 LIB=libwolfip.so
 
 PREFIX=/usr/local
@@ -181,7 +181,7 @@ asan:LDFLAGS+=-static-libasan
 ESP_CFLAGS = \
     -DWOLFIP_ESP \
     -DWOLFSSL_WOLFIP \
-    -DDEBUG_IP \
+    -DDEBUG_IP -DDEBUG_UDP \
     -DWOLFIP_DEBUG_ESP
 
 # Test
@@ -249,6 +249,14 @@ build/test/test_esp.o: src/test/test_esp.c
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
 build/test-esp: $(ESP_OBJ) build/test/test_esp.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+
+build/test/esp_server.o: src/test/esp_server.c
+	@echo "[CC] $@"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
+
+build/esp-server: $(ESP_OBJ) build/port/posix/bsd_socket.o build/test/esp_server.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
 
