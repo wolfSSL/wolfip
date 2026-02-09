@@ -605,6 +605,83 @@ START_TEST(test_fifo_pop_no_wrap_when_space_available)
 }
 END_TEST
 
+START_TEST(test_fifo_peek_empty_unaligned_tail)
+{
+    struct fifo f;
+    uint8_t data[64];
+    struct pkt_desc *desc;
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 3;
+    f.tail = 3;
+    f.h_wrap = 0;
+
+    desc = fifo_peek(&f);
+    ck_assert_ptr_eq(desc, NULL);
+    ck_assert_uint_eq(f.tail, 3);
+    ck_assert_uint_eq(f.h_wrap, 0);
+}
+END_TEST
+
+START_TEST(test_fifo_len_empty_unaligned_tail)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 3;
+    f.tail = 3;
+    f.h_wrap = 0;
+
+    ck_assert_uint_eq(fifo_len(&f), 0);
+    ck_assert_uint_eq(f.tail, 3);
+}
+END_TEST
+
+START_TEST(test_fifo_pop_empty_unaligned_tail)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 3;
+    f.tail = 3;
+    f.h_wrap = 0;
+
+    ck_assert_ptr_eq(fifo_pop(&f), NULL);
+    ck_assert_uint_eq(f.tail, 3);
+}
+END_TEST
+
+START_TEST(test_fifo_push_pop_odd_sizes_drains_cleanly)
+{
+    struct fifo f;
+    uint8_t data[256];
+    struct pkt_desc *desc;
+    uint8_t p1[3] = {0x01, 0x02, 0x03};
+    uint8_t p2[5] = {0x11, 0x12, 0x13, 0x14, 0x15};
+    uint8_t p3[7] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27};
+
+    fifo_init(&f, data, sizeof(data));
+    ck_assert_int_eq(fifo_push(&f, p1, sizeof(p1)), 0);
+    ck_assert_int_eq(fifo_push(&f, p2, sizeof(p2)), 0);
+    ck_assert_int_eq(fifo_push(&f, p3, sizeof(p3)), 0);
+
+    desc = fifo_pop(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), p1, sizeof(p1));
+    desc = fifo_pop(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), p2, sizeof(p2));
+    desc = fifo_pop(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_mem_eq((const uint8_t *)f.data + desc->pos + sizeof(struct pkt_desc), p3, sizeof(p3));
+
+    ck_assert_uint_eq(fifo_len(&f), 0);
+    ck_assert_ptr_eq(fifo_peek(&f), NULL);
+}
+END_TEST
+
 START_TEST(test_queue_insert_len_gt_space)
 {
     struct queue q;
@@ -4507,6 +4584,56 @@ START_TEST(test_sock_recvfrom_icmp_short_addrlen)
 
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_sd, buf, sizeof(buf), 0,
             (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_recvfrom_udp_fifo_alignment)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in from;
+    socklen_t from_len;
+    uint8_t buf[16];
+    uint8_t payload1[3] = {0xA1, 0xA2, 0xA3};
+    uint8_t payload2[5] = {0xB1, 0xB2, 0xB3, 0xB4, 0xB5};
+    uint8_t payload3[7] = {0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7};
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 1234;
+
+    enqueue_udp_rx(ts, payload1, sizeof(payload1), 1111);
+    enqueue_udp_rx(ts, payload2, sizeof(payload2), 2222);
+    enqueue_udp_rx(ts, payload3, sizeof(payload3), 3333);
+
+    memset(buf, 0, sizeof(buf));
+    ret = wolfIP_sock_recv(&s, udp_sd, buf, sizeof(buf), 0);
+    ck_assert_int_eq(ret, (int)sizeof(payload1));
+    ck_assert_mem_eq(buf, payload1, sizeof(payload1));
+
+    memset(&from, 0, sizeof(from));
+    from_len = sizeof(from);
+    memset(buf, 0, sizeof(buf));
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, buf, sizeof(buf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload2));
+    ck_assert_mem_eq(buf, payload2, sizeof(payload2));
+    ck_assert_uint_eq(from.sin_port, ee16(2222));
+    ck_assert_uint_eq(from_len, sizeof(from));
+
+    memset(buf, 0, sizeof(buf));
+    ret = wolfIP_sock_recv(&s, udp_sd, buf, sizeof(buf), 0);
+    ck_assert_int_eq(ret, (int)sizeof(payload3));
+    ck_assert_mem_eq(buf, payload3, sizeof(payload3));
+
+    ret = wolfIP_sock_recv(&s, udp_sd, buf, sizeof(buf), 0);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
 }
 END_TEST
 
@@ -11513,6 +11640,14 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_pop_no_wrap_when_space_available);
     suite_add_tcase(s, tc_core);
+    tcase_add_test(tc_core, test_fifo_peek_empty_unaligned_tail);
+    suite_add_tcase(s, tc_core);
+    tcase_add_test(tc_core, test_fifo_len_empty_unaligned_tail);
+    suite_add_tcase(s, tc_core);
+    tcase_add_test(tc_core, test_fifo_pop_empty_unaligned_tail);
+    suite_add_tcase(s, tc_core);
+    tcase_add_test(tc_core, test_fifo_push_pop_odd_sizes_drains_cleanly);
+    suite_add_tcase(s, tc_core);
     suite_add_tcase(s, tc_utils);
     suite_add_tcase(s, tc_proto);
 
@@ -11704,6 +11839,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_short_addrlen);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_short_addrlen);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_sock_recvfrom_udp_fifo_alignment);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_sock_bind_non_local_ip_fails);
     suite_add_tcase(s, tc_utils);
