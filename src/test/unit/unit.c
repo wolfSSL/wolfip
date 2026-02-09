@@ -1035,7 +1035,7 @@ START_TEST(test_udp_sendto_and_recvfrom)
             (struct wolfIP_sockaddr *)&from, &from_len);
     ck_assert_int_eq(ret, (int)sizeof(payload));
     ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
-    ck_assert_uint_eq(from.sin_port, remote_port);
+    ck_assert_uint_eq(from.sin_port, ee16(remote_port));
 }
 END_TEST
 
@@ -1202,7 +1202,7 @@ START_TEST(test_udp_recvfrom_null_addrlen)
     memset(&from, 0, sizeof(from));
     ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
             (struct wolfIP_sockaddr *)&from, NULL);
-    ck_assert_int_eq(ret, -1);
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -1661,13 +1661,13 @@ START_TEST(test_sock_recvfrom_short_addrlen)
     ck_assert_int_gt(udp_sd, 0);
     alen = (socklen_t)1;
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 
     icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
     ck_assert_int_gt(icmp_sd, 0);
     alen = (socklen_t)1;
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 }
 END_TEST
 START_TEST(test_dns_query_and_callback_a)
@@ -4487,7 +4487,7 @@ START_TEST(test_sock_recvfrom_udp_short_addrlen)
     ck_assert_int_gt(udp_sd, 0);
 
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -4506,7 +4506,7 @@ START_TEST(test_sock_recvfrom_icmp_short_addrlen)
     ck_assert_int_gt(icmp_sd, 0);
 
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_sd, buf, sizeof(buf), 0,
-            (struct wolfIP_sockaddr *)&sin, &alen), -1);
+            (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EINVAL);
 }
 END_TEST
 
