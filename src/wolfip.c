@@ -2656,8 +2656,11 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             return -WOLFIP_EAGAIN;
         desc = fifo_peek(&ts->sock.udp.rxbuf);
         udp = (struct wolfIP_udp_datagram *)(ts->rxmem + desc->pos + sizeof(*desc));
-        if (ts->remote_ip == 0)
-            ts->remote_ip = ee32(udp->ip.src);
+        if (ts->remote_ip == 0) {
+            ip4 src_ip = ee32(udp->ip.src);
+            if (src_ip != ts->local_ip)
+                ts->remote_ip = src_ip;
+        }
         if (sin) {
             sin->sin_family = AF_INET;
             sin->sin_port = ee16(udp->src_port);
