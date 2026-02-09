@@ -31,6 +31,17 @@ jobs:
           sudo ./build/test-evloop
           sudo killall tcpdump || true
 
+      - name: Run standalone "IPsec esp" test
+        run: |
+          sudo ./tools/ip-xfrm/rfc4106 128
+          sudo ./build/test-esp -m 0
+          sudo killall tcpdump || true
+          sudo ./tools/ip-xfrm/delete_all
+          sudo ./tools/ip-xfrm/cbc_auth sha256 128
+          sudo ./build/test-esp -m 1
+          sudo killall tcpdump || true
+          sudo ./tools/ip-xfrm/delete_all
+
       - name: Run standalone wolfssl test
         run: |
           sudo ./build/test-wolfssl

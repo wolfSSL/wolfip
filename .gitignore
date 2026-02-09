@@ -5,6 +5,7 @@
 *.dis
 *.uf2
 *.bin
+*.swp
 CMakeCache.txt
 CMakeFiles
 CMakeScripts

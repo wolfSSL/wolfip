@@ -61,7 +61,6 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-
     printf("Echo server listening on port %d\n", PORT);
 
     while (1) {

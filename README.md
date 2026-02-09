@@ -2,10 +2,10 @@
 
 ## Description and project goals
 
-wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be 
+wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be
 used in resource-constrained embedded systems.
 
-Endpoint only mode is supported, which means that wolfip can be used to 
+Endpoint only mode is supported, which means that wolfip can be used to
 establish network connections but it does not route traffic between different
 network interfaces.
 
