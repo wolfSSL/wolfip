@@ -2647,6 +2647,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
+        if (sin && !addrlen)
+            return -1;
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -1;
         if (addrlen) *addrlen = sizeof(struct wolfIP_sockaddr_in);
@@ -2654,10 +2656,12 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             return -WOLFIP_EAGAIN;
         desc = fifo_peek(&ts->sock.udp.rxbuf);
         udp = (struct wolfIP_udp_datagram *)(ts->rxmem + desc->pos + sizeof(*desc));
+        if (ts->remote_ip == 0)
+            ts->remote_ip = ee32(udp->ip.src);
         if (sin) {
             sin->sin_family = AF_INET;
             sin->sin_port = ee16(udp->src_port);
-            sin->sin_addr.s_addr = ee32(ts->remote_ip);
+            sin->sin_addr.s_addr = udp->ip.src;
         }
         seg_len = ee16(udp->len) - UDP_HEADER_LEN;
         if (seg_len > len)
