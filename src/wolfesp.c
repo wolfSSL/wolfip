@@ -9,6 +9,14 @@ static wolfIP_esp_sa   out_sa_list[WOLFIP_ESP_NUM_SA];
 static uint16_t        in_sa_num = WOLFIP_ESP_NUM_SA;
 static uint16_t        out_sa_num = WOLFIP_ESP_NUM_SA;
 
+#ifdef WOLFIP_DEBUG_ESP
+    #define ESP_DEBUG(fmt, ...) \
+        printf(fmt, ##__VA_ARGS__)
+#else
+    #define ESP_DEBUG(fmt, ...) \
+        do { } while (0)
+#endif
+
 int wolfIP_esp_init(void)
 {
     int err = 0;
@@ -95,12 +103,12 @@ int wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
     esp_replay_init(new_sa->replay);
     memcpy(new_sa->spi, spi, ESP_SPI_LEN);
     memcpy(new_sa->enc_key, enc_key, enc_key_len);
-    new_sa->src = src;
-    new_sa->dst = dst;
-    new_sa->enc = ESP_ENC_GCM_RFC4106;
+    new_sa->src         = src;
+    new_sa->dst         = dst;
+    new_sa->enc         = ESP_ENC_GCM_RFC4106;
     new_sa->enc_key_len = enc_key_len;
-    new_sa->auth = ESP_AUTH_GCM_RFC4106;
-    new_sa->icv_len = ESP_GCM_RFC4106_ICV_LEN;
+    new_sa->auth        = ESP_AUTH_GCM_RFC4106;
+    new_sa->icv_len     = ESP_GCM_RFC4106_ICV_LEN;
 
     /* Generate pre-iv for gcm. */
     err = wc_RNG_GenerateBlock(&wc_rng, new_sa->pre_iv,
@@ -114,10 +122,7 @@ int wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
         err = -1;
     }
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: esp_sa_new_aead: %s\n", in == 1 ? "in" : "out");
-    #endif /* WOLFIP_DEBUG_ESP */
-
+    ESP_DEBUG("info: esp_sa_new_aead: %s\n", in == 1 ? "in" : "out");
     return err;
 }
 #endif /*WOLFSSL_AESGCM_STREAM */
@@ -141,18 +146,15 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     memcpy(new_sa->spi, spi, ESP_SPI_LEN);
     memcpy(new_sa->enc_key, enc_key, enc_key_len);
     memcpy(new_sa->auth_key, auth_key, auth_key_len);
-    new_sa->src = src;
-    new_sa->dst = dst;
-    new_sa->enc = ESP_ENC_CBC_AES;
-    new_sa->enc_key_len = enc_key_len;
-    new_sa->auth = auth;
+    new_sa->src          = src;
+    new_sa->dst          = dst;
+    new_sa->enc          = ESP_ENC_CBC_AES;
+    new_sa->enc_key_len  = enc_key_len;
+    new_sa->auth         = auth;
     new_sa->auth_key_len = auth_key_len;
-    new_sa->icv_len = icv_len;
+    new_sa->icv_len      = icv_len;
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: esp_sa_new_cbc_sha256: %s\n", in == 1 ? "in" : "out");
-    #endif /* WOLFIP_DEBUG_ESP */
-
+    ESP_DEBUG("info: esp_sa_new_cbc_sha256: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
 
@@ -184,10 +186,7 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: esp_sa_new_cbc_sha256: %s\n", in == 1 ? "in" : "out");
-    #endif /* WOLFIP_DEBUG_ESP */
-
+    ESP_DEBUG("info: esp_sa_new_cbc_sha256: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
 
@@ -474,9 +473,7 @@ esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint16_t  enc_len = 0;
     uint8_t   inited = 0;
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: aes cbc dec: %d\n", esp_len);
-    #endif /* WOLFIP_DEBUG_ESP */
+    ESP_DEBUG("info: aes cbc dec: %d\n", esp_len);
 
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
@@ -528,9 +525,7 @@ esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint16_t     enc_len = 0;
     uint8_t      inited = 0;
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: aes cbc enc: %d\n", esp_len);
-    #endif /* WOLFIP_DEBUG_ESP */
+    ESP_DEBUG("info: aes cbc enc: %d\n", esp_len);
 
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
@@ -590,9 +585,7 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint16_t  enc_len = 0;
     uint8_t   inited = 0;
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: des3 dec: %d\n", esp_len);
-    #endif /* WOLFIP_DEBUG_ESP */
+    ESP_DEBUG("info: des3 dec: %d\n", esp_len);
 
     if (esp_sa->enc_key_len != ESP_DES3_KEY_LEN) {
         printf("error: des3_rfc2451_dec: key len = %d, expected %d\n",
@@ -649,9 +642,7 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint16_t  enc_len = 0;
     uint8_t   inited = 0;
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: des3 enc: %d\n", esp_len);
-    #endif /* WOLFIP_DEBUG_ESP */
+    ESP_DEBUG("info: des3 enc: %d\n", esp_len);
 
     if (esp_sa->enc_key_len != ESP_DES3_KEY_LEN) {
         printf("error: des3_rfc2451_enc: key len = %d, expected %d\n",
@@ -726,9 +717,7 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: aes gcm dec: %d\n", esp_len);
-    #endif /* WOLFIP_DEBUG_ESP */
+    ESP_DEBUG("info: aes gcm dec: %d\n", esp_len);
 
     /* get enc payload, iv, and icv pointers. */
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
@@ -803,9 +792,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
 
-    #ifdef WOLFIP_DEBUG_ESP
-    printf("info: aes gcm enc: %d\n", esp_len);
-    #endif /* WOLFIP_DEBUG_ESP */
+    ESP_DEBUG("info: aes gcm enc: %d\n", esp_len);
 
     /* get enc payload, iv, and icv pointers. */
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
@@ -929,16 +916,12 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
     uint32_t bitn = 0;
     uint32_t seq_low = replay->hi_seq - ESP_REPLAY_WIN;
 
-    #if WOLFIP_DEBUG_ESP
-    printf("info: seq: %u\n", seq);
-    #endif
-
     if (seq == 0) {
         return -1;
     }
 
     if (seq < seq_low) {
-        printf("error: seq (%d) below window (%d)\n", seq, seq_low);
+        ESP_DEBUG("error: seq (%d) below window (%d)\n", seq, seq_low);
         return -1;
     }
 
@@ -951,21 +934,17 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
         bitn = 1U << (replay->hi_seq - seq);
 
         if ((replay->bitmap & bitn) != 0U) {
-            printf("error: seq replayed: %u, %d\n", bitn, seq);
+            ESP_DEBUG("error: seq replayed: %u, %d\n", bitn, seq);
             return -1;
         }
         else {
-            #if WOLFIP_DEBUG_ESP
-            printf("info: new seq : %d\n", seq);
-            #endif
+            ESP_DEBUG("info: new seq : %d\n", seq);
             replay->bitmap |= bitn;
         }
     }
     else {
         /* seq number above window. */
-        #if WOLFIP_DEBUG_ESP
-        printf("info: new hi_seq : %d, %d\n", replay->hi_seq, seq);
-        #endif
+        ESP_DEBUG("info: new hi_seq : %d, %d\n", replay->hi_seq, seq);
         diff = seq - replay->hi_seq;
         if (diff < ESP_REPLAY_WIN) {
             /* within a window width, slide up. */
@@ -1009,8 +988,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
  *   Returns -1 on error.
  * */
 static int
-esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
-                     uint32_t * frame_len)
+esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 {
     uint8_t         spi[ESP_SPI_LEN];
     uint32_t        seq = 0;
@@ -1024,9 +1002,7 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
     memset(spi, 0, sizeof(spi));
 
     if (*frame_len <= (ETH_HEADER_LEN + IP_HEADER_LEN)) {
-        #ifdef WOLFIP_DEBUG_ESP
-        printf("error: esp: malformed frame: %d\n", *frame_len);
-        #endif /* WOLFIP_DEBUG_ESP */
+        ESP_DEBUG("error: esp: malformed frame: %d\n", *frame_len);
         return -1;
     }
 
@@ -1034,9 +1010,7 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
 
     /* If not at least SPI and sequence, something wrong. */
     if (esp_len < (ESP_SPI_LEN + ESP_SEQ_LEN)) {
-        #ifdef WOLFIP_DEBUG_ESP
-        printf("error: esp: malformed packet: %d\n", esp_len);
-        #endif /* WOLFIP_DEBUG_ESP */
+        ESP_DEBUG("error: esp: malformed packet: %d\n", esp_len);
         return -1;
     }
 
@@ -1048,10 +1022,8 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
 
     for (size_t i = 0; i < in_sa_num; ++i) {
         if (memcmp(spi, in_sa_list[i].spi, sizeof(spi)) == 0) {
-            #ifdef WOLFIP_DEBUG_ESP
-            printf("info: found sa: 0x%02x%02x%02x%02x\n",
-                   spi[0], spi[1], spi[2], spi[3]);
-            #endif /* WOLFIP_DEBUG_ESP */
+            ESP_DEBUG("info: found sa: 0x%02x%02x%02x%02x\n",
+                      spi[0], spi[1], spi[2], spi[3]);
             esp_sa = &in_sa_list[i];
             break;
         }
@@ -1073,7 +1045,6 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
     }
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
-
     {
         /* calculate min expected length based on the security association. */
         uint32_t min_len = 0;
@@ -1182,8 +1153,6 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
     ip->proto = nxt_hdr;
     ip->csum = 0;
     iphdr_set_checksum(ip);
-
-    (void)s;
     return 0;
 }
 
@@ -1206,8 +1175,8 @@ esp_transport_unwrap(struct wolfIP *s, struct wolfIP_ip_packet *ip,
  *                 |<--- integrity checked ---->|
  *
  *   Returns  0 on success.
- *   Returns -1 on error.
  *   Returns  1 if no ipsec policy found (send plaintext)
+ *   Returns -1 on error.
  * */
 static int
 esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
@@ -1228,11 +1197,9 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     for (size_t i = 0; i < out_sa_num; ++i) {
         if (ip->dst == ee32(out_sa_list[i].dst)) {
             esp_sa = &out_sa_list[i];
-            #ifdef WOLFIP_DEBUG_ESP
-            printf("info: found out sa: 0x%02x%02x%02x%02x\n",
-                   esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2],
-                   esp_sa->spi[3]);
-            #endif /* WOLFIP_DEBUG_ESP */
+            ESP_DEBUG("info: found out sa: 0x%02x%02x%02x%02x\n",
+                      esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2],
+                      esp_sa->spi[3]);
             break;
         }
     }
@@ -1409,13 +1376,16 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
  * Copy frame to new packet so we can expand and wrap in place
  * without stepping on the fifo tcp circular buffer.
  *
- * A more intelligent way to do this would be to save extra scratch space
- * in the fifo circular buffer for each tcp packet, so we can expand in place.
+ * A better way to do this would be to save extra scratch space in the fifo
+ * circular buffer for each tcp packet, so we can expand in place.
+ *
+ * Returns  0 on success.
+ * Returns  1 if no ipsec policy found (send plaintext)
+ * Returns -1 on error.
  * */
 static int
-esp_tcp_output(struct wolfIP_ll_dev * ll_dev,
-               const struct wolfIP_ip_packet *ip,
-               uint16_t len)
+esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
+         uint16_t len)
 {
     /**
      * 60 is reasonable max ESP overhead (for now), rounded up to 4 bytes.
@@ -1437,9 +1407,7 @@ esp_tcp_output(struct wolfIP_ll_dev * ll_dev,
     esp_rc = esp_transport_wrap(esp, &ip_final_len);
 
     if (esp_rc) {
-        #ifdef WOLFIP_DEBUG_ESP
-        printf("info: esp_wrap returned: %d\n", esp_rc);
-        #endif /* WOLFIP_DEBUG_ESP */
+        ESP_DEBUG("info: esp_wrap: %d\n", esp_rc);
         return esp_rc;
     }
 
@@ -1448,9 +1416,8 @@ esp_tcp_output(struct wolfIP_ll_dev * ll_dev,
     esp->proto = 0x32;
     esp->csum = 0;
     iphdr_set_checksum(esp);
-
+    /* send it */
     ll_dev->send(ll_dev, esp, ip_final_len + ETH_HEADER_LEN);
-
     return 0;
 }
 #endif /* WOLFIP_ESP && !WOLFESP_SRC */

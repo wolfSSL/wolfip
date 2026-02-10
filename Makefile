@@ -244,7 +244,7 @@ build/esp/wolfip.o: src/wolfip.c
 	@echo "[CC] $< (esp)"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
-build/test/test_esp.o: src/test/test_esp.c
+build/test/test_esp.o: src/test/esp/test_esp.c
 	@echo "[CC] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
@@ -252,7 +252,7 @@ build/test-esp: $(ESP_OBJ) build/test/test_esp.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
 
-build/test/esp_server.o: src/test/esp_server.c
+build/test/esp_server.o: src/test/esp/esp_server.c
 	@echo "[CC] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
 
