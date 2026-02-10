@@ -20,7 +20,7 @@ wireshark test.pcap
 
 Build wolfssl with:
 ```sh
-./configure --enable-aesgcm-stream
+./configure --enable-des3 --enable-aesgcm-stream
   make
   sudo make install
 ```

@@ -12,8 +12,13 @@
 /* hmac-[sha256, sha1, md5]-96*/
 #define ESP_ICVLEN_HMAC_96        12
 #define ESP_ICVLEN_HMAC_128       16
+/* des3-cbc */
+#ifndef NO_DES3
+#define ESP_DES3_KEY_LEN          24
+#define ESP_DES3_IV_LEN            8
+#endif /* !NO_DES3 */
 /* max key size */
-#define ESP_MAX_KEY_LEN          (AES_MAX_KEY_SIZE / 8)
+#define ESP_MAX_KEY_LEN           32
 /* aes-cbc */
 #define ESP_CBC_RFC3602_IV_LEN    16
 /* aes-gcm */
@@ -26,7 +31,9 @@
 typedef enum {
   ESP_ENC_NONE = 0,
   ESP_ENC_CBC_AES,
+  #ifndef NO_DES3
   ESP_ENC_CBC_DES3,
+  #endif /* !NO_DES3 */
   ESP_ENC_GCM_RFC4106,
   ESP_ENC_GCM_RFC4543, /* placeholder to indicate gmac auth. */
 } esp_enc_t;
@@ -75,11 +82,18 @@ struct wolfIP_esp_sa {
 typedef struct wolfIP_esp_sa wolfIP_esp_sa;
 
 int  wolfIP_esp_init(void);
-void wolfIP_esp_sa_del(void);
+void wolfIP_esp_sa_del(int in, uint8_t * spi);
+void wolfIP_esp_sa_del_all(void);
+#if defined(WOLFSSL_AESGCM_STREAM)
 int  wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
                             uint8_t * enc_key, uint8_t enc_key_len);
-int  wolfIP_esp_sa_new_cbc_sha256(int in, uint8_t * spi, ip4 src, ip4 dst,
-                                  uint8_t * enc_key, uint8_t enc_key_len,
-                                  uint8_t * auth_key, uint8_t auth_key_len,
-                                  uint8_t icv_len);
+#endif /*WOLFSSL_AESGCM_STREAM */
+int  wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
+                                uint8_t * enc_key, uint8_t enc_key_len,
+                                esp_auth_t auth, uint8_t * auth_key,
+                                uint8_t auth_key_len, uint8_t icv_len);
+int  wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
+                                 uint8_t * enc_key, esp_auth_t auth,
+                                 uint8_t * auth_key, uint8_t auth_key_len,
+                                 uint8_t icv_len);
 #endif /* !WOLFESP_H */

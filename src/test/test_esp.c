@@ -60,6 +60,8 @@ static uint8_t in_sa_gcm[ESP_SPI_LEN] = {0x01, 0x01, 0x01, 0x01};
 static uint8_t out_sa_gcm[ESP_SPI_LEN] = {0x02, 0x02, 0x02, 0x02};
 static uint8_t in_sa_cbc[ESP_SPI_LEN] = {0x03, 0x03, 0x03, 0x03};
 static uint8_t out_sa_cbc[ESP_SPI_LEN] = {0x04, 0x04, 0x04, 0x04};
+static uint8_t in_sa_des3[ESP_SPI_LEN] = {0x05, 0x05, 0x05, 0x05};
+static uint8_t out_sa_des3[ESP_SPI_LEN] = {0x06, 0x06, 0x06, 0x06};
 /* 32 byte key + 4 byte nonce*/
 static uint8_t in_enc_key[36] =
      {0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
@@ -79,7 +81,6 @@ static uint8_t in_auth_key[16] =
 static uint8_t out_auth_key[16] =
      {0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
       0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02};
-
 
 /* wolfIP: server side callback. */
 static void server_cb(int fd, uint16_t event, void *arg)
@@ -589,18 +590,36 @@ int main(int argc, char **argv)
             break;
 
         case 1:
-            err = wolfIP_esp_sa_new_cbc_sha256(1, in_sa_cbc, atoip4(HOST_STACK_IP),
-                                               atoip4(WOLFIP_IP),
-                                               in_enc_key, sizeof(in_enc_key) - 4,
-                                               in_auth_key, sizeof(in_auth_key),
-                                               ESP_ICVLEN_HMAC_128);
+            err = wolfIP_esp_sa_new_cbc_hmac(1, in_sa_cbc, atoip4(HOST_STACK_IP),
+                                             atoip4(WOLFIP_IP),
+                                             in_enc_key, sizeof(in_enc_key) - 4,
+                                             ESP_AUTH_SHA256_RFC4868,
+                                             in_auth_key, sizeof(in_auth_key),
+                                             ESP_ICVLEN_HMAC_128);
             if (err) { return err; }
 
-            err = wolfIP_esp_sa_new_cbc_sha256(0, out_sa_cbc, atoip4(WOLFIP_IP),
-                                               atoip4(HOST_STACK_IP),
-                                               out_enc_key, sizeof(out_enc_key) - 4,
-                                               out_auth_key, sizeof(out_auth_key),
-                                               ESP_ICVLEN_HMAC_128);
+            err = wolfIP_esp_sa_new_cbc_hmac(0, out_sa_cbc, atoip4(WOLFIP_IP),
+                                             atoip4(HOST_STACK_IP),
+                                             out_enc_key, sizeof(out_enc_key) - 4,
+                                             ESP_AUTH_SHA256_RFC4868,
+                                             out_auth_key, sizeof(out_auth_key),
+                                             ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
+            break;
+
+        case 2:
+            err = wolfIP_esp_sa_new_des3_hmac(1, in_sa_des3, atoip4(HOST_STACK_IP),
+                                              atoip4(WOLFIP_IP),
+                                              in_enc_key, ESP_AUTH_SHA256_RFC4868,
+                                              in_auth_key, sizeof(in_auth_key),
+                                              ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
+
+            err = wolfIP_esp_sa_new_des3_hmac(0, out_sa_des3, atoip4(WOLFIP_IP),
+                                              atoip4(HOST_STACK_IP),
+                                              out_enc_key, ESP_AUTH_SHA256_RFC4868,
+                                              out_auth_key, sizeof(out_auth_key),
+                                              ESP_ICVLEN_HMAC_128);
             if (err) { return err; }
             break;
 
@@ -628,6 +647,6 @@ print_usage_and_die(void)
     printf("\n");
     printf("options:\n");
     printf("  -p         force plaintext (disable ipsec)\n");
-    printf("  -m <mode>  0 aead (default), 1 cbc auth\n");
+    printf("  -m <mode>  0 aead (default), 1 cbc hmac, 2 des3 hmac\n");
     exit(1);
 }
