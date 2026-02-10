@@ -1560,6 +1560,14 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
 }
 
+/* Increment a TCP sequence number (wraps at 2^32) */
+static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
+{
+    if (n > UINT32_MAX - seq)
+        return n - (UINT32_MAX - seq) - 1;
+    return seq + n;
+}
+
 /* Add a segment to the rx buffer for the application to consume */
 static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
 {
@@ -1575,7 +1583,7 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
             /* Buffer full, dropped. This will send a duplicate ack. */
         } else {
             /* Advance ack counter */
-            t->sock.tcp.ack = seq + seg_len;
+            t->sock.tcp.ack = tcp_seq_inc(seq, seg_len);
             timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
             t->sock.tcp.tmr_rto = NO_TIMER;
             t->events |= CB_EVENT_READABLE;
@@ -1834,14 +1842,6 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
         }
     }
     return -1;
-}
-
-/* Increment a TCP sequence number (wraps at 2^32) */
-static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
-{
-    if (n > UINT32_MAX - seq)
-        return n - (UINT32_MAX - seq) - 1;
-    return seq + n;
 }
 
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
