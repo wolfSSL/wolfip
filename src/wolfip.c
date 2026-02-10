@@ -1815,6 +1815,8 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
                 t->sock.tcp.last_ts = ts->val;
                 if (ts->ecr == 0)
                     return -1; /* No echoed timestamp; fall back to coarse RTT. */
+                if (ee32(ts->ecr) > t->S->last_tick)
+                    return -1; /* Echoed timestamp in the future; ignore. */
                 if (t->sock.tcp.rtt == 0)
                     t->sock.tcp.rtt = (uint32_t)(t->S->last_tick - ee32(ts->ecr));
                 else {
