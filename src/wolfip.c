@@ -1823,8 +1823,9 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
                 if (t->sock.tcp.rtt == 0)
                     t->sock.tcp.rtt = (uint32_t)(t->S->last_tick - ee32(ts->ecr));
                 else {
-                    t->sock.tcp.rtt = (uint32_t)(7 * (t->sock.tcp.rtt << 3)) +
-                        ((t->S->last_tick - ee32(ts->ecr)) << 3);
+                    uint64_t rtt_scaled = (uint64_t)t->sock.tcp.rtt << 3;
+                    uint64_t sample_scaled = (t->S->last_tick - ee32(ts->ecr)) << 3;
+                    t->sock.tcp.rtt = (uint32_t)(7 * rtt_scaled + sample_scaled);
                 }
                 return 0;
             } else {
@@ -1921,11 +1922,14 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             /* Update rtt */
             if (tcp_process_ts(t, seg, fresh_desc->len) < 0) {
                 /* No timestamp option, use coarse RTT estimation */
-                int rtt = t->S->last_tick - fresh_desc->time_sent;
-                if (t->sock.tcp.rtt == 0) {
-                    t->sock.tcp.rtt = rtt;
-                } else {
-                    t->sock.tcp.rtt = (7 * (t->sock.tcp.rtt << 3)) + (rtt << 3);
+                if (t->S->last_tick >= fresh_desc->time_sent) {
+                    uint32_t rtt = (uint32_t)(t->S->last_tick - fresh_desc->time_sent);
+                    if (t->sock.tcp.rtt == 0) {
+                        t->sock.tcp.rtt = rtt;
+                    } else {
+                        uint64_t rtt_scaled = (uint64_t)t->sock.tcp.rtt << 3;
+                        t->sock.tcp.rtt = (uint32_t)(7 * rtt_scaled + ((uint64_t)rtt << 3));
+                    }
                 }
             }
             /* Update cwnd only if we were cwnd-limited. */
