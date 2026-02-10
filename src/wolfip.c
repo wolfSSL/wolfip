@@ -3755,9 +3755,8 @@ static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
 #ifdef DEBUG_UDP
 static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
 {
-    char payload_str[32];
     uint16_t len = ee16(udp->len);
-    uint16_t max_len = 16;
+    char     payload_str[32];
     printf("udp hdr:\n");
     printf("+-------------------+\n");
     printf("|  %5d  |  %5d  | (src_port, dst_port)\n",
@@ -3767,7 +3766,17 @@ static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
            len, ee16(udp->csum));
     printf("+-------------------+\n");
     memset(payload_str, '\0', sizeof(payload_str));
-    memcpy(payload_str, udp->data, len < max_len ? len : max_len);
+    {
+        /* show first 16 printable chars of payload */
+        uint16_t max_len = 16;
+        size_t   print_len = (len - 8) < max_len ? (len  - 8): max_len;
+        size_t   i = 0;
+        memset(payload_str, '\0', sizeof(payload_str));
+        memcpy(payload_str, udp->data, print_len);
+        for (i = 0; i < print_len; i++) {
+            if (!isprint(payload_str[i])) { payload_str[i] = '.'; }
+        }
+    }
     printf("| %17s | (payload first 16 bytes)\n", payload_str);
     printf("+-------------------+\n");
     printf("\n");

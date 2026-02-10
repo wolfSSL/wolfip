@@ -1,4 +1,4 @@
-/* tcp_echo.c
+/* esp_server.c
  *
  * Copyright (C) 2024 wolfSSL Inc.
  *

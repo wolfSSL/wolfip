@@ -786,7 +786,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
         bitn = 1U << (replay->hi_seq - seq);
 
         if ((replay->bitmap & bitn) != 0U) {
-            printf("error: seq replayed: %d, %d\n", bitn, seq);
+            printf("error: seq replayed: %u, %d\n", bitn, seq);
             return -1;
         }
         else {
