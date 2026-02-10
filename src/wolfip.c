@@ -1848,7 +1848,10 @@ static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
  */
 static inline int tcp_seq_leq(uint32_t a, uint32_t b)
 {
-    return ((int32_t)a - (int32_t)b) <= 0;
+    if (a <= b)
+        return (b - a) <= 0x80000000U;
+    else
+        return (a - b) >= 0x80000000U;
 }
 
 /* Receive an ack */
