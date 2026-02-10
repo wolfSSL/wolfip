@@ -123,7 +123,8 @@ struct wolfIP_icmp_packet;
 
 struct PACKED pkt_desc {
     uint32_t pos, len;
-    uint16_t flags, time_sent;
+    uint16_t flags;
+    uint32_t time_sent;
 };
 
 struct fifo {
