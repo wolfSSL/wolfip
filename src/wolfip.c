@@ -1142,7 +1142,8 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, stru
     icmp.ip.ver_ihl = 0x45;
     icmp.ip.ttl = 64;
     icmp.ip.proto = WI_IPPROTO_ICMP;
-    icmp.ip.id = ee16(s->ipcounter++);
+    icmp.ip.id = ee16(s->ipcounter);
+    s->ipcounter = (uint16_t)(s->ipcounter + 1);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE);
     icmp.ip.src = ee32(wolfIP_ipconf_at(s, if_idx)->ip);
     icmp.ip.dst = orig->src;
@@ -1743,7 +1744,8 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, 
     ip->flags_fo = 0;
     ip->ttl = 64;
     ip->proto = proto;
-    ip->id = ee16(t->S->ipcounter++);
+    ip->id = ee16(t->S->ipcounter);
+    t->S->ipcounter = (uint16_t)(t->S->ipcounter + 1);
     ip->csum = 0;
     iphdr_set_checksum(ip);
 
@@ -3111,7 +3113,8 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
-        ip->id = ee16(s->ipcounter++);
+        ip->id = ee16(s->ipcounter);
+        s->ipcounter = (uint16_t)(s->ipcounter + 1);
         ip->csum = 0;
         iphdr_set_checksum(ip);
         eth_output_add_header(s, if_idx, ip->eth.src, &ip->eth, ETH_TYPE_IP);
