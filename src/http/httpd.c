@@ -42,7 +42,7 @@
  *
  */
 
-#ifdef WOLFIP_CONF_HTTP
+#ifdef WOLFIP_ENABLE_HTTP
 
 #include "wolfip.h"
 #include "httpd.h"
@@ -529,4 +529,4 @@ int httpd_init(struct httpd *httpd, struct wolfIP *s, uint16_t port, void *ssl_c
     return 0;
 }
 
-#endif /* WOLFIP_CONF_HTTP */
+#endif /* WOLFIP_ENABLE_HTTP */

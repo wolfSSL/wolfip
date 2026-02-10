@@ -1,7 +1,7 @@
 #ifndef WOLF_HTTPD_H
 #define WOLF_HTTPD_H
 
-#ifdef WOLFIP_CONF_HTTP
+#ifdef WOLFIP_ENABLE_HTTP
 
 #ifdef WOLFSSL_USER_SETTINGS
 #include <user_settings.h>
@@ -90,6 +90,6 @@ void http_send_418_teapot(struct http_client *hc);
 int http_url_decode(char *buf, size_t len);
 int http_url_encode(char *buf, size_t len, size_t max_len);
 
-#endif /* WOLFIP_CONF_HTTP */
+#endif /* WOLFIP_ENABLE_HTTP */
 
 #endif /* WOLF_HTTPD_H */

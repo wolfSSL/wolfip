@@ -115,9 +115,9 @@ extern ${variable.value} ${variable.name};
     #define WOLFIP_ENABLE_DHCP
 #endif
 
-/* DNS Client */
-#if defined(WOLFIP_CONF_DNS) && WOLFIP_CONF_DNS == 1
-    #define WOLFIP_ENABLE_DNS
+/* HTTP Server */
+#if defined(WOLFIP_CONF_HTTP) && WOLFIP_CONF_HTTP == 1
+    #define WOLFIP_ENABLE_HTTP
 #endif
 
 /* Loopback Interface */
@@ -163,7 +163,7 @@ extern ${variable.value} ${variable.name};
 #ifdef __cplusplus
 }
 #endif
-#endif /* ${inclusion_protection}_H */
+#endif /* __${inclusion_protection}__ */
 
 /**
   * @}
