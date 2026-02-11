@@ -2,24 +2,12 @@ CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
 LDFLAGS+=-pthread
-
-#
-# Debug flags:
-#   tap debug:
-#     CFLAGS+=-DDEBUG_TAP
-#
-#   print ethernet headers:
-#     CFLAGS+=-DDEBUG_ETH
-#
-#   print ip headers:
-#     CFLAGS+=-DDEBUG_IP
-#
-#   print tcp headers:
-#     CFLAGS+=-DDEBUG_TCP
-#
-#   print esp header data:
-#     CFLAGS+=-DWOLFIP_DEBUG_ESP
-#
+# additional debug flags:
+#   CFLAGS+=-DDEBUG_TAP
+#   CFLAGS+=-DDEBUG_ETH
+#   CFLAGS+=-DDEBUG_IP
+#   CFLAGS+=-DDEBUG_UDP
+#   CFLAGS+=-DDEBUG_ESP
 
 UNAME_S:=$(shell uname -s)
 UNAME_M:=$(shell uname -m)
@@ -179,10 +167,8 @@ asan:CFLAGS+=-fsanitize=address
 asan:LDFLAGS+=-static-libasan
 
 ESP_CFLAGS = \
-    -DWOLFIP_ESP \
-    -DWOLFSSL_WOLFIP \
-    -DDEBUG_IP -DDEBUG_UDP \
-    -DWOLFIP_DEBUG_ESP
+    -DWOLFIP_ESP  -DWOLFSSL_WOLFIP \
+    -DDEBUG_IP -DDEBUG_UDP -DDEBUG_ESP
 
 # Test
 

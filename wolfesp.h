@@ -29,26 +29,26 @@
                                  + ESP_GCM_RFC4106_IV_LEN)
 
 typedef enum {
-  ESP_ENC_NONE = 0,
-  ESP_ENC_CBC_AES,
-  #ifndef NO_DES3
-  ESP_ENC_CBC_DES3,
-  #endif /* !NO_DES3 */
-  #if defined(WOLFSSL_AESGCM_STREAM)
-  ESP_ENC_GCM_RFC4106,
-  #endif /* WOLFSSL_AESGCM_STREAM */
-  ESP_ENC_GCM_RFC4543, /* placeholder to indicate gmac auth. */
+    ESP_ENC_NONE = 0,
+    ESP_ENC_CBC_AES,
+    #ifndef NO_DES3
+    ESP_ENC_CBC_DES3,
+    #endif /* !NO_DES3 */
+    #if defined(WOLFSSL_AESGCM_STREAM)
+    ESP_ENC_GCM_RFC4106,
+    #endif /* WOLFSSL_AESGCM_STREAM */
+    ESP_ENC_GCM_RFC4543, /* placeholder to indicate gmac auth. */
 } esp_enc_t;
 
 typedef enum {
-  ESP_AUTH_NONE = 0,
-  ESP_AUTH_MD5_RFC2403,    /* hmac(md5)-96 */
-  ESP_AUTH_SHA1_RFC2404,   /* hmac(sha1)-96 */
-  ESP_AUTH_SHA256_RFC4868, /* hmac(sha256)-N, N=96,128  */
-  #if defined(WOLFSSL_AESGCM_STREAM)
-  ESP_AUTH_GCM_RFC4106,    /* placeholder to indicate gcm auth. */
-  #endif /* WOLFSSL_AESGCM_STREAM */
-  ESP_AUTH_GCM_RFC4543     /* rfc4543 gmac */
+    ESP_AUTH_NONE = 0,
+    ESP_AUTH_MD5_RFC2403,    /* hmac(md5)-96 */
+    ESP_AUTH_SHA1_RFC2404,   /* hmac(sha1)-96 */
+    ESP_AUTH_SHA256_RFC4868, /* hmac(sha256)-N, N=96,128  */
+    #if defined(WOLFSSL_AESGCM_STREAM)
+    ESP_AUTH_GCM_RFC4106,    /* placeholder to indicate gcm auth. */
+    #endif /* WOLFSSL_AESGCM_STREAM */
+    ESP_AUTH_GCM_RFC4543     /* rfc4543 gmac */
 } esp_auth_t;
 
 /* simple static 32 bit replay window */
@@ -56,9 +56,9 @@ typedef enum {
 #define ESP_REPLAY_WIN  32U
 
 struct replay_t {
-  uint32_t  bitmap; /* inbound sequence bitmap */
-  uint32_t  hi_seq; /* inbound high sequence number */
-  uint32_t  oseq; /* outbound sequence number */
+    uint32_t  bitmap; /* inbound sequence bitmap */
+    uint32_t  hi_seq; /* inbound high sequence number */
+    uint32_t  oseq; /* outbound sequence number */
 };
 
 typedef struct replay_t replay_t;

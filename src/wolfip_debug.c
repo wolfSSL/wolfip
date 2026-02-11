@@ -1,6 +1,6 @@
 /* wolfip_debug.c
  *
- * Copyright (C) 2024 wolfSSL Inc.
+ * Copyright (C) 2026 wolfSSL Inc.
  *
  * This file is part of wolfIP TCP/IP stack.
  *
@@ -25,17 +25,17 @@ static void wolfIP_print_eth(struct wolfIP_eth_frame * eth, uint32_t len)
     uint8_t * dst = eth->dst;
     uint8_t * src = eth->src;
     uint8_t * type = (uint8_t *) &eth->type;
-    printf("eth hdr:\n");
-    printf("+---------------------------------------+\n");
-    printf("| %02x:%02x:%02x:%02x:%02x:%02x "
-           "| %02x:%02x:%02x:%02x:%02x:%02x | (dst, src) \n",
-           dst[0], dst[1], dst[2], dst[3], dst[4], dst[5],
-           src[0], src[1], src[2], src[3], src[4], src[5]);
-    printf("+---------------------------------------+\n");
-    printf("| 0x%02x%02x | %5lu bytes data             | (eth type, payload) \n",
-           type[0], type[1], (unsigned long)len);
-    printf("+---------------------------------------+\n");
-    printf("\n");
+    LOG("eth hdr:\n");
+    LOG("+---------------------------------------+\n");
+    LOG("| %02x:%02x:%02x:%02x:%02x:%02x "
+        "| %02x:%02x:%02x:%02x:%02x:%02x | (dst, src) \n",
+        dst[0], dst[1], dst[2], dst[3], dst[4], dst[5],
+        src[0], src[1], src[2], src[3], src[4], src[5]);
+    LOG("+---------------------------------------+\n");
+    LOG("| 0x%02x%02x | %5lu bytes data             | (eth type, payload) \n",
+        type[0], type[1], (unsigned long)len);
+    LOG("+---------------------------------------+\n");
+    LOG("\n");
 }
 #endif /* ETHERNET && DEBUG_ETH */
 
@@ -49,22 +49,22 @@ static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
     iptoa(ee32(ip->src), src);
     iptoa(ee32(ip->dst), dst);
 
-    printf("ip hdr:\n");
-    printf("+-----------------------------+\n");
-    printf("| 0x%02x | 0x%02x | 0x%02x |   %4d | (ipv, hdr_len, tos, ip_len)\n",
-           0x04, ip->ver_ihl, ip->tos, ee16(ip->len));
-    printf("+-----------------------------+\n");
-    printf("|    0x%04x    |    0x%04x    | (id, flags_fo)\n",
-           ee16(ip->id), ee16(ip->flags_fo));
-    printf("+-----------------------------+\n");
-    printf("|  %3d  | 0x%02x |    0x%04x    | (ttl, proto, chksum)\n",
-           ip->ttl, ip->proto, ee16(ip->csum));
-    printf("+-----------------------------+\n");
-    printf("|           %15s   | (src)\n", src);
-    printf("+-----------------------------+\n");
-    printf("|           %15s   | (dst)\n", dst);
-    printf("+-----------------------------+\n");
-    printf("\n");
+    LOG("ip hdr:\n");
+    LOG("+-----------------------------+\n");
+    LOG("| 0x%02x | 0x%02x | 0x%02x |   %4d | (ipv, hdr_len, tos, ip_len)\n",
+        0x04, ip->ver_ihl, ip->tos, ee16(ip->len));
+    LOG("+-----------------------------+\n");
+    LOG("|    0x%04x    |    0x%04x    | (id, flags_fo)\n",
+        ee16(ip->id), ee16(ip->flags_fo));
+    LOG("+-----------------------------+\n");
+    LOG("|  %3d  | 0x%02x |    0x%04x    | (ttl, proto, chksum)\n",
+        ip->ttl, ip->proto, ee16(ip->csum));
+    LOG("+-----------------------------+\n");
+    LOG("|           %15s   | (src)\n", src);
+    LOG("+-----------------------------+\n");
+    LOG("|           %15s   | (dst)\n", dst);
+    LOG("+-----------------------------+\n");
+    LOG("\n");
 }
 #endif /* DEBUG_IP*/
 
@@ -73,14 +73,14 @@ static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
 {
     uint16_t len = ee16(udp->len);
     char     payload_str[32];
-    printf("udp hdr:\n");
-    printf("+-------------------+\n");
-    printf("|  %5d  |  %5d  | (src_port, dst_port)\n",
-           ee16(udp->src_port), ee16(udp->dst_port));
-    printf("+-------------------+\n");
-    printf("|  %5u  |  0x%04x | (len, chksum)\n",
-           len, ee16(udp->csum));
-    printf("+-------------------+\n");
+    LOG("udp hdr:\n");
+    LOG("+-------------------+\n");
+    LOG("|  %5d  |  %5d  | (src_port, dst_port)\n",
+        ee16(udp->src_port), ee16(udp->dst_port));
+    LOG("+-------------------+\n");
+    LOG("|  %5u  |  0x%04x | (len, chksum)\n",
+        len, ee16(udp->csum));
+    LOG("+-------------------+\n");
     memset(payload_str, '\0', sizeof(payload_str));
     {
         /* show first 16 printable chars of payload */
@@ -93,8 +93,8 @@ static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
             if (!isprint(payload_str[i])) { payload_str[i] = '.'; }
         }
     }
-    printf("| %17s | (payload first 16 bytes)\n", payload_str);
-    printf("+-------------------+\n");
-    printf("\n");
+    LOG("| %17s | (payload first 16 bytes)\n", payload_str);
+    LOG("+-------------------+\n");
+    LOG("\n");
 }
 #endif /* DEBUG_UDP */

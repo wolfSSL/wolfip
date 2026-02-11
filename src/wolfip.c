@@ -3723,9 +3723,9 @@ size_t wolfIP_instance_size(void)
     return sizeof(struct wolfIP);
 }
 
-#if defined(DEBUG_ETH) || defined(DEBUG_IP) || defined(DEBUG_UDP)
+#if defined(DEBUG)
 #include "src/wolfip_debug.c"
-#endif /* DEBUG_ETH || DEBUG_IP || DEBUG_UDP */
+#endif /* DEBUG */
 
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                            struct wolfIP_ip_packet *ip, uint32_t len)
@@ -3798,7 +3798,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         /* proto is ESP 0x32 (50), try to unwrap. */
         int err = esp_transport_unwrap(ip, &len);
         if (err) {
-            printf("info: failed to unwrap esp packet, dropping.\n");
+            LOG("info: failed to unwrap esp packet, dropping.\n");
             return;
         }
     }
@@ -3820,7 +3820,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     }
     #ifdef DEBUG_IP
     else {
-        printf("info: dropping ip packet: 0x%02x\n", ip->proto);
+        LOG("info: dropping ip packet: 0x%02x\n", ip->proto);
     }
     #endif
 }

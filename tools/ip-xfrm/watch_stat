@@ -1,2 +1,0 @@
-#!/bin/bash
-watch cat /proc/net/xfrm_stat

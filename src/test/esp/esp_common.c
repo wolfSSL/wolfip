@@ -1,6 +1,6 @@
 /* esp_common.c
  *
- * Copyright (C) 2024 wolfSSL Inc.
+ * Copyright (C) 2026 wolfSSL Inc.
  *
  * This file is part of wolfIP TCP/IP stack.
  *
@@ -19,6 +19,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+/* ipsec esp security association info shared by esp tests.
+ * These match the scripts and esp_sa.txt config file found
+ * in tools/ip-xfrm/ */
 static uint8_t in_sa_gcm[ESP_SPI_LEN] = {0x01, 0x01, 0x01, 0x01};
 static uint8_t out_sa_gcm[ESP_SPI_LEN] = {0x02, 0x02, 0x02, 0x02};
 static uint8_t in_sa_cbc[ESP_SPI_LEN] = {0x03, 0x03, 0x03, 0x03};

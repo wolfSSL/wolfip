@@ -32,6 +32,7 @@ if [ $# -eq 1 ]; then
 fi
 
 if [ $# -eq 2 ]; then
+  len=$1
   ip_proto=$2
 fi
 

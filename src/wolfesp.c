@@ -1,3 +1,24 @@
+/* wolfesp.c
+ *
+ * Copyright (C) 2026 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
+
 #if defined(WOLFIP_ESP) && !defined(WOLFESP_SRC)
 #define WOLFESP_SRC
 #include "wolfesp.h"
@@ -9,26 +30,28 @@ static wolfIP_esp_sa   out_sa_list[WOLFIP_ESP_NUM_SA];
 static uint16_t        in_sa_num = WOLFIP_ESP_NUM_SA;
 static uint16_t        out_sa_num = WOLFIP_ESP_NUM_SA;
 
-#ifdef WOLFIP_DEBUG_ESP
+/* for err and important messages */
+#define ESP_LOG(fmt, ...) LOG(fmt, ##__VA_ARGS__)
+
+/* for verbose debug */
+#ifdef DEBUG_ESP
     #define ESP_DEBUG(fmt, ...) \
-        printf(fmt, ##__VA_ARGS__)
+        LOG(fmt, ##__VA_ARGS__)
 #else
     #define ESP_DEBUG(fmt, ...) \
         do { } while (0)
-#endif
+#endif /* DEBUG_ESP */
 
 int wolfIP_esp_init(void)
 {
     int err = 0;
 
-    memset(in_sa_list, 0, sizeof(in_sa_list));
-    memset(out_sa_list, 0, sizeof(out_sa_list));
+    wolfIP_esp_sa_del_all();
 
     if (rng_inited == 0) {
         err = wc_InitRng_ex(&wc_rng, NULL, INVALID_DEVID);
-
         if (err) {
-            printf("error: wc_InitRng_ex: %d\n", err);
+            ESP_LOG("error: wc_InitRng_ex: %d\n", err);
         }
         else {
             rng_inited = 1;
@@ -42,7 +65,7 @@ void wolfIP_esp_sa_del_all(void)
 {
     memset(in_sa_list, 0, sizeof(in_sa_list));
     memset(out_sa_list, 0, sizeof(out_sa_list));
-    return ;
+    return;
 }
 
 static inline wolfIP_esp_sa *
@@ -76,13 +99,11 @@ esp_sa_get(int in, const uint8_t * spi)
 void wolfIP_esp_sa_del_spi(int in, uint8_t * spi)
 {
     wolfIP_esp_sa * sa = NULL;
-
     sa = esp_sa_get(in, spi);
     if (sa != NULL) {
         memset(sa, 0, sizeof(*sa));
     }
-
-    return ;
+    return;
 }
 
 /* Configure a new Security Association based on either
@@ -97,9 +118,8 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     esp_auth_t      auth = 0;
 
     new_sa = esp_sa_get(in, NULL);
-
     if (new_sa == NULL) {
-        printf("error: sa %s pool is full\n", in == 1 ? "in" : "out");
+        ESP_LOG("error: sa %s pool is full\n", in == 1 ? "in" : "out");
         return -1;
     }
 
@@ -113,7 +133,7 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
         auth = ESP_AUTH_GCM_RFC4543;
         break;
     default:
-        printf("error: unsupported enc: %d\n", enc);
+        ESP_LOG("error: unsupported enc: %d\n", enc);
         return -1;
     }
 
@@ -133,15 +153,12 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     err = wc_RNG_GenerateBlock(&wc_rng, new_sa->pre_iv,
                                ESP_GCM_RFC4106_IV_LEN);
     if (err) {
-        printf("error: wc_RNG_GenerateBlock: %d\n", err);
-    }
-
-    if (err) {
+        ESP_LOG("error: wc_RNG_GenerateBlock: %d\n", err);
         memset(new_sa, 0, sizeof(*new_sa));
         err = -1;
     }
 
-    ESP_DEBUG("info: esp_sa_new_aead: %s\n", in == 1 ? "in" : "out");
+    ESP_DEBUG("info: esp_sa_new_gcm: %s\n", in == 1 ? "in" : "out");
     return err;
 }
 
@@ -155,9 +172,8 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     wolfIP_esp_sa * new_sa = NULL;
 
     new_sa = esp_sa_get(in, NULL);
-
     if (new_sa == NULL) {
-        printf("error: sa %s pool is full\n", in == 1 ? "in" : "out");
+        ESP_LOG("error: sa %s pool is full\n", in == 1 ? "in" : "out");
         return -1;
     }
 
@@ -174,7 +190,7 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
 
-    ESP_DEBUG("info: esp_sa_new_cbc_sha256: %s\n", in == 1 ? "in" : "out");
+    ESP_DEBUG("info: esp_sa_new_cbc_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
 
@@ -189,9 +205,8 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     wolfIP_esp_sa * new_sa = NULL;
 
     new_sa = esp_sa_get(in, NULL);
-
     if (new_sa == NULL) {
-        printf("error: sa %s pool is full\n", in == 1 ? "in" : "out");
+        ESP_LOG("error: sa %s pool is full\n", in == 1 ? "in" : "out");
         return -1;
     }
 
@@ -208,7 +223,7 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
 
-    ESP_DEBUG("info: esp_sa_new_cbc_sha256: %s\n", in == 1 ? "in" : "out");
+    ESP_DEBUG("info: esp_sa_new_des3_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
 
@@ -264,9 +279,9 @@ esp_iv_len_from_enc(esp_enc_t enc)
     return iv_len;
 }
 
-#ifdef WOLFIP_DEBUG_ESP
+#ifdef DEBUG_ESP
 #define esp_print_sep \
-    printf("+------------------+\n")
+    LOG("+------------------+\n")
 #define esp_str_4hex \
     "|  %02x  %02x  %02x  %02x  |"
 #define esp_str_skip \
@@ -279,17 +294,17 @@ esp_print_field(const char * fld, const uint8_t * val,
                 uint32_t val_len)
 {
     esp_print_sep;
-    printf(esp_str_4hex " (%s, %d bytes)\n",
-           val[0], val[1], val[2], val[3], fld, val_len);
+    LOG(esp_str_4hex " (%s, %d bytes)\n",
+        val[0], val[1], val[2], val[3], fld, val_len);
     if (val_len > 4) {
         for (size_t i = 4; i < val_len; i += 4) {
             if (i > 16 || (i + 4) > val_len) {
-                printf(esp_str_skip "\n");
+                LOG(esp_str_skip "\n");
                 break;
             }
 
-            printf(esp_str_4hex"\n",
-                   val[0 + i], val[1 + i], val[2 + i], val[3 + i]);
+            LOG(esp_str_4hex"\n",
+                val[0 + i], val[1 + i], val[2 + i], val[3 + i]);
         }
     }
     return;
@@ -334,7 +349,7 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
     /* last 2 bytes of padding */
     padding = esp_data + esp_len - esp_sa->icv_len - 4;
 
-    printf("esp packet: (%d bytes)\n", esp_len);
+    LOG("esp packet: (%d bytes)\n", esp_len);
 
    /**   ESP header
     *     ______________
@@ -359,8 +374,8 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
     *    | (variable length) | Length | Header |
     *     ------------------------------------- */
     esp_print_sep;
-    printf(esp_pad_fld " (padding last 2 bytes, pad len, nxt hdr)\n",
-           padding[0], padding[1], pad_len, nxt_hdr);
+    LOG(esp_pad_fld " (padding last 2 bytes, pad len, nxt hdr)\n",
+        padding[0], padding[1], pad_len, nxt_hdr);
 
     if (icv) {
         esp_print_field("icv", icv, esp_sa->icv_len);
@@ -370,7 +385,7 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
 
     return;
 }
-#endif /* WOLFIP_DEBUG_ESP */
+#endif /* DEBUG_ESP */
 
 /*
  * esp_data covers from start of ESP header to end of ESP trailer, but does not
@@ -401,8 +416,7 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
         break;
     case ESP_AUTH_NONE:
     default:
-        printf("error: esp_calc_icv_hmac: invalid auth: %d\n",
-               esp_sa->auth);
+        ESP_LOG("error: esp_calc_icv_hmac: invalid auth: %d\n", esp_sa->auth);
         return -1;
     }
 
@@ -410,16 +424,14 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
     auth_len = esp_len - esp_sa->icv_len;
 
     err = wc_HmacInit(&hmac, NULL, INVALID_DEVID);
-
     if (err) {
-        printf("error: wc_HmacSetKey: %d\n", err);
+        ESP_LOG("error: wc_HmacSetKey: %d\n", err);
         goto calc_icv_hmac_end;
     }
 
-    err = wc_HmacSetKey(&hmac, type, esp_sa->auth_key,
-                             esp_sa->auth_key_len);
+    err = wc_HmacSetKey(&hmac, type, esp_sa->auth_key, esp_sa->auth_key_len);
     if (err) {
-        printf("error: wc_HmacSetKey: %d\n", err);
+        ESP_LOG("error: wc_HmacSetKey: %d\n", err);
         goto calc_icv_hmac_end;
     }
 
@@ -427,13 +439,13 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
      * inclusive. */
     err = wc_HmacUpdate(&hmac, (const byte *)esp_data, auth_len);
     if (err) {
-        printf("error: wc_HmacUpdate: %d\n", err);
+        ESP_LOG("error: wc_HmacUpdate: %d\n", err);
         goto calc_icv_hmac_end;
     }
 
     err = wc_HmacFinal(&hmac, hash);
     if (err) {
-        printf("error: wc_HmacFinal: %d\n", err);
+        ESP_LOG("error: wc_HmacFinal: %d\n", err);
         goto calc_icv_hmac_end;
     }
 
@@ -503,7 +515,7 @@ esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     ret = wc_AesInit(&cbc_dec, NULL, INVALID_DEVID);
     if (ret != 0) {
-        printf("error: wc_AesInit returned: %d\n", ret);
+        ESP_LOG("error: wc_AesInit: %d\n", ret);
         goto aes_dec_out;
     }
     inited = 1;
@@ -511,14 +523,14 @@ esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ret = wc_AesSetKey(&cbc_dec, esp_sa->enc_key, esp_sa->enc_key_len,
                        iv, AES_DECRYPTION);
     if (ret != 0) {
-        printf("error: wc_AesSetKey returned: %d\n", ret);
+        ESP_LOG("error: wc_AesSetKey: %d\n", ret);
         goto aes_dec_out;
     }
 
     /* decrypt in place. */
     ret = wc_AesCbcDecrypt(&cbc_dec, enc_payload, enc_payload, enc_len);
     if (ret != 0) {
-        printf("error: wc_AesCbcDecrypt returned: %d\n", ret);
+        ESP_LOG("error: wc_AesCbcDecrypt: %d\n", ret);
         goto aes_dec_out;
     }
 
@@ -553,13 +565,13 @@ esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     /* Generate random iv block for cbc method. */
     ret = wc_RNG_GenerateBlock(&wc_rng, iv, iv_len);
     if (ret) {
-        printf("error: wc_RNG_GenerateBlock returned: %d\n", ret);
+        ESP_LOG("error: wc_RNG_GenerateBlock: %d\n", ret);
         goto aes_enc_out;
     }
 
     ret = wc_AesInit(&cbc_enc, NULL, INVALID_DEVID);
     if (ret != 0) {
-        printf("error: wc_AesInit returned: %d\n", ret);
+        ESP_LOG("error: wc_AesInit: %d\n", ret);
         goto aes_enc_out;
     }
 
@@ -567,13 +579,13 @@ esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ret = wc_AesSetKey(&cbc_enc, esp_sa->enc_key, esp_sa->enc_key_len,
                        iv, AES_ENCRYPTION);
     if (ret != 0) {
-        printf("error: wc_AesSetKey returned: %d\n", ret);
+        ESP_LOG("error: wc_AesSetKey: %d\n", ret);
         goto aes_enc_out;
     }
 
     ret = wc_AesCbcEncrypt(&cbc_enc, enc_payload, enc_payload, enc_len);
     if (ret != 0) {
-        printf("error: wc_AesCbcEncrypt returned: %d\n", ret);
+        ESP_LOG("error: wc_AesCbcEncrypt: %d\n", ret);
         goto aes_enc_out;
     }
 
@@ -603,7 +615,7 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ESP_DEBUG("info: des3 dec: %d\n", esp_len);
 
     if (esp_sa->enc_key_len != ESP_DES3_KEY_LEN) {
-        printf("error: des3_rfc2451_dec: key len = %d, expected %d\n",
+        ESP_LOG("error: des3_rfc2451_dec: key len = %d, expected %d\n",
                esp_sa->enc_key_len, ESP_DES3_KEY_LEN);
         goto des3_dec_out;
     }
@@ -614,21 +626,21 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     ret = wc_Des3Init(&des3_dec, NULL, INVALID_DEVID);
     if (ret != 0) {
-        printf("error: wc_Des3Init returned: %d\n", ret);
+        ESP_LOG("error: wc_Des3Init: %d\n", ret);
         goto des3_dec_out;
     }
     inited = 1;
 
     ret = wc_Des3_SetKey(&des3_dec, esp_sa->enc_key, iv, DES_DECRYPTION);
     if (ret != 0) {
-        printf("error: wc_Des3_SetKey returned: %d\n", ret);
+        ESP_LOG("error: wc_Des3_SetKey: %d\n", ret);
         goto des3_dec_out;
     }
 
     /* decrypt in place. */
     ret = wc_Des3_CbcDecrypt(&des3_dec, enc_payload, enc_payload, enc_len);
     if (ret != 0) {
-        printf("error: wc_Des3_CbcDecrypt returned: %d\n", ret);
+        ESP_LOG("error: wc_Des3_CbcDecrypt: %d\n", ret);
         goto des3_dec_out;
     }
 
@@ -657,7 +669,7 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ESP_DEBUG("info: des3 enc: %d\n", esp_len);
 
     if (esp_sa->enc_key_len != ESP_DES3_KEY_LEN) {
-        printf("error: des3_rfc2451_enc: key len = %d, expected %d\n",
+        ESP_LOG("error: des3_rfc2451_enc: key len = %d, expected %d\n",
                esp_sa->enc_key_len, ESP_DES3_KEY_LEN);
         goto des3_enc_out;
     }
@@ -669,21 +681,21 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ret = wc_Des3Init(&des3_enc, NULL, INVALID_DEVID);
 
     if (ret != 0) {
-        printf("error: wc_Des3Init returned: %d\n", ret);
+        ESP_LOG("error: wc_Des3Init: %d\n", ret);
         goto des3_enc_out;
     }
     inited = 1;
 
     ret = wc_Des3_SetKey(&des3_enc, esp_sa->enc_key, iv, DES_ENCRYPTION);
     if (ret != 0) {
-        printf("error: wc_Des3_SetKey returned: %d\n", ret);
+        ESP_LOG("error: wc_Des3_SetKey: %d\n", ret);
         goto des3_enc_out;
     }
 
     /* encrypt in place. */
     ret = wc_Des3_CbcEncrypt(&des3_enc, enc_payload, enc_payload, enc_len);
     if (ret != 0) {
-        printf("error: wc_Des3_CbcEncrypt returned: %d\n", ret);
+        ESP_LOG("error: wc_Des3_CbcEncrypt: %d\n", ret);
         goto des3_enc_out;
     }
 
@@ -721,8 +733,8 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t *       iv = NULL;
     uint16_t        enc_len = 0;
     uint8_t         inited = 0;
-    uint8_t         aad[ESP_SPI_LEN + ESP_SEQ_LEN];
-    uint16_t        aad_len = sizeof(aad);
+    uint8_t *       aad = NULL;
+    uint16_t        aad_len = ESP_SPI_LEN + ESP_SEQ_LEN;
     const uint8_t * salt = NULL;
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
@@ -732,18 +744,18 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     /* get enc payload, iv, and icv pointers. */
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
+    aad = esp_data;
     iv = esp_enc_iv(esp_data, iv_len);
     icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
 
-    /* Get the salt, aad, and construct nonce. */
+    /* Get the salt, and construct nonce. */
     salt = esp_rfc4106_salt(esp_sa);
-    memcpy(aad, esp_data, sizeof(aad));
     memcpy(nonce, salt, salt_len);
     memcpy(nonce + salt_len, iv, iv_len);
 
     err = wc_AesInit(&gcm_dec, NULL, INVALID_DEVID);
     if (err != 0) {
-        printf("error: wc_AesInit: %d\n", err);
+        ESP_LOG("error: wc_AesInit: %d\n", err);
         goto rfc4106_dec_out;
     }
     inited = 1;
@@ -752,20 +764,20 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     err = wc_AesGcmInit(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
     if (err != 0) {
-        printf("error: wc_AesGcmInit: %d\n", err);
+        ESP_LOG("error: wc_AesGcmInit: %d\n", err);
         goto rfc4106_dec_out;
     }
 
     err = wc_AesGcmSetKey(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4);
     if (err != 0) {
-        printf("error: wc_AesGcmSetKey: %d\n", err);
+        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_dec_out;
     }
 
     err = wc_AesGcmDecrypt(&gcm_dec, enc_payload, enc_payload, enc_len,
                            nonce, sizeof(nonce), icv, icv_len, aad, aad_len);
     if (err != 0) {
-        printf("error: wc_AesGcmDecrypt: %d\n", err);
+        ESP_LOG("error: wc_AesGcmDecrypt: %d\n", err);
         goto rfc4106_dec_out;
     }
 
@@ -791,8 +803,8 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t *       iv = NULL;
     uint16_t        enc_len = 0;
     uint8_t         inited = 0;
-    uint8_t         aad[ESP_SPI_LEN + ESP_SEQ_LEN];
-    uint16_t        aad_len = sizeof(aad);
+    uint8_t *       aad = NULL;
+    uint16_t        aad_len = ESP_SPI_LEN + ESP_SEQ_LEN;
     const uint8_t * salt = NULL;
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
@@ -802,12 +814,12 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     /* get enc payload, iv, and icv pointers. */
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
+    aad = esp_data;
     iv = esp_enc_iv(esp_data, iv_len);
     icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
 
-    /* Get the salt, aad. */
+    /* Get the salt, and construct nonce. */
     salt = esp_rfc4106_salt(esp_sa);
-    memcpy(aad, esp_data, sizeof(aad));
 
     {
         /* Deterministic iv construction using pre-iv salt and sequence number.
@@ -834,7 +846,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     err = wc_AesInit(&gcm_enc, NULL, INVALID_DEVID);
     if (err != 0) {
-        printf("error: wc_AesInit: %d\n", err);
+        ESP_LOG("error: wc_AesInit: %d\n", err);
         goto rfc4106_enc_out;
     }
     inited = 1;
@@ -843,20 +855,20 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     err = wc_AesGcmInit(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
     if (err != 0) {
-        printf("error: wc_AesGcmInit: %d\n", err);
+        ESP_LOG("error: wc_AesGcmInit: %d\n", err);
         goto rfc4106_enc_out;
     }
 
     err = wc_AesGcmSetKey(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4);
     if (err != 0) {
-        printf("error: wc_AesGcmSetKey: %d\n", err);
+        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_enc_out;
     }
 
     err = wc_AesGcmEncrypt(&gcm_enc, enc_payload, enc_payload, enc_len,
                            nonce, sizeof(nonce), icv, icv_len, aad, aad_len);
     if (err != 0) {
-        printf("error: wc_AesGcmDecrypt: %d\n", err);
+        ESP_LOG("error: wc_AesGcmDecrypt: %d\n", err);
         goto rfc4106_enc_out;
     }
 
@@ -908,9 +920,8 @@ esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     err = wc_GmacVerify(esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce), aad, aad_len,
                         icv, icv_len);
-
     if (err != 0) {
-        printf("error: wc_GmacVerify: %d\n", err);
+        ESP_LOG("error: wc_GmacVerify: %d\n", err);
         goto rfc4543_dec_out;
     }
 
@@ -969,7 +980,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     err = wc_AesInit(&gmac_enc.aes, NULL, INVALID_DEVID);
     if (err != 0) {
-        printf("error: wc_AesInit: %d\n", err);
+        ESP_LOG("error: wc_AesInit: %d\n", err);
         goto rfc4543_enc_out;
     }
     inited = 1;
@@ -977,14 +988,14 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     /* subtract 4 byte salt from enc_key_len */
     err = wc_GmacSetKey(&gmac_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4);
     if (err != 0) {
-        printf("error: wc_AesGcmSetKey: %d\n", err);
+        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4543_enc_out;
     }
 
     err = wc_GmacUpdate(&gmac_enc, nonce, sizeof(nonce), aad, aad_len,
                         icv, icv_len);
     if (err != 0) {
-        printf("error: wc_AesGmacUpdate: %d\n", err);
+        ESP_LOG("error: wc_AesGmacUpdate: %d\n", err);
         goto rfc4543_enc_out;
     }
 
@@ -1048,20 +1059,20 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
     }
 
     if (seq < seq_low) {
-        ESP_DEBUG("error: seq (%d) below window (%d)\n", seq, seq_low);
+        ESP_LOG("error: seq (%d) below window (%d)\n", seq, seq_low);
         return -1;
     }
 
     /* Simple 32 bit replay window:
      *   seq_low - - - - - - - seq - - - - - - hi_seq
-     *   <------------ ESP_REPLAY_WIN -------------->
+     *   |<----------- ESP_REPLAY_WIN --------------|
      * */
     if (seq < replay->hi_seq) {
         /* seq number within window. */
         bitn = 1U << (replay->hi_seq - seq);
 
         if ((replay->bitmap & bitn) != 0U) {
-            ESP_DEBUG("error: seq replayed: %u, %d\n", bitn, seq);
+            ESP_LOG("error: seq replayed: %u, %d\n", bitn, seq);
             return -1;
         }
         else {
@@ -1129,7 +1140,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     memset(spi, 0, sizeof(spi));
 
     if (*frame_len <= (ETH_HEADER_LEN + IP_HEADER_LEN)) {
-        ESP_DEBUG("error: esp: malformed frame: %d\n", *frame_len);
+        ESP_LOG("error: esp: malformed frame: %d\n", *frame_len);
         return -1;
     }
 
@@ -1137,7 +1148,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 
     /* If not at least SPI and sequence, something wrong. */
     if (esp_len < (ESP_SPI_LEN + ESP_SEQ_LEN)) {
-        ESP_DEBUG("error: esp: malformed packet: %d\n", esp_len);
+        ESP_LOG("error: esp: malformed packet: %d\n", esp_len);
         return -1;
     }
 
@@ -1161,7 +1172,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
          *   If no valid Security Association exists for this packet, the
          *   receiver MUST discard the packet; this is an auditable event.
          * */
-        printf("error: unknown spi: 0x%02x%02x%02x%02x\n",
+        ESP_LOG("error: unknown spi: 0x%02x%02x%02x%02x\n",
                spi[0], spi[1], spi[2], spi[3]);
         return -1;
     }
@@ -1180,7 +1191,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
                    ESP_PADDING_LEN + ESP_NEXT_HEADER_LEN + esp_sa->icv_len);
 
         if (esp_len < min_len) {
-            printf("error: esp: got %d, expected >= %d frame len", esp_len,
+            ESP_LOG("error: esp: got %d, expected >= %d frame len", esp_len,
                    min_len);
             return -1;
         }
@@ -1188,24 +1199,24 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 
     if (esp_sa->icv_len) {
         switch (esp_sa->auth) {
-            case ESP_AUTH_MD5_RFC2403:
-            case ESP_AUTH_SHA1_RFC2404:
-            case ESP_AUTH_SHA256_RFC4868:
-                err = esp_check_icv_hmac(esp_sa, ip->data, esp_len);
-                break;
-            case ESP_AUTH_GCM_RFC4106:
-            case ESP_AUTH_GCM_RFC4543:
-                /* icv calculated during decrypt */
-                err = 0;
-                break;
-            case ESP_AUTH_NONE:
-            default:
-                err = -1;
-                break;
+        case ESP_AUTH_MD5_RFC2403:
+        case ESP_AUTH_SHA1_RFC2404:
+        case ESP_AUTH_SHA256_RFC4868:
+            err = esp_check_icv_hmac(esp_sa, ip->data, esp_len);
+            break;
+        case ESP_AUTH_GCM_RFC4106:
+        case ESP_AUTH_GCM_RFC4543:
+            /* icv calculated during decrypt */
+            err = 0;
+            break;
+        case ESP_AUTH_NONE:
+        default:
+            err = -1;
+            break;
         }
 
         if (err) {
-            printf("error: icv check failed\n");
+            ESP_LOG("error: icv check failed\n");
             return -1;
         }
     }
@@ -1236,13 +1247,13 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 
         case ESP_ENC_NONE:
         default:
-            printf("error: decrypt unsupported: %d\n", esp_sa->enc);
+            ESP_LOG("error: decrypt unsupported: %d\n", esp_sa->enc);
             err = -1;
             break;
         }
 
         if (err) {
-            printf("error: esp_decrypt(%02x) returned: %d\n", esp_sa->enc,
+            ESP_LOG("error: esp_decrypt(%02x): %d\n", esp_sa->enc,
                    err);
             return -1;
         }
@@ -1254,9 +1265,9 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
                 - ESP_PADDING_LEN);
     nxt_hdr = *(ip->data + esp_len - esp_sa->icv_len - ESP_NEXT_HEADER_LEN);
 
-    #ifdef WOLFIP_DEBUG_ESP
+    #ifdef DEBUG_ESP
     wolfIP_print_esp(esp_sa, ip->data, esp_len, pad_len, nxt_hdr);
-    #endif /* WOLFIP_DEBUG_ESP */
+    #endif /* DEBUG_ESP */
 
     /* move ip payload forward to hide ESP header (SPI, SEQ, IV). */
     memmove(ip->data, ip->data + ESP_SPI_LEN + ESP_SEQ_LEN + iv_len,
@@ -1329,13 +1340,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     }
 
     if (esp_sa == NULL) {
-        /* nothing to do */
-        #ifdef WOLFIP_DEBUG_ESP
-        char ip_str[32];
-        memset(ip_str, '\0', sizeof(ip_str));
-        iptoa(ip->dst, ip_str);
-        printf("info: ip dst not found: %s\n", ip_str);
-        #endif /* WOLFIP_DEBUG_ESP */
+        /* no ipsec match found */
         return 1;
     }
 
@@ -1443,14 +1448,13 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
 
         case ESP_ENC_NONE:
         default:
-            printf("error: encrypt unsupported: %d\n", esp_sa->enc);
+            ESP_LOG("error: encrypt unsupported: %d\n", esp_sa->enc);
             err = -1;
             break;
         }
 
         if (err) {
-            printf("error: esp_encrypt(%02x) returned: %d\n", esp_sa->enc,
-                   err);
+            ESP_LOG("error: esp_encrypt(%02x): %d\n", esp_sa->enc, err);
             return -1;
         }
         /* Payload is now encrypted. Now calculate ICV.  */
@@ -1461,34 +1465,34 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
         int       err = 0;
 
         switch (esp_sa->auth) {
-            case ESP_AUTH_MD5_RFC2403:
-            case ESP_AUTH_SHA1_RFC2404:
-            case ESP_AUTH_SHA256_RFC4868:
-                icv = ip->data + icv_offset;
-                err = esp_calc_icv_hmac(icv, esp_sa, ip->data, payload_len);
-                break;
-            case ESP_AUTH_GCM_RFC4106:
-            case ESP_AUTH_GCM_RFC4543:
-                /* icv already calculated during encrypt */
-                err = 0;
-                break;
-            case ESP_AUTH_NONE:
-            default:
-                err = -1;
-                break;
+        case ESP_AUTH_MD5_RFC2403:
+        case ESP_AUTH_SHA1_RFC2404:
+        case ESP_AUTH_SHA256_RFC4868:
+            icv = ip->data + icv_offset;
+            err = esp_calc_icv_hmac(icv, esp_sa, ip->data, payload_len);
+            break;
+        case ESP_AUTH_GCM_RFC4106:
+        case ESP_AUTH_GCM_RFC4543:
+            /* icv already calculated during encrypt */
+            err = 0;
+            break;
+        case ESP_AUTH_NONE:
+        default:
+            err = -1;
+            break;
         }
 
         if (err) {
-            printf("error: icv check failed\n");
+            ESP_LOG("error: icv check: %d\n", err);
             return -1;
         }
     }
 
     *ip_len = payload_len + IP_HEADER_LEN;
 
-    #ifdef WOLFIP_DEBUG_ESP
+    #ifdef DEBUG_ESP
     wolfIP_print_esp(esp_sa, ip->data, payload_len, pad_len, ip->proto);
-    #endif /* WOLFIP_DEBUG_ESP */
+    #endif /* DEBUG_ESP */
 
     return 0;
 }
