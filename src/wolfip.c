@@ -956,6 +956,13 @@ static inline struct ipconf *wolfIP_primary_ipconf(struct wolfIP *s)
     return wolfIP_ipconf_at(s, WOLFIP_PRIMARY_IF_IDX);
 }
 
+static inline uint16_t ipcounter_next(struct wolfIP *s)
+{
+    uint16_t id = s->ipcounter;
+    s->ipcounter = (uint16_t)(id + 1);
+    return ee16(id);
+}
+
 static inline int ip_is_local_conf(const struct ipconf *conf, ip4 addr)
 {
     if (!conf)
@@ -1142,8 +1149,7 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx, stru
     icmp.ip.ver_ihl = 0x45;
     icmp.ip.ttl = 64;
     icmp.ip.proto = WI_IPPROTO_ICMP;
-    icmp.ip.id = ee16(s->ipcounter);
-    s->ipcounter = (uint16_t)(s->ipcounter + 1);
+    icmp.ip.id = ipcounter_next(s);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE);
     icmp.ip.src = ee32(wolfIP_ipconf_at(s, if_idx)->ip);
     icmp.ip.dst = orig->src;
@@ -3117,8 +3123,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
-        ip->id = ee16(s->ipcounter);
-        s->ipcounter = (uint16_t)(s->ipcounter + 1);
+        ip->id = ipcounter_next(s);
         ip->csum = 0;
         iphdr_set_checksum(ip);
         eth_output_add_header(s, if_idx, ip->eth.src, &ip->eth, ETH_TYPE_IP);
