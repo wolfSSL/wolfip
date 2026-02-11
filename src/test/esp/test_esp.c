@@ -555,14 +555,14 @@ int main(int argc, char **argv)
     if (!disable_ipsec) {
         switch (mode) {
         case 0:
-            err = wolfIP_esp_sa_new_aead(1, in_sa_gcm, atoip4(HOST_STACK_IP),
-                                         atoip4(WOLFIP_IP),
-                                         in_enc_key, sizeof(in_enc_key));
+            err = wolfIP_esp_sa_new_gcm(1, in_sa_gcm, atoip4(HOST_STACK_IP),
+                                        atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4106,
+                                        in_enc_key, sizeof(in_enc_key));
             if (err) { return err; }
 
-            err = wolfIP_esp_sa_new_aead(0, out_sa_gcm, atoip4(WOLFIP_IP),
-                                         atoip4(HOST_STACK_IP),
-                                         out_enc_key, sizeof(out_enc_key));
+            err = wolfIP_esp_sa_new_gcm(0, out_sa_gcm, atoip4(WOLFIP_IP),
+                                        atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4106,
+                                        out_enc_key, sizeof(out_enc_key));
             if (err) { return err; }
             break;
 
@@ -600,6 +600,18 @@ int main(int argc, char **argv)
             if (err) { return err; }
             break;
 
+        case 3:
+            err = wolfIP_esp_sa_new_gcm(1, in_sa_gmac, atoip4(HOST_STACK_IP),
+                                        atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4543,
+                                        in_enc_key, sizeof(in_enc_key));
+            if (err) { return err; }
+
+            err = wolfIP_esp_sa_new_gcm(0, out_sa_gmac, atoip4(WOLFIP_IP),
+                                        atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4543,
+                                        out_enc_key, sizeof(out_enc_key));
+            if (err) { return err; }
+            break;
+
         default:
             break;
         }
@@ -624,6 +636,6 @@ print_usage_and_die(void)
     printf("\n");
     printf("options:\n");
     printf("  -p         force plaintext (disable ipsec)\n");
-    printf("  -m <mode>  0 aead (default), 1 cbc hmac, 2 des3 hmac\n");
+    printf("  -m <mode>  0 gcm (default), 1 cbc hmac, 2 des3 hmac, 3 gmac\n");
     exit(1);
 }

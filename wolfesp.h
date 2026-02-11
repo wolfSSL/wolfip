@@ -34,7 +34,9 @@ typedef enum {
   #ifndef NO_DES3
   ESP_ENC_CBC_DES3,
   #endif /* !NO_DES3 */
+  #if defined(WOLFSSL_AESGCM_STREAM)
   ESP_ENC_GCM_RFC4106,
+  #endif /* WOLFSSL_AESGCM_STREAM */
   ESP_ENC_GCM_RFC4543, /* placeholder to indicate gmac auth. */
 } esp_enc_t;
 
@@ -43,7 +45,9 @@ typedef enum {
   ESP_AUTH_MD5_RFC2403,    /* hmac(md5)-96 */
   ESP_AUTH_SHA1_RFC2404,   /* hmac(sha1)-96 */
   ESP_AUTH_SHA256_RFC4868, /* hmac(sha256)-N, N=96,128  */
+  #if defined(WOLFSSL_AESGCM_STREAM)
   ESP_AUTH_GCM_RFC4106,    /* placeholder to indicate gcm auth. */
+  #endif /* WOLFSSL_AESGCM_STREAM */
   ESP_AUTH_GCM_RFC4543     /* rfc4543 gmac */
 } esp_auth_t;
 
@@ -63,7 +67,8 @@ typedef struct replay_t replay_t;
   (r).bitmap = 0U; (r).hi_seq = ESP_REPLAY_WIN; (r).oseq = 1U; \
 
 /* Minimal ESP Security Association structure.
- * Supports only transport mode. */
+ * Supports only transport mode.
+ * todo: support port/proto filtering, and priority sorting. */
 struct wolfIP_esp_sa {
     uint8_t    spi[ESP_SPI_LEN]; /* security parameter index */
     ip4        src; /* ip src and dst in network byte order */
@@ -84,10 +89,9 @@ typedef struct wolfIP_esp_sa wolfIP_esp_sa;
 int  wolfIP_esp_init(void);
 void wolfIP_esp_sa_del(int in, uint8_t * spi);
 void wolfIP_esp_sa_del_all(void);
-#if defined(WOLFSSL_AESGCM_STREAM)
-int  wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
-                            uint8_t * enc_key, uint8_t enc_key_len);
-#endif /*WOLFSSL_AESGCM_STREAM */
+int  wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
+                           esp_enc_t enc, uint8_t * enc_key,
+                           uint8_t enc_key_len);
 int  wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                                 uint8_t * enc_key, uint8_t enc_key_len,
                                 esp_auth_t auth, uint8_t * auth_key,

@@ -85,17 +85,35 @@ void wolfIP_esp_sa_del_spi(int in, uint8_t * spi)
     return ;
 }
 
-#if defined(WOLFSSL_AESGCM_STREAM)
-int wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
-                           uint8_t * enc_key, uint8_t enc_key_len)
+/* Configure a new Security Association based on either
+ * enc = ESP_ENC_GCM_RFC4106 (gcm), or enc = ESP_AUTH_GCM_RFC4543 (gmac).
+ * */
+int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
+                          esp_enc_t enc, uint8_t * enc_key,
+                          uint8_t enc_key_len)
 {
     wolfIP_esp_sa * new_sa = NULL;
     int             err = 0;
+    esp_auth_t      auth = 0;
 
     new_sa = esp_sa_get(in, NULL);
 
     if (new_sa == NULL) {
         printf("error: sa %s pool is full\n", in == 1 ? "in" : "out");
+        return -1;
+    }
+
+    switch (enc) {
+    #if defined(WOLFSSL_AESGCM_STREAM)
+    case ESP_ENC_GCM_RFC4106:
+        auth = ESP_AUTH_GCM_RFC4106;
+        break;
+    #endif /* WOLFSSL_AESGCM_STREAM */
+    case ESP_ENC_GCM_RFC4543:
+        auth = ESP_AUTH_GCM_RFC4543;
+        break;
+    default:
+        printf("error: unsupported enc: %d\n", enc);
         return -1;
     }
 
@@ -105,9 +123,10 @@ int wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
     memcpy(new_sa->enc_key, enc_key, enc_key_len);
     new_sa->src         = src;
     new_sa->dst         = dst;
-    new_sa->enc         = ESP_ENC_GCM_RFC4106;
+    new_sa->enc         = enc;
     new_sa->enc_key_len = enc_key_len;
-    new_sa->auth        = ESP_AUTH_GCM_RFC4106;
+    new_sa->auth        = auth;
+    /* rfc4106 and rfc4543 follow the same IV and ICV standards. */
     new_sa->icv_len     = ESP_GCM_RFC4106_ICV_LEN;
 
     /* Generate pre-iv for gcm. */
@@ -125,8 +144,9 @@ int wolfIP_esp_sa_new_aead(int in, uint8_t * spi, ip4 src, ip4 dst,
     ESP_DEBUG("info: esp_sa_new_aead: %s\n", in == 1 ? "in" : "out");
     return err;
 }
-#endif /*WOLFSSL_AESGCM_STREAM */
 
+/* Configure a new Security Association based on aes-cbc with hmac.
+ * */
 int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                                uint8_t * enc_key, uint8_t enc_key_len,
                                esp_auth_t auth, uint8_t * auth_key,
@@ -158,6 +178,8 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     return 0;
 }
 
+/* Configure a new Security Association based on des3 with hmac.
+ * */
 int
 wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                             uint8_t * enc_key, esp_auth_t auth,
@@ -480,16 +502,14 @@ esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     iv = esp_enc_iv(esp_data, iv_len);
 
     ret = wc_AesInit(&cbc_dec, NULL, INVALID_DEVID);
-
     if (ret != 0) {
         printf("error: wc_AesInit returned: %d\n", ret);
         goto aes_dec_out;
     }
-
     inited = 1;
+
     ret = wc_AesSetKey(&cbc_dec, esp_sa->enc_key, esp_sa->enc_key_len,
                        iv, AES_DECRYPTION);
-
     if (ret != 0) {
         printf("error: wc_AesSetKey returned: %d\n", ret);
         goto aes_dec_out;
@@ -497,7 +517,6 @@ esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* decrypt in place. */
     ret = wc_AesCbcDecrypt(&cbc_dec, enc_payload, enc_payload, enc_len);
-
     if (ret != 0) {
         printf("error: wc_AesCbcDecrypt returned: %d\n", ret);
         goto aes_dec_out;
@@ -533,14 +552,12 @@ esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* Generate random iv block for cbc method. */
     ret = wc_RNG_GenerateBlock(&wc_rng, iv, iv_len);
-
     if (ret) {
         printf("error: wc_RNG_GenerateBlock returned: %d\n", ret);
         goto aes_enc_out;
     }
 
     ret = wc_AesInit(&cbc_enc, NULL, INVALID_DEVID);
-
     if (ret != 0) {
         printf("error: wc_AesInit returned: %d\n", ret);
         goto aes_enc_out;
@@ -549,14 +566,12 @@ esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     inited = 1;
     ret = wc_AesSetKey(&cbc_enc, esp_sa->enc_key, esp_sa->enc_key_len,
                        iv, AES_ENCRYPTION);
-
     if (ret != 0) {
         printf("error: wc_AesSetKey returned: %d\n", ret);
         goto aes_enc_out;
     }
 
     ret = wc_AesCbcEncrypt(&cbc_enc, enc_payload, enc_payload, enc_len);
-
     if (ret != 0) {
         printf("error: wc_AesCbcEncrypt returned: %d\n", ret);
         goto aes_enc_out;
@@ -598,15 +613,13 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     iv = esp_enc_iv(esp_data, iv_len);
 
     ret = wc_Des3Init(&des3_dec, NULL, INVALID_DEVID);
-
     if (ret != 0) {
         printf("error: wc_Des3Init returned: %d\n", ret);
         goto des3_dec_out;
     }
-
     inited = 1;
-    ret = wc_Des3_SetKey(&des3_dec, esp_sa->enc_key, iv, DES_DECRYPTION);
 
+    ret = wc_Des3_SetKey(&des3_dec, esp_sa->enc_key, iv, DES_DECRYPTION);
     if (ret != 0) {
         printf("error: wc_Des3_SetKey returned: %d\n", ret);
         goto des3_dec_out;
@@ -614,7 +627,6 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* decrypt in place. */
     ret = wc_Des3_CbcDecrypt(&des3_dec, enc_payload, enc_payload, enc_len);
-
     if (ret != 0) {
         printf("error: wc_Des3_CbcDecrypt returned: %d\n", ret);
         goto des3_dec_out;
@@ -660,10 +672,9 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
         printf("error: wc_Des3Init returned: %d\n", ret);
         goto des3_enc_out;
     }
-
     inited = 1;
-    ret = wc_Des3_SetKey(&des3_enc, esp_sa->enc_key, iv, DES_ENCRYPTION);
 
+    ret = wc_Des3_SetKey(&des3_enc, esp_sa->enc_key, iv, DES_ENCRYPTION);
     if (ret != 0) {
         printf("error: wc_Des3_SetKey returned: %d\n", ret);
         goto des3_enc_out;
@@ -671,7 +682,6 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* encrypt in place. */
     ret = wc_Des3_CbcEncrypt(&des3_enc, enc_payload, enc_payload, enc_len);
-
     if (ret != 0) {
         printf("error: wc_Des3_CbcEncrypt returned: %d\n", ret);
         goto des3_enc_out;
@@ -687,7 +697,6 @@ des3_enc_out:
 }
 #endif /* !NO_DES3 */
 
-#if defined(WOLFSSL_AESGCM_STREAM)
 /**
  * AES-GCM-ESP
  *    The KEYMAT requested for each AES-GCM key is N + 4 octets.  The first
@@ -698,6 +707,7 @@ des3_enc_out:
                                  + (esp_sa)->enc_key_len \
                                  - ESP_GCM_RFC4106_SALT_LEN
 
+#if defined(WOLFSSL_AESGCM_STREAM)
 static int
 esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                     uint32_t esp_len)
@@ -732,25 +742,21 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     memcpy(nonce + salt_len, iv, iv_len);
 
     err = wc_AesInit(&gcm_dec, NULL, INVALID_DEVID);
-
     if (err != 0) {
         printf("error: wc_AesInit: %d\n", err);
         goto rfc4106_dec_out;
     }
-
     inited = 1;
 
     /* subtract 4 byte salt from enc_key_len */
     err = wc_AesGcmInit(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
-
     if (err != 0) {
         printf("error: wc_AesGcmInit: %d\n", err);
         goto rfc4106_dec_out;
     }
 
     err = wc_AesGcmSetKey(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4);
-
     if (err != 0) {
         printf("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_dec_out;
@@ -758,7 +764,6 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     err = wc_AesGcmDecrypt(&gcm_dec, enc_payload, enc_payload, enc_len,
                            nonce, sizeof(nonce), icv, icv_len, aad, aad_len);
-
     if (err != 0) {
         printf("error: wc_AesGcmDecrypt: %d\n", err);
         goto rfc4106_dec_out;
@@ -828,25 +833,21 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     memcpy(nonce + salt_len, iv, iv_len);
 
     err = wc_AesInit(&gcm_enc, NULL, INVALID_DEVID);
-
     if (err != 0) {
         printf("error: wc_AesInit: %d\n", err);
         goto rfc4106_enc_out;
     }
-
     inited = 1;
 
     /* subtract 4 byte salt from enc_key_len */
     err = wc_AesGcmInit(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
-
     if (err != 0) {
         printf("error: wc_AesGcmInit: %d\n", err);
         goto rfc4106_enc_out;
     }
 
     err = wc_AesGcmSetKey(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4);
-
     if (err != 0) {
         printf("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_enc_out;
@@ -854,7 +855,6 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     err = wc_AesGcmEncrypt(&gcm_enc, enc_payload, enc_payload, enc_len,
                            nonce, sizeof(nonce), icv, icv_len, aad, aad_len);
-
     if (err != 0) {
         printf("error: wc_AesGcmDecrypt: %d\n", err);
         goto rfc4106_enc_out;
@@ -869,6 +869,133 @@ rfc4106_enc_out:
     return err;
 }
 #endif /*WOLFSSL_AESGCM_STREAM */
+
+/**
+ * In rfc4543(gcm(aes)) the AAD consists ofthe SPI, Sequence Number,
+ * and ESP Payload, and the AES-GCM plaintext is zero-length, while in
+ * rfc4106(gcm(aes)) the AAD consists only of the SPI and Sequence Number,
+ * and the AES-GCM plaintext consists of the ESP Payload.
+ *  _____________     _______________________________________________________
+ * |aad (N bytes)| = |SPI (4 bytes) + Sequence Number (4 bytes) + ESP Payload|
+ *  -------------     -------------------------------------------------------
+ * */
+static int
+esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+                    uint32_t esp_len)
+{
+    int             err = -1;
+    uint8_t *       icv = NULL;
+    uint8_t         icv_len = esp_sa->icv_len;
+    uint8_t         iv_len = ESP_GCM_RFC4106_IV_LEN;
+    uint8_t *       iv = NULL;
+    uint8_t *       aad = esp_data;
+    uint16_t        aad_len = esp_len - icv_len;
+    const uint8_t * salt = NULL;
+    uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
+    uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
+
+    ESP_DEBUG("info: aes gcm rfc4543 dec: %d\n", esp_len);
+
+    /* get enc payload, iv, and icv pointers. */
+    iv = esp_enc_iv(esp_data, iv_len);
+    icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
+
+    /* Get the salt, and construct nonce. */
+    salt = esp_rfc4106_salt(esp_sa);
+    memcpy(nonce, salt, salt_len);
+    memcpy(nonce + salt_len, iv, iv_len);
+
+    err = wc_GmacVerify(esp_sa->enc_key, esp_sa->enc_key_len - 4,
+                        nonce, sizeof(nonce), aad, aad_len,
+                        icv, icv_len);
+
+    if (err != 0) {
+        printf("error: wc_GmacVerify: %d\n", err);
+        goto rfc4543_dec_out;
+    }
+
+rfc4543_dec_out:
+    return err;
+}
+
+static int
+esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
+                    uint32_t esp_len)
+{
+    Gmac            gmac_enc;
+    int             err = -1;
+    uint8_t *       icv = NULL;
+    uint8_t         icv_len = esp_sa->icv_len;
+    uint8_t         iv_len = ESP_GCM_RFC4106_IV_LEN;
+    uint8_t *       iv = NULL;
+    uint8_t         inited = 0;
+    uint8_t *       aad = esp_data;
+    uint16_t        aad_len = esp_len - icv_len;
+    const uint8_t * salt = NULL;
+    uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
+    uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
+
+    ESP_DEBUG("info: aes gcm enc: %d\n", esp_len);
+
+    /* get enc payload, iv, and icv pointers. */
+    iv = esp_enc_iv(esp_data, iv_len);
+    icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
+
+    /* Get the salt. */
+    salt = esp_rfc4106_salt(esp_sa);
+
+    {
+        /* Deterministic iv construction using pre-iv salt and sequence number.
+         * NIST SP 800-38D, section 8.2.1 Deterministic Construction, using
+         * an integer counter. The sequence number is used as a counter, and
+         * xor'ed with pre-iv salt. Based on linux kernel crypto/seqiv.c.
+         * */
+        uint32_t  seq_num = 0;
+        uint8_t * seq_num_u8 = (uint8_t *) &seq_num;
+
+        seq_num = ee32(esp_sa->replay.oseq);
+
+        /* copy in the pre_iv. */
+        memcpy(iv, esp_sa->pre_iv, sizeof(esp_sa->pre_iv));
+
+        /* xor pre-iv salt with current sequence number. */
+        for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+            iv[i + sizeof(uint32_t)] ^= seq_num_u8[i];
+        }
+    }
+
+    memcpy(nonce, salt, salt_len);
+    memcpy(nonce + salt_len, iv, iv_len);
+
+    err = wc_AesInit(&gmac_enc.aes, NULL, INVALID_DEVID);
+    if (err != 0) {
+        printf("error: wc_AesInit: %d\n", err);
+        goto rfc4543_enc_out;
+    }
+    inited = 1;
+
+    /* subtract 4 byte salt from enc_key_len */
+    err = wc_GmacSetKey(&gmac_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4);
+    if (err != 0) {
+        printf("error: wc_AesGcmSetKey: %d\n", err);
+        goto rfc4543_enc_out;
+    }
+
+    err = wc_GmacUpdate(&gmac_enc, nonce, sizeof(nonce), aad, aad_len,
+                        icv, icv_len);
+    if (err != 0) {
+        printf("error: wc_AesGmacUpdate: %d\n", err);
+        goto rfc4543_enc_out;
+    }
+
+rfc4543_enc_out:
+    if (inited) {
+        wc_AesFree(&gmac_enc.aes);
+        inited = 0;
+    }
+
+    return err;
+}
 
 /**
  * esp_data covers from start of ESP header to end of ESP trailer, but does not
@@ -1103,12 +1230,9 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
             break;
         #endif /*WOLFSSL_AESGCM_STREAM */
 
-        #if 0
-        /* not implemented yet */
         case ESP_ENC_GCM_RFC4543:
             err = esp_aes_rfc4543_dec(esp_sa, ip->data, esp_len);
             break;
-        #endif
 
         case ESP_ENC_NONE:
         default:
@@ -1192,7 +1316,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     wolfIP_esp_sa * esp_sa = NULL;
     uint8_t   iv_len = 0;
 
-    /* TODO: priority, tcp/udp port-filtering? currently this grabs
+    /* todo: priority, proto / port filtering. currently this grabs
      * the first dst match. */
     for (size_t i = 0; i < out_sa_num; ++i) {
         if (ip->dst == ee32(out_sa_list[i].dst)) {
@@ -1313,12 +1437,9 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
             break;
         #endif /*WOLFSSL_AESGCM_STREAM */
 
-        #if 0
-        /* not implemented yet */
         case ESP_ENC_GCM_RFC4543:
             err = esp_aes_rfc4543_enc(esp_sa, ip->data, payload_len);
             break;
-        #endif
 
         case ESP_ENC_NONE:
         default:
@@ -1374,10 +1495,10 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
 
 /**
  * Copy frame to new packet so we can expand and wrap in place
- * without stepping on the fifo tcp circular buffer.
+ * without stepping on the fifo circular buffer.
  *
  * A better way to do this would be to save extra scratch space in the fifo
- * circular buffer for each tcp packet, so we can expand in place.
+ * circular buffer for each packet, so we can expand in place.
  *
  * Returns  0 on success.
  * Returns  1 if no ipsec policy found (send plaintext)
