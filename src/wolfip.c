@@ -1717,19 +1717,7 @@ static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t ma
         *opt++ = TCP_OPTION_NOP;
         len++;
     }
-    if (len > 0 && len < max_len)
-        *opt = TCP_OPTION_EOO;
     return len;
-}
-
-static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
-        uint32_t frame_len)
-{
-    struct tcp_parsed_opts po;
-    tcp_parse_options(tcp, frame_len, &po);
-    if (po.ws_found)
-        t->sock.tcp.snd_wscale = po.ws_shift;
-    return po.ws_found ? 1 : 0;
 }
 
 static void tcp_send_empty(struct tsocket *t, uint8_t flags)
@@ -2195,7 +2183,7 @@ static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
             continue;
         }
         seg_start = ee32(seg->seq);
-        seg_end = seg_start + seg_len;
+        seg_end = tcp_seq_inc(seg_start, seg_len);
         if (tcp_seq_leq(seg_end, ack)) {
             desc = fifo_next(&t->sock.tcp.txbuf, desc);
             continue;
@@ -2375,20 +2363,22 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
             if (tcp->flags & 0x02) {
-                int ws_found = tcp_process_ws(t, tcp, frame_len);
                 struct tcp_parsed_opts po;
                 tcp_parse_options(tcp, frame_len, &po);
                 /* Window scale is negotiated only during SYN/SYN-ACK. */
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     /* Server side: enable if peer offered WS. */
-                    t->sock.tcp.ws_enabled = ws_found ? 1 : 0;
+                    t->sock.tcp.ws_enabled = po.ws_found ? 1 : 0;
+                    if (po.ws_found)
+                        t->sock.tcp.snd_wscale = po.ws_shift;
                     t->sock.tcp.sack_permitted = po.sack_permitted ? 1 : 0;
-                    if (!ws_found)
+                    if (!po.ws_found)
                         t->sock.tcp.snd_wscale = 0;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     /* Client side: only accept WS if we offered it. */
-                    if (t->sock.tcp.ws_offer && ws_found) {
+                    if (t->sock.tcp.ws_offer && po.ws_found) {
                         t->sock.tcp.ws_enabled = 1;
+                        t->sock.tcp.snd_wscale = po.ws_shift;
                     } else {
                         t->sock.tcp.ws_enabled = 0;
                         t->sock.tcp.snd_wscale = 0;
