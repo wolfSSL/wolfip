@@ -124,7 +124,7 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     if (enc_key_len != (AES_128_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN) &&
         enc_key_len != (AES_192_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN) &&
         enc_key_len != (AES_256_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN)) {
-        ESP_LOG("error: bad key len: %d\n", enc_key_len);
+        ESP_LOG("error: bad gcm key len: %d\n", enc_key_len);
         return -1;
     }
 
@@ -185,7 +185,7 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     if (enc_key_len != (AES_128_KEY_SIZE) &&
         enc_key_len != (AES_192_KEY_SIZE) &&
         enc_key_len != (AES_256_KEY_SIZE)) {
-        ESP_LOG("error: bad key len: %d\n", enc_key_len);
+        ESP_LOG("error: bad aes key len: %d\n", enc_key_len);
         return -1;
     }
 
@@ -211,6 +211,7 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     return 0;
 }
 
+#ifndef NO_DES3
 /* Configure a new Security Association based on des3 with hmac.
  * */
 int
@@ -248,6 +249,7 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     ESP_DEBUG("info: esp_sa_new_des3_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
+#endif /* !NO_DES3 */
 
 static uint8_t
 esp_block_len_from_enc(esp_enc_t enc)
@@ -263,7 +265,9 @@ esp_block_len_from_enc(esp_enc_t enc)
     case ESP_ENC_CBC_AES:
         block_len = AES_BLOCK_SIZE;
         break;
+    #if defined(WOLFSSL_AESGCM_STREAM)
     case ESP_ENC_GCM_RFC4106:
+    #endif /* WOLFSSL_AESGCM_STREAM */
     case ESP_ENC_GCM_RFC4543:
     case ESP_ENC_NONE:
     default:
@@ -288,7 +292,9 @@ esp_iv_len_from_enc(esp_enc_t enc)
     case ESP_ENC_CBC_AES:
         iv_len = ESP_CBC_RFC3602_IV_LEN;
         break;
+    #if defined(WOLFSSL_AESGCM_STREAM)
     case ESP_ENC_GCM_RFC4106:
+    #endif /* WOLFSSL_AESGCM_STREAM */
     case ESP_ENC_GCM_RFC4543:
         iv_len = ESP_GCM_RFC4106_IV_LEN;
         break;
@@ -1226,7 +1232,9 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         case ESP_AUTH_SHA256_RFC4868:
             err = esp_check_icv_hmac(esp_sa, ip->data, esp_len);
             break;
+        #if defined(WOLFSSL_AESGCM_STREAM)
         case ESP_AUTH_GCM_RFC4106:
+        #endif /* WOLFSSL_AESGCM_STREAM */
         case ESP_AUTH_GCM_RFC4543:
             /* icv calculated during decrypt */
             err = 0;
@@ -1493,7 +1501,9 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
             icv = ip->data + icv_offset;
             err = esp_calc_icv_hmac(icv, esp_sa, ip->data, payload_len);
             break;
+        #if defined(WOLFSSL_AESGCM_STREAM)
         case ESP_AUTH_GCM_RFC4106:
+        #endif /* WOLFSSL_AESGCM_STREAM */
         case ESP_AUTH_GCM_RFC4543:
             /* icv already calculated during encrypt */
             err = 0;

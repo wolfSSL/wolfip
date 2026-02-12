@@ -96,8 +96,10 @@ int  wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                                 uint8_t * enc_key, uint8_t enc_key_len,
                                 esp_auth_t auth, uint8_t * auth_key,
                                 uint8_t auth_key_len, uint8_t icv_len);
+#ifndef NO_DES3
 int  wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                                  uint8_t * enc_key, esp_auth_t auth,
                                  uint8_t * auth_key, uint8_t auth_key_len,
                                  uint8_t icv_len);
+#endif /* !NO_DES3 */
 #endif /* !WOLFESP_H */

@@ -317,6 +317,7 @@ static inline void iptoa(ip4 ip, char *buf)
         #include <wolfssl/wolfcrypt/aes.h>
         #include <wolfssl/wolfcrypt/des3.h>
         #include <wolfssl/wolfcrypt/hmac.h>
+        #include <wolfssl/wolfcrypt/random.h>
     #endif /* WOLFIP_ESP */
 #endif /* WOLFSSL_WOLFIP */
 

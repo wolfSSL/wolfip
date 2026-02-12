@@ -69,6 +69,10 @@ static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
 #endif /* DEBUG_IP*/
 
 #ifdef DEBUG_UDP
+static inline int wolfip_isprint(int c)
+{
+    return (c >= ' ' && c <= '~');
+}
 static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
 {
     uint16_t len = ee16(udp->len);
@@ -90,7 +94,7 @@ static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
         memset(payload_str, '\0', sizeof(payload_str));
         memcpy(payload_str, udp->data, print_len);
         for (i = 0; i < print_len; i++) {
-            if (!isprint(payload_str[i])) { payload_str[i] = '.'; }
+            if (!wolfip_isprint(payload_str[i])) { payload_str[i] = '.'; }
         }
     }
     LOG("| %17s | (payload first 16 bytes)\n", payload_str);

@@ -22,12 +22,16 @@
 /* ipsec esp security association info shared by esp tests.
  * These match the scripts and esp_sa.txt config file found
  * in tools/ip-xfrm/ */
+#if defined(WOLFSSL_AESGCM_STREAM)
 static uint8_t in_sa_gcm[ESP_SPI_LEN] = {0x01, 0x01, 0x01, 0x01};
 static uint8_t out_sa_gcm[ESP_SPI_LEN] = {0x02, 0x02, 0x02, 0x02};
+#endif /* WOLFSSL_AESGCM_STREAM */
 static uint8_t in_sa_cbc[ESP_SPI_LEN] = {0x03, 0x03, 0x03, 0x03};
 static uint8_t out_sa_cbc[ESP_SPI_LEN] = {0x04, 0x04, 0x04, 0x04};
+#ifndef NO_DES3
 static uint8_t in_sa_des3[ESP_SPI_LEN] = {0x05, 0x05, 0x05, 0x05};
 static uint8_t out_sa_des3[ESP_SPI_LEN] = {0x06, 0x06, 0x06, 0x06};
+#endif /* !NO_DES3 */
 static uint8_t in_sa_gmac[ESP_SPI_LEN] = {0x07, 0x07, 0x07, 0x07};
 static uint8_t out_sa_gmac[ESP_SPI_LEN] = {0x08, 0x08, 0x08, 0x08};
 /* 32 byte key + 4 byte nonce*/

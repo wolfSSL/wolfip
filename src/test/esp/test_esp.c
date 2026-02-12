@@ -554,6 +554,7 @@ int main(int argc, char **argv)
 
     if (!disable_ipsec) {
         switch (mode) {
+        #if defined(WOLFSSL_AESGCM_STREAM)
         case 0:
             err = wolfIP_esp_sa_new_gcm(1, in_sa_gcm, atoip4(HOST_STACK_IP),
                                         atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4106,
@@ -565,7 +566,7 @@ int main(int argc, char **argv)
                                         out_enc_key, sizeof(out_enc_key));
             if (err) { return err; }
             break;
-
+        #endif /* WOLFSSL_AESGCM_STREAM */
         case 1:
             err = wolfIP_esp_sa_new_cbc_hmac(1, in_sa_cbc, atoip4(HOST_STACK_IP),
                                              atoip4(WOLFIP_IP),
@@ -583,7 +584,7 @@ int main(int argc, char **argv)
                                              ESP_ICVLEN_HMAC_128);
             if (err) { return err; }
             break;
-
+        #ifndef NO_DES3
         case 2:
             err = wolfIP_esp_sa_new_des3_hmac(1, in_sa_des3, atoip4(HOST_STACK_IP),
                                               atoip4(WOLFIP_IP),
@@ -599,7 +600,7 @@ int main(int argc, char **argv)
                                               ESP_ICVLEN_HMAC_128);
             if (err) { return err; }
             break;
-
+        #endif /* !NO_DES3 */
         case 3:
             err = wolfIP_esp_sa_new_gcm(1, in_sa_gmac, atoip4(HOST_STACK_IP),
                                         atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4543,
