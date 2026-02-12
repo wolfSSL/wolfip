@@ -8099,6 +8099,39 @@ START_TEST(test_tcp_send_syn_advertises_sack_permitted)
 }
 END_TEST
 
+START_TEST(test_tcp_sort_sack_blocks_swaps_out_of_order)
+{
+    struct tcp_sack_block blocks[3];
+
+    blocks[0].left = 30; blocks[0].right = 40;
+    blocks[1].left = 10; blocks[1].right = 20;
+    blocks[2].left = 25; blocks[2].right = 26;
+
+    tcp_sort_sack_blocks(blocks, 3);
+    ck_assert_uint_eq(blocks[0].left, 10);
+    ck_assert_uint_eq(blocks[1].left, 25);
+    ck_assert_uint_eq(blocks[2].left, 30);
+}
+END_TEST
+
+START_TEST(test_tcp_merge_sack_blocks_adjacent_and_disjoint)
+{
+    struct tcp_sack_block blocks[3];
+    uint8_t merged;
+
+    blocks[0].left = 30; blocks[0].right = 35;
+    blocks[1].left = 20; blocks[1].right = 30;
+    blocks[2].left = 40; blocks[2].right = 45;
+
+    merged = tcp_merge_sack_blocks(blocks, 3);
+    ck_assert_uint_eq(merged, 2);
+    ck_assert_uint_eq(blocks[0].left, 20);
+    ck_assert_uint_eq(blocks[0].right, 35);
+    ck_assert_uint_eq(blocks[1].left, 40);
+    ck_assert_uint_eq(blocks[1].right, 45);
+}
+END_TEST
+
 START_TEST(test_tcp_recv_tracks_holes_and_sack_blocks)
 {
     struct wolfIP s;
@@ -8151,6 +8184,82 @@ START_TEST(test_tcp_recv_tracks_holes_and_sack_blocks)
 
     ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), 2);
     ck_assert_mem_eq(out, "ab", 2);
+}
+END_TEST
+
+START_TEST(test_tcp_rebuild_rx_sack_right_edge_wraps)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[8] = {0};
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 0xFFFFFFFCU, 8), 0);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 1);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].left, 0xFFFFFFFCU);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].right, 4U);
+}
+END_TEST
+
+START_TEST(test_tcp_consume_ooo_wrap_trim_and_promote)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t out[8];
+    uint8_t payload[8] = { 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h' };
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 2;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 2);
+
+    ts->sock.tcp.ooo[0].used = 1;
+    ts->sock.tcp.ooo[0].seq = 0xFFFFFFFCU;
+    ts->sock.tcp.ooo[0].len = 8;
+    memcpy(ts->sock.tcp.ooo[0].data, payload, sizeof(payload));
+
+    tcp_consume_ooo(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 4U);
+    ck_assert_int_eq(ts->sock.tcp.ooo[0].used, 0);
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), 2);
+    ck_assert_mem_eq(out, payload + 6, 2);
+}
+END_TEST
+
+START_TEST(test_tcp_consume_ooo_wrap_drop_fully_acked)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[8] = {0};
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 4;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 4);
+
+    ts->sock.tcp.ooo[0].used = 1;
+    ts->sock.tcp.ooo[0].seq = 0xFFFFFFFCU;
+    ts->sock.tcp.ooo[0].len = 8;
+    memcpy(ts->sock.tcp.ooo[0].data, payload, sizeof(payload));
+
+    tcp_consume_ooo(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 4U);
+    ck_assert_int_eq(ts->sock.tcp.ooo[0].used, 0);
+    ck_assert_int_eq(ts->sock.tcp.ooo[0].len, 0);
 }
 END_TEST
 
@@ -8565,6 +8674,72 @@ START_TEST(test_tcp_ack_no_sack_requires_three_dupacks)
     ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
     tcp_ack(ts, &ackseg);
     ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_ack_wraparound_delta_reduces_inflight)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    uint32_t snd_una = 0xFFFFFFF0U;
+    uint32_t ack = 0x00000010U;
+    uint32_t pre_flight = 0x40U;
+    uint32_t delta = 0x20U;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = snd_una;
+    ts->sock.tcp.seq = 0x00000020U;
+    ts->sock.tcp.bytes_in_flight = pre_flight;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(ack);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = 0x10;
+
+    tcp_ack(ts, &ackseg);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, ack);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, pre_flight - delta);
+}
+END_TEST
+
+START_TEST(test_tcp_ack_wraparound_delta_saturates_inflight)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    uint32_t snd_una = 0xFFFFFFF0U;
+    uint32_t ack = 0x00000010U;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = snd_una;
+    ts->sock.tcp.seq = 0x00000020U;
+    ts->sock.tcp.bytes_in_flight = 8;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(ack);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = 0x10;
+
+    tcp_ack(ts, &ackseg);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, ack);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
 }
 END_TEST
 
@@ -12945,7 +13120,12 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_process_ts_updates_rtt_when_set);
     tcase_add_test(tc_utils, test_tcp_send_syn_advertises_sack_permitted);
+    tcase_add_test(tc_utils, test_tcp_sort_sack_blocks_swaps_out_of_order);
+    tcase_add_test(tc_utils, test_tcp_merge_sack_blocks_adjacent_and_disjoint);
     tcase_add_test(tc_utils, test_tcp_recv_tracks_holes_and_sack_blocks);
+    tcase_add_test(tc_utils, test_tcp_rebuild_rx_sack_right_edge_wraps);
+    tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_trim_and_promote);
+    tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_drop_fully_acked);
     tcase_add_test(tc_utils, test_tcp_ack_sack_early_retransmit_before_three_dupack);
     tcase_add_test(tc_utils, test_tcp_input_listen_syn_without_sack_disables_sack);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_without_sack_disables_sack);
@@ -12954,6 +13134,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_malformed_sack_does_not_early_retransmit);
     tcase_add_test(tc_utils, test_tcp_ack_early_retransmit_once_per_ack);
     tcase_add_test(tc_utils, test_tcp_ack_no_sack_requires_three_dupacks);
+    tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_reduces_inflight);
+    tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_saturates_inflight);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);

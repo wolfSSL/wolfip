@@ -852,6 +852,8 @@ struct tsocket {
 };
 static void close_socket(struct tsocket *ts);
 static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n);
+static inline int tcp_seq_leq(uint32_t a, uint32_t b);
+static inline int tcp_seq_lt(uint32_t a, uint32_t b);
 
 #ifdef ETHERNET
 struct PACKED arp_packet {
@@ -1560,7 +1562,7 @@ static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t coun
         return 0;
     tcp_sort_sack_blocks(blocks, count);
     for (i = 1; i < count; i++) {
-        if (blocks[i].left <= blocks[out].right) {
+        if (blocks[i].left < blocks[out].right) {
             if (blocks[i].right > blocks[out].right)
                 blocks[out].right = blocks[i].right;
         } else if (blocks[i].left == blocks[out].right) {
@@ -1584,7 +1586,8 @@ static void tcp_rebuild_rx_sack(struct tsocket *t)
         if (!t->sock.tcp.ooo[i].used || t->sock.tcp.ooo[i].len == 0)
             continue;
         blocks[count].left = t->sock.tcp.ooo[i].seq;
-        blocks[count].right = t->sock.tcp.ooo[i].seq + t->sock.tcp.ooo[i].len;
+        blocks[count].right = tcp_seq_inc(t->sock.tcp.ooo[i].seq,
+                t->sock.tcp.ooo[i].len);
         count++;
     }
     count = tcp_merge_sack_blocks(blocks, count);
@@ -1639,9 +1642,10 @@ static void tcp_consume_ooo(struct tsocket *t)
             /* ACK may have advanced due to newly in-order data. Normalize OOO
              * entries against the new ACK so stale prefixes do not block
              * consumption of valid suffixes. */
-            if (t->sock.tcp.ooo[i].seq < t->sock.tcp.ack) {
-                uint32_t seg_end = t->sock.tcp.ooo[i].seq + t->sock.tcp.ooo[i].len;
-                if (seg_end <= t->sock.tcp.ack) {
+            if (tcp_seq_lt(t->sock.tcp.ooo[i].seq, t->sock.tcp.ack)) {
+                uint32_t seg_end = tcp_seq_inc(t->sock.tcp.ooo[i].seq,
+                        t->sock.tcp.ooo[i].len);
+                if (tcp_seq_leq(seg_end, t->sock.tcp.ack)) {
                     t->sock.tcp.ooo[i].used = 0;
                     t->sock.tcp.ooo[i].len = 0;
                     progressed = 1;
