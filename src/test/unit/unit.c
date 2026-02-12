@@ -8707,10 +8707,14 @@ START_TEST(test_tcp_input_syn_with_sack_option_enables_sack)
     int listen_sd;
     struct tsocket *ts;
     struct wolfIP_sockaddr_in sin;
-    uint8_t frame[sizeof(struct wolfIP_tcp_seg) + 2];
-    struct wolfIP_tcp_seg *syn = (struct wolfIP_tcp_seg *)frame;
+    struct {
+        uint8_t frame[sizeof(struct wolfIP_tcp_seg) + 4];
+        uint8_t canary[8];
+    } pkt;
+    struct wolfIP_tcp_seg *syn = (struct wolfIP_tcp_seg *)pkt.frame;
     struct wolfIP_ll_dev *ll;
     union transport_pseudo_header ph;
+    int i;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -8727,7 +8731,8 @@ START_TEST(test_tcp_input_syn_with_sack_option_enables_sack)
     ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
     ck_assert_ptr_nonnull(ll);
 
-    memset(frame, 0, sizeof(frame));
+    memset(&pkt, 0, sizeof(pkt));
+    memset(pkt.canary, 0xA5, sizeof(pkt.canary));
     memcpy(syn->ip.eth.dst, ll->mac, 6);
     syn->ip.eth.type = ee16(ETH_TYPE_IP);
     syn->ip.ver_ihl = 0x45;
@@ -8747,6 +8752,8 @@ START_TEST(test_tcp_input_syn_with_sack_option_enables_sack)
     syn->data[1] = TCP_OPTION_SACK_PERMITTED_LEN;
     syn->data[2] = TCP_OPTION_NOP;
     syn->data[3] = TCP_OPTION_NOP;
+    for (i = 0; i < (int)sizeof(pkt.canary); i++)
+        ck_assert_uint_eq(pkt.canary[i], 0xA5);
 
     memset(&ph, 0, sizeof(ph));
     ph.ph.src = syn->ip.src;
