@@ -1840,7 +1840,7 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
     }
     if (seg_len == 0)
         return;
-    if (seq < t->sock.tcp.ack) {
+    if (tcp_seq_lt(seq, t->sock.tcp.ack)) {
         uint32_t consumed = t->sock.tcp.ack - seq;
         /* Retransmitted/overlapping data below ACK is already delivered.
          * Trim it so only bytes above ACK participate in hole handling. */
@@ -1865,7 +1865,7 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
             t->events |= CB_EVENT_READABLE;
         }
         tcp_send_ack(t);
-    } else if (seq > t->sock.tcp.ack) {
+    } else if (tcp_seq_lt(t->sock.tcp.ack, seq)) {
         /* Hole detected: segment starts above ACK, so cache it as OOO and
          * immediately ACK with SACK blocks describing what we already have. */
         (void)tcp_store_ooo_segment(t, payload, seq, seg_len);
@@ -2371,7 +2371,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
                     t->sock.tcp.ws_enabled = po.ws_found ? 1 : 0;
                     if (po.ws_found)
                         t->sock.tcp.snd_wscale = po.ws_shift;
-                    t->sock.tcp.sack_permitted = po.sack_permitted ? 1 : 0;
+                    t->sock.tcp.sack_permitted =
+                        (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
                     if (!po.ws_found)
                         t->sock.tcp.snd_wscale = 0;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {

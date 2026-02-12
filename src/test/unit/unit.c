@@ -9001,6 +9001,69 @@ START_TEST(test_tcp_input_syn_with_sack_option_enables_sack)
 }
 END_TEST
 
+START_TEST(test_tcp_input_syn_with_sack_option_respects_local_sack_offer)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct {
+        uint8_t frame[sizeof(struct wolfIP_tcp_seg) + 4];
+    } pkt;
+    struct wolfIP_tcp_seg *syn = (struct wolfIP_tcp_seg *)pkt.frame;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ts->sock.tcp.sack_offer = 0;
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    memset(&pkt, 0, sizeof(pkt));
+    memcpy(syn->ip.eth.dst, ll->mac, 6);
+    syn->ip.eth.type = ee16(ETH_TYPE_IP);
+    syn->ip.ver_ihl = 0x45;
+    syn->ip.ttl = 64;
+    syn->ip.proto = WI_IPPROTO_TCP;
+    syn->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    syn->ip.src = ee32(0x0A0000A1U);
+    syn->ip.dst = ee32(0x0A000001U);
+    iphdr_set_checksum(&syn->ip);
+    syn->src_port = ee16(40000);
+    syn->dst_port = ee16(1234);
+    syn->seq = ee32(1);
+    syn->hlen = (TCP_HEADER_LEN + 4) << 2;
+    syn->flags = 0x02;
+    syn->win = ee16(65535);
+    syn->data[0] = TCP_OPTION_SACK_PERMITTED;
+    syn->data[1] = TCP_OPTION_SACK_PERMITTED_LEN;
+    syn->data[2] = TCP_OPTION_NOP;
+    syn->data[3] = TCP_OPTION_NOP;
+
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = syn->ip.src;
+    ph.ph.dst = syn->ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN + 4);
+    syn->csum = ee16(transport_checksum(&ph, &syn->src_port));
+
+    tcp_input(&s, TEST_PRIMARY_IF, syn,
+            sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    ck_assert_uint_eq(ts->sock.tcp.sack_permitted, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_listen_mismatch)
 {
     struct wolfIP s;
@@ -9709,6 +9772,38 @@ START_TEST(test_tcp_recv_ack_mismatch_does_nothing)
 
     tcp_recv(ts, &seg);
     ck_assert_uint_eq(queue_len(&ts->sock.tcp.rxbuf), 0U);
+}
+END_TEST
+
+START_TEST(test_tcp_recv_wrap_seq_ahead_not_trimmed)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 1];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 0xFFFFFFF0U;
+    ts->sock.tcp.sack_permitted = 1;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(seg, 0, sizeof(seg_buf));
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(0x00000010U); /* numerically lower, but ahead across wrap */
+    seg->data[0] = 0x5A;
+
+    tcp_recv(ts, seg);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 0xFFFFFFF0U);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 1);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].left, 0x00000010U);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].right, 0x00000011U);
 }
 END_TEST
 
@@ -13163,6 +13258,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_wrong_state_does_nothing);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_recv_ack_mismatch_does_nothing);
+    tcase_add_test(tc_utils, test_tcp_recv_wrap_seq_ahead_not_trimmed);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_recv_close_wait_ack_match);
     suite_add_tcase(s, tc_utils);
@@ -13200,6 +13296,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);
     tcase_add_test(tc_utils, test_tcp_input_syn_with_sack_option_enables_sack);
+    tcase_add_test(tc_utils, test_tcp_input_syn_with_sack_option_respects_local_sack_offer);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_input_iplen_too_big);
     suite_add_tcase(s, tc_utils);
