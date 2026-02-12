@@ -74,6 +74,23 @@ The `-I wtcp0` flag pins the test to the injected interface and `-c5`
 generates five echo requests.  Successful replies confirm the ICMP
 datagram socket support end-to-end through the tap device.
 
+## FreeRTOS Port
+
+wolfIP now includes a dedicated FreeRTOS wrapper port at:
+
+- `src/port/freeRTOS/bsd_socket.c`
+- `src/port/freeRTOS/bsd_socket.h`
+
+This port follows the same model as the POSIX wrapper:
+
+- One background task loops on `wolfIP_poll()`
+- Socket wrappers serialize stack access with a mutex
+- Blocking operations wait on callback-driven wakeups (instead of busy polling)
+
+A complete STM32H563 + FreeRTOS build and TCP echo demo is provided in:
+
+- `../stm32h563-freertos`
+
 ## Copyright and License
 
 wolfIP is licensed under the GPLv3 license. See the LICENSE file for details.
