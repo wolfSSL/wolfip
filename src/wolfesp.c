@@ -35,11 +35,9 @@ static uint16_t        out_sa_num = WOLFIP_ESP_NUM_SA;
 
 /* for verbose debug */
 #ifdef DEBUG_ESP
-    #define ESP_DEBUG(fmt, ...) \
-        LOG(fmt, ##__VA_ARGS__)
+    #define ESP_DEBUG(fmt, ...) LOG(fmt, ##__VA_ARGS__)
 #else
-    #define ESP_DEBUG(fmt, ...) \
-        do { } while (0)
+    #define ESP_DEBUG(fmt, ...) do { } while (0)
 #endif /* DEBUG_ESP */
 
 int wolfIP_esp_init(void)
@@ -123,6 +121,13 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
+    if (enc_key_len != (AES_128_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN) &&
+        enc_key_len != (AES_192_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN) &&
+        enc_key_len != (AES_256_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN)) {
+        ESP_LOG("error: bad key len: %d\n", enc_key_len);
+        return -1;
+    }
+
     switch (enc) {
     #if defined(WOLFSSL_AESGCM_STREAM)
     case ESP_ENC_GCM_RFC4106:
@@ -177,6 +182,18 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
+    if (enc_key_len != (AES_128_KEY_SIZE) &&
+        enc_key_len != (AES_192_KEY_SIZE) &&
+        enc_key_len != (AES_256_KEY_SIZE)) {
+        ESP_LOG("error: bad key len: %d\n", enc_key_len);
+        return -1;
+    }
+
+    if (auth_key_len > ESP_MAX_KEY_LEN) {
+        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
+        return -1;
+    }
+
     memset(new_sa, 0, sizeof(*new_sa));
     esp_replay_init(new_sa->replay);
     memcpy(new_sa->spi, spi, ESP_SPI_LEN);
@@ -207,6 +224,11 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa = esp_sa_get(in, NULL);
     if (new_sa == NULL) {
         ESP_LOG("error: sa %s pool is full\n", in == 1 ? "in" : "out");
+        return -1;
+    }
+
+    if (auth_key_len > ESP_MAX_KEY_LEN) {
+        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
         return -1;
     }
 
@@ -332,7 +354,7 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
     const uint8_t * padding = NULL;
     uint32_t        payload_len = esp_len - ESP_SPI_LEN - ESP_SEQ_LEN
                                   - pad_len - ESP_PADDING_LEN
-                                  - ESP_NEXT_HEADER_LEN ;
+                                  - ESP_NEXT_HEADER_LEN - esp_sa->icv_len;
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
 

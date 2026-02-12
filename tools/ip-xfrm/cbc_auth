@@ -34,6 +34,12 @@ if [ $# -eq 2 ]; then
   len=$2
 fi
 
+if [ $# -eq 3 ]; then
+  alg=$1
+  len=$2
+  ip_proto=$3
+fi
+
 # State
 # ipv4
 sudo ip xfrm state add \
