@@ -32,6 +32,11 @@
 #define WOLFIP_ENABLE_LOOPBACK 0
 #endif
 
+/* Enable HTTP server for POSIX builds */
+#ifndef WOLFIP_ENABLE_HTTP
+#define WOLFIP_ENABLE_HTTP
+#endif
+
 #if WOLFIP_ENABLE_LOOPBACK && WOLFIP_MAX_INTERFACES < 2
 #error "WOLFIP_ENABLE_LOOPBACK requires WOLFIP_MAX_INTERFACES > 1"
 #endif
