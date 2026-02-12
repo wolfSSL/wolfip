@@ -2184,6 +2184,13 @@ static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
         }
         seg_start = ee32(seg->seq);
         seg_end = tcp_seq_inc(seg_start, seg_len);
+        /* Do not retransmit partially acknowledged segments without splitting:
+         * retransmitting from seg_start would resend bytes below ACK and skew
+         * bytes_in_flight accounting. */
+        if (tcp_seq_lt(seg_start, ack)) {
+            desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            continue;
+        }
         if (tcp_seq_leq(seg_end, ack)) {
             desc = fifo_next(&t->sock.tcp.txbuf, desc);
             continue;

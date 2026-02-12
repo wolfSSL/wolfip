@@ -8801,6 +8801,52 @@ START_TEST(test_tcp_mark_unsacked_for_retransmit_wrap_seg_end)
 }
 END_TEST
 
+START_TEST(test_tcp_mark_unsacked_skips_partially_acked_segment)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf1;
+    struct tcp_seg_buf segbuf2;
+    struct wolfIP_tcp_seg *seg1;
+    struct wolfIP_tcp_seg *seg2;
+    struct pkt_desc *desc1, *desc2;
+    int ret;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf1, 0, sizeof(segbuf1));
+    seg1 = &segbuf1.seg;
+    seg1->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 10);
+    seg1->hlen = TCP_HEADER_LEN << 2;
+    seg1->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf1, sizeof(segbuf1)), 0);
+    desc1 = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc1);
+    desc1->flags |= PKT_FLAG_SENT;
+
+    memset(&segbuf2, 0, sizeof(segbuf2));
+    seg2 = &segbuf2.seg;
+    seg2->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 10);
+    seg2->hlen = TCP_HEADER_LEN << 2;
+    seg2->seq = ee32(110);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2, sizeof(segbuf2)), 0);
+    desc2 = fifo_next(&ts->sock.tcp.txbuf, desc1);
+    ck_assert_ptr_nonnull(desc2);
+    desc2->flags |= PKT_FLAG_SENT;
+
+    ret = tcp_mark_unsacked_for_retransmit(ts, 105);
+    ck_assert_int_eq(ret, 1);
+    ck_assert_int_ne(desc1->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_eq(desc2->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_sack_blocks_clamped_and_dropped)
 {
     struct wolfIP s;
@@ -13292,6 +13338,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_reduces_inflight);
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_saturates_inflight);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_for_retransmit_wrap_seg_end);
+    tcase_add_test(tc_utils, test_tcp_mark_unsacked_skips_partially_acked_segment);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);
