@@ -61,17 +61,20 @@ static volatile uint32_t g_cb_log_count;
 static void wolfip_bsd_poll_task(void *arg)
 {
     struct wolfIP *ipstack = (struct wolfIP *)arg;
-    TickType_t next_heartbeat = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
 
     for (;;) {
         uint32_t next_ms;
         TickType_t delay_ticks;
-        TickType_t now_ticks;
         uint64_t now_ms = (uint64_t)xTaskGetTickCount() * (uint64_t)portTICK_PERIOD_MS;
 
+        /* Run one wolfIP poll cycle under the global lock so socket operations
+         * and timer processing see a consistent core state. */
         xSemaphoreTake(g_lock, portMAX_DELAY);
         next_ms = (uint32_t)wolfIP_poll(ipstack, now_ms);
         xSemaphoreGive(g_lock);
+
+        /* Bound sleep time to keep progress predictable and to avoid either
+         * spinning too fast or sleeping too long when no timers are pending. */
         if (next_ms < WOLFIP_FREERTOS_POLL_MIN_MS) {
             next_ms = WOLFIP_FREERTOS_POLL_MIN_MS;
         }
@@ -79,32 +82,13 @@ static void wolfip_bsd_poll_task(void *arg)
             next_ms = WOLFIP_FREERTOS_POLL_MAX_MS;
         }
 
+        /* Convert milliseconds to RTOS ticks and always sleep at least one tick
+         * so the poll task yields CPU time to application tasks. */
         delay_ticks = pdMS_TO_TICKS(next_ms);
         if (delay_ticks == 0) {
             delay_ticks = 1;
         }
-        while (delay_ticks > 0) {
-            TickType_t chunk = delay_ticks;
-            TickType_t max_chunk = pdMS_TO_TICKS(500);
-            if (max_chunk == 0) {
-                max_chunk = 1;
-            }
-            if (chunk > max_chunk) {
-                chunk = max_chunk;
-            }
-            vTaskDelay(chunk);
-            delay_ticks -= chunk;
-
-            now_ticks = xTaskGetTickCount();
-            if ((int32_t)(now_ticks - next_heartbeat) >= 0) {
-                uint64_t virt_ms = (uint64_t)now_ticks * (uint64_t)portTICK_PERIOD_MS;
-                printf("[wolfip_poll] virt_ms=%lu virt_s=%lu next_ms=%lu\n",
-                    (unsigned long)virt_ms,
-                    (unsigned long)(virt_ms / 1000u),
-                    (unsigned long)next_ms);
-                next_heartbeat = now_ticks + pdMS_TO_TICKS(5000);
-            }
-        }
+        vTaskDelay(delay_ticks);
     }
 }
 
