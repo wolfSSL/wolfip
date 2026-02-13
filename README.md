@@ -87,10 +87,6 @@ This port follows the same model as the POSIX wrapper:
 - Socket wrappers serialize stack access with a mutex
 - Blocking operations wait on callback-driven wakeups (instead of busy polling)
 
-A complete STM32H563 + FreeRTOS build and TCP echo demo is provided in:
-
-- `../stm32h563-freertos`
-
 ## Copyright and License
 
 wolfIP is licensed under the GPLv3 license. See the LICENSE file for details.
