@@ -1544,6 +1544,7 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
 static void tcp_sort_sack_blocks(struct tcp_sack_block *blocks, uint8_t count)
 {
     uint8_t i, j;
+    /* Small fixed-size sort (n <= 4) to normalize interval order before merge. */
     for (i = 0; i < count; i++) {
         for (j = (uint8_t)(i + 1); j < count; j++) {
             if (blocks[j].left < blocks[i].left) {
@@ -1560,6 +1561,10 @@ static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t coun
     uint8_t i, out = 0;
     if (count == 0)
         return 0;
+    /* Convert arbitrary block order/shape into canonical non-overlapping ranges:
+     * - overlap: merge into one range
+     * - adjacency: merge into one range (continuous received bytes)
+     * - gap: keep as separate ranges */
     tcp_sort_sack_blocks(blocks, count);
     for (i = 1; i < count; i++) {
         if (blocks[i].left < blocks[out].right) {
@@ -1580,8 +1585,13 @@ static void tcp_rebuild_rx_sack(struct tsocket *t)
     struct tcp_sack_block blocks[TCP_OOO_MAX_SEGS];
     uint8_t i, count = 0;
 
-    /* RX SACK reports describe data we already have beyond cumulative ACK.
-     * Build them from the current OOO cache each time the cache changes. */
+    /* RFC 2018 model:
+     * - Cumulative ACK (RCV.NXT) reports the longest contiguous prefix.
+     * - SACK blocks report additional non-contiguous data already received.
+     *
+     * We derive SACK state from the local out-of-order cache every time the
+     * cache changes so ACK generation can advertise current "received islands"
+     * without tracking a second independent data structure. */
     for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
         if (!t->sock.tcp.ooo[i].used || t->sock.tcp.ooo[i].len == 0)
             continue;
@@ -1604,8 +1614,15 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
     uint8_t i;
     int slot = -1;
 
-    /* Keep a small bounded cache of out-of-order payloads. This is only for
-     * hole tracking/SACK reporting and for promoting data when holes close. */
+    /* Store out-of-order payload exactly as received so it can be promoted when
+     * holes close and reflected in outgoing SACK blocks.
+     *
+     * Policy here is intentionally simple (bounded cache, no complex reassembly):
+     * - exact duplicate (same seq/len): refresh payload in-place
+     * - first free slot: insert new OOO segment
+     * - cache full: reject (caller still ACKs; peer will retransmit)
+     *
+     * SACK block generation is rebuilt from cache state after each update. */
     if (len == 0 || len > TCP_MSS)
         return -1;
     for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
@@ -1614,6 +1631,7 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
                 slot = (int)i;
             continue;
         }
+        /* Duplicate range: keep newest bytes and avoid consuming another slot. */
         if (t->sock.tcp.ooo[i].seq == seq && t->sock.tcp.ooo[i].len == len) {
             memcpy(t->sock.tcp.ooo[i].data, data, len);
             tcp_rebuild_rx_sack(t);
@@ -1622,6 +1640,7 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
     }
     if (slot < 0)
         return -1;
+    /* New out-of-order range. */
     t->sock.tcp.ooo[slot].used = 1;
     t->sock.tcp.ooo[slot].seq = seq;
     t->sock.tcp.ooo[slot].len = len;
@@ -1632,6 +1651,15 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
 
 static void tcp_consume_ooo(struct tsocket *t)
 {
+    /* Promote out-of-order data into the in-order RX queue whenever holes close.
+     *
+     * Expected receiver behavior (RFC 793 + RFC 2018):
+     * 1) ACK stays at first missing byte (RCV.NXT) until hole is filled.
+     * 2) Once a segment starts at ACK, it becomes contiguous and ACK advances.
+     * 3) Advancing ACK may make more cached OOO data contiguous; continue until
+     *    no more progress is possible.
+     *
+     * This function applies that loop to a bounded OOO cache. */
     int progressed = 1;
     while (progressed) {
         uint8_t i;
@@ -1639,18 +1667,22 @@ static void tcp_consume_ooo(struct tsocket *t)
         for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
             if (!t->sock.tcp.ooo[i].used)
                 continue;
-            /* ACK may have advanced due to newly in-order data. Normalize OOO
-             * entries against the new ACK so stale prefixes do not block
-             * consumption of valid suffixes. */
+            /* ACK may move while we consume entries. Re-normalize each cached
+             * segment against current ACK:
+             * - fully below ACK: drop (already cumulatively acknowledged),
+             * - partially below ACK: trim prefix so segment starts at ACK,
+             * - at ACK: eligible for immediate promotion. */
             if (tcp_seq_lt(t->sock.tcp.ooo[i].seq, t->sock.tcp.ack)) {
                 uint32_t seg_end = tcp_seq_inc(t->sock.tcp.ooo[i].seq,
                         t->sock.tcp.ooo[i].len);
                 if (tcp_seq_leq(seg_end, t->sock.tcp.ack)) {
+                    /* Entire block is now behind cumulative ACK. */
                     t->sock.tcp.ooo[i].used = 0;
                     t->sock.tcp.ooo[i].len = 0;
                     progressed = 1;
                     break;
                 } else {
+                    /* Keep only the still-unacknowledged suffix. */
                     uint32_t trim = t->sock.tcp.ack - t->sock.tcp.ooo[i].seq;
                     memmove(t->sock.tcp.ooo[i].data,
                             t->sock.tcp.ooo[i].data + trim,
@@ -1661,8 +1693,9 @@ static void tcp_consume_ooo(struct tsocket *t)
                     break;
                 }
             }
-            /* When an OOO segment starts exactly at ACK, the hole in front of
-             * it has closed: promote it to the RX queue and advance ACK. */
+            /* Segment starts exactly at ACK: the hole in front of it is closed.
+             * Move payload to RX queue, advance ACK by payload length, and loop
+             * again to consume any newly contiguous cached segments. */
             if (t->sock.tcp.ooo[i].seq == t->sock.tcp.ack) {
                 if (queue_insert(&t->sock.tcp.rxbuf, t->sock.tcp.ooo[i].data,
                             t->sock.tcp.ooo[i].seq, t->sock.tcp.ooo[i].len) == 0) {
@@ -1675,6 +1708,8 @@ static void tcp_consume_ooo(struct tsocket *t)
             }
         }
     }
+    /* Rebuild advertised SACK blocks from whatever OOO cache remains after
+     * promotion. If all holes closed, this naturally drops SACK reporting. */
     tcp_rebuild_rx_sack(t);
 }
 
@@ -1692,6 +1727,8 @@ static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t ma
     len += TCP_OPTION_TS_LEN;
     opt += TCP_OPTION_TS_LEN;
 
+    /* SACK option is sent only after successful negotiation and only while we
+     * still hold non-contiguous data above cumulative ACK. */
     if (t->sock.tcp.sack_permitted && t->sock.tcp.rx_sack_count > 0 &&
             max_len >= (uint8_t)(len + 10)) {
         uint8_t blocks = t->sock.tcp.rx_sack_count;
