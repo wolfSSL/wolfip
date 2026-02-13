@@ -2105,6 +2105,14 @@ static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
     return seq + n;
 }
 
+/* Subtract two TCP sequence numbers: a - b (wraps at 2^32) */
+static inline uint32_t tcp_seq_diff(uint32_t a, uint32_t b)
+{
+    if (a >= b)
+        return a - b;
+    return UINT32_MAX - (b - a - 1);
+}
+
 /* Add a segment to the rx buffer for the application to consume */
 static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
 {
@@ -2117,14 +2125,14 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
     if (seg_len == 0)
         return;
     if (tcp_seq_lt(seq, t->sock.tcp.ack)) {
-        uint32_t consumed = t->sock.tcp.ack - seq;
+        uint32_t consumed = tcp_seq_diff(t->sock.tcp.ack, seq);
         /* Retransmitted/overlapping data below ACK is already delivered.
          * Trim it so only bytes above ACK participate in hole handling. */
         if (consumed >= seg_len) {
             tcp_send_ack(t);
             return;
         }
-        seq += consumed;
+        seq = tcp_seq_inc(seq, consumed);
         payload += consumed;
         seg_len -= consumed;
     }
