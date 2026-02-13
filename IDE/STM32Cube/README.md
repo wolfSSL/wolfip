@@ -6,13 +6,13 @@ This guide explains how to use wolfIP on any STM32 microcontroller with Ethernet
 
 | Family   | Interface Config | Auto-Detected | Example Boards |
 |----------|------------------|---------------|----------------|
-| STM32F4  | SYSCFG->PMC      | ✅ Yes        | NUCLEO-F429ZI, STM32F4-Discovery |
-| STM32F7  | SYSCFG->PMC      | ✅ Yes        | NUCLEO-F746ZG, NUCLEO-F767ZI |
-| STM32H5  | SBS->PMCR        | ✅ Yes        | NUCLEO-H563ZI, NUCLEO-H573ZI |
-| STM32H7  | SYSCFG->PMCR     | ✅ Yes        | NUCLEO-H743ZI, NUCLEO-H753ZI |
+| STM32F4  | SYSCFG->PMC      | Yes           | NUCLEO-F429ZI, STM32F4-Discovery |
+| STM32F7  | SYSCFG->PMC      | Yes           | NUCLEO-F746ZG, NUCLEO-F767ZI |
+| STM32H5  | SBS->PMCR        | Yes           | NUCLEO-H563ZI, NUCLEO-H573ZI |
+| STM32H7  | SYSCFG->PMCR     | Yes           | NUCLEO-H743ZI, NUCLEO-H753ZI |
 | Others   | Manual           | Fallback      | See family reference manual |
 
-## Quick Start - Zero Configuration!
+## Quick Start
 
 ### Step 1: Install the wolfIP Pack
 
@@ -25,84 +25,69 @@ This guide explains how to use wolfIP on any STM32 microcontroller with Ethernet
 1. Create new project for your board
 2. Configure **Connectivity → ETH**:
    - Mode: **RMII** (or MII depending on board)
+   - Verify GPIO pin assignments match your board's PHY (CubeMX auto-configures for NUCLEO boards)
 3. Configure **System Core → NVIC**:
-   - **ETH global interrupt: ENABLED** ⚠️ CRITICAL
+   - **ETH global interrupt: ENABLED** (CRITICAL - required for RX)
 4. Configure **Software Packs → Select Components**:
    - Expand wolfIP → Check **Core** and **Eth**
 5. Configure **Software Packs → wolfIP**:
    - Enable the library checkbox
-6. Generate code
+6. Generate code (Makefile recommended for command-line builds)
+
+**Note:** For NUCLEO boards, CubeMX auto-configures the correct ETH GPIO pins. For custom boards, verify pins match your PHY datasheet.
 
 **That's it for CubeMX!** No MspInit changes needed - the driver auto-configures RMII/MII.
 
 ### Step 3: Add wolfIP Code to main.c
 
+Add this code to your CubeMX-generated main.c in the corresponding USER CODE sections:
+
+**In USER CODE BEGIN Includes:**
 ```c
-/* USER CODE BEGIN Includes */
 #include "wolfip.h"
 #include "stm32_hal_eth.h"
-/* USER CODE END Includes */
-
-/* USER CODE BEGIN PV */
-static struct wolfIP *ipstack = NULL;
-
-/* IP Configuration - adjust for your network */
-#define MY_IP      atoip4("192.168.1.100")
-#define MY_MASK    atoip4("255.255.255.0")
-#define MY_GATEWAY atoip4("192.168.1.1")
-/* USER CODE END PV */
-
-int main(void)
-{
-    HAL_Init();
-    SystemClock_Config();
-    MX_GPIO_Init();
-    MX_ETH_Init();
-
-    /* USER CODE BEGIN 2 */
-    /* Initialize wolfIP */
-    wolfIP_init_static(&ipstack);
-    if (stm32_hal_eth_init(wolfIP_getdev(ipstack)) != 0) {
-        Error_Handler();
-    }
-    wolfIP_ipconfig_set(ipstack, MY_IP, MY_MASK, MY_GATEWAY);
-    /* USER CODE END 2 */
-
-    while (1)
-    {
-        /* USER CODE BEGIN 3 */
-        wolfIP_poll(ipstack, HAL_GetTick());
-        /* USER CODE END 3 */
-    }
-}
 ```
 
-### Step 4: Add Required Callbacks
-
-Add these functions to your main.c (wolfIP requires them):
-
+**In USER CODE BEGIN PV:**
 ```c
-/* USER CODE BEGIN 4 */
-uint64_t wolfip_get_time_ms(void)
-{
-    return (uint64_t)HAL_GetTick();
-}
+static struct wolfIP *ipstack = NULL;
+```
 
+**In USER CODE BEGIN 2 (after MX_ETH_Init):**
+```c
+wolfIP_init_static(&ipstack);
+if (stm32_hal_eth_init(wolfIP_getdev(ipstack)) != 0) {
+    Error_Handler();
+}
+wolfIP_ipconfig_set(ipstack,
+    atoip4("192.168.0.200"),
+    atoip4("255.255.255.0"),
+    atoip4("192.168.0.1"));
+```
+
+**In USER CODE BEGIN 3 (inside while loop):**
+```c
+wolfIP_poll(ipstack, HAL_GetTick());
+```
+
+**In USER CODE BEGIN 4:**
+```c
 uint32_t wolfIP_getrandom(void)
 {
     static uint32_t seed = 12345;
     seed = seed * 1103515245 + 12345;
     return (seed >> 16) ^ HAL_GetTick();
 }
-/* USER CODE END 4 */
 ```
 
-### Step 5: Build and Test
+**Alternative: Use DHCP** instead of static IP by enabling DHCP in Software Packs -> wolfIP settings.
+
+### Step 4: Build and Test
 
 1. Build the project
 2. Flash to your board
 3. Connect Ethernet cable
-4. Ping from your PC: `ping 192.168.1.100`
+4. Ping from your PC: `ping 192.168.0.200`
 
 ## Troubleshooting
 

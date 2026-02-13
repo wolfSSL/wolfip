@@ -288,3 +288,13 @@ int stm32_hal_eth_init(struct wolfIP_ll_dev *ll)
 
     return 0;
 }
+
+/* wolfIP callbacks for CubeMX builds */
+#ifdef WOLFIP_STM32_CUBEMX
+
+uint64_t wolfip_get_time_ms(void)
+{
+    return (uint64_t)HAL_GetTick();
+}
+
+#endif /* WOLFIP_STM32_CUBEMX */
