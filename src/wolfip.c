@@ -81,10 +81,14 @@ struct wolfIP_icmp_packet;
 #define TCP_OPTION_MSS_LEN 4
 #define TCP_OPTION_WS 0x03
 #define TCP_OPTION_WS_LEN 3
+#define TCP_OPTION_SACK_PERMITTED 0x04
+#define TCP_OPTION_SACK_PERMITTED_LEN 2
+#define TCP_OPTION_SACK 0x05
 #define TCP_OPTION_TS 0x08
 #define TCP_OPTION_TS_LEN 10
 #define TCP_OPTIONS_LEN 12
 #define TCP_SYN_OPTIONS_LEN 20
+#define TCP_MAX_OPTIONS_LEN 40
 #define TCP_OPTION_NOP 0x01
 #define TCP_OPTION_EOO 0x00
 
@@ -117,6 +121,8 @@ struct wolfIP_icmp_packet;
 #define PKT_FLAG_ACKED 0x02
 #define PKT_FLAG_FIN 0x04
 
+#define TCP_SACK_MAX_BLOCKS 4
+#define TCP_OOO_MAX_SEGS 4
 
 /* Random number generator, provided by the user */
 //extern uint32_t wolfIP_getrandom(void);
@@ -465,6 +471,16 @@ struct PACKED tcp_opt_ws {
     uint8_t shift;
 };
 
+struct tcp_sack_block {
+    uint32_t left, right;
+};
+
+struct tcp_ooo_seg {
+    uint32_t seq, len;
+    uint8_t used;
+    uint8_t data[TCP_MSS];
+};
+
 /* UDP datagram */
 struct PACKED wolfIP_udp_datagram {
     struct wolfIP_ip_packet ip;
@@ -793,10 +809,17 @@ struct tcpsocket {
     enum tcp_state state;
     uint32_t last_ts, rtt, rto, cwnd, cwnd_count, ssthresh, tmr_rto, rto_backoff,
              seq, ack, last_ack, last, bytes_in_flight, snd_una;
+    uint32_t last_early_rexmit_ack;
     uint8_t dup_acks;
+    uint8_t early_rexmit_done;
     ip4 local_ip, remote_ip;
     uint32_t peer_rwnd;
     uint8_t snd_wscale, rcv_wscale, ws_enabled, ws_offer;
+    uint8_t sack_offer, sack_permitted;
+    uint8_t rx_sack_count, peer_sack_count;
+    struct tcp_sack_block rx_sack[TCP_SACK_MAX_BLOCKS];
+    struct tcp_sack_block peer_sack[TCP_SACK_MAX_BLOCKS];
+    struct tcp_ooo_seg ooo[TCP_OOO_MAX_SEGS];
     struct fifo txbuf;
     struct queue rxbuf;
 };
@@ -828,6 +851,9 @@ struct tsocket {
     void *callback_arg;
 };
 static void close_socket(struct tsocket *ts);
+static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n);
+static inline int tcp_seq_leq(uint32_t a, uint32_t b);
+static inline int tcp_seq_lt(uint32_t a, uint32_t b);
 
 #ifdef ETHERNET
 struct PACKED arp_packet {
@@ -1397,9 +1423,16 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.bytes_in_flight = 0;
             t->sock.tcp.snd_una = t->sock.tcp.seq;
             t->sock.tcp.dup_acks = 0;
+            t->sock.tcp.early_rexmit_done = 0;
+            t->sock.tcp.last_early_rexmit_ack = 0;
             t->sock.tcp.peer_rwnd = 0xFFFF;
             t->sock.tcp.snd_wscale = 0;
             t->sock.tcp.ws_enabled = 0;
+            t->sock.tcp.sack_offer = 1;
+            t->sock.tcp.sack_permitted = 0;
+            t->sock.tcp.rx_sack_count = 0;
+            t->sock.tcp.peer_sack_count = 0;
+            memset(t->sock.tcp.ooo, 0, sizeof(t->sock.tcp.ooo));
             {
                 uint32_t space = RXBUF_SIZE;
                 uint8_t shift = 0;
@@ -1429,73 +1462,320 @@ static uint16_t tcp_adv_win(const struct tsocket *t)
     return (uint16_t)win;
 }
 
-static int tcp_process_ws(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
-        uint32_t frame_len)
+struct tcp_parsed_opts {
+    uint8_t ws_found, ws_shift;
+    uint8_t sack_permitted;
+    uint8_t sack_count;
+    struct tcp_sack_block sack[TCP_SACK_MAX_BLOCKS];
+    uint8_t ts_found;
+    uint32_t ts_val, ts_ecr;
+};
+
+static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
+        struct tcp_parsed_opts *po)
 {
-    const uint8_t *opt = (const uint8_t *)tcp->data;
+    const uint8_t *opt = tcp->data;
     int claimed_opt_len = (tcp->hlen >> 2) - TCP_HEADER_LEN;
     int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
     int opt_len;
     const uint8_t *opt_end;
-    int found = 0;
 
+    memset(po, 0, sizeof(*po));
     if (claimed_opt_len <= 0 || available_bytes <= 0)
-        return 0;
+        return;
 
     opt_len = (claimed_opt_len < available_bytes) ? claimed_opt_len : available_bytes;
     opt_end = opt + opt_len;
 
     while (opt < opt_end) {
-        if (*opt == TCP_OPTION_NOP) {
+        uint8_t kind = *opt;
+        uint8_t olen;
+
+        if (kind == TCP_OPTION_NOP) {
             opt++;
             continue;
-        } else if (*opt == TCP_OPTION_EOO) {
-            break;
         }
+        if (kind == TCP_OPTION_EOO)
+            break;
         if (opt + 2 > opt_end)
             break;
-        if (opt[1] < 2 || opt + opt[1] > opt_end)
+
+        olen = opt[1];
+        if (olen < 2 || opt + olen > opt_end)
             break;
-        if (*opt == TCP_OPTION_WS && opt[1] == TCP_OPTION_WS_LEN) {
-            uint8_t shift;
-            if (opt + TCP_OPTION_WS_LEN > opt_end)
-                break;
-            shift = opt[2];
+
+        if (kind == TCP_OPTION_WS && olen == TCP_OPTION_WS_LEN) {
+            uint8_t shift = opt[2];
             if (shift > 14)
                 shift = 14;
-            t->sock.tcp.snd_wscale = shift;
-            found = 1;
+            po->ws_shift = shift;
+            po->ws_found = 1;
+        } else if (kind == TCP_OPTION_SACK_PERMITTED &&
+                olen == TCP_OPTION_SACK_PERMITTED_LEN) {
+            po->sack_permitted = 1;
+        } else if (kind == TCP_OPTION_SACK && olen >= 10 &&
+                ((olen - 2) % 8) == 0) {
+            int i;
+            int blocks = (olen - 2) / 8;
+            for (i = 0; i < blocks && po->sack_count < TCP_SACK_MAX_BLOCKS; i++) {
+                uint32_t left, right;
+                memcpy(&left, opt + 2 + (i * 8), sizeof(left));
+                memcpy(&right, opt + 2 + (i * 8) + 4, sizeof(right));
+                left = ee32(left);
+                right = ee32(right);
+                if (right > left) {
+                    po->sack[po->sack_count].left = left;
+                    po->sack[po->sack_count].right = right;
+                    po->sack_count++;
+                }
+            }
+        } else if (kind == TCP_OPTION_TS && olen >= TCP_OPTION_TS_LEN) {
+            uint32_t val, ecr;
+            memcpy(&val, opt + 2, sizeof(val));
+            memcpy(&ecr, opt + 6, sizeof(ecr));
+            po->ts_val = ee32(val);
+            po->ts_ecr = ee32(ecr);
+            po->ts_found = 1;
         }
-        opt += opt[1];
+        opt += olen;
     }
-    return found;
+}
+
+static void tcp_sort_sack_blocks(struct tcp_sack_block *blocks, uint8_t count)
+{
+    uint8_t i, j;
+    /* Small fixed-size sort (n <= 4) to normalize interval order before merge. */
+    for (i = 0; i < count; i++) {
+        for (j = (uint8_t)(i + 1); j < count; j++) {
+            if (blocks[j].left < blocks[i].left) {
+                struct tcp_sack_block tmp = blocks[i];
+                blocks[i] = blocks[j];
+                blocks[j] = tmp;
+            }
+        }
+    }
+}
+
+static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t count)
+{
+    uint8_t i, out = 0;
+    if (count == 0)
+        return 0;
+    /* Convert arbitrary block order/shape into canonical non-overlapping ranges:
+     * - overlap: merge into one range
+     * - adjacency: merge into one range (continuous received bytes)
+     * - gap: keep as separate ranges */
+    tcp_sort_sack_blocks(blocks, count);
+    for (i = 1; i < count; i++) {
+        if (blocks[i].left < blocks[out].right) {
+            if (blocks[i].right > blocks[out].right)
+                blocks[out].right = blocks[i].right;
+        } else if (blocks[i].left == blocks[out].right) {
+            blocks[out].right = blocks[i].right;
+        } else {
+            out++;
+            blocks[out] = blocks[i];
+        }
+    }
+    return (uint8_t)(out + 1);
+}
+
+static void tcp_rebuild_rx_sack(struct tsocket *t)
+{
+    struct tcp_sack_block blocks[TCP_OOO_MAX_SEGS];
+    uint8_t i, count = 0;
+
+    /* RFC 2018 model:
+     * - Cumulative ACK (RCV.NXT) reports the longest contiguous prefix.
+     * - SACK blocks report additional non-contiguous data already received.
+     *
+     * We derive SACK state from the local out-of-order cache every time the
+     * cache changes so ACK generation can advertise current "received islands"
+     * without tracking a second independent data structure. */
+    for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
+        if (!t->sock.tcp.ooo[i].used || t->sock.tcp.ooo[i].len == 0)
+            continue;
+        blocks[count].left = t->sock.tcp.ooo[i].seq;
+        blocks[count].right = tcp_seq_inc(t->sock.tcp.ooo[i].seq,
+                t->sock.tcp.ooo[i].len);
+        count++;
+    }
+    count = tcp_merge_sack_blocks(blocks, count);
+    t->sock.tcp.rx_sack_count = 0;
+    while (count > 0 && t->sock.tcp.rx_sack_count < TCP_SACK_MAX_BLOCKS) {
+        count--;
+        t->sock.tcp.rx_sack[t->sock.tcp.rx_sack_count++] = blocks[count];
+    }
+}
+
+static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
+        uint32_t seq, uint32_t len)
+{
+    uint8_t i;
+    int slot = -1;
+
+    /* Store out-of-order payload exactly as received so it can be promoted when
+     * holes close and reflected in outgoing SACK blocks.
+     *
+     * Policy here is intentionally simple (bounded cache, no complex reassembly):
+     * - exact duplicate (same seq/len): refresh payload in-place
+     * - first free slot: insert new OOO segment
+     * - cache full: reject (caller still ACKs; peer will retransmit)
+     *
+     * SACK block generation is rebuilt from cache state after each update. */
+    if (len == 0 || len > TCP_MSS)
+        return -1;
+    for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
+        if (!t->sock.tcp.ooo[i].used) {
+            if (slot < 0)
+                slot = (int)i;
+            continue;
+        }
+        /* Duplicate range: keep newest bytes and avoid consuming another slot. */
+        if (t->sock.tcp.ooo[i].seq == seq && t->sock.tcp.ooo[i].len == len) {
+            memcpy(t->sock.tcp.ooo[i].data, data, len);
+            tcp_rebuild_rx_sack(t);
+            return 0;
+        }
+    }
+    if (slot < 0)
+        return -1;
+    /* New out-of-order range. */
+    t->sock.tcp.ooo[slot].used = 1;
+    t->sock.tcp.ooo[slot].seq = seq;
+    t->sock.tcp.ooo[slot].len = len;
+    memcpy(t->sock.tcp.ooo[slot].data, data, len);
+    tcp_rebuild_rx_sack(t);
+    return 0;
+}
+
+static void tcp_consume_ooo(struct tsocket *t)
+{
+    /* Promote out-of-order data into the in-order RX queue whenever holes close.
+     *
+     * Expected receiver behavior (RFC 793 + RFC 2018):
+     * 1) ACK stays at first missing byte (RCV.NXT) until hole is filled.
+     * 2) Once a segment starts at ACK, it becomes contiguous and ACK advances.
+     * 3) Advancing ACK may make more cached OOO data contiguous; continue until
+     *    no more progress is possible.
+     *
+     * This function applies that loop to a bounded OOO cache. */
+    int progressed = 1;
+    while (progressed) {
+        uint8_t i;
+        progressed = 0;
+        for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
+            if (!t->sock.tcp.ooo[i].used)
+                continue;
+            /* ACK may move while we consume entries. Re-normalize each cached
+             * segment against current ACK:
+             * - fully below ACK: drop (already cumulatively acknowledged),
+             * - partially below ACK: trim prefix so segment starts at ACK,
+             * - at ACK: eligible for immediate promotion. */
+            if (tcp_seq_lt(t->sock.tcp.ooo[i].seq, t->sock.tcp.ack)) {
+                uint32_t seg_end = tcp_seq_inc(t->sock.tcp.ooo[i].seq,
+                        t->sock.tcp.ooo[i].len);
+                if (tcp_seq_leq(seg_end, t->sock.tcp.ack)) {
+                    /* Entire block is now behind cumulative ACK. */
+                    t->sock.tcp.ooo[i].used = 0;
+                    t->sock.tcp.ooo[i].len = 0;
+                    progressed = 1;
+                    break;
+                } else {
+                    /* Keep only the still-unacknowledged suffix. */
+                    uint32_t trim = t->sock.tcp.ack - t->sock.tcp.ooo[i].seq;
+                    memmove(t->sock.tcp.ooo[i].data,
+                            t->sock.tcp.ooo[i].data + trim,
+                            t->sock.tcp.ooo[i].len - trim);
+                    t->sock.tcp.ooo[i].seq = t->sock.tcp.ack;
+                    t->sock.tcp.ooo[i].len -= trim;
+                    progressed = 1;
+                    break;
+                }
+            }
+            /* Segment starts exactly at ACK: the hole in front of it is closed.
+             * Move payload to RX queue, advance ACK by payload length, and loop
+             * again to consume any newly contiguous cached segments. */
+            if (t->sock.tcp.ooo[i].seq == t->sock.tcp.ack) {
+                if (queue_insert(&t->sock.tcp.rxbuf, t->sock.tcp.ooo[i].data,
+                            t->sock.tcp.ooo[i].seq, t->sock.tcp.ooo[i].len) == 0) {
+                    t->sock.tcp.ack = tcp_seq_inc(t->sock.tcp.ack, t->sock.tcp.ooo[i].len);
+                    t->sock.tcp.ooo[i].used = 0;
+                    t->sock.tcp.ooo[i].len = 0;
+                    progressed = 1;
+                    break;
+                }
+            }
+        }
+    }
+    /* Rebuild advertised SACK blocks from whatever OOO cache remains after
+     * promotion. If all holes closed, this naturally drops SACK reporting. */
+    tcp_rebuild_rx_sack(t);
+}
+
+static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t max_len)
+{
+    struct tcp_opt_ts *ts = (struct tcp_opt_ts *)opt;
+    uint8_t len = 0;
+
+    if (max_len < TCP_OPTION_TS_LEN)
+        return 0;
+    ts->opt = TCP_OPTION_TS;
+    ts->len = TCP_OPTION_TS_LEN;
+    ts->val = ee32(t->S->last_tick & 0xFFFFFFFFU);
+    ts->ecr = t->sock.tcp.last_ts;
+    len += TCP_OPTION_TS_LEN;
+    opt += TCP_OPTION_TS_LEN;
+
+    /* SACK option is sent only after successful negotiation and only while we
+     * still hold non-contiguous data above cumulative ACK. */
+    if (t->sock.tcp.sack_permitted && t->sock.tcp.rx_sack_count > 0 &&
+            max_len >= (uint8_t)(len + 10)) {
+        uint8_t blocks = t->sock.tcp.rx_sack_count;
+        uint8_t i;
+        uint8_t fit = (uint8_t)((max_len - len - 2) / 8);
+        if (blocks > fit)
+            blocks = fit;
+        if (blocks > 0) {
+            opt[0] = TCP_OPTION_SACK;
+            opt[1] = (uint8_t)(2 + blocks * 8);
+            for (i = 0; i < blocks; i++) {
+                uint32_t left = ee32(t->sock.tcp.rx_sack[i].left);
+                uint32_t right = ee32(t->sock.tcp.rx_sack[i].right);
+                memcpy(opt + 2 + i * 8, &left, sizeof(left));
+                memcpy(opt + 2 + i * 8 + 4, &right, sizeof(right));
+            }
+            len = (uint8_t)(len + opt[1]);
+            opt += opt[1];
+        }
+    }
+
+    while ((len % 4) != 0 && len < max_len) {
+        *opt++ = TCP_OPTION_NOP;
+        len++;
+    }
+    return len;
 }
 
 static void tcp_send_empty(struct tsocket *t, uint8_t flags)
 {
     struct wolfIP_tcp_seg *tcp;
-    struct tcp_opt_ts *ts;
-    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    uint8_t opt_len;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
+    opt_len = tcp_build_ack_options(t, tcp->data, TCP_MAX_OPTIONS_LEN);
     tcp->src_port = ee16(t->src_port);
     tcp->dst_port = ee16(t->dst_port);
     tcp->seq = ee32(t->sock.tcp.seq);
     tcp->ack = ee32(t->sock.tcp.ack);
-    tcp->hlen = ((20 + TCP_OPTIONS_LEN) << 2) & 0xF0;
+    tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
     tcp->flags = flags;
     tcp->win = ee16(tcp_adv_win(t));
     tcp->csum = 0;
     tcp->urg = 0;
-    ts = (struct tcp_opt_ts *)tcp->data;
-    ts->opt = TCP_OPTION_TS;
-    ts->len = TCP_OPTION_TS_LEN;
-    ts->val = ee32(t->S->last_tick & 0xFFFFFFFFU);
-    ts->ecr = t->sock.tcp.last_ts;
-    ts->pad = 0x01;
-    ts->eoo = 0x00;
-    fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + \
-            TCP_OPTIONS_LEN);
+    fifo_push(&t->sock.tcp.txbuf, tcp,
+            sizeof(struct wolfIP_tcp_seg) + opt_len);
 }
 
 static void tcp_send_ack(struct tsocket *t)
@@ -1516,27 +1796,27 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     struct tcp_opt_mss *mss;
     struct tcp_opt_ws *ws;
     uint8_t *opt;
-    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_SYN_OPTIONS_LEN];
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
     uint8_t include_ws = 0;
-    uint8_t opt_len = TCP_OPTIONS_LEN + TCP_OPTION_MSS_LEN;
+    uint8_t include_sack = 0;
+    uint8_t opt_len = 0;
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
     if (flags & 0x02) {
         if ((flags & 0x10) != 0) {
             /* SYN-ACK: include WS only when enabled on this socket. */
             include_ws = t->sock.tcp.ws_enabled;
+            include_sack = t->sock.tcp.sack_permitted;
         } else {
             /* Initial SYN: always include WS to allow peer scaling. */
             include_ws = 1;
+            include_sack = t->sock.tcp.sack_offer;
         }
     }
-    if (include_ws)
-        opt_len = TCP_SYN_OPTIONS_LEN;
     tcp->src_port = ee16(t->src_port);
     tcp->dst_port = ee16(t->dst_port);
     tcp->seq = ee32(t->sock.tcp.seq);
     tcp->ack = ee32(t->sock.tcp.ack);
-    tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
     tcp->flags = flags;
     tcp->win = ee16(tcp_adv_win(t));
     tcp->csum = 0;
@@ -1550,19 +1830,31 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     ts->pad = TCP_OPTION_NOP;
     ts->eoo = TCP_OPTION_NOP;
     opt += sizeof(*ts);
+    opt_len += sizeof(*ts);
     mss = (struct tcp_opt_mss *)opt;
     mss->opt = TCP_OPTION_MSS;
     mss->len = TCP_OPTION_MSS_LEN;
     mss->mss = ee16(TCP_MSS);
     opt += sizeof(*mss);
+    opt_len += sizeof(*mss);
     if (include_ws) {
         ws = (struct tcp_opt_ws *)opt;
         ws->opt = TCP_OPTION_WS;
         ws->len = TCP_OPTION_WS_LEN;
         ws->shift = t->sock.tcp.rcv_wscale;
         opt += sizeof(*ws);
-        *opt++ = TCP_OPTION_NOP;
+        opt_len += sizeof(*ws);
     }
+    if (include_sack) {
+        *opt++ = TCP_OPTION_SACK_PERMITTED;
+        *opt++ = TCP_OPTION_SACK_PERMITTED_LEN;
+        opt_len += TCP_OPTION_SACK_PERMITTED_LEN;
+    }
+    while ((opt_len % 4) != 0 && opt_len < TCP_MAX_OPTIONS_LEN) {
+        *opt++ = TCP_OPTION_NOP;
+        opt_len++;
+    }
+    tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
     fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
 }
 
@@ -1579,21 +1871,41 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
 {
     uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
     uint32_t seq = ee32(seg->seq);
+    const uint8_t *payload = (uint8_t *)seg->ip.data + (seg->hlen >> 2);
     if ((t->sock.tcp.state != TCP_ESTABLISHED) && (t->sock.tcp.state != TCP_CLOSE_WAIT)) {
         return;
     }
-    if (t->sock.tcp.ack == seq) {
-        /* push into queue */
-        if (queue_insert(&t->sock.tcp.rxbuf, (uint8_t *)seg->ip.data + (seg->hlen >> 2),
-                    seq, seg_len) < 0) {
+    if (seg_len == 0)
+        return;
+    if (tcp_seq_lt(seq, t->sock.tcp.ack)) {
+        uint32_t consumed = t->sock.tcp.ack - seq;
+        /* Retransmitted/overlapping data below ACK is already delivered.
+         * Trim it so only bytes above ACK participate in hole handling. */
+        if (consumed >= seg_len) {
+            tcp_send_ack(t);
+            return;
+        }
+        seq += consumed;
+        payload += consumed;
+        seg_len -= consumed;
+    }
+    if (seq == t->sock.tcp.ack) {
+        if (queue_insert(&t->sock.tcp.rxbuf, (void *)payload, seq, seg_len) < 0) {
             /* Buffer full, dropped. This will send a duplicate ack. */
         } else {
-            /* Advance ack counter */
+            /* In-order segment: advance cumulative ACK, then repeatedly pull in
+             * any cached OOO segments that now become contiguous. */
             t->sock.tcp.ack = tcp_seq_inc(seq, seg_len);
+            tcp_consume_ooo(t);
             timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
             t->sock.tcp.tmr_rto = NO_TIMER;
             t->events |= CB_EVENT_READABLE;
         }
+        tcp_send_ack(t);
+    } else if (tcp_seq_lt(t->sock.tcp.ack, seq)) {
+        /* Hole detected: segment starts above ACK, so cache it as OOO and
+         * immediately ACK with SACK blocks describing what we already have. */
+        (void)tcp_store_ooo_segment(t, payload, seq, seg_len);
         tcp_send_ack(t);
     }
 }
@@ -1794,60 +2106,24 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip, 
 static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
         uint32_t frame_len)
 {
-    const struct tcp_opt_ts *ts;
-    const uint8_t *opt = tcp->data;
-    int claimed_opt_len = (tcp->hlen >> 2) - 20;
-    int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
-    int opt_len;
-    const uint8_t *opt_end;
+    struct tcp_parsed_opts po;
 
-    /* Sanity checks */
-    if (claimed_opt_len <= 0 || available_bytes <= 0)
+    tcp_parse_options(tcp, frame_len, &po);
+    if (!po.ts_found)
         return -1;
-
-    /* Use minimum of claimed vs actual available */
-    opt_len = (claimed_opt_len < available_bytes) ? claimed_opt_len : available_bytes;
-    opt_end = opt + opt_len;
-
-    while (opt < opt_end) {
-        if (*opt == TCP_OPTION_NOP) {
-            opt++;
-        } else if (*opt == TCP_OPTION_EOO) {
-            break;
-        } else {
-            /* Need at least 2 bytes for kind + length */
-            if (opt + 2 > opt_end)
-                break;
-
-            ts = (const struct tcp_opt_ts *)opt;
-
-            /* Validate length: minimum 2, must not exceed remaining space */
-            if (ts->len < 2 || opt + ts->len > opt_end)
-                break;
-
-            if (ts->opt == TCP_OPTION_TS) {
-                /* Need full timestamp option (10 bytes) */
-                if (ts->len < TCP_OPTION_TS_LEN)
-                    return -1;
-                t->sock.tcp.last_ts = ts->val;
-                if (ts->ecr == 0)
-                    return -1; /* No echoed timestamp; fall back to coarse RTT. */
-                if (ee32(ts->ecr) > t->S->last_tick)
-                    return -1; /* Echoed timestamp in the future; ignore. */
-                if (t->sock.tcp.rtt == 0)
-                    t->sock.tcp.rtt = (uint32_t)(t->S->last_tick - ee32(ts->ecr));
-                else {
-                    uint64_t rtt_scaled = (uint64_t)t->sock.tcp.rtt << 3;
-                    uint64_t sample_scaled = (t->S->last_tick - ee32(ts->ecr)) << 3;
-                    t->sock.tcp.rtt = (uint32_t)(7 * rtt_scaled + sample_scaled);
-                }
-                return 0;
-            } else {
-                opt += ts->len;
-            }
-        }
+    t->sock.tcp.last_ts = ee32(po.ts_val);
+    if (po.ts_ecr == 0)
+        return -1; /* No echoed timestamp; fall back to coarse RTT. */
+    if (po.ts_ecr > t->S->last_tick)
+        return -1; /* Echoed timestamp in the future; ignore. */
+    if (t->sock.tcp.rtt == 0)
+        t->sock.tcp.rtt = (uint32_t)(t->S->last_tick - po.ts_ecr);
+    else {
+        uint64_t rtt_scaled = (uint64_t)t->sock.tcp.rtt << 3;
+        uint64_t sample_scaled = (t->S->last_tick - po.ts_ecr) << 3;
+        t->sock.tcp.rtt = (uint32_t)(7 * rtt_scaled + sample_scaled);
     }
-    return -1;
+    return 0;
 }
 
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
@@ -1863,6 +2139,109 @@ static inline int tcp_seq_leq(uint32_t a, uint32_t b)
         return (a - b) >= 0x80000000U;
 }
 
+static inline int tcp_seq_lt(uint32_t a, uint32_t b)
+{
+    return (a != b) && tcp_seq_leq(a, b);
+}
+
+static int tcp_block_covers_seq(const struct tcp_sack_block *b, uint32_t start,
+        uint32_t end)
+{
+    return tcp_seq_leq(b->left, start) && tcp_seq_leq(end, b->right);
+}
+
+static int tcp_is_range_sacked(struct tsocket *t, uint32_t start, uint32_t end)
+{
+    uint8_t i;
+    for (i = 0; i < t->sock.tcp.peer_sack_count; i++) {
+        if (tcp_block_covers_seq(&t->sock.tcp.peer_sack[i], start, end))
+            return 1;
+    }
+    return 0;
+}
+
+static void tcp_process_sack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
+{
+    struct tcp_parsed_opts po;
+    struct tcp_sack_block blocks[TCP_SACK_MAX_BLOCKS];
+    uint8_t i, out = 0;
+
+    t->sock.tcp.peer_sack_count = 0;
+    if (!t->sock.tcp.sack_permitted)
+        return;
+    tcp_parse_options(tcp, frame_len, &po);
+    if (po.sack_count == 0)
+        return;
+
+    for (i = 0; i < po.sack_count && out < TCP_SACK_MAX_BLOCKS; i++) {
+        uint32_t left = po.sack[i].left;
+        uint32_t right = po.sack[i].right;
+
+        if (!tcp_seq_lt(left, right))
+            continue;
+        if (tcp_seq_leq(right, t->sock.tcp.snd_una))
+            continue;
+        if (tcp_seq_leq(t->sock.tcp.seq, left))
+            continue;
+        if (tcp_seq_lt(left, t->sock.tcp.snd_una))
+            left = t->sock.tcp.snd_una;
+        if (tcp_seq_lt(t->sock.tcp.seq, right))
+            right = t->sock.tcp.seq;
+        if (!tcp_seq_lt(left, right))
+            continue;
+        blocks[out].left = left;
+        blocks[out].right = right;
+        out++;
+    }
+    out = tcp_merge_sack_blocks(blocks, out);
+    for (i = 0; i < out; i++)
+        t->sock.tcp.peer_sack[i] = blocks[i];
+    t->sock.tcp.peer_sack_count = out;
+}
+
+static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
+{
+    struct pkt_desc *desc = fifo_peek(&t->sock.tcp.txbuf);
+    while (desc) {
+        struct wolfIP_tcp_seg *seg;
+        uint32_t seg_len;
+        uint32_t seg_start;
+        uint32_t seg_end;
+
+        if (!(desc->flags & PKT_FLAG_SENT)) {
+            desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            continue;
+        }
+        seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
+        seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+        if (seg_len == 0) {
+            desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            continue;
+        }
+        seg_start = ee32(seg->seq);
+        seg_end = tcp_seq_inc(seg_start, seg_len);
+        /* Do not retransmit partially acknowledged segments without splitting:
+         * retransmitting from seg_start would resend bytes below ACK and skew
+         * bytes_in_flight accounting. */
+        if (tcp_seq_lt(seg_start, ack)) {
+            desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            continue;
+        }
+        if (tcp_seq_leq(seg_end, ack)) {
+            desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            continue;
+        }
+        if (tcp_is_range_sacked(t, seg_start, seg_end)) {
+            desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            continue;
+        }
+        desc->flags &= ~PKT_FLAG_SENT;
+        return 1;
+    }
+    return 0;
+}
+
 /* Receive an ack */
 static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 {
@@ -1871,6 +2250,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     int ack_count = 0;
     uint32_t inflight_pre = t->sock.tcp.bytes_in_flight;
     uint32_t acked_bytes = 0;
+
+    tcp_process_sack(t, tcp,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + (tcp->hlen >> 2)));
     desc = fifo_peek(&t->sock.tcp.txbuf);
     while ((desc) && (desc->flags & PKT_FLAG_SENT)) {
         struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
@@ -1912,6 +2294,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             t->sock.tcp.bytes_in_flight -= delta;
         t->sock.tcp.snd_una = ack;
         t->sock.tcp.dup_acks = 0;
+        t->sock.tcp.early_rexmit_done = 0;
+        t->sock.tcp.last_early_rexmit_ack = ack;
         acked_bytes = delta;
     }
     if (ack_count > 0) {
@@ -1959,6 +2343,16 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             return;
         if (inflight_pre == 0)
             return;
+        if (t->sock.tcp.peer_sack_count > 0 &&
+                tcp_seq_lt(ack, t->sock.tcp.peer_sack[t->sock.tcp.peer_sack_count - 1].right) &&
+                (!t->sock.tcp.early_rexmit_done ||
+                 t->sock.tcp.last_early_rexmit_ack != ack)) {
+            if (tcp_mark_unsacked_for_retransmit(t, ack)) {
+                t->sock.tcp.early_rexmit_done = 1;
+                t->sock.tcp.last_early_rexmit_ack = ack;
+                return;
+            }
+        }
         if (t->sock.tcp.dup_acks < 3)
             t->sock.tcp.dup_acks++;
         if (t->sock.tcp.dup_acks < 3)
@@ -1969,23 +2363,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         }
         t->sock.tcp.cwnd = t->sock.tcp.ssthresh + TCP_MSS;
         t->sock.tcp.cwnd_count = 0;
-        desc = fifo_peek(&t->sock.tcp.txbuf);
-        while (desc && (desc->flags & PKT_FLAG_SENT)) {
-            struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
-            uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
-            if (seg_len == 0) {
-                /* Advance the tail and discard */
-                desc = fifo_pop(&t->sock.tcp.txbuf);
-                (void)desc;
-                desc = fifo_peek(&t->sock.tcp.txbuf);
-                continue;
-            }
-            if (ee32(seg->seq) == ack) {
-                desc->flags &= ~PKT_FLAG_SENT; /* Resend */
-                break;
-            }
-            desc = fifo_next(&t->sock.tcp.txbuf, desc);
-        }
+        (void)tcp_mark_unsacked_for_retransmit(t, ack);
     }
 }
 
@@ -2029,21 +2407,29 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx, struct wolfIP_tcp_s
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
             if (tcp->flags & 0x02) {
-                int ws_found = tcp_process_ws(t, tcp, frame_len);
+                struct tcp_parsed_opts po;
+                tcp_parse_options(tcp, frame_len, &po);
                 /* Window scale is negotiated only during SYN/SYN-ACK. */
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     /* Server side: enable if peer offered WS. */
-                    t->sock.tcp.ws_enabled = ws_found ? 1 : 0;
-                    if (!ws_found)
+                    t->sock.tcp.ws_enabled = po.ws_found ? 1 : 0;
+                    if (po.ws_found)
+                        t->sock.tcp.snd_wscale = po.ws_shift;
+                    t->sock.tcp.sack_permitted =
+                        (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
+                    if (!po.ws_found)
                         t->sock.tcp.snd_wscale = 0;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     /* Client side: only accept WS if we offered it. */
-                    if (t->sock.tcp.ws_offer && ws_found) {
+                    if (t->sock.tcp.ws_offer && po.ws_found) {
                         t->sock.tcp.ws_enabled = 1;
+                        t->sock.tcp.snd_wscale = po.ws_shift;
                     } else {
                         t->sock.tcp.ws_enabled = 0;
                         t->sock.tcp.snd_wscale = 0;
                     }
+                    t->sock.tcp.sack_permitted =
+                        (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
                 }
             }
             {
@@ -2423,6 +2809,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.rcv_wscale = ts->sock.tcp.rcv_wscale;
             newts->sock.tcp.ws_enabled = ts->sock.tcp.ws_enabled;
             newts->sock.tcp.ws_offer = ts->sock.tcp.ws_offer;
+            newts->sock.tcp.sack_offer = ts->sock.tcp.sack_offer;
+            newts->sock.tcp.sack_permitted = ts->sock.tcp.sack_permitted;
             newts->sock.tcp.state = TCP_ESTABLISHED;
             /* Send SYN-ACK to accept connection.
              * Send the syn-ack from the newly established socket:
