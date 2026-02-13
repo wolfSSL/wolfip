@@ -49,7 +49,6 @@ typedef struct {
     int in_use;
     int internal_fd;
     SemaphoreHandle_t ready_sem;
-    volatile uint16_t seen_events;
     volatile uint16_t wait_events;
 } wolfip_bsd_fd_entry;
 
@@ -147,7 +146,6 @@ static int wolfip_bsd_fd_alloc(int internal_fd)
             g_fds[i].in_use = 1;
             g_fds[i].internal_fd = internal_fd;
             g_fds[i].ready_sem = sem;
-            g_fds[i].seen_events = 0;
             g_fds[i].wait_events = 0;
             return i;
         }
@@ -165,7 +163,6 @@ static void wolfip_bsd_fd_free(int public_fd)
     g_fds[public_fd].in_use = 0;
     g_fds[public_fd].internal_fd = -1;
     g_fds[public_fd].ready_sem = NULL;
-    g_fds[public_fd].seen_events = 0;
     g_fds[public_fd].wait_events = 0;
 }
 
@@ -185,7 +182,6 @@ static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
             (unsigned)entry->wait_events,
             (unsigned long)g_cb_log_count);
     }
-    entry->seen_events |= events;
     if ((events & entry->wait_events) != 0) {
         (void)xSemaphoreGive(entry->ready_sem);
     }
@@ -193,7 +189,6 @@ static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
 
 static void wolfip_bsd_prepare_wait_locked(wolfip_bsd_fd_entry *entry, uint16_t wait_events)
 {
-    entry->seen_events = 0;
     entry->wait_events = wait_events;
     while (xSemaphoreTake(entry->ready_sem, 0) == pdTRUE) {
     }
@@ -230,7 +225,6 @@ int wolfip_freertos_socket_init(struct wolfIP *ipstack,
         g_fds[i].in_use = 0;
         g_fds[i].internal_fd = -1;
         g_fds[i].ready_sem = NULL;
-        g_fds[i].seen_events = 0;
         g_fds[i].wait_events = 0;
     }
 
