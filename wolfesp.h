@@ -63,8 +63,12 @@ struct replay_t {
 
 typedef struct replay_t replay_t;
 
-#define esp_replay_init(r) \
-  (r).bitmap = 0U; (r).hi_seq = ESP_REPLAY_WIN; (r).oseq = 1U; \
+#define esp_replay_init(r)           \
+    do {                             \
+        (r).bitmap = 0U;             \
+        (r).hi_seq = ESP_REPLAY_WIN; \
+        (r).oseq = 1U;               \
+    } while (0)
 
 /* Minimal ESP Security Association structure.
  * Supports only transport mode.
@@ -87,8 +91,8 @@ struct wolfIP_esp_sa {
 typedef struct wolfIP_esp_sa wolfIP_esp_sa;
 
 int  wolfIP_esp_init(void);
-void wolfIP_esp_sa_del(int in, uint8_t * spi);
 void wolfIP_esp_sa_del_all(void);
+void wolfIP_esp_sa_del(int in, uint8_t * spi);
 int  wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
                            esp_enc_t enc, uint8_t * enc_key,
                            uint8_t enc_key_len);

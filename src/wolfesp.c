@@ -94,7 +94,7 @@ esp_sa_get(int in, const uint8_t * spi)
     return NULL;
 }
 
-void wolfIP_esp_sa_del_spi(int in, uint8_t * spi)
+void wolfIP_esp_sa_del(int in, uint8_t * spi)
 {
     wolfIP_esp_sa * sa = NULL;
     sa = esp_sa_get(in, spi);
@@ -376,7 +376,6 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
 
     /* last 2 bytes of padding */
     padding = esp_data + esp_len - esp_sa->icv_len - 4;
-
     LOG("esp packet: (%d bytes)\n", esp_len);
 
    /**   ESP header
@@ -393,7 +392,6 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
     if (iv) {
         esp_print_field("iv", iv, iv_len);
     }
-
     esp_print_field("payload", payload, payload_len);
 
    /**  ESP trailer
@@ -707,7 +705,6 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     iv = esp_enc_iv(esp_data, iv_len);
 
     ret = wc_Des3Init(&des3_enc, NULL, INVALID_DEVID);
-
     if (ret != 0) {
         ESP_LOG("error: wc_Des3Init: %d\n", ret);
         goto des3_enc_out;
@@ -746,6 +743,27 @@ des3_enc_out:
 #define esp_rfc4106_salt(esp_sa) (esp_sa)->enc_key \
                                  + (esp_sa)->enc_key_len \
                                  - ESP_GCM_RFC4106_SALT_LEN
+
+/* Deterministic iv construction using pre-iv salt and sequence number.
+ * NIST SP 800-38D, section 8.2.1 Deterministic Construction, using
+ * an integer counter. The sequence number is used as a counter, and
+ * xor'ed with pre-iv salt. Based on linux kernel crypto/seqiv.c.
+ * */
+static inline void
+esp_rfc4106_gen_iv(uint8_t * iv, const wolfIP_esp_sa * esp_sa)
+{
+    uint32_t  seq_num = 0;
+    uint8_t * seq_num_u8 = (uint8_t *) &seq_num;
+
+    seq_num = ee32(esp_sa->replay.oseq);
+    /* copy in the pre_iv. */
+    memcpy(iv, esp_sa->pre_iv, sizeof(esp_sa->pre_iv));
+    /* xor pre-iv salt with current sequence number. */
+    for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+        iv[i + sizeof(uint32_t)] ^= seq_num_u8[i];
+    }
+    return;
+}
 
 #if defined(WOLFSSL_AESGCM_STREAM)
 static int
@@ -848,26 +866,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* Get the salt, and construct nonce. */
     salt = esp_rfc4106_salt(esp_sa);
-
-    {
-        /* Deterministic iv construction using pre-iv salt and sequence number.
-         * NIST SP 800-38D, section 8.2.1 Deterministic Construction, using
-         * an integer counter. The sequence number is used as a counter, and
-         * xor'ed with pre-iv salt. Based on linux kernel crypto/seqiv.c.
-         * */
-        uint32_t  seq_num = 0;
-        uint8_t * seq_num_u8 = (uint8_t *) &seq_num;
-
-        seq_num = ee32(esp_sa->replay.oseq);
-
-        /* copy in the pre_iv. */
-        memcpy(iv, esp_sa->pre_iv, sizeof(esp_sa->pre_iv));
-
-        /* xor pre-iv salt with current sequence number. */
-        for (size_t i = 0; i < sizeof(uint32_t); ++i) {
-            iv[i + sizeof(uint32_t)] ^= seq_num_u8[i];
-        }
-    }
+    esp_rfc4106_gen_iv(iv, esp_sa);
 
     memcpy(nonce, salt, salt_len);
     memcpy(nonce + salt_len, iv, iv_len);
@@ -982,26 +981,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* Get the salt. */
     salt = esp_rfc4106_salt(esp_sa);
-
-    {
-        /* Deterministic iv construction using pre-iv salt and sequence number.
-         * NIST SP 800-38D, section 8.2.1 Deterministic Construction, using
-         * an integer counter. The sequence number is used as a counter, and
-         * xor'ed with pre-iv salt. Based on linux kernel crypto/seqiv.c.
-         * */
-        uint32_t  seq_num = 0;
-        uint8_t * seq_num_u8 = (uint8_t *) &seq_num;
-
-        seq_num = ee32(esp_sa->replay.oseq);
-
-        /* copy in the pre_iv. */
-        memcpy(iv, esp_sa->pre_iv, sizeof(esp_sa->pre_iv));
-
-        /* xor pre-iv salt with current sequence number. */
-        for (size_t i = 0; i < sizeof(uint32_t); ++i) {
-            iv[i + sizeof(uint32_t)] ^= seq_num_u8[i];
-        }
-    }
+    esp_rfc4106_gen_iv(iv, esp_sa);
 
     memcpy(nonce, salt, salt_len);
     memcpy(nonce + salt_len, iv, iv_len);
@@ -1080,7 +1060,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
     #else
     uint32_t diff = 0;
     uint32_t bitn = 0;
-    uint32_t seq_low = replay->hi_seq - ESP_REPLAY_WIN;
+    uint32_t seq_low = replay->hi_seq - (ESP_REPLAY_WIN - 1);
 
     if (seq == 0) {
         return -1;
@@ -1559,7 +1539,7 @@ esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
     int                       esp_rc = 0;
 
     esp = (struct wolfIP_ip_packet *) frame;
-    memcpy(esp, ip, sizeof(struct wolfIP_ip_packet) + len);
+    memcpy(esp, ip, ETH_HEADER_LEN + len);
 
     esp_rc = esp_transport_wrap(esp, &ip_final_len);
 

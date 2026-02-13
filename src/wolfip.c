@@ -3197,8 +3197,8 @@ static void dhcp_cancel_timer(struct wolfIP *s)
 }
 
 #define DHCP_OPT_data_to_u32(opt)                    \
-    (opt)->data[0]        | ((opt)->data[1] << 8) |  \
-   ((opt)->data[2] << 16) | ((opt)->data[3] << 24);
+   ((opt)->data[0]        | ((opt)->data[1] << 8) |  \
+   ((opt)->data[2] << 16) | ((opt)->data[3] << 24))
 
 #define DHCP_OPT_u32_to_data(opt, v)          \
     do {                                      \

@@ -14,7 +14,8 @@ print_usage_and_die() {
   echo ""
   echo "examples:"
   echo "  ./tools/ip-xfrm/rfc4543 128"
-  echo "  ./tools/ip-xfrm/rfc4543"
+  echo "  ./tools/ip-xfrm/rfc4543 128 udp"
+  echo "  ./tools/ip-xfrm/rfc4543 128 tcp"
   exit 1
 }
 
