@@ -2836,6 +2836,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->sock.tcp.state = TCP_SYN_RCVD;
                     t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->sock.tcp.seq = wolfIP_getrandom();
+                    t->sock.tcp.snd_una = t->sock.tcp.seq;
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
