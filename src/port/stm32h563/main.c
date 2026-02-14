@@ -45,6 +45,12 @@
 #include "mqtt_client.h"
 #endif
 
+#ifdef ENABLE_MQTT_BROKER
+#include "mqtt_broker.h"
+/* Defined in mqtt_broker.c, updated from main loop tick */
+extern volatile unsigned long broker_uptime_sec;
+#endif
+
 #ifdef ENABLE_TLS
 
 /* Google IP for TLS client test (run: dig +short google.com) */
@@ -688,6 +694,19 @@ int main(void)
     }
 #endif
 
+#ifdef ENABLE_MQTT_BROKER
+    uart_puts("Initializing MQTT broker...\n");
+    {
+        mqtt_broker_config_t broker_config = {
+            .port = 8883,
+            .use_tls = 1
+        };
+        if (mqtt_broker_init(IPStack, &broker_config, uart_puts) < 0) {
+            uart_puts("ERROR: MQTT broker init failed\n");
+        }
+    }
+#endif
+
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("Loop starting...\n");
 
@@ -748,6 +767,14 @@ int main(void)
                 last_publish_tick = tick;
             }
         }
+#endif
+
+#ifdef ENABLE_MQTT_BROKER
+        /* Poll MQTT broker */
+        mqtt_broker_poll();
+
+        /* Update broker uptime counter (approximate seconds from tick) */
+        broker_uptime_sec = (unsigned long)(tick / 1000);
 #endif
 
 #ifdef ENABLE_TLS

@@ -20,6 +20,9 @@ ENABLE_SSH ?= 0
 # MQTT support: set ENABLE_MQTT=1 to include wolfMQTT client (requires TLS)
 ENABLE_MQTT ?= 0
 
+# MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
+ENABLE_MQTT_BROKER ?= 0
+
 # Library paths - default to sibling directories (clone alongside pattern)
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
 WOLFSSH_ROOT ?= $(ROOT)/../wolfssh
@@ -198,9 +201,55 @@ SRCS += $(WOLFMQTT_SRCS)
 
 # wolfMQTT objects use relaxed warnings + MQTT/SSL include paths + user_settings.h
 $(WOLFMQTT_ROOT)/%.o: $(WOLFMQTT_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
 
 endif # ENABLE_MQTT
+
+# -----------------------------------------------------------------------------
+# MQTT Broker Support (wolfMQTT broker) - requires TLS
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_MQTT_BROKER),1)
+
+# MQTT Broker requires TLS
+ifeq ($(ENABLE_TLS),0)
+  $(error ENABLE_MQTT_BROKER=1 requires ENABLE_TLS=1)
+endif
+
+# Validate wolfMQTT exists
+ifeq ($(wildcard $(WOLFMQTT_ROOT)/wolfmqtt/mqtt_broker.h),)
+  $(error wolfMQTT (with broker) not found at $(WOLFMQTT_ROOT). Clone it: git clone https://github.com/wolfSSL/wolfMQTT.git)
+endif
+
+CFLAGS += -DENABLE_MQTT_BROKER
+CFLAGS += -DWOLFMQTT_USER_SETTINGS
+CFLAGS += -I$(WOLFMQTT_ROOT)
+
+# MQTT broker wrapper
+SRCS += mqtt_broker.c
+
+# wolfMQTT broker source files
+# Note: mqtt_client.c is needed by broker internals (MqttClient_Init, etc.)
+WOLFMQTT_BROKER_SRCS := \
+    $(WOLFMQTT_ROOT)/src/mqtt_broker.c
+
+# Only add shared wolfMQTT sources if MQTT client is not already enabled
+ifneq ($(ENABLE_MQTT),1)
+WOLFMQTT_BROKER_SRCS += \
+    $(WOLFMQTT_ROOT)/src/mqtt_client.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_packet.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_socket.c
+endif
+
+SRCS += $(WOLFMQTT_BROKER_SRCS)
+
+# wolfMQTT objects use relaxed warnings + include paths + user_settings.h
+# Only define this pattern rule if MQTT client didn't already define it
+ifneq ($(ENABLE_MQTT),1)
+$(WOLFMQTT_ROOT)/%.o: $(WOLFMQTT_ROOT)/%.c
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT_BROKER -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
+endif
+
+endif # ENABLE_MQTT_BROKER
 
 # -----------------------------------------------------------------------------
 # Build rules
@@ -208,7 +257,7 @@ endif # ENABLE_MQTT
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT)"
+	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
 endif
@@ -216,7 +265,10 @@ ifeq ($(ENABLE_SSH),1)
 	@echo "  wolfSSH: $(WOLFSSH_ROOT)"
 endif
 ifeq ($(ENABLE_MQTT),1)
-	@echo "  wolfMQTT: $(WOLFMQTT_ROOT)"
+	@echo "  wolfMQTT (client): $(WOLFMQTT_ROOT)"
+endif
+ifeq ($(ENABLE_MQTT_BROKER),1)
+	@echo "  wolfMQTT (broker): $(WOLFMQTT_ROOT)"
 endif
 
 app.elf: $(OBJS) $(LDSCRIPT)
@@ -230,7 +282,7 @@ app.bin: app.elf
 
 # wolfSSL objects use relaxed warnings + user_settings.h + include paths
 $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH) -I$(WOLFSSL_ROOT) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFSSL_ROOT) -c $< -o $@
 
 clean:
 	rm -f *.o app.elf app.bin
@@ -246,6 +298,9 @@ endif
 ifeq ($(ENABLE_MQTT),1)
 	rm -f $(WOLFMQTT_ROOT)/src/*.o
 endif
+ifeq ($(ENABLE_MQTT_BROKER),1)
+	rm -f $(WOLFMQTT_ROOT)/src/*.o
+endif
 
 # Verify what features are compiled into the binary
 verify: app.bin
@@ -255,9 +310,10 @@ verify: app.bin
 	@strings app.bin | grep -q "Initializing HTTPS server" && echo "  ✓ HTTPS server enabled" || echo "  ✗ HTTPS server disabled"
 	@strings app.bin | grep -q "Initializing SSH server" && echo "  ✓ SSH server enabled" || echo "  ✗ SSH server disabled"
 	@strings app.bin | grep -q "Initializing MQTT client" && echo "  ✓ MQTT client enabled" || echo "  ✗ MQTT client disabled"
+	@strings app.bin | grep -q "MQTT Broker: Initializing" && echo "  ✓ MQTT broker enabled" || echo "  ✗ MQTT broker disabled"
 	@echo ""
 	@echo "Binary size: $$(ls -lh app.bin | awk '{print $$5}')"
-	@echo "Build flags: TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT)"
+	@echo "Build flags: TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
 
 # Show memory usage
 size: app.elf
@@ -290,6 +346,7 @@ help:
 	@echo "  ENABLE_HTTPS=1  Enable HTTPS web server (requires TLS)"
 	@echo "  ENABLE_SSH=1    Enable SSH server (requires TLS + wolfSSH)"
 	@echo "  ENABLE_MQTT=1   Enable MQTT client (requires TLS + wolfMQTT)"
+	@echo "  ENABLE_MQTT_BROKER=1 Enable MQTT broker (requires TLS + wolfMQTT)"
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
 	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
 	@echo "  WOLFMQTT_ROOT=  Path to wolfMQTT (default: ../wolfmqtt)"
@@ -302,7 +359,8 @@ help:
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1                            # TLS + HTTPS web (port 443)"
 	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                              # TLS + SSH shell (port 22)"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT=1                             # TLS + MQTT client"
-	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 # Full featured"
+	@echo "  make ENABLE_TLS=1 ENABLE_MQTT_BROKER=1                       # TLS + MQTT broker"
+	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 ENABLE_MQTT_BROKER=1 # Full featured"
 	@echo ""
 	@echo "Full Build Command (recommended):"
 	@echo "  CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \\"
@@ -314,5 +372,6 @@ help:
 	@echo "  curl -k https://<ip>/                          # HTTPS web server"
 	@echo "  ssh admin@<ip>                                 # SSH (password: wolfip)"
 	@echo "  mosquitto_sub -h test.mosquitto.org -t 'wolfip/status' -v  # MQTT subscribe"
+	@echo "  mosquitto_pub -h <ip> -p 8883 --cafile /dev/null --insecure -t test -m hello  # MQTT broker publish"
 
 .PHONY: help
