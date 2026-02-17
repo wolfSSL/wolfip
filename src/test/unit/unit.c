@@ -9739,6 +9739,65 @@ START_TEST(test_tcp_ack_duplicate_discards_zero_len_segment)
 }
 END_TEST
 
+START_TEST(test_tcp_ack_progress_resets_rto_recovery_state)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+    struct wolfIP_timer tmr;
+    uint32_t seq = 100;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.ssthresh = 2 * TCP_MSS;
+    ts->sock.tcp.seq = seq + 64;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.rto_backoff = 4;
+    ts->sock.tcp.dup_acks = 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    seg->data[0] = TCP_OPTION_EOO;
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    desc->time_sent = 10;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 1000;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(seq + 1);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = 0x10;
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, seq + 1);
+    ck_assert_uint_eq(ts->sock.tcp.rto_backoff, 0);
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_gt(ts->sock.tcp.cwnd, TCP_MSS);
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_rcvd_ack_established)
 {
     struct wolfIP s;
@@ -13351,6 +13410,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_discards_zero_len_segment_far_ack);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_ssthresh_min);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_tcp_ack_progress_resets_rto_recovery_state);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_recv_queues_payload_and_advances_ack);
     suite_add_tcase(s, tc_utils);
