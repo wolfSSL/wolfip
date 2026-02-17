@@ -1,0 +1,57 @@
+name: Multiple Compilers
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compiler_test:
+    name: ${{ matrix.cc }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc-11
+          - cc: gcc-12
+          - cc: gcc-13
+          - cc: clang-14
+          - cc: clang-15
+          - cc: clang-17
+
+    steps:
+      - name: Install compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cc }}
+
+      - name: Checkout wolfIP
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y libwolfssl-dev check
+          sudo modprobe tun
+
+      - name: Build wolfIP with ${{ matrix.cc }}
+        run: |
+          mkdir -p build/port
+          make CC=${{ matrix.cc }}
+
+      - name: Build unit tests
+        run: make unit CC=${{ matrix.cc }}
+
+      - name: Run unit tests
+        run: ./build/test/unit
+
+      - name: Run standalone TTL expired test
+        run: ./build/test-ttl-expired
