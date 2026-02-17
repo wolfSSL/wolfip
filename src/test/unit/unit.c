@@ -1085,8 +1085,8 @@ START_TEST(test_queue_insert_updates_head_when_pos_plus_len_gt_head)
     queue_init(&q, data, sizeof(data), 0);
     ck_assert_int_eq(queue_insert(&q, payload, 0, 4), 0);
     ck_assert_uint_eq(q.head, 4);
-    ck_assert_int_eq(queue_insert(&q, payload, 6, 4), 0);
-    ck_assert_uint_eq(q.head, 10);
+    ck_assert_int_eq(queue_insert(&q, payload, 4, 4), 0);
+    ck_assert_uint_eq(q.head, 8);
 }
 END_TEST
 
@@ -5460,7 +5460,9 @@ START_TEST(test_poll_tcp_ack_only_skips_send)
     (void)wolfIP_poll(&s, 100);
 
     ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
-    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_frame_sent[12], 0x08);
+    ck_assert_uint_eq(last_frame_sent[13], 0x00);
     ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
 }
 END_TEST
@@ -9932,6 +9934,7 @@ START_TEST(test_tcp_ack_duplicate_zero_len_segment_large_ack)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS * 4;
     ts->sock.tcp.ssthresh = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf1, 0, sizeof(segbuf1));
@@ -10040,6 +10043,7 @@ START_TEST(test_tcp_ack_duplicate_clears_sent_flag)
     ts->S = &s;
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     memset(&segbuf1, 0, sizeof(segbuf1));
@@ -11727,7 +11731,7 @@ START_TEST(test_queue_space_empty) {
     struct queue q;
 
     queue_init(&q, mem, memsz, 0x12345678);
-    ck_assert_int_eq(queue_space(&q), memsz);  // Full space should be available
+    ck_assert_int_eq(queue_space(&q), memsz - 1);  // Reserve one byte to disambiguate full/empty
 
 }
 END_TEST
@@ -11745,7 +11749,7 @@ START_TEST(test_queue_partial_fill) {
     struct queue q;
     queue_init(&q, mem, memsz, 0x12345678);
     q.head = 256;  // Simulate adding 256 bytes of data
-    ck_assert_int_eq(queue_space(&q), memsz - 256);
+    ck_assert_int_eq(queue_space(&q), memsz - 257);
     ck_assert_int_eq(queue_len(&q), 256);
 
 }
@@ -11756,7 +11760,7 @@ START_TEST(test_queue_wrap_around) {
     queue_init(&q, mem, memsz, 0x12345678);
     q.head = 800;
     q.tail = 200;  // Head has wrapped around, so 600 bytes are filled
-    ck_assert_int_eq(queue_space(&q), q.size - 600);
+    ck_assert_int_eq(queue_space(&q), q.size - 601);
     ck_assert_int_eq(queue_len(&q), 600);  // 600 bytes filled
 }
 END_TEST
@@ -11835,12 +11839,21 @@ START_TEST(test_queue_insert_wrap)
 {
     struct queue q;
     uint8_t mem[16];
-    uint8_t data[8];
+    uint8_t first[12];
+    uint8_t second[3];
+    uint8_t out[16];
 
-    memset(data, 0xAB, sizeof(data));
+    memset(first, 0xAB, sizeof(first));
+    memset(second, 0xCD, sizeof(second));
     queue_init(&q, mem, sizeof(mem), 0);
-    ck_assert_int_eq(queue_insert(&q, data, 0, 4), 0);
-    ck_assert_int_eq(queue_insert(&q, data, 12, sizeof(data)), 0);
+    ck_assert_int_eq(queue_insert(&q, first, 0, sizeof(first)), 0);
+    ck_assert_int_eq(queue_pop(&q, out, 10), 10);
+    ck_assert_int_eq(queue_insert(&q, second, 12, sizeof(second)), 0);
+    ck_assert_uint_eq(queue_len(&q), 5);
+    ck_assert_int_eq(queue_pop(&q, out, 2), 2);
+    ck_assert_mem_eq(out, first + 10, 2);
+    ck_assert_int_eq(queue_pop(&q, out, 3), 3);
+    ck_assert_mem_eq(out, second, 3);
 }
 END_TEST
 
@@ -11852,7 +11865,141 @@ START_TEST(test_queue_space_wrap)
     queue_init(&q, mem, sizeof(mem), 0);
     q.head = 4;
     q.tail = 12;
-    ck_assert_uint_eq(queue_space(&q), q.tail - q.head);
+    ck_assert_uint_eq(queue_space(&q), (q.tail - q.head) - 1);
+}
+END_TEST
+
+START_TEST(test_queue_full_state_not_empty_and_drains_data)
+{
+    struct queue q;
+    uint8_t mem[16];
+    uint8_t data[15];
+    uint8_t out[15];
+    int i;
+
+    for (i = 0; i < (int)sizeof(data); i++)
+        data[i] = (uint8_t)(i + 1);
+    queue_init(&q, mem, sizeof(mem), 1000);
+    ck_assert_int_eq(queue_insert(&q, data, 1000, sizeof(data)), 0);
+    ck_assert_uint_eq(queue_len(&q), sizeof(data));
+    ck_assert_uint_eq(queue_space(&q), 0);
+    ck_assert_int_eq(queue_pop(&q, out, sizeof(out)), (int)sizeof(out));
+    ck_assert_mem_eq(out, data, sizeof(data));
+    ck_assert_uint_eq(queue_len(&q), 0);
+    ck_assert_uint_eq(queue_space(&q), sizeof(mem) - 1);
+}
+END_TEST
+
+START_TEST(test_poll_tcp_residual_window_gates_data_segment)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xef};
+    struct pkt_desc *desc;
+    struct pkt_desc *sent_desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.last_ack = 0;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = 32;
+    ts->sock.tcp.peer_rwnd = 20;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Keep 12 bytes in-flight, then queue 16 new bytes. Residual window is 8. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 12, 0x18), 0);
+    sent_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(sent_desc);
+    sent_desc->flags |= PKT_FLAG_SENT;
+    ts->sock.tcp.bytes_in_flight = 12;
+
+    ts->sock.tcp.seq = 12;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 16, 0x18), 0);
+    desc = fifo_next(&ts->sock.tcp.txbuf, sent_desc);
+    ck_assert_ptr_nonnull(desc);
+
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_ptr_eq(fifo_next(&ts->sock.tcp.txbuf, sent_desc), desc);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
+START_TEST(test_poll_tcp_residual_window_allows_exact_fit)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *sent_desc;
+    struct pkt_desc *data_desc;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.last_ack = 0;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = 32;
+    ts->sock.tcp.peer_rwnd = 20;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Keep 4 bytes in-flight, then queue 16 bytes: exact residual-window fit. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 4, 0x18), 0);
+    sent_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(sent_desc);
+    sent_desc->flags |= PKT_FLAG_SENT;
+    ts->sock.tcp.bytes_in_flight = 4;
+
+    ts->sock.tcp.seq = 4;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 16, 0x18), 0);
+    data_desc = fifo_next(&ts->sock.tcp.txbuf, sent_desc);
+    ck_assert_ptr_nonnull(data_desc);
+
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_int_ne(data_desc->flags & PKT_FLAG_SENT, 0);
 }
 END_TEST
 
@@ -13451,6 +13598,8 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_queue_insert_no_head_update_when_pos_plus_len_le_head);
     suite_add_tcase(s, tc_core);
+    tcase_add_test(tc_core, test_queue_full_state_not_empty_and_drains_data);
+    suite_add_tcase(s, tc_core);
 
     tcase_add_test(tc_utils, test_insert_timer);
     suite_add_tcase(s, tc_utils);
@@ -13765,6 +13914,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_ack_only_skips_send);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_poll_tcp_send_on_arp_hit);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_poll_tcp_residual_window_gates_data_segment);
+    suite_add_tcase(s, tc_utils);
+    tcase_add_test(tc_utils, test_poll_tcp_residual_window_allows_exact_fit);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_poll_tcp_arp_request_on_miss);
     suite_add_tcase(s, tc_utils);
