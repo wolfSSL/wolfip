@@ -704,6 +704,46 @@ START_TEST(test_fifo_push_pop_odd_sizes_drains_cleanly)
 }
 END_TEST
 
+START_TEST(test_fifo_full_wrap_does_not_appear_empty_or_discard_packets)
+{
+    struct fifo f;
+    uint8_t data[120];
+    uint8_t payload[8];
+    struct pkt_desc *desc;
+    int i;
+
+    memset(payload, 0xAB, sizeof(payload));
+    fifo_init(&f, data, sizeof(data));
+
+    /* 5 * (sizeof(pkt_desc)=16 + payload=8) == 120: fills FIFO exactly and
+     * forces head == tail with wrap marker set (full, not empty). */
+    for (i = 0; i < 5; i++) {
+        payload[0] = (uint8_t)i;
+        ck_assert_int_eq(fifo_push(&f, payload, sizeof(payload)), 0);
+    }
+
+    ck_assert_uint_eq(fifo_space(&f), 0);
+    ck_assert_uint_eq(f.head, f.tail);
+    ck_assert_uint_eq(f.h_wrap, sizeof(data));
+
+    /* Full FIFO must still expose packets. */
+    desc = fifo_peek(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_eq(desc->len, sizeof(payload));
+    ck_assert_uint_eq(*((uint8_t *)f.data + desc->pos + sizeof(*desc)), 0);
+
+    for (i = 0; i < 5; i++) {
+        desc = fifo_pop(&f);
+        ck_assert_ptr_nonnull(desc);
+        ck_assert_uint_eq(desc->len, sizeof(payload));
+        ck_assert_uint_eq(*((uint8_t *)f.data + desc->pos + sizeof(*desc)), (uint8_t)i);
+    }
+
+    ck_assert_ptr_eq(fifo_peek(&f), NULL);
+    ck_assert_uint_eq(fifo_len(&f), 0);
+}
+END_TEST
+
 START_TEST(test_queue_insert_len_gt_space)
 {
     struct queue q;
@@ -8349,8 +8389,14 @@ START_TEST(test_tcp_ack_sack_early_retransmit_before_three_dupack)
     tcp_ack(ts, ackseg);
     desc = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 1);
+
+    tcp_ack(ts, ackseg);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
     ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
-    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 2);
 }
 END_TEST
 
@@ -8643,12 +8689,16 @@ START_TEST(test_tcp_ack_early_retransmit_once_per_ack)
     memcpy(&ackseg->data[8], &right, sizeof(right));
 
     tcp_ack(ts, ackseg);
+    ck_assert_int_ne(desc1->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc2->flags & PKT_FLAG_SENT, 0);
+
+    tcp_ack(ts, ackseg);
     ck_assert_int_eq(desc1->flags & PKT_FLAG_SENT, 0);
     ck_assert_int_ne(desc2->flags & PKT_FLAG_SENT, 0);
 
     desc1->flags |= PKT_FLAG_SENT; /* emulate transmit loop sending it again */
     tcp_ack(ts, ackseg);
-    ck_assert_int_ne(desc1->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_eq(desc1->flags & PKT_FLAG_SENT, 0);
     ck_assert_int_ne(desc2->flags & PKT_FLAG_SENT, 0);
 }
 END_TEST
@@ -8801,7 +8851,7 @@ START_TEST(test_tcp_mark_unsacked_for_retransmit_wrap_seg_end)
 }
 END_TEST
 
-START_TEST(test_tcp_mark_unsacked_skips_partially_acked_segment)
+START_TEST(test_tcp_mark_unsacked_retransmits_partially_acked_segment)
 {
     struct wolfIP s;
     struct tsocket *ts;
@@ -8842,8 +8892,10 @@ START_TEST(test_tcp_mark_unsacked_skips_partially_acked_segment)
 
     ret = tcp_mark_unsacked_for_retransmit(ts, 105);
     ck_assert_int_eq(ret, 1);
-    ck_assert_int_ne(desc1->flags & PKT_FLAG_SENT, 0);
-    ck_assert_int_eq(desc2->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_eq(desc1->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc1->flags & PKT_FLAG_RETRANS, 0);
+    ck_assert_int_ne(desc2->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_eq(desc2->flags & PKT_FLAG_RETRANS, 0);
 }
 END_TEST
 
@@ -12736,6 +12788,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_pop_empty_unaligned_tail);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_push_pop_odd_sizes_drains_cleanly);
+    tcase_add_test(tc_core, test_fifo_full_wrap_does_not_appear_empty_or_discard_packets);
     suite_add_tcase(s, tc_core);
     suite_add_tcase(s, tc_utils);
     suite_add_tcase(s, tc_proto);
@@ -13338,7 +13391,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_reduces_inflight);
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_saturates_inflight);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_for_retransmit_wrap_seg_end);
-    tcase_add_test(tc_utils, test_tcp_mark_unsacked_skips_partially_acked_segment);
+    tcase_add_test(tc_utils, test_tcp_mark_unsacked_retransmits_partially_acked_segment);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);

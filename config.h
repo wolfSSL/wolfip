@@ -11,11 +11,16 @@
 #define MAX_TCPSOCKETS 4
 #define MAX_UDPSOCKETS 2
 #define MAX_ICMPSOCKETS 2
-#define RXBUF_SIZE LINK_MTU * 16
-#define TXBUF_SIZE LINK_MTU * 16
+#define RXBUF_SIZE (20 * 1024)
+#define TXBUF_SIZE (32 * 1024)
 
 #ifndef WOLFIP_POSIX_TCPDUMP
 #define WOLFIP_POSIX_TCPDUMP 0
+#endif
+
+/* POSIX Network Device Selection */
+#ifndef WOLFIP_USE_VDE
+#define WOLFIP_USE_VDE 0  /* 0 = TAP device (default), 1 = VDE */
 #endif
 
 #define MAX_NEIGHBORS 16
