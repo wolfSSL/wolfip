@@ -224,6 +224,9 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
                             const socklen_t *addrlen);
 int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr,
                             const socklen_t *addrlen);
+int wolfIP_sock_can_read(struct wolfIP *s, int sockfd);
+int wolfIP_sock_can_write(struct wolfIP *s, int sockfd);
+
 int dhcp_client_init(struct wolfIP *s);
 int dhcp_bound(struct wolfIP *s);
 
