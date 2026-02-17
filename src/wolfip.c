@@ -2829,10 +2829,32 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     ip4 syn_dst = ee32(tcp->ip.dst);
                     int dst_match = 0;
                     unsigned int dst_if;
+                    int dup_found = 0;
 
                     if (syn_dst == IPADDR_ANY)
                         continue;
                     if (t->bound_local_ip != IPADDR_ANY && t->bound_local_ip != syn_dst)
+                        continue;
+
+                    /* Reject SYNs that match an already-active connection
+                     * with the same tuple (local_port, remote_port, remote_ip), that is already
+                     * in the established state.
+                     * */
+                    for (int k = 0; k < MAX_TCPSOCKETS; k++) {
+                        struct tsocket *tk = &S->tcpsockets[k];
+                        if (tk == t)
+                            continue;
+                        if (tk->sock.tcp.state <= TCP_LISTEN ||
+                            tk->sock.tcp.state == TCP_CLOSED)
+                            continue;
+                        if (tk->src_port == t->src_port &&
+                            tk->dst_port == ee16(tcp->src_port) &&
+                            tk->remote_ip == ee32(tcp->ip.src)) {
+                            dup_found = 1;
+                            break;
+                        }
+                    }
+                    if (dup_found)
                         continue;
 
                     dst_if = wolfIP_if_for_local_ip(S, syn_dst, &dst_match);
