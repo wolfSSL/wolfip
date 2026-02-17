@@ -41,7 +41,12 @@ extern const unsigned long server_der_len;
 extern const unsigned char server_key_der[];
 extern const unsigned long server_key_der_len;
 
+/* Network device initialization: VDE or TAP */
+#if WOLFIP_USE_VDE
+#include "src/port/vde2/vde_device.h"
+#else
 extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
+#endif
 
 #define IP4(a,b,c,d) (((ip4)(a) << 24) | ((ip4)(b) << 16) | ((ip4)(c) << 8) | (ip4)(d))
 
@@ -572,11 +577,25 @@ int main(void)
         ret = 1;
         goto cleanup;
     }
+#if WOLFIP_USE_VDE
+    {
+        const char *vde_socket = getenv("VDE_SOCKET_PATH");
+        if (!vde_socket) {
+            vde_socket = "/tmp/vde_switch.ctl";
+        }
+        if (vde_init(tap_dev, vde_socket, NULL, NULL) < 0) {
+            perror("vde init");
+            ret = 1;
+            goto cleanup;
+        }
+    }
+#else
     if (tap_init(tap_dev, TAP_IFNAME, host_addr.s_addr) < 0) {
         perror("tap_init");
         ret = 1;
         goto cleanup;
     }
+#endif
     memcpy(host_mac, tap_dev->mac, sizeof(host_mac));
     host_mac[5] ^= 1;
 

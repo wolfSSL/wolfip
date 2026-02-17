@@ -55,12 +55,30 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 
-TAP_SRC:=src/port/posix/tap_$(UNAME_LC).c
-ifeq ($(wildcard $(TAP_SRC)),)
-  TAP_SRC:=src/port/posix/tap_linux.c
+# Network device driver selection
+# Default to TAP for local examples/tests. Use BUILD_VDE=1 to opt in VDE.
+BUILD_VDE ?= 0
+ifeq ($(BUILD_VDE),1)
+  # VDE (Virtual Distributed Ethernet) driver
+  NETDEV_SRC:=src/port/vde2/vde_device.c
+  NETDEV_OBJ:=$(patsubst src/%.c,build/%.o,$(NETDEV_SRC))
+  NETDEV_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(NETDEV_SRC))
+  CFLAGS+=-DWOLFIP_USE_VDE=1
+  LDFLAGS+=-lvdeplug
+else
+  # TAP device driver (default)
+  TAP_SRC:=src/port/posix/tap_$(UNAME_LC).c
+  ifeq ($(wildcard $(TAP_SRC)),)
+    TAP_SRC:=src/port/posix/tap_linux.c
+  endif
+  NETDEV_SRC:=$(TAP_SRC)
+  NETDEV_OBJ:=$(patsubst src/%.c,build/%.o,$(TAP_SRC))
+  NETDEV_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(TAP_SRC))
 endif
-TAP_OBJ:=$(patsubst src/%.c,build/%.o,$(TAP_SRC))
-TAP_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(TAP_SRC))
+
+# Legacy aliases for backward compatibility
+TAP_OBJ:=$(NETDEV_OBJ)
+TAP_PIE_OBJ:=$(NETDEV_PIE_OBJ)
 
 ifeq ($(UNAME_S),Darwin)
   BEGIN_GROUP:=
@@ -146,7 +164,7 @@ libwolfip.so:  build/pie/port/posix/bsd_socket.o build/pie/wolfip.o \
 	$(TAP_PIE_OBJ)
 	@mkdir -p `dirname $@` || true
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -shared -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -shared -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 
 clean:
@@ -174,23 +192,23 @@ endif
 unit:LDFLAGS+=$(UNIT_LIBS)
 build/test-evloop: $(OBJ) build/test/test_eventloop.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 build/test-dns: $(OBJ) build/test/test_dhcp_dns.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 build/tcpecho: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_echo.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 build/tcp_netcat_poll: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_netcat_poll.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 build/tcp_netcat_select: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_netcat_select.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 
 build/test-wolfssl:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP
@@ -199,11 +217,11 @@ build/test-wolfssl-forwarding:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP 
 
 build/test-wolfssl: $(OBJ) build/test/test_native_wolfssl.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
 
 build/ipfilter-logger: $(IPFILTER_OBJ) build/test/ipfilter_logger.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
 
 build/ipfilter/wolfip.o: src/wolfip.c
 	@mkdir -p `dirname $@` || true
@@ -214,7 +232,7 @@ build/test/ipfilter_logger.o: CFLAGS+=-DCONFIG_IPFILTER=1
 
 build/test-wolfssl-forwarding: build/test/test_wolfssl_forwarding.o build/test/wolfip_forwarding.o $(TAP_OBJ) build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
 
 build/test/test_wolfssl_forwarding.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
 
@@ -226,11 +244,11 @@ build/test/wolfip_forwarding.o: src/wolfip.c
 build/test/test_ttl_expired.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
 build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwarding.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 build/test-httpd: $(OBJ) build/test/test_httpd.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/server_cert.o build/http/httpd.o
 	@echo "[LD] $@"
-	@$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true

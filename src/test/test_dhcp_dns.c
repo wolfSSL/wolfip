@@ -191,10 +191,12 @@ static void *pt_echoserver(void *arg)
 }
 
 
-/* Catch-all function to initialize a new tap device as the network interface.
- * This is defined in port/posix/bsd_socket.c
- * */
+/* Network device initialization: VDE or TAP */
+#if WOLFIP_USE_VDE
+#include "src/port/vde2/vde_device.h"
+#else
 extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
+#endif
 
 void test_wolfip_echoclient(struct wolfIP *s)
 {
@@ -260,10 +262,23 @@ int main(int argc, char **argv)
     if (!tapdev)
         return 1;
     inet_aton(HOST_STACK_IP, &host_stack_ip);
+#if WOLFIP_USE_VDE
+    {
+        const char *vde_socket = getenv("VDE_SOCKET_PATH");
+        if (!vde_socket) {
+            vde_socket = "/tmp/vde_switch.ctl";
+        }
+        if (vde_init(tapdev, vde_socket, NULL, NULL) < 0) {
+            perror("vde init");
+            return 2;
+        }
+    }
+#else
     if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
         return 2;
     }
+#endif
     {
 #if !defined(__FreeBSD__) && !defined(__APPLE__)
         char cmd[128];
