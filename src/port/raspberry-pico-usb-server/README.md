@@ -8,7 +8,7 @@
 
 - run CMake from this directory, specitying the FAMILY and PICO_COMPILER variables. Also specify the path where you cloned the pico-sdk in the previous step.
 
-cmake . -DPICO_SDK_PATH=/path/to/src/pico-sdk -DFAMILY=rp2040 -DPICO_COMPILER=arm-none-eabi-gcc 
+cmake . -DPICO_SDK_PATH=/path/to/src/pico-sdk -DFAMILY=rp2040 -DPICO_COMPILER=arm-none-eabi-gcc
 
 - run make
 

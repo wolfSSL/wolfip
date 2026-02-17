@@ -37,6 +37,7 @@
 
 static int tap_fd;
 
+#if defined(DEBUG_TAP)
 void print_buffer(uint8_t *buf, int len)
 {
     int i;
@@ -47,6 +48,7 @@ void print_buffer(uint8_t *buf, int len)
     }
     printf("\n");
 }
+#endif /* DEBUG_TAP */
 
 static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
@@ -69,7 +71,9 @@ static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 static int tap_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     (void)ll;
-    //print_buffer(buf, len);
+    #if defined(DEBUG_TAP)
+    print_buffer(buf, len);
+    #endif /* DEBUG_TAP */
     return write(tap_fd, buf, len);
 }
 

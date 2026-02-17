@@ -2,6 +2,12 @@ CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
 LDFLAGS+=-pthread
+# additional debug flags:
+#   CFLAGS+=-DDEBUG_TAP
+#   CFLAGS+=-DDEBUG_ETH
+#   CFLAGS+=-DDEBUG_IP
+#   CFLAGS+=-DDEBUG_UDP
+#   CFLAGS+=-DDEBUG_ESP
 
 UNAME_S:=$(shell uname -s)
 UNAME_M:=$(shell uname -m)
@@ -123,6 +129,9 @@ OBJ=build/wolfip.o \
 IPFILTER_OBJ=build/ipfilter/wolfip.o \
 	$(TAP_OBJ)
 
+ESP_OBJ=build/esp/wolfip.o \
+	$(TAP_OBJ)
+
 HAVE_WOLFSSL:=$(shell printf "#include <wolfssl/options.h>\nint main(void){return 0;}\n" | $(CC) $(CFLAGS) -x c - -c -o /dev/null 2>/dev/null && echo 1)
 
 # Require wolfSSL unless the requested goals are wolfSSL-independent (unit/cppcheck/clean).
@@ -142,7 +151,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/ipfilter-logger
+	build/ipfilter-logger build/test-esp build/esp-server
 LIB=libwolfip.so
 
 PREFIX=/usr/local
@@ -175,6 +184,9 @@ asan: $(EXE) $(LIB)
 asan:CFLAGS+=-fsanitize=address
 asan:LDFLAGS+=-static-libasan
 
+ESP_CFLAGS = \
+    -DWOLFIP_ESP  -DWOLFSSL_WOLFIP \
+    -DDEBUG_IP -DDEBUG_UDP -DDEBUG_ESP
 
 # Test
 
@@ -229,6 +241,28 @@ build/ipfilter/wolfip.o: src/wolfip.c
 	@$(CC) $(CFLAGS) -DCONFIG_IPFILTER=1 -c $< -o $@
 
 build/test/ipfilter_logger.o: CFLAGS+=-DCONFIG_IPFILTER=1
+
+# ipsec esp
+build/esp/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (esp)"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
+
+build/test/test_esp.o: src/test/esp/test_esp.c
+	@echo "[CC] $@"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
+
+build/test-esp: $(ESP_OBJ) build/test/test_esp.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
+
+build/test/esp_server.o: src/test/esp/esp_server.c
+	@echo "[CC] $@"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) -c $< -o $@
+
+build/esp-server: $(ESP_OBJ) build/port/posix/bsd_socket.o build/test/esp_server.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
 
 build/test-wolfssl-forwarding: build/test/test_wolfssl_forwarding.o build/test/wolfip_forwarding.o $(TAP_OBJ) build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
