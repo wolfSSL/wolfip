@@ -1707,7 +1707,7 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
 {
     const uint8_t *opt = tcp->data;
     int claimed_opt_len = (tcp->hlen >> 2) - TCP_HEADER_LEN;
-    int available_bytes = (int)(frame_len - sizeof(struct wolfIP_tcp_seg));
+    int available_bytes = (int)frame_len - (int)sizeof(struct wolfIP_tcp_seg);
     int opt_len;
     const uint8_t *opt_end;
 
