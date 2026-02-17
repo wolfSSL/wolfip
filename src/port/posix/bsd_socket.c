@@ -117,6 +117,8 @@ struct wolfip_fd_entry {
     int internal_fd;   /* MARK_* encoded */
     int public_fd;     /* Returned to user; read end of pipe */
     int pipe_write;    /* Write end used for wakeups */
+    int snd_timeout_ms; /* SO_SNDTIMEO; -1 means infinite */
+    int rcv_timeout_ms; /* SO_RCVTIMEO; -1 means infinite */
     uint8_t nonblock;
     uint8_t in_use;
     uint8_t pending_tokens; /* Bitset of queued event bytes in the pipe */
@@ -313,6 +315,8 @@ static int wolfip_fd_alloc(int internal_fd, int nonblock)
     wolfip_fd_entries[idx].internal_fd = internal_fd;
     wolfip_fd_entries[idx].public_fd = pipefds[0];
     wolfip_fd_entries[idx].pipe_write = pipefds[1];
+    wolfip_fd_entries[idx].snd_timeout_ms = -1;
+    wolfip_fd_entries[idx].rcv_timeout_ms = -1;
     wolfip_fd_entries[idx].nonblock = nonblock ? 1 : 0;
     wolfip_fd_entries[idx].pending_tokens = 0;
     wolfip_fd_entries[idx].events = 0;
@@ -360,7 +364,7 @@ static int wolfip_fd_is_nonblock(int public_fd)
     return e ? (e->nonblock != 0) : 0;
 }
 
-static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wait_events)
+static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wait_events, int timeout_ms)
 {
     struct pollfd pfd;
     char want;
@@ -390,7 +394,7 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
         }
 
         pthread_mutex_unlock(&wolfIP_mutex);
-        poll_ret = host_poll(&pfd, 1, -1);
+        poll_ret = host_poll(&pfd, 1, timeout_ms);
         if (poll_ret < 0 && errno == EINTR) {
             pthread_mutex_lock(&wolfIP_mutex);
             return -EINTR;
@@ -398,6 +402,9 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
         pthread_mutex_lock(&wolfIP_mutex);
         if (poll_ret < 0) {
             return -errno;
+        }
+        if (poll_ret == 0) {
+            return -ETIMEDOUT;
         }
         while (host_read(entry->public_fd, &c, 1) > 0) {
             wolfip_consume_token_locked(entry, c);
@@ -462,7 +469,8 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
                         return -1; \
                     } \
                     if (__entry) { \
-                        int __wait_ret = wolfip_wait_for_event_locked(__entry, (wait_events)); \
+                        int __wait_timeout = ((wait_events) & POLLOUT) ? __entry->snd_timeout_ms : __entry->rcv_timeout_ms; \
+                        int __wait_ret = wolfip_wait_for_event_locked(__entry, (wait_events), __wait_timeout); \
                         if (__wait_ret < 0) { \
                             errno = -__wait_ret; \
                             pthread_mutex_unlock(&wolfIP_mutex); \
@@ -1421,7 +1429,7 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct 
                 return -1;
             }
             if (entry) {
-                wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT);
+                wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT, entry->snd_timeout_ms);
                 if (wait_ret < 0) {
                     errno = -wait_ret;
                     pthread_mutex_unlock(&wolfIP_mutex);
@@ -1492,7 +1500,7 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
                 return (ssize_t)sent;
             }
             if (entry) {
-                wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT);
+                wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT, entry->snd_timeout_ms);
                 if (wait_ret < 0) {
                     errno = -wait_ret;
                     pthread_mutex_unlock(&wolfIP_mutex);
@@ -1558,7 +1566,7 @@ ssize_t write(int sockfd, const void *buf, size_t len) {
                 return (ssize_t)sent;
             }
             if (entry) {
-                wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT);
+                wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT, entry->snd_timeout_ms);
                 if (wait_ret < 0) {
                     errno = -wait_ret;
                     pthread_mutex_unlock(&wolfIP_mutex);
