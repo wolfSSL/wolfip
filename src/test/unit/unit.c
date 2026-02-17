@@ -5560,7 +5560,7 @@ START_TEST(test_tcp_rto_cb_resets_flags_and_arms_timer)
     ts->sock.tcp.rto = 100;
     ts->sock.tcp.rto_backoff = 0;
     ts->sock.tcp.cwnd = TCP_MSS * 2;
-    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.snd_una = 101;
     ts->sock.tcp.seq = 101;
 
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
@@ -5693,7 +5693,7 @@ START_TEST(test_tcp_rto_cb_clears_sack_and_marks_lowest_only)
     ts->sock.tcp.rto = 100;
     ts->sock.tcp.cwnd = TCP_MSS * 8;
     ts->sock.tcp.snd_una = 100;
-    ts->sock.tcp.seq = 102;
+    ts->sock.tcp.seq = 100;
     ts->sock.tcp.bytes_in_flight = 2;
     ts->sock.tcp.peer_sack_count = 1;
     ts->sock.tcp.peer_sack[0].left = 101;
@@ -5701,6 +5701,7 @@ START_TEST(test_tcp_rto_cb_clears_sack_and_marks_lowest_only)
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     ck_assert_int_eq(enqueue_tcp_tx(ts, 1, 0x18), 0);
+    ts->sock.tcp.seq = 101;
     ck_assert_int_eq(enqueue_tcp_tx(ts, 1, 0x18), 0);
     desc1 = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc1);
@@ -5738,7 +5739,7 @@ START_TEST(test_tcp_rto_cb_ssthresh_floor_two_mss)
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.rto = 100;
     ts->sock.tcp.cwnd = TCP_MSS;
-    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.snd_una = 101;
     ts->sock.tcp.seq = 101;
     ts->sock.tcp.bytes_in_flight = 1;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);

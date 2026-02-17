@@ -2390,12 +2390,18 @@ static void tcp_rto_cb(void *arg);
 
 static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
 {
+    struct pkt_desc *desc;
+    struct pkt_desc *pending;
+    uint32_t guard;
+    uint32_t budget;
+    int cover_found;
+
 retry_scan:
-    struct pkt_desc *desc = fifo_peek(&t->sock.tcp.txbuf);
-    struct pkt_desc *pending = NULL;
-    uint32_t guard = 0;
-    uint32_t budget = fifo_desc_budget(&t->sock.tcp.txbuf);
-    int cover_found = 0;
+    desc = fifo_peek(&t->sock.tcp.txbuf);
+    pending = NULL;
+    guard = 0;
+    budget = fifo_desc_budget(&t->sock.tcp.txbuf);
+    cover_found = 0;
 
     while (desc) {
         struct wolfIP_tcp_seg *seg;
