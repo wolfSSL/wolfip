@@ -11,7 +11,7 @@
 #define MAX_TCPSOCKETS 4
 #define MAX_UDPSOCKETS 2
 #define MAX_ICMPSOCKETS 2
-#define RXBUF_SIZE (64 * 1024)
+#define RXBUF_SIZE (20 * 1024)
 #define TXBUF_SIZE (32 * 1024)
 
 #ifndef WOLFIP_POSIX_TCPDUMP

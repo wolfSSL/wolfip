@@ -274,8 +274,6 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
     memset(&desc, 0, sizeof(struct pkt_desc));
     /* Ensure 4-byte alignment in the buffer */
     head = fifo_align_head_pos(head, f->size);
-    if (head == tail && h_wrap == 0)
-        h_wrap = 0;
     {
         uint32_t space;
         if (head == tail && h_wrap == 0)

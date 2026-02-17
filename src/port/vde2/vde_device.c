@@ -62,8 +62,8 @@ static int vde_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
     pfd.fd = vde_datafd(vde_conn);
     pfd.events = POLLIN;
 
-    /* Poll with short timeout (2ms, same as TAP driver) */
-    ret = poll(&pfd, 1, 2);
+    /* Keep ll polling non-blocking to avoid adding per-call sleep latency. */
+    ret = poll(&pfd, 1, 0);
     if (ret < 0) {
         perror("vde_poll: poll");
         return -1;

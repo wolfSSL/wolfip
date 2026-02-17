@@ -945,6 +945,9 @@ void poller_callback(int fd, uint16_t event, void *arg)
             wr = write(entry->pipe_write, &c, 1);
     }
     if (wr < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        /* Best-effort wakeup only: close/teardown races can invalidate the
+         * pipe while callbacks are still in flight, so hard errors are
+         * intentionally ignored here. */
     }
 }
 
