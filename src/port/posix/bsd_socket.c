@@ -1531,7 +1531,8 @@ void __attribute__((constructor)) init_wolfip_posix() {
     if (!wolfip_mask_str || wolfip_mask_str[0] == '\0') {
         wolfip_mask_str = "255.255.255.0";
     }
-    fprintf(stderr, "wolfIP: Serving process PID=%hu, TID=%x\n", getpid(), (unsigned short)pthread_self());
+    fprintf(stderr, "wolfIP: Serving process PID=%d, TID=%x\n", getpid(),
+        (unsigned short)pthread_self());
     inet_aton(host_stack_ip_str, &host_stack_ip);
     swap_socketcall(socket, "socket");
     swap_socketcall(bind, "bind");

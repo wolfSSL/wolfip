@@ -175,6 +175,14 @@ asan: $(EXE) $(LIB)
 asan:CFLAGS+=-fsanitize=address
 asan:LDFLAGS+=-static-libasan
 
+ubsan: $(EXE) $(LIB)
+ubsan:CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
+ubsan:LDFLAGS+=-fsanitize=undefined
+
+leaksan: $(EXE) $(LIB)
+leaksan:CFLAGS+=-fsanitize=leak
+leaksan:LDFLAGS+=-fsanitize=leak
+
 
 # Test
 

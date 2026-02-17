@@ -1,0 +1,56 @@
+name: Sanitizer Tests
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sanitizer_test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "ASan"
+            target: "asan"
+          - name: "UBSan"
+            target: "ubsan"
+          - name: "LeakSan"
+            target: "leaksan"
+
+    steps:
+      - name: Workaround high-entropy ASLR
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Checkout wolfIP
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwolfssl-dev check
+          sudo modprobe tun
+
+      - name: Build wolfIP with ${{ matrix.name }}
+        run: |
+          mkdir -p build/port
+          make ${{ matrix.target }}
+
+      - name: Build unit tests
+        run: make unit
+
+      - name: Run unit tests
+        run: ./build/test/unit
+
+      - name: Run standalone TTL expired test
+        run: ./build/test-ttl-expired
