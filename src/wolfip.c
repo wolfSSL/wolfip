@@ -478,52 +478,58 @@ static void queue_init(struct queue *q, uint8_t *data, uint32_t size, uint32_t s
 /* Return the number of bytes available */
 static uint32_t queue_space(struct queue *q)
 {
-    if (q->head >= q->tail) {
-        return q->size - (q->head - q->tail);
-    } else {
-        return q->tail - q->head;
-    }
+    if (q->size <= 1)
+        return 0;
+    if (q->head >= q->tail)
+        return (q->size - (q->head - q->tail)) - 1;
+    return (q->tail - q->head) - 1;
 }
 
 /* Return the number of bytes used */
 static uint32_t queue_len(struct queue *q)
 {
-    return q->size - queue_space(q);
+    if (q->size <= 1)
+        return 0;
+    return (q->size - 1) - queue_space(q);
 }
 
 /* Insert data into the queue */
 static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
 {
-    uint32_t pos;
-    int diff;
-    if (len > q->size)
+    uint32_t q_len;
+    uint32_t diff;
+    uint32_t first_chunk;
+    if (q->size <= 1)
+        return -1;
+    if (len > (q->size - 1))
         return -1;
     if (len > queue_space(q))
         return -1;
-    if (queue_len(q) == 0) {
+    q_len = queue_len(q);
+    if (q_len == 0) {
         q->tail = q->head = 0;
         memcpy(q->data, data, len);
         q->head = len;
         q->seq_base = seq;
     } else {
         diff = seq - q->seq_base;
-        if (diff < 0)
-            return -1;
-        pos = (uint32_t)diff;
-        if (pos > q->size)
-            return -1;
-        /* Check if the data is ancient */
-        if (pos < q->tail)
+        if (diff < q_len) {
+            /* Duplicate/overlap with bytes already queued for the app. */
             return 0;
-        /* Write in two steps: consider wrapping */
-        if (pos + len > q->size) {
-            memcpy((uint8_t *)q->data + pos, data, q->size - pos);
-            memcpy((uint8_t *)q->data, (const uint8_t *)data + q->size - pos, len - (q->size - pos));
-        } else {
-            memcpy((uint8_t *)q->data + pos, data, len);
         }
-        if (pos + len > q->head)
-            q->head = (pos + len) % q->size;
+        if (diff > q_len) {
+            /* Non-contiguous insert is not supported in the RX queue. */
+            return -1;
+        }
+        /* Append at head and wrap when needed. */
+        if (q->head + len > q->size) {
+            first_chunk = q->size - q->head;
+            memcpy((uint8_t *)q->data + q->head, data, first_chunk);
+            memcpy((uint8_t *)q->data, (const uint8_t *)data + first_chunk, len - first_chunk);
+        } else {
+            memcpy((uint8_t *)q->data + q->head, data, len);
+        }
+        q->head = (q->head + len) % q->size;
     }
     return 0;
 }
@@ -2603,6 +2609,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         /* Duplicate ack (no advance in snd_una). */
         if (ack != t->sock.tcp.snd_una)
             return;
+        if (t->sock.tcp.peer_rwnd == 0)
+            return;
         if (inflight_pre == 0)
             return;
         if (t->sock.tcp.dup_acks < 255)
@@ -2702,8 +2710,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 uint16_t raw_win = ee16(tcp->win);
                 uint8_t ws_shift = t->sock.tcp.ws_enabled ? t->sock.tcp.snd_wscale : 0;
                 t->sock.tcp.peer_rwnd = (uint32_t)raw_win << ws_shift;
-                if (t->sock.tcp.peer_rwnd > prev_peer_rwnd)
+                if (t->sock.tcp.peer_rwnd > prev_peer_rwnd) {
                     t->events |= CB_EVENT_WRITABLE;
+                }
             }
             /* Check if RST */
             if (tcp->flags & 0x04) {
@@ -3418,11 +3427,26 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             /* In close-wait, return 0 if the queue is empty */
             if (queue_len(&ts->sock.tcp.rxbuf) == 0)
                 return 0;
-            return queue_pop(&ts->sock.tcp.rxbuf, buf, len);
+            {
+                uint16_t win_before = tcp_adv_win(ts);
+                int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
+                if (ret > 0) {
+                    uint16_t win_after = tcp_adv_win(ts);
+                    if (win_after > win_before)
+                        tcp_send_ack(ts);
+                }
+                return ret;
+            }
         } else if (ts->sock.tcp.state == TCP_ESTABLISHED) {
+            uint16_t win_before = tcp_adv_win(ts);
             int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
-            if ((ret > 0) && (queue_len(&ts->sock.tcp.rxbuf) > 0))
-                ts->events |= CB_EVENT_READABLE;
+            if (ret > 0) {
+                uint16_t win_after = tcp_adv_win(ts);
+                if (queue_len(&ts->sock.tcp.rxbuf) > 0)
+                    ts->events |= CB_EVENT_READABLE;
+                if (win_after > win_before)
+                    tcp_send_ack(ts);
+            }
             return ret;
         } else { /* Not established */
             return -1;
@@ -5069,22 +5093,20 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                     {
                         uint32_t snd_wnd = ts->sock.tcp.cwnd;
                         int is_retrans;
+                        uint32_t seg_ip_len;
+                        uint32_t seg_hdr_len;
+                        uint32_t seg_payload_len;
                         if (ts->sock.tcp.peer_rwnd < snd_wnd)
                             snd_wnd = ts->sock.tcp.peer_rwnd;
                         is_retrans = (desc->flags & PKT_FLAG_RETRANS) ? 1 : 0;
-                        if (is_retrans || in_flight < snd_wnd) {
+                        seg_ip_len = desc->len - ETH_HEADER_LEN;
+                        seg_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
+                        seg_payload_len = (seg_ip_len > seg_hdr_len) ? (seg_ip_len - seg_hdr_len) : 0;
+                        if (is_retrans || seg_payload_len == 0 ||
+                                (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
                         struct wolfIP_timer new_tmr = {};
                         size = desc->len - ETH_HEADER_LEN;
                         tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
-                        if ((ts->sock.tcp.ack == ts->sock.tcp.last_ack) &&
-                                (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) &&
-                                (tcp->flags == 0x10) &&
-                                (ee16(tcp->win) == tcp_adv_win(ts))) {
-                            desc->flags |= PKT_FLAG_SENT;
-                            fifo_pop(&ts->sock.tcp.txbuf);
-                            desc = fifo_peek(&ts->sock.tcp.txbuf);
-                            continue;
-                        }
                         /* Refresh ack counter */
                         ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                         tcp->ack = ee32(ts->sock.tcp.ack);
