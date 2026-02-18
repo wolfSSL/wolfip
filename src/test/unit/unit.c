@@ -5788,7 +5788,7 @@ START_TEST(test_tcp_rto_cb_fallback_marks_lowest_sent_when_no_snd_una_cover)
 
     ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
     ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
-    ck_assert_uint_eq(ts->sock.tcp.snd_una, 100U);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 50U);
     ck_assert_uint_eq(ts->sock.tcp.cwnd, TCP_MSS);
     ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
 }
@@ -9176,6 +9176,54 @@ START_TEST(test_tcp_ack_no_sack_requires_three_dupacks)
 }
 END_TEST
 
+START_TEST(test_tcp_ack_no_sack_three_dupacks_with_zero_rwnd_triggers_retransmit)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.sack_permitted = 0;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(100);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = 0x10;
+
+    tcp_ack(ts, &ackseg);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+    tcp_ack(ts, &ackseg);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+    tcp_ack(ts, &ackseg);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_wraparound_delta_reduces_inflight)
 {
     struct wolfIP s;
@@ -9733,6 +9781,7 @@ START_TEST(test_tcp_ack_acks_data_and_sets_writable)
     /* Simulate cwnd-limited flight and initialize snd_una. */
     ts->sock.tcp.bytes_in_flight = TCP_MSS;
     ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(seq + sizeof(payload));
@@ -10806,6 +10855,7 @@ START_TEST(test_tcp_ack_cwnd_count_wrap)
     ts->sock.tcp.bytes_in_flight = ts->sock.tcp.cwnd;
     /* Advance ACK by 1 byte to exercise cwnd_count wrap. */
     ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100 + TCP_MSS;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(101);
@@ -10859,6 +10909,7 @@ START_TEST(test_tcp_ack_updates_rtt_and_cwnd)
     /* Simulate cwnd-limited flight and initialize snd_una. */
     ts->sock.tcp.bytes_in_flight = ts->sock.tcp.cwnd;
     ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100 + TCP_MSS;
 
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ack = ee32(101);
@@ -11865,6 +11916,36 @@ START_TEST(test_fifo_next_hits_hwrap)
 }
 END_TEST
 
+START_TEST(test_fifo_next_aligned_len_exceeds_size_returns_null)
+{
+    struct fifo f;
+    uint8_t buf[128];
+    struct pkt_desc *desc;
+    struct pkt_desc *next;
+    uint32_t sz = (uint32_t)(sizeof(struct pkt_desc) + 1U);
+    uint32_t pos = 1U;
+    uint32_t adv;
+
+    fifo_init(&f, buf, sz);
+    f.head = 8;
+    f.h_wrap = 0;
+
+    desc = (struct pkt_desc *)(buf + pos);
+    memset(desc, 0, sizeof(*desc));
+    desc->pos = pos;
+    desc->len = 1U; /* accepted by precheck: <= f.size - sizeof(pkt_desc). */
+
+    adv = (uint32_t)(sizeof(struct pkt_desc) + desc->len);
+    while ((pos + adv) % 4U)
+        adv++;
+    ck_assert_uint_gt(adv, (f.size - pos));
+
+    /* Alignment padding would make traversal exceed queue bounds. */
+    next = fifo_next(&f, desc);
+    ck_assert_ptr_null(next);
+}
+END_TEST
+
 START_TEST(test_fifo_len_tail_gt_head_no_hwrap)
 {
     struct fifo f;
@@ -12048,6 +12129,26 @@ START_TEST(test_queue_insert_negative_diff)
     queue_init(&q, mem, sizeof(mem), 100);
     ck_assert_int_eq(queue_insert(&q, data, 100, sizeof(data)), 0);
     ck_assert_int_eq(queue_insert(&q, data, 90, sizeof(data)), -1);
+}
+END_TEST
+
+START_TEST(test_queue_insert_wraparound_contiguous_and_old_rejected)
+{
+    struct queue q;
+    uint8_t mem[64];
+    uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint8_t out[32];
+    uint32_t next_seq;
+
+    queue_init(&q, mem, sizeof(mem), 0xFFFFFFFCU);
+    ck_assert_int_eq(queue_insert(&q, data, 0xFFFFFFFCU, sizeof(data)), 0);
+    next_seq = 0xFFFFFFFCU + (uint32_t)sizeof(data);
+    ck_assert_int_eq(queue_insert(&q, data, next_seq, sizeof(data)), 0);
+    ck_assert_int_eq(queue_len(&q), (int)(sizeof(data) * 2));
+
+    /* A sequence behind base after wrap must not be accepted. */
+    ck_assert_int_eq(queue_insert(&q, data, 0xFFFFFFF0U, sizeof(data)), -1);
+    ck_assert_int_eq(queue_pop(&q, out, sizeof(out)), (int)(sizeof(data) * 2));
 }
 END_TEST
 
@@ -13790,6 +13891,7 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_next_hits_hwrap);
     tcase_add_test(tc_core, test_fifo_push_no_contiguous_space_even_with_space);
+    tcase_add_test(tc_core, test_fifo_next_aligned_len_exceeds_size_returns_null);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_fifo_len_tail_gt_head_no_hwrap);
     suite_add_tcase(s, tc_core);
@@ -13817,6 +13919,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_queue_insert_sequential);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_queue_insert_negative_diff);
+    suite_add_tcase(s, tc_core);
+    tcase_add_test(tc_core, test_queue_insert_wraparound_contiguous_and_old_rejected);
     suite_add_tcase(s, tc_core);
     tcase_add_test(tc_core, test_queue_insert_pos_gt_size);
     suite_add_tcase(s, tc_core);
@@ -14373,6 +14477,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_malformed_sack_does_not_early_retransmit);
     tcase_add_test(tc_utils, test_tcp_ack_early_retransmit_once_per_ack);
     tcase_add_test(tc_utils, test_tcp_ack_no_sack_requires_three_dupacks);
+    tcase_add_test(tc_utils, test_tcp_ack_no_sack_three_dupacks_with_zero_rwnd_triggers_retransmit);
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_reduces_inflight);
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_saturates_inflight);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_for_retransmit_wrap_seg_end);

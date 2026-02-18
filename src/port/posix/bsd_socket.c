@@ -1404,9 +1404,11 @@ void freeaddrinfo(struct addrinfo *res) {
 ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *addr, socklen_t addrlen) {
     int internal_fd;
     int nonblock;
+    int is_stream;
     int ret;
     int wait_ret;
     struct wolfip_fd_entry *entry;
+    size_t sent = 0;
 
     if (in_the_stack) {
         return host_sendto(sockfd, buf, len, flags, addr, addrlen);
@@ -1418,15 +1420,26 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct 
         return host_sendto(sockfd, buf, len, flags, addr, addrlen);
     }
     nonblock = wolfip_fd_is_nonblock(sockfd);
+    is_stream = IS_SOCKET_TCP(internal_fd) ? 1 : 0;
     entry = wolfip_entry_from_public(sockfd);
-    do {
-        ret = wolfIP_sock_sendto(IPSTACK, internal_fd, buf, len, flags,
+    while (sent < len) {
+        ret = wolfIP_sock_sendto(IPSTACK, internal_fd, (const uint8_t *)buf + sent,
+                len - sent, flags,
                 (const struct wolfIP_sockaddr *)addr, addrlen);
+        if (ret > 0) {
+            sent += (size_t)ret;
+            if (nonblock || !is_stream)
+                break;
+            continue;
+        }
         if (ret == -EAGAIN) {
             if (nonblock) {
-                errno = EAGAIN;
+                if (sent == 0)
+                    errno = EAGAIN;
+                else
+                    errno = 0;
                 pthread_mutex_unlock(&wolfIP_mutex);
-                return -1;
+                return (sent == 0) ? -1 : (ssize_t)sent;
             }
             if (entry) {
                 wait_ret = wolfip_wait_for_event_locked(entry, POLLOUT, entry->snd_timeout_ms);
@@ -1440,16 +1453,17 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct 
                 usleep(1000);
                 pthread_mutex_lock(&wolfIP_mutex);
             }
+            continue;
         }
-    } while (ret == -EAGAIN);
-    if (ret < 0) {
+        if (ret < 0) {
         errno = -ret;
         pthread_mutex_unlock(&wolfIP_mutex);
         return -1;
+        }
     }
     pthread_mutex_unlock(&wolfIP_mutex);
     errno = 0;
-    return ret;
+    return (ssize_t)sent;
 }
 
 ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags) {
@@ -1484,11 +1498,6 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
             continue;
         }
         if (ret == -EAGAIN) {
-            if (sent > 0) {
-                pthread_mutex_unlock(&wolfIP_mutex);
-                errno = 0;
-                return (ssize_t)sent;
-            }
             if (nonblock) {
                 if (sent == 0) {
                     errno = EAGAIN;
@@ -1550,11 +1559,6 @@ ssize_t write(int sockfd, const void *buf, size_t len) {
             continue;
         }
         if (ret == -EAGAIN) {
-            if (sent > 0) {
-                pthread_mutex_unlock(&wolfIP_mutex);
-                errno = 0;
-                return (ssize_t)sent;
-            }
             if (nonblock) {
                 if (sent == 0) {
                     errno = EAGAIN;

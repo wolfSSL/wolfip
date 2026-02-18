@@ -247,6 +247,8 @@ static struct pkt_desc *fifo_next(struct fifo *f, struct pkt_desc *desc)
     len = sizeof(struct pkt_desc) + desc->len;
     while ((pos + len) % 4)
         len++;
+    if (len > (f->size - pos))
+        return NULL;
     next_pos = pos + len;
 
     if (f->h_wrap && pos < f->h_wrap && next_pos >= f->h_wrap)
@@ -498,7 +500,7 @@ static uint32_t queue_len(struct queue *q)
 static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
 {
     uint32_t q_len;
-    uint32_t diff;
+    int32_t rel;
     uint32_t first_chunk;
     if (q->size <= 1)
         return -1;
@@ -513,12 +515,19 @@ static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
         q->head = len;
         q->seq_base = seq;
     } else {
-        diff = seq - q->seq_base;
-        if (diff < q_len) {
+        /* Sequence arithmetic is modulo 2^32. Use signed relative distance
+         * so contiguous inserts across wrap are accepted and old data behind
+         * seq_base is rejected. */
+        rel = (int32_t)(seq - q->seq_base);
+        if (rel < 0) {
+            /* Old data that is behind the current receive base. */
+            return -1;
+        }
+        if ((uint32_t)rel < q_len) {
             /* Duplicate/overlap with bytes already queued for the app. */
             return 0;
         }
-        if (diff > q_len) {
+        if ((uint32_t)rel > q_len) {
             /* Non-contiguous insert is not supported in the RX queue. */
             return -1;
         }
@@ -1637,7 +1646,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.peer_rwnd = 0xFFFF;
             t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
             t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
-            t->sock.tcp.peer_mss = TCP_MSS;
+            t->sock.tcp.peer_mss = TCP_DEFAULT_MSS;
             t->sock.tcp.snd_wscale = 0;
             t->sock.tcp.ws_enabled = 0;
             t->sock.tcp.sack_offer = 1;
@@ -2653,8 +2662,6 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         /* Duplicate ack (no advance in snd_una). */
         if (ack != t->sock.tcp.snd_una)
             return;
-        if (t->sock.tcp.peer_rwnd == 0)
-            return;
         if (inflight_pre == 0)
             return;
         if (t->sock.tcp.dup_acks < 255)
@@ -2901,7 +2908,6 @@ static void tcp_rto_cb(void *arg)
     uint32_t guard = 0;
     uint32_t budget;
     uint32_t first_sent_seq = 0;
-    uint32_t first_sent_len = 0;
     uint32_t prev_cwnd;
     if ((ts->proto != WI_IPPROTO_TCP) || (ts->sock.tcp.state != TCP_ESTABLISHED))
         return;
@@ -2923,7 +2929,6 @@ static void tcp_rto_cb(void *arg)
             if (seg_len > 0 && (!first_sent_valid || tcp_seq_lt(seg_start, first_sent_seq))) {
                 first_sent_payload_desc = desc;
                 first_sent_seq = seg_start;
-                first_sent_len = seg_len;
                 first_sent_valid = 1;
             }
 
@@ -2956,13 +2961,12 @@ static void tcp_rto_cb(void *arg)
         desc = next;
     }
     if (!pending && first_sent_valid && first_sent_payload_desc) {
-        uint32_t fseg_end = tcp_seq_inc(first_sent_seq, first_sent_len);
         first_sent_payload_desc->flags &= ~PKT_FLAG_SENT;
         first_sent_payload_desc->flags |= PKT_FLAG_RETRANS;
-        if (!tcp_seq_leq(first_sent_seq, ts->sock.tcp.snd_una) ||
-                !tcp_seq_lt(ts->sock.tcp.snd_una, fseg_end)) {
-            ts->sock.tcp.snd_una = first_sent_seq;
-        }
+        /* Do not rewrite snd_una here: sender-side cumulative ACK state must
+         * advance only via incoming ACKs. If scoreboard/bookkeeping drift left
+         * no segment covering snd_una, retransmit the lowest sent payload and
+         * rely on peer ACK to move snd_una forward. */
         pending = 1;
     }
     if (cover_pending_unsent) {
