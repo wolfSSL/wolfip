@@ -1888,6 +1888,14 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
     return 0;
 }
 
+/* Subtract two TCP sequence numbers: a - b (wraps at 2^32) */
+static inline uint32_t tcp_seq_diff(uint32_t a, uint32_t b)
+{
+    if (a >= b)
+        return a - b;
+    return UINT32_MAX - (b - a - 1);
+}
+
 static void tcp_consume_ooo(struct tsocket *t)
 {
     /* Promote out-of-order data into the in-order RX queue whenever holes close.
@@ -1922,7 +1930,7 @@ static void tcp_consume_ooo(struct tsocket *t)
                     break;
                 } else {
                     /* Keep only the still-unacknowledged suffix. */
-                    uint32_t trim = t->sock.tcp.ack - t->sock.tcp.ooo[i].seq;
+                    uint32_t trim = tcp_seq_diff(t->sock.tcp.ack, t->sock.tcp.ooo[i].seq);
                     memmove(t->sock.tcp.ooo[i].data,
                             t->sock.tcp.ooo[i].data + trim,
                             t->sock.tcp.ooo[i].len - trim);
@@ -2103,14 +2111,6 @@ static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
     if (n > UINT32_MAX - seq)
         return n - (UINT32_MAX - seq) - 1;
     return seq + n;
-}
-
-/* Subtract two TCP sequence numbers: a - b (wraps at 2^32) */
-static inline uint32_t tcp_seq_diff(uint32_t a, uint32_t b)
-{
-    if (a >= b)
-        return a - b;
-    return UINT32_MAX - (b - a - 1);
 }
 
 /* Add a segment to the rx buffer for the application to consume */
