@@ -13853,7 +13853,100 @@ START_TEST(test_icmp_socket_send_recv)
 }
 END_TEST
 
+START_TEST(test_regression_snd_una_initialized_on_syn_rcvd)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    struct tsocket *ts;
+    ip4 local_ip  = 0x0A000001U;
+    uint16_t local_port = 8080;
 
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port   = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    wolfIP_sock_listen(&s, sd, 1);
+
+    /* inject_tcp_syn uses a deterministic PRNG seed so seq is reproducible */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, local_port);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* snd_una must equal the ISN that was placed in seq, not 0 */
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, ts->sock.tcp.seq);
+
+    /* The wrap-aware ordering invariant: snd_una <= seq */
+    ck_assert_int_eq(tcp_seq_leq(ts->sock.tcp.snd_una, ts->sock.tcp.seq), 1);
+}
+END_TEST
+
+START_TEST(test_regression_duplicate_syn_rejected_on_established)
+{
+    struct wolfIP s;
+    int sd, sd2;
+    struct wolfIP_sockaddr_in sin;
+    struct tsocket *listener, *established;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U; /* hardcoded in inject_tcp_syn */
+    uint16_t local_port  = 8080;
+    uint16_t remote_port = 40000; /* hardcoded in inject_tcp_syn */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    /* Create a listening socket that must stay in LISTEN throughout */
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port   = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    wolfIP_sock_listen(&s, sd, 4);
+    listener = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+
+    /* Allocate a second socket slot and wire it as ESTABLISHED with the
+     * same 4-tuple that inject_tcp_syn will use.  This simulates a live
+     * connection that was established by a previous handshake. */
+    sd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd2, 0);
+    established = &s.tcpsockets[SOCKET_UNMARK(sd2)];
+    established->sock.tcp.state   = TCP_ESTABLISHED;
+    established->local_ip         = local_ip;
+    established->remote_ip        = remote_ip;
+    established->if_idx           = TEST_PRIMARY_IF;
+    established->src_port         = local_port;
+    established->dst_port         = remote_port;
+    established->sock.tcp.seq     = 1000;
+    established->sock.tcp.snd_una = 1000;
+    established->sock.tcp.ack     = 2;
+    established->sock.tcp.cwnd    = TCP_MSS;
+    established->sock.tcp.peer_rwnd = TCP_MSS;
+    queue_init(&established->sock.tcp.rxbuf, established->rxmem, RXBUF_SIZE, 0);
+    fifo_init(&established->sock.tcp.txbuf, established->txmem, TXBUF_SIZE);
+
+    /* Send a SYN whose tuple matches the established connection above.
+     * Without the fix (da5c792): listener → TCP_SYN_RCVD.
+     * With the fix:              listener stays in TCP_LISTEN. */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, local_port);
+
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
+/* ----------------------------------------------------------------------- */
 
 Suite *wolf_suite(void)
 {
@@ -14749,7 +14842,13 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_proto, test_tcp_handshake_and_fin_close_wait);
     suite_add_tcase(s, tc_proto);
-    
+
+    /* Regression tests for fixes-4 branch */
+    tcase_add_test(tc_proto, test_regression_snd_una_initialized_on_syn_rcvd);
+    suite_add_tcase(s, tc_proto);
+    tcase_add_test(tc_proto, test_regression_duplicate_syn_rejected_on_established);
+    suite_add_tcase(s, tc_proto);
+
     tcase_add_test(tc_utils, test_transport_checksum);
     suite_add_tcase(s, tc_proto);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
