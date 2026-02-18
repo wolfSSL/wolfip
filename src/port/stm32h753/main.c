@@ -120,6 +120,16 @@ static int tls_client_test_done = 0;
 #define SYSCFG_PMCR         (*(volatile uint32_t *)(SYSCFG_BASE + 0x04))
 #define SYSCFG_PMCR_EPIS_RMII (4U << 21)
 
+/* RNG (hardware random number generator) */
+#define RNG_BASE            0x48021800UL
+#define RNG_CR              (*(volatile uint32_t *)(RNG_BASE + 0x00))
+#define RNG_SR              (*(volatile uint32_t *)(RNG_BASE + 0x04))
+#define RNG_DR              (*(volatile uint32_t *)(RNG_BASE + 0x08))
+#define RNG_CR_RNGEN        (1u << 2)
+#define RNG_SR_DRDY         (1u << 0)
+#define RNG_SR_CECS         (1u << 1)
+#define RNG_SR_SECS         (1u << 2)
+
 /* USART3 for debug output (ST-Link VCP on NUCLEO-H753ZI: PD8=TX, PD9=RX) */
 #define USART3_BASE         0x40004800UL
 #define USART3_CR1          (*(volatile uint32_t *)(USART3_BASE + 0x00))
@@ -210,10 +220,82 @@ static uint8_t rx_buf[RX_BUF_SIZE];
  * Helper Functions
  * ========================================================================= */
 
+/* Initialize STM32H7 hardware RNG */
+static void rng_init(void)
+{
+    volatile uint32_t *rcc_cr = (volatile uint32_t *)(RCC_BASE + 0x00);
+    volatile uint32_t *rcc_d2ccip2r = (volatile uint32_t *)(RCC_BASE + 0x54);
+    uint32_t timeout;
+
+    /* Enable HSI48 oscillator (RNG kernel clock source) */
+    *rcc_cr |= (1u << 12);  /* HSI48ON */
+    timeout = 100000;
+    while (!(*rcc_cr & (1u << 13)) && --timeout) { }  /* Wait HSI48RDY */
+
+    /* Select HSI48 as RNG clock: RCC_D2CCIP2R bits[9:8] = 00 (HSI48) */
+    *rcc_d2ccip2r &= ~(3u << 8);
+
+    /* Enable RNG clock (AHB2, bit 6) */
+    RCC_AHB2ENR |= (1u << 6);
+    /* Small delay for clock to stabilize */
+    for (volatile int i = 0; i < 100; i++) { }
+    /* Enable RNG */
+    RNG_CR = RNG_CR_RNGEN;
+}
+
+/* Get one 32-bit random word from hardware RNG */
+static int rng_get_word(uint32_t *out)
+{
+    uint32_t timeout = 10000;
+    /* Wait for data ready */
+    while ((RNG_SR & RNG_SR_DRDY) == 0) {
+        if (--timeout == 0)
+            return -1;
+        /* Check for errors */
+        if (RNG_SR & (RNG_SR_CECS | RNG_SR_SECS)) {
+            /* Reset RNG on error */
+            RNG_CR = 0;
+            for (volatile int i = 0; i < 100; i++) { }
+            RNG_CR = RNG_CR_RNGEN;
+            timeout = 10000;
+        }
+    }
+    *out = RNG_DR;
+    return 0;
+}
+
+/* Required by wolfSSL (CUSTOM_RAND_GENERATE_BLOCK) */
+int custom_rand_gen_block(unsigned char *output, unsigned int sz)
+{
+    uint32_t word;
+    while (sz >= 4) {
+        if (rng_get_word(&word) != 0)
+            return -1;
+        output[0] = (unsigned char)(word);
+        output[1] = (unsigned char)(word >> 8);
+        output[2] = (unsigned char)(word >> 16);
+        output[3] = (unsigned char)(word >> 24);
+        output += 4;
+        sz -= 4;
+    }
+    if (sz > 0) {
+        if (rng_get_word(&word) != 0)
+            return -1;
+        while (sz--) {
+            *output++ = (unsigned char)(word);
+            word >>= 8;
+        }
+    }
+    return 0;
+}
+
 /* Required by wolfIP */
 uint32_t wolfIP_getrandom(void)
 {
-    /* Simple LFSR PRNG - use hardware RNG in production */
+    uint32_t val;
+    if (rng_get_word(&val) == 0)
+        return val;
+    /* Fallback LFSR if HW RNG fails */
     static uint32_t lfsr = 0x1A2B3C4DU;
     lfsr ^= lfsr << 13;
     lfsr ^= lfsr >> 17;
@@ -678,6 +760,19 @@ int main(void)
     delay(200000);
     led_green_on();
 
+    /* Initialize hardware RNG */
+    rng_init();
+    {
+        uint32_t rng_test;
+        int rng_ok = rng_get_word(&rng_test);
+        uart_puts("RNG init: ");
+        uart_puts(rng_ok == 0 ? "OK" : "FAILED");
+        if (rng_ok == 0) {
+            uart_puts(" val="); uart_puthex(rng_test);
+        }
+        uart_puts("\n");
+    }
+
     uart_puts("\n\n=== wolfIP STM32H753ZI Echo Server ===\n");
 
     /* Read chip revision - critical for errata */
@@ -899,7 +994,10 @@ int main(void)
         uint32_t dhcp_start_tick;
         uint32_t dhcp_timeout = 30000;
 
-        if (dhcp_client_init(IPStack) >= 0) {
+        uart_puts("Calling dhcp_client_init...\n");
+        ret = dhcp_client_init(IPStack);
+        uart_puts("dhcp_client_init returned: "); uart_putdec((uint32_t)ret); uart_puts("\n");
+        if (ret >= 0) {
             uart_puts("Waiting for DHCP...\n");
             dhcp_start_tick = tick;
             while (!dhcp_bound(IPStack)) {

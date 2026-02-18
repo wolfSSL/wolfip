@@ -72,7 +72,7 @@ WOLFSSL_SRCS := \
     $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/stm32.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c \
     $(WOLFSSL_ROOT)/src/ssl.c \
     $(WOLFSSL_ROOT)/src/tls.c \
     $(WOLFSSL_ROOT)/src/tls13.c \
@@ -125,7 +125,6 @@ clean:
 	rm -f $(ROOT)/src/http/*.o
 ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/*.o
-	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o
 endif
 

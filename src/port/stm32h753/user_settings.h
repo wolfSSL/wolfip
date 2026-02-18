@@ -1,17 +1,24 @@
 /* user_settings.h
  *
- * wolfSSL configuration for STM32H753ZI with hardware acceleration
+ * wolfSSL configuration for STM32H753ZI bare-metal
  *
- * This configuration enables:
- * - TLS 1.3 client support
- * - STM32 hardware HASH acceleration (SHA-1/256/384/512)
- * - STM32 hardware HMAC acceleration (for TLS PRF)
- * - STM32 hardware AES acceleration
- * - STM32 hardware RNG
- * - ECC P-256 for key exchange
- * - RSA for certificate verification
+ * Copyright (C) 2026 wolfSSL Inc.
  *
- * Copyright (C) 2024 wolfSSL Inc.
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
 #ifndef USER_SETTINGS_H
@@ -37,40 +44,13 @@ extern "C" {
 #define NO_WOLFSSL_DIR
 
 /* ------------------------------------------------------------------------- */
-/* STM32H7 Hardware Acceleration
- * ------------------------------------------------------------------------- */
-#define WOLFSSL_STM32H7           /* STM32H753 variant */
-#define WOLFSSL_STM32_CUBEMX      /* Use CubeMX HAL conventions */
-
-/* Hardware HASH (SHA-1/256/384/512) */
-#define STM32_HASH
-#undef  NO_STM32_HASH
-
-/* Hardware HMAC - accelerates TLS PRF operations */
-#define STM32_HMAC
-#undef  NO_STM32_HMAC
-
-/* Hardware AES */
-#define STM32_CRYPTO
-#undef  NO_STM32_CRYPTO
-
-/* Hardware RNG */
-#define STM32_RNG
-#undef  NO_STM32_RNG
-
-/* Note: STM32H753 may not have PKA (public key accelerator)
- * If your variant has PKA, uncomment the following:
- * #define WOLFSSL_STM32_PKA
- */
-
-/* ------------------------------------------------------------------------- */
-/* Math Library
+/* Math - SP math with Cortex-M assembly optimizations
  * ------------------------------------------------------------------------- */
 #define WOLFSSL_SP_MATH_ALL       /* Use SP math for all operations */
 #define WOLFSSL_SP_SMALL          /* Smaller code size */
 #define SP_WORD_SIZE 32           /* 32-bit platform */
 
-/* Use Cortex-M assembly optimizations for better performance */
+/* Use Cortex-M assembly optimizations for SP math */
 #define WOLFSSL_SP_ARM_CORTEX_M_ASM
 
 /* Disable TFM ASM (we use SP math instead) */
@@ -93,7 +73,7 @@ extern "C" {
 /* Cipher Suites
  * ------------------------------------------------------------------------- */
 
-/* AES-GCM (primary, hardware accelerated on STM32) */
+/* AES-GCM (primary) */
 #define HAVE_AESGCM
 #define GCM_SMALL                 /* Smaller GCM tables */
 #define WOLFSSL_AES_SMALL_TABLES
@@ -103,7 +83,7 @@ extern "C" {
 #define HAVE_CHACHA
 #define HAVE_POLY1305
 
-/* SHA-2 family (hardware accelerated) */
+/* SHA-2 family */
 #define WOLFSSL_SHA384
 #define WOLFSSL_SHA512
 
@@ -162,7 +142,7 @@ extern "C" {
 /* RNG Configuration
  * ------------------------------------------------------------------------- */
 
-/* Custom RNG block generator using STM32 hardware RNG */
+/* Custom RNG block generator (implemented in main.c using STM32H7 RNG peripheral) */
 #define CUSTOM_RAND_GENERATE_BLOCK custom_rand_gen_block
 int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 
