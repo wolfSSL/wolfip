@@ -72,7 +72,9 @@ WOLFSSL_SRCS := \
     $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/stm32.c \
     $(WOLFSSL_ROOT)/src/ssl.c \
     $(WOLFSSL_ROOT)/src/tls.c \
     $(WOLFSSL_ROOT)/src/tls13.c \
@@ -88,7 +90,15 @@ WOLFSSL_SRCS += \
 
 # RSA for certificate verification
 WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c
+    $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/signature.c
+
+# wolfCrypt test (validates all crypto algorithms including HW HASH/HMAC)
+WOLFSSL_SRCS += \
+    $(WOLFSSL_ROOT)/wolfcrypt/test/test.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/logging.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/error.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_encrypt.c
 
 SRCS += $(WOLFSSL_SRCS)
 
@@ -125,6 +135,8 @@ clean:
 	rm -f $(ROOT)/src/http/*.o
 ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/*.o
+	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/*.o
+	rm -f $(WOLFSSL_ROOT)/wolfcrypt/test/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o
 endif
 

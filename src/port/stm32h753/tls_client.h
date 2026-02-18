@@ -83,6 +83,13 @@ int tls_client_poll(void);
 int tls_client_send(const void *data, int len);
 
 /**
+ * Set SNI hostname for TLS connections (call before tls_client_connect)
+ *
+ * @param hostname  Server hostname for SNI (e.g., "www.google.com")
+ */
+void tls_client_set_sni(const char *hostname);
+
+/**
  * Close the TLS connection
  */
 void tls_client_close(void);

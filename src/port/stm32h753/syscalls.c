@@ -18,10 +18,23 @@ extern uint32_t _estack;
 
 static char *heap_end;
 
+/* USART3 TX register for printf output */
+#define USART3_BASE_ADDR    0x40004800UL
+#define USART3_ISR_REG      (*(volatile uint32_t *)(USART3_BASE_ADDR + 0x1C))
+#define USART3_TDR_REG      (*(volatile uint32_t *)(USART3_BASE_ADDR + 0x28))
+
 int _write(int file, const char *ptr, int len)
 {
+    int i;
     (void)file;
-    (void)ptr;
+    for (i = 0; i < len; i++) {
+        if (ptr[i] == '\n') {
+            while ((USART3_ISR_REG & (1u << 7)) == 0) { }
+            USART3_TDR_REG = '\r';
+        }
+        while ((USART3_ISR_REG & (1u << 7)) == 0) { }
+        USART3_TDR_REG = (uint32_t)ptr[i];
+    }
     return len;
 }
 
@@ -93,10 +106,13 @@ int _gettimeofday(struct timeval *tv, void *tzvp)
 
 time_t time(time_t *t)
 {
+    /* Fixed time: 2026-02-16 (epoch seconds) for certificate validation.
+     * Without a real RTC, this ensures ASN time checks pass. */
+    time_t now = 1771200000;  /* approx 2026-02-16 */
     if (t != 0) {
-        *t = 0;
+        *t = now;
     }
-    return 0;
+    return now;
 }
 
 void _exit(int status)

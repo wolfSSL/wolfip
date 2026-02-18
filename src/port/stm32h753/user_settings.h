@@ -44,6 +44,20 @@ extern "C" {
 #define NO_WOLFSSL_DIR
 
 /* ------------------------------------------------------------------------- */
+/* STM32H753 Hardware HASH/HMAC Acceleration
+ *
+ * Uses the HASH peripheral for SHA-1/SHA-224/SHA-256 and HMAC.
+ * Register definitions are in stm32_hash_register.h (no HAL required).
+ * Note: We do NOT define WOLFSSL_STM32H7 or WOLFSSL_STM32_CUBEMX because
+ * those trigger #include "stm32h7xx_hal.h". Instead we provide register
+ * definitions directly via stm32_hash_register.h.
+ * ------------------------------------------------------------------------- */
+#include "stm32_hash_register.h"
+
+#define STM32_HASH                    /* Enable HW hash (SHA-1/224/256) */
+#define STM32_HMAC                    /* Enable HW HMAC */
+
+/* ------------------------------------------------------------------------- */
 /* Math - SP math with Cortex-M assembly optimizations
  * ------------------------------------------------------------------------- */
 #define WOLFSSL_SP_MATH_ALL       /* Use SP math for all operations */
@@ -52,6 +66,10 @@ extern "C" {
 
 /* Use Cortex-M assembly optimizations for SP math */
 #define WOLFSSL_SP_ARM_CORTEX_M_ASM
+
+/* SP ECC and RSA acceleration (uses sp_c32.c) */
+#define WOLFSSL_HAVE_SP_ECC       /* SP-optimized ECC operations */
+#define WOLFSSL_HAVE_SP_RSA       /* SP-optimized RSA operations */
 
 /* Disable TFM ASM (we use SP math instead) */
 #define TFM_NO_ASM
@@ -137,6 +155,7 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 #define ALT_ECC_SIZE              /* Smaller ECC structs */
 #define WOLFSSL_SMALL_CERT_VERIFY
+#define BENCH_EMBEDDED            /* Use smaller benchmark/test buffers */
 
 /* ------------------------------------------------------------------------- */
 /* RNG Configuration
@@ -151,6 +170,7 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
  * ------------------------------------------------------------------------- */
 /* #define DEBUG_WOLFSSL */
 /* #define WOLFSSL_DEBUG_TLS */
+/* #define DEBUG_STM32_HASH */
 
 #ifdef __cplusplus
 }

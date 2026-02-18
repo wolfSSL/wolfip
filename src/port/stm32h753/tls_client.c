@@ -55,6 +55,7 @@ static struct {
     uint8_t rx_buf[TLS_CLIENT_BUF_SIZE];
     ip4 server_ip;
     uint16_t server_port;
+    char sni_host[64];
     int got_response;
 } client;
 
@@ -104,6 +105,16 @@ int tls_client_init(struct wolfIP *stack, tls_client_debug_cb debug)
 
     debug_print("TLS Client: Initialized\n");
     return 0;
+}
+
+void tls_client_set_sni(const char *hostname)
+{
+    if (hostname) {
+        strncpy(client.sni_host, hostname, sizeof(client.sni_host) - 1);
+        client.sni_host[sizeof(client.sni_host) - 1] = '\0';
+    } else {
+        client.sni_host[0] = '\0';
+    }
 }
 
 int tls_client_connect(const char *host, uint16_t port,
@@ -193,7 +204,7 @@ int tls_client_poll(void)
                 }
                 /* Connection established - wait a few poll cycles to let stack settle */
                 connect_ready_count++;
-                if (connect_ready_count < 100) {
+                if (connect_ready_count < 10) {
                     return 0;
                 }
                 connect_ready_count = 0;
@@ -209,7 +220,10 @@ int tls_client_poll(void)
             }
 
             /* Set SNI (Server Name Indication) - required by most servers */
-            wolfSSL_UseSNI(client.ssl, WOLFSSL_SNI_HOST_NAME, "google.com", 10);
+            if (client.sni_host[0]) {
+                wolfSSL_UseSNI(client.ssl, WOLFSSL_SNI_HOST_NAME,
+                    client.sni_host, (word16)strlen(client.sni_host));
+            }
 
             /* Associate SSL with socket */
             ret = wolfSSL_SetIO_wolfIP(client.ssl, client.fd);

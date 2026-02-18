@@ -14,6 +14,8 @@
 
 #ifdef ENABLE_TLS
 #include "tls_client.h"
+#include <wolfssl/wolfcrypt/settings.h>
+#include <wolfcrypt/test/test.h>
 #define TLS_PORT 8443
 #endif
 
@@ -26,6 +28,7 @@
 /* Test server for TLS client (Google) */
 #ifdef ENABLE_TLS
 #define GOOGLE_IP "142.250.189.174"
+#define GOOGLE_HOST "www.google.com"
 #define GOOGLE_HTTPS_PORT 443
 static int tls_client_test_started = 0;
 static int tls_client_test_done = 0;
@@ -434,12 +437,12 @@ static void led_init(void)
     GPIO_MODER(GPIOB_BASE) = moder;
 }
 
-static void led_green_on(void)  { GPIO_BSRR(GPIOB_BASE) = (1u << LED1_PIN); }
-static void led_green_off(void) { GPIO_BSRR(GPIOB_BASE) = (1u << (LED1_PIN + 16)); }
-static void led_blue_on(void)   { GPIO_BSRR(GPIOB_BASE) = (1u << LED2_PIN); }
-static void led_blue_off(void)  { GPIO_BSRR(GPIOB_BASE) = (1u << (LED2_PIN + 16)); }
-static void led_red_on(void)    { GPIO_BSRR(GPIOB_BASE) = (1u << LED3_PIN); }
-static void led_red_off(void)   { GPIO_BSRR(GPIOB_BASE) = (1u << (LED3_PIN + 16)); }
+static void led_green_on(void)                     { GPIO_BSRR(GPIOB_BASE) = (1u << LED1_PIN); }
+static void __attribute__((unused)) led_green_off(void) { GPIO_BSRR(GPIOB_BASE) = (1u << (LED1_PIN + 16)); }
+static void led_blue_on(void)                      { GPIO_BSRR(GPIOB_BASE) = (1u << LED2_PIN); }
+static void led_blue_off(void)                     { GPIO_BSRR(GPIOB_BASE) = (1u << (LED2_PIN + 16)); }
+static void led_red_on(void)                       { GPIO_BSRR(GPIOB_BASE) = (1u << LED3_PIN); }
+static void led_red_off(void)                      { GPIO_BSRR(GPIOB_BASE) = (1u << (LED3_PIN + 16)); }
 
 static void led_toggle_green(void) { GPIO_ODR(GPIOB_BASE) ^= (1u << LED1_PIN); }
 
@@ -744,21 +747,9 @@ int main(void)
     uart_reconfigure();
     uart_puts("Clock config OK! Now at 400MHz SYSCLK, 200MHz HCLK\n");
 
-    /* Short blink to indicate clock config success */
-    led_green_off();
-    delay(100000);
     led_green_on();
     led_blue_off();
     led_red_off();
-
-    /* Blink to show UART init done */
-    led_green_off();
-    delay(200000);
-    led_green_on();
-    delay(200000);
-    led_green_off();
-    delay(200000);
-    led_green_on();
 
     /* Initialize hardware RNG */
     rng_init();
@@ -773,8 +764,108 @@ int main(void)
         uart_puts("\n");
     }
 
+#ifdef ENABLE_TLS
+#ifdef DEBUG_HW
+    /* Direct bare-metal HASH test - bypass wolfSSL entirely */
+    uart_puts("\n--- Direct HASH Hardware Test ---\n");
+    {
+        volatile uint32_t *hash_cr  = (volatile uint32_t *)0x48021400UL;
+        volatile uint32_t *hash_str = (volatile uint32_t *)0x48021408UL;
+        volatile uint32_t *hash_hr  = (volatile uint32_t *)0x4802140CUL;
+        volatile uint32_t *hash_sr  = (volatile uint32_t *)0x48021424UL;
+        uint32_t timeout;
+        int algo_idx;
+
+        /* Enable HASH clock (AHB2 bit 5) */
+        RCC_AHB2ENR |= (1u << 5);
+        (void)RCC_AHB2ENR;
+        for (volatile int d = 0; d < 1000; d++) {}
+
+        /* Test hash of empty message with all 4 ALGO settings.
+         * Expected digests (first word, big-endian in HR[0]):
+         *   MD5("")    = d41d8cd9... → HR[0]=0xd98c1dd4
+         *   SHA-1("")  = da39a3ee... → HR[0]=0xeea339da
+         *   SHA-224("") = d14a028c... → HR[0]=0x8c024ad1 (if supported)
+         *   SHA-256("") = e3b0c442... → HR[0]=0x42c4b0e3
+         */
+        struct { uint32_t bits; const char *name; } algos[4] = {
+            { 0x00000000, "MD5    (ALGO=00)" },
+            { 0x00000080, "SHA-1  (ALGO=01)" },
+            { 0x00040000, "SHA-224(ALGO=10)" },
+            { 0x00040080, "SHA-256(ALGO=11)" },
+        };
+
+        for (algo_idx = 0; algo_idx < 4; algo_idx++) {
+            uart_puts("  ");
+            uart_puts(algos[algo_idx].name);
+            uart_puts(": CR=");
+
+            /* Configure and init: algo + DATATYPE_8B + INIT */
+            *hash_cr = algos[algo_idx].bits | 0x20 | 0x04;
+            uart_puthex(*hash_cr);
+
+            /* Set NBLW=0 (all bits valid) and trigger DCAL */
+            *hash_str = 0;
+            *hash_str = (1u << 8);  /* DCAL */
+
+            /* Wait for digest complete */
+            timeout = 100000;
+            while ((*hash_sr & (1u << 1)) == 0 && --timeout) {}
+
+            uart_puts(" HR0=");
+            uart_puthex(hash_hr[0]);
+            uart_puts(" HR1=");
+            uart_puthex(hash_hr[1]);
+            uart_puts(timeout == 0 ? " TIMEOUT" : " OK");
+            uart_puts("\n");
+        }
+
+        /* Keep HASH clock enabled */
+    }
+#endif /* DEBUG_HW */
+
+#ifdef DEBUG_HW
+    /* Run wolfCrypt test to validate all crypto algorithms.
+     * This confirms hardware HASH/HMAC is working correctly. */
+    uart_puts("\n--- Running wolfCrypt Test ---\n");
+    {
+        typedef struct func_args {
+            int    argc;
+            char** argv;
+            int    return_code;
+        } func_args;
+        func_args args;
+        args.argc = 0;
+        args.argv = NULL;
+        args.return_code = 0;
+
+        wolfCrypt_Init();
+        wolfcrypt_test(&args);
+
+        uart_puts("wolfCrypt Test: Return code ");
+        if (args.return_code < 0) {
+            uart_puts("-");
+            uart_putdec((uint32_t)(-args.return_code));
+        } else {
+            uart_putdec((uint32_t)args.return_code);
+        }
+        uart_puts(args.return_code == 0 ? " (PASSED)\n" : " (FAILED)\n");
+        wolfCrypt_Cleanup();
+
+        if (args.return_code != 0) {
+            uart_puts("ERROR: wolfCrypt test failed! Halting.\n");
+            led_red_on();
+            while (1) { }
+        }
+    }
+#else
+    wolfCrypt_Init();
+#endif /* DEBUG_HW */
+#endif /* ENABLE_TLS */
+
     uart_puts("\n\n=== wolfIP STM32H753ZI Echo Server ===\n");
 
+#ifdef DEBUG_HW
     /* Read chip revision - critical for errata */
     uart_puts("Chip ID:\n");
     {
@@ -794,6 +885,7 @@ int main(void)
     uart_puts("\n");
     uart_puts("  RCC_D3CFGR: "); uart_puthex(*(volatile uint32_t *)(RCC_BASE + 0x20));
     uart_puts("\n");
+#endif
 
     uart_puts("Initializing wolfIP stack...\n");
     wolfIP_init_static(&IPStack);
@@ -812,9 +904,9 @@ int main(void)
      * ================================================================ */
 
     /* Step 1: Configure GPIO + SYSCFG RMII mode */
-    uart_puts("Configuring GPIO for RMII...\n");
     eth_gpio_init();
 
+#ifdef DEBUG_HW
     /* Verify GPIO config IMMEDIATELY after eth_gpio_init() */
     uart_puts("GPIO verification (after eth_gpio_init):\n");
     {
@@ -881,14 +973,14 @@ int main(void)
         uart_puts(" switches="); uart_puthex((pmcr >> 24) & 0xF);
         uart_puts((((pmcr >> 24) & 0xF) == 0) ? " (closed OK)\n" : " (OPEN!)\n");
     }
+#endif
 
     /* Step 2: Wait for PHY REF_CLK to stabilize after board reset.
-     * LAN8742A power-on reset takes up to 167ms. We wait 500ms to
-     * be very safe. The MAC needs REF_CLK for register access. */
-    uart_puts("Waiting 500ms for PHY REF_CLK stabilization...\n");
-    delay(50000000);  /* ~500ms at 400MHz (~10ns per iteration) */
-
-    /* Verify PA1 REF_CLK */
+     * LAN8742A power-on reset takes up to 167ms. We wait ~200ms to
+     * be safe. The MAC needs REF_CLK for register access.
+     * Calibration: volatile loop ~80ns/iter at 400MHz (12500 iters/ms) */
+    delay(2500000);  /* ~200ms */
+#ifdef DEBUG_HW
     {
         uint32_t pa1_samples = 0;
         int i;
@@ -901,6 +993,7 @@ int main(void)
                    pa1_samples == 0xFFFFFFFF ? " (ALL HIGH!)\n" :
                    " (toggling OK)\n");
     }
+#endif
 
     /* Step 3: Enable ETH clocks.
      * CRITICAL: ETH clock bits are 15,16,17 in AHB1ENR (NOT 25,26,27!)
@@ -908,24 +1001,17 @@ int main(void)
      *   Bit 16: ETH1TXEN   (TX clock, from REF_CLK in RMII)
      *   Bit 17: ETH1RXEN   (RX clock, from REF_CLK in RMII)
      * Bits 25-27 are USB OTG clocks - not ETH! */
-    uart_puts("Enabling ETH clocks (bits 15,16,17)...\n");
     RCC_AHB1ENR |= (1u << 15) | (1u << 16) | (1u << 17);
     __asm volatile ("dsb sy" ::: "memory");
-    delay(100000);  /* ~250us for clocks to stabilize */
-
-    uart_puts("  RCC_AHB1ENR: "); uart_puthex(RCC_AHB1ENR); uart_puts("\n");
-    uart_puts("  MACVR: "); uart_puthex(*(volatile uint32_t *)(0x40028110UL)); uart_puts("\n");
+    delay(12500);  /* ~1ms for clocks to stabilize */
 
     /* Step 4: RCC reset ETH MAC (bit 15 in AHB1RSTR) */
     RCC_AHB1RSTR |= RCC_AHB1RSTR_ETHRST;
     __asm volatile ("dsb sy" ::: "memory");
-    delay(100000);
+    delay(12500);  /* ~1ms reset pulse */
     RCC_AHB1RSTR &= ~RCC_AHB1RSTR_ETHRST;
     __asm volatile ("dsb sy" ::: "memory");
-    delay(4000000);  /* ~10ms post-reset stabilization */
-
-    uart_puts("  Post-reset MACVR: "); uart_puthex(*(volatile uint32_t *)(0x40028110UL)); uart_puts("\n");
-    uart_puts("  Post-reset DMAMR: "); uart_puthex(*(volatile uint32_t *)(0x40029000UL)); uart_puts("\n");
+    delay(125000);  /* ~10ms post-reset stabilization */
 
     uart_puts("Initializing Ethernet MAC...\n");
     ll = wolfIP_getdev(IPStack);
@@ -943,7 +1029,8 @@ int main(void)
         uart_puts("\n");
     }
 
-    /* Debug: Read MDIO registers post-init (no DMA reset - preserve eth state) */
+#ifdef DEBUG_HW
+    /* Debug: Read MDIO registers post-init */
     uart_puts("MDIO Debug (post-init register state):\n");
     {
         volatile uint32_t *macmdioar = (volatile uint32_t *)(0x40028000UL + 0x0200U);
@@ -988,24 +1075,22 @@ int main(void)
         while ((*macmdioar & 1) && --timeout) {}
         uart_puts("  MACMDIODR (ID1@1): "); uart_puthex(*macmdiodr); uart_puts("\n");
     }
+#endif
 
 #ifdef DHCP
     {
         uint32_t dhcp_start_tick;
         uint32_t dhcp_timeout = 30000;
 
-        uart_puts("Calling dhcp_client_init...\n");
         ret = dhcp_client_init(IPStack);
-        uart_puts("dhcp_client_init returned: "); uart_putdec((uint32_t)ret); uart_puts("\n");
         if (ret >= 0) {
             uart_puts("Waiting for DHCP...\n");
             dhcp_start_tick = tick;
             while (!dhcp_bound(IPStack)) {
                 uint32_t elapsed = (uint32_t)(tick - dhcp_start_tick);
-                if (elapsed == 0) uart_puts("  Entering poll loop...\n");
                 (void)wolfIP_poll(IPStack, tick);
-                if (elapsed == 0) uart_puts("  First poll done.\n");
                 tick++;
+#ifdef DEBUG_HW
                 if ((elapsed < 10) ||
                     (elapsed % 2000) == 0) {
                     uint32_t polls, pkts;
@@ -1022,7 +1107,8 @@ int main(void)
                     uart_puthex(stm32h7_eth_get_rx_des3());
                     uart_puts("\n");
                 }
-                delay(100000);  /* ~1ms at 400MHz SYSCLK */
+#endif
+                delay(100000);  /* ~8ms per poll */
                 if (elapsed > dhcp_timeout)
                     break;
             }
@@ -1077,21 +1163,22 @@ int main(void)
         uart_puts("ERROR: TLS client init failed\n");
         led_red_on();
     }
+    tls_client_set_sni(GOOGLE_HOST);
 #endif
 
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("  TCP Echo: port 7\n");
 #ifdef ENABLE_TLS
-    uart_puts("  TLS Client: will connect to Google after 5s\n");
+    uart_puts("  TLS Client: will connect to Google after ~2s\n");
 #endif
 
     for (;;) {
         (void)wolfIP_poll(IPStack, tick++);
-        delay(100000);  /* ~1ms per tick at 400MHz */
+        delay(100000);  /* ~8ms per tick (volatile loop ~80ns/iter at 400MHz) */
 
 #ifdef ENABLE_TLS
         /* TLS client test: connect to Google after network settles */
-        if (!tls_client_test_started && tick > 5000) {
+        if (!tls_client_test_started && tick > 250) {
             uart_puts("\n--- TLS Client Test: Connecting to Google ---\n");
             uart_puts("Target: ");
             uart_puts(GOOGLE_IP);
@@ -1115,7 +1202,7 @@ int main(void)
             static int request_sent = 0;
             if (!request_sent) {
                 const char *http_req = "GET / HTTP/1.1\r\n"
-                                       "Host: google.com\r\n"
+                                       "Host: " GOOGLE_HOST "\r\n"
                                        "Connection: close\r\n\r\n";
                 uart_puts("TLS Client: Sending HTTP GET request...\n");
                 if (tls_client_send(http_req, (int)strlen(http_req)) > 0) {

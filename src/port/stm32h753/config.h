@@ -63,4 +63,7 @@
 #define WOLFIP_STATIC_DNS_IP    "8.8.8.8"
 #endif
 
+/* Hardware debug: uncomment to enable verbose GPIO/ETH/MDIO/DHCP logging */
+/* #define DEBUG_HW */
+
 #endif /* WOLF_CONFIG_H */
