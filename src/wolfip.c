@@ -119,10 +119,10 @@ struct wolfIP_icmp_packet;
 /* Macros */
 #define IS_IP_BCAST(ip) (ip == 0xFFFFFFFF)
 
-#define PKT_FLAG_SENT 0x01
-#define PKT_FLAG_ACKED 0x02
-#define PKT_FLAG_FIN 0x04
-#define PKT_FLAG_RETRANS 0x08
+#define PKT_FLAG_SENT    0x01U
+#define PKT_FLAG_ACKED   0x02U
+#define PKT_FLAG_FIN     0x04U
+#define PKT_FLAG_RETRANS 0x08U
 #define TX_WRITABLE_THRESHOLD 1
 
 #define TCP_SACK_MAX_BLOCKS 4
