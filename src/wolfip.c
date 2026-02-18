@@ -1597,6 +1597,24 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
 }
 
 /* TCP */
+static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd)
+{
+    uint32_t cwnd = peer_rwnd / 2U;
+    uint32_t tx_half = TXBUF_SIZE / 2U;
+    uint32_t min_cwnd = 2U * TCP_MSS;
+
+    if (cwnd > tx_half)
+        cwnd = tx_half;
+    if (cwnd < min_cwnd)
+        cwnd = min_cwnd;
+    return cwnd;
+}
+
+static uint32_t tcp_initial_ssthresh(uint32_t peer_rwnd)
+{
+    return (peer_rwnd < TXBUF_SIZE) ? peer_rwnd : TXBUF_SIZE;
+}
+
 static struct tsocket *tcp_new_socket(struct wolfIP *s)
 {
     struct tsocket *t;
@@ -1609,8 +1627,6 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->if_idx = 0;
             t->sock.tcp.state = TCP_CLOSED;
             t->sock.tcp.rto = 1000;
-            t->sock.tcp.cwnd = 2 * TCP_MSS;
-            t->sock.tcp.ssthresh = 64 * TCP_MSS;
             t->sock.tcp.rtt = 0;
             t->sock.tcp.rto_backoff = 0;
             t->sock.tcp.bytes_in_flight = 0;
@@ -1619,6 +1635,8 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.early_rexmit_done = 0;
             t->sock.tcp.last_early_rexmit_ack = 0;
             t->sock.tcp.peer_rwnd = 0xFFFF;
+            t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+            t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
             t->sock.tcp.peer_mss = TCP_MSS;
             t->sock.tcp.snd_wscale = 0;
             t->sock.tcp.ws_enabled = 0;
@@ -2520,8 +2538,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     uint32_t ack = ee32(tcp->ack);
     struct pkt_desc *desc;
     int ack_count = 0;
+    int ack_advanced = 0;
     uint32_t inflight_pre = t->sock.tcp.bytes_in_flight;
-    uint32_t acked_bytes = 0;
 
     tcp_process_sack(t, tcp,
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + (tcp->hlen >> 2)));
@@ -2584,10 +2602,10 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             new_tmr.arg = t;
             t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, new_tmr);
         }
-        acked_bytes = delta;
         if (t->sock.tcp.bytes_in_flight < inflight_pre) {
             t->events |= CB_EVENT_WRITABLE;
         }
+        ack_advanced = 1;
     }
     if (ack_count > 0) {
         struct pkt_desc *fresh_desc = NULL;
@@ -2613,10 +2631,11 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                     }
                 }
             }
-            /* Update cwnd only if we were cwnd-limited.
-             * Data payload can be smaller than TCP_MSS when TCP options are
-             * present, so include header options bytes in the gate. */
-            if (t->sock.tcp.cwnd <= (inflight_pre + acked_bytes + TCP_OPTIONS_LEN)) {
+            /* Grow cwnd only on forward ACK progress (never on duplicate ACKs),
+             * and only if we were cwnd-limited. */
+            if (ack_advanced &&
+                    ((t->sock.tcp.cwnd <= inflight_pre + TCP_MSS) ||
+                     (t->sock.tcp.cwnd <= 2 * TCP_MSS))) {
                 if (t->sock.tcp.cwnd < t->sock.tcp.ssthresh) {
                     t->sock.tcp.cwnd += TCP_MSS;
                 } else {
@@ -2813,6 +2832,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
+                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+                        t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                         if (tx_has_writable_space(t))
                             t->events |= CB_EVENT_WRITABLE;
                         tcp_process_ts(t, tcp, frame_len);
@@ -2827,6 +2848,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->sock.tcp.ack = ee32(tcp->seq);
                     t->sock.tcp.seq = ee32(tcp->ack);
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
+                    t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+                    t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                     if (tx_has_writable_space(t))
                         t->events |= CB_EVENT_WRITABLE;
                 }
@@ -3257,6 +3280,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.seq = ts->sock.tcp.seq;
             newts->sock.tcp.last_ts = ts->sock.tcp.last_ts;
             newts->sock.tcp.peer_rwnd = ts->sock.tcp.peer_rwnd;
+            newts->sock.tcp.cwnd = tcp_initial_cwnd(newts->sock.tcp.peer_rwnd);
+            newts->sock.tcp.ssthresh = tcp_initial_ssthresh(newts->sock.tcp.peer_rwnd);
             newts->sock.tcp.peer_mss = ts->sock.tcp.peer_mss;
             newts->sock.tcp.snd_wscale = ts->sock.tcp.snd_wscale;
             newts->sock.tcp.rcv_wscale = ts->sock.tcp.rcv_wscale;

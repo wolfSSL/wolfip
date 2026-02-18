@@ -1708,8 +1708,8 @@ void __attribute__((constructor)) init_wolfip_posix() {
     wolfIP_ipconfig_set(IPSTACK, atoip4(wolfip_ip_str), atoip4(wolfip_mask_str),
             atoip4(host_stack_ip_str));
     fprintf(stderr, "IP: manually configured - %s\n", wolfip_ip_str);
-    /* Keep startup delay minimal; sender synchronization is handled by the framework. */
-    usleep(100 * 1000);
+    /* Avoid penalizing startup fairness across stacks: once init is done,
+     * hand control to the poll thread immediately. */
     pthread_create(&wolfIP_thread, NULL, wolfIP_sock_posix_ip_loop, IPSTACK);
     in_the_stack = 0;
 }
