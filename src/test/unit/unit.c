@@ -12673,6 +12673,155 @@ START_TEST(test_poll_tcp_residual_window_allows_exact_fit)
 }
 END_TEST
 
+START_TEST(test_poll_tcp_zero_window_arms_persist)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf1};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, 0x18), 0);
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_tcp_seg *tcp;
+    uint32_t ip_len;
+    uint32_t tcp_hlen;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, 0x18), 0);
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ip = (struct wolfIP_ip_packet *)last_frame_sent;
+    tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ip_len = ee16(ip->len);
+    tcp_hlen = (uint32_t)(tcp->hlen >> 2);
+    ck_assert_uint_eq(ip_len - (IP_HEADER_LEN + tcp_hlen), 1U);
+    ck_assert_uint_eq(tcp->flags & 0x10, 0x10);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_tcp_input_window_reopen_stops_persist)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    struct wolfIP_timer tmr;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.persist_active = 1;
+    ts->src_port = 2222;
+    ts->dst_port = 3333;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    ts->sock.tcp.tmr_persist = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ttl = 64;
+    seg.ip.src = ee32(remote_ip);
+    seg.ip.dst = ee32(local_ip);
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.src_port = ee16(ts->dst_port);
+    seg.dst_port = ee16(ts->src_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = 0x10;
+    seg.win = ee16(16);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_gt(ts->sock.tcp.peer_rwnd, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
 START_TEST(test_queue_insert_len_gt_size)
 {
     struct queue q;
@@ -14476,6 +14625,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_send_on_arp_hit);
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_gates_data_segment);
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_allows_exact_fit);
+    tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
+    tcase_add_test(tc_utils, test_tcp_input_window_reopen_stops_persist);
     tcase_add_test(tc_utils, test_poll_tcp_arp_request_on_miss);
     tcase_add_test(tc_utils, test_poll_udp_send_on_arp_hit);
     tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_hit);
