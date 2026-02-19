@@ -1043,7 +1043,10 @@ static void close_socket(struct tsocket *ts);
 static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n);
 static inline int tcp_seq_leq(uint32_t a, uint32_t b);
 static inline int tcp_seq_lt(uint32_t a, uint32_t b);
+<<<<<<< HEAD
 static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms);
+=======
+>>>>>>> 0e6db0a (Add missing retransmissions for SYN/SYNACK/FIN segments)
 static void tcp_rto_cb(void *arg);
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
@@ -2128,8 +2131,11 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
 }
 
+<<<<<<< HEAD
 /* Returns true when handshake/teardown control traffic is outstanding and
  * should be driven by control-RTO retransmission (SYN/SYN-ACK/FIN states). */
+=======
+>>>>>>> 0e6db0a (Add missing retransmissions for SYN/SYNACK/FIN segments)
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
 {
     if (!t || t->proto != WI_IPPROTO_TCP)
@@ -2140,7 +2146,10 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
            (t->sock.tcp.state == TCP_LAST_ACK);
 }
 
+<<<<<<< HEAD
 /* Stop control-RTO retransmission tracking for this socket and reset counters. */
+=======
+>>>>>>> 0e6db0a (Add missing retransmissions for SYN/SYNACK/FIN segments)
 static void tcp_ctrl_rto_stop(struct tsocket *t)
 {
     if (!t || t->proto != WI_IPPROTO_TCP)
@@ -2153,8 +2162,11 @@ static void tcp_ctrl_rto_stop(struct tsocket *t)
     t->sock.tcp.ctrl_rto_retries = 0;
 }
 
+<<<<<<< HEAD
 /* Arm/re-arm control-RTO timer using exponential backoff over the current base RTO.
  * This path is dedicated to SYN/SYN-ACK/FIN reliability (not data-loss recovery). */
+=======
+>>>>>>> 0e6db0a (Add missing retransmissions for SYN/SYNACK/FIN segments)
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
 {
     struct wolfIP_timer tmr = {0};
