@@ -243,6 +243,7 @@ static void eth_config_speed_duplex(void)
     maccr = ETH_MACCR;
     maccr &= ~(ETH_MACCR_FES | ETH_MACCR_DM);
 
+    /* Read BSR twice (latched low). */
     bsr = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
     bsr |= eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
 
@@ -274,6 +275,7 @@ static void eth_init_desc(void)
 {
     uint32_t i;
 
+    /* Step 1: Clear all descriptors (like HAL does). */
     for (i = 0; i < TX_DESC_COUNT; i++) {
         tx_ring[i].des0 = 0;
         tx_ring[i].des1 = 0;
@@ -289,6 +291,7 @@ static void eth_init_desc(void)
     rx_idx = 0;
     tx_idx = 0;
 
+    /* Step 2: Configure DMA registers. */
     __asm volatile ("dsb sy" ::: "memory");
     ETH_DMACTXDLAR = (uint32_t)&tx_ring[0];
     ETH_DMACRXDLAR = (uint32_t)&rx_ring[0];
@@ -298,6 +301,7 @@ static void eth_init_desc(void)
     ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
     __asm volatile ("dsb sy" ::: "memory");
 
+    /* Step 3: Now set buffer addresses and OWN bit. */
     for (i = 0; i < TX_DESC_COUNT; i++) {
         *(volatile uint32_t *)&tx_ring[i].des0 = (uint32_t)tx_buffers[i];
     }
@@ -306,9 +310,12 @@ static void eth_init_desc(void)
         *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     }
 
+    /* Data synchronization barrier before updating tail pointer. */
     __asm volatile ("dsb sy" ::: "memory");
     __asm volatile ("isb sy" ::: "memory");
+    /* Step 4: Update tail pointer to signal DMA that descriptors are ready. */
     ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    /* Final barrier. */
     __asm volatile ("dsb sy" ::: "memory");
 }
 
@@ -317,6 +324,7 @@ static void eth_init_desc(void)
 static void eth_config_dma(void)
 {
     ETH_DMASBMR = ETH_DMASBMR_FB | ETH_DMASBMR_AAL;
+    /* Set DSL=0 for 16-byte descriptors (no skip). */
     ETH_DMACCR = ETH_DMACCR_DSL_0BIT;
     ETH_DMACRXCR = ((RX_BUF_SIZE & ETH_RDES3_PL_MASK) << ETH_DMACRXCR_RBSZ_SHIFT) |
                    ETH_DMACRXCR_RPBL(DMA_RPBL);
@@ -333,9 +341,11 @@ static void eth_start(void)
     ETH_DMACTXCR |= ETH_DMACTXCR_ST;
     ETH_DMACRXCR |= ETH_DMACRXCR_SR;
 
+    /* Clear TX and RX process stopped flags. */
     ETH_DMACSR = ETH_DMACSR_TPS | ETH_DMACSR_RPS;
 
     __asm volatile ("dsb sy" ::: "memory");
+    /* Write tail pointer to start RX DMA. */
     ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
 }
 
@@ -360,6 +370,7 @@ static uint16_t eth_mdio_read(uint32_t phy, uint32_t reg)
 {
     uint32_t cfg;
     eth_mdio_wait_ready();
+    /* CR = 4 for HCLK 150-250MHz range. */
     cfg = (4U << ETH_MACMDIOAR_CR_SHIFT) |
           (reg << ETH_MACMDIOAR_RDA_SHIFT) |
           (phy << ETH_MACMDIOAR_PA_SHIFT) |
@@ -374,6 +385,7 @@ static void eth_mdio_write(uint32_t phy, uint32_t reg, uint16_t value)
     uint32_t cfg;
     eth_mdio_wait_ready();
     ETH_MACMDIODR = (uint32_t)value;
+    /* CR = 4 for HCLK 150-250MHz range. */
     cfg = (4U << ETH_MACMDIOAR_CR_SHIFT) |
           (reg << ETH_MACMDIOAR_RDA_SHIFT) |
           (phy << ETH_MACMDIOAR_PA_SHIFT) |
@@ -405,23 +417,27 @@ static void eth_phy_init(void)
         if (phy_addr < 0) phy_addr = 0;
     }
 
+    /* Reset PHY. */
     eth_mdio_write((uint32_t)phy_addr, PHY_REG_BCR, PHY_BCR_RESET);
     timeout = 100000U;
     do {
         ctrl = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BCR);
     } while ((ctrl & PHY_BCR_RESET) != 0U && --timeout != 0U);
 
+    /* Configure PHY for auto-negotiation. */
     ctrl &= ~(PHY_BCR_POWER_DOWN | PHY_BCR_ISOLATE | PHY_BCR_SPEED_100 | PHY_BCR_FULL_DUPLEX);
     eth_mdio_write((uint32_t)phy_addr, PHY_REG_ANAR, PHY_ANAR_DEFAULT);
     ctrl |= PHY_BCR_AUTONEG_ENABLE | PHY_BCR_RESTART_AUTONEG;
     eth_mdio_write((uint32_t)phy_addr, PHY_REG_BCR, ctrl);
 
+    /* Wait for auto-negotiation complete. */
     timeout = 100000U;
     do {
         bsr = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
         bsr |= eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
     } while ((bsr & PHY_BSR_AUTONEG_COMPLETE) == 0U && --timeout != 0U);
 
+    /* Wait for link up. */
     timeout = 100000U;
     do {
         bsr = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
@@ -451,6 +467,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
         memcpy(frame, rx_staging_buffer, frame_len);
     }
 
+    /* Reinitialize descriptor. */
     desc->des1 = 0;
     desc->des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     __asm volatile ("dsb sy" ::: "memory");
@@ -472,11 +489,14 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     desc = &tx_ring[tx_idx];
     if (desc->des3 & ETH_TDES3_OWN) return -2;
 
+    /* Copy frame to TX buffer. */
     memcpy(tx_buffers[tx_idx], frame, len);
 
+    /* Pad to minimum frame length. */
     dma_len = (len < FRAME_MIN_LEN) ? FRAME_MIN_LEN : len;
     if (dma_len > len) memset(tx_buffers[tx_idx] + len, 0, dma_len - len);
 
+    /* Setup descriptor. */
     desc->des0 = (uint32_t)tx_buffers[tx_idx];
     desc->des1 = 0;
     desc->des2 = (dma_len & ETH_TDES2_B1L_MASK);
@@ -499,6 +519,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 
 static void stm32_eth_generate_mac(uint8_t mac[6])
 {
+    /* Generate a locally-administered MAC address. */
     mac[0] = 0x02;
     mac[1] = 0x11;
 #if defined(STM32H7)
@@ -537,6 +558,7 @@ uint32_t stm32_eth_get_rx_ring_addr(void)
 
 uint32_t stm32_eth_get_dmacsr(void)
 {
+    /* Clear RBU by writing 1 to bit 7. */
     uint32_t val = ETH_DMACSR;
     if (val & 0x80) {
         ETH_DMACSR = 0x80;
@@ -552,6 +574,7 @@ uint32_t stm32_eth_get_rx_tail(void)
 void stm32_eth_kick_rx(void)
 {
     uint32_t i;
+    /* Reinitialize all RX descriptors and kick DMA. */
     for (i = 0; i < RX_DESC_COUNT; i++) {
         *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
         *(volatile uint32_t *)&rx_ring[i].des1 = 0;
