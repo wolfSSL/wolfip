@@ -114,6 +114,9 @@ struct wolfIP_icmp_packet;
 #define TCP_MSS (WI_IP_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
 #define TCP_DEFAULT_MSS 536U
 #define TCP_CTRL_RTO_MAXRTX 6U
+#define TCP_RTO_MIN_MS 1000U
+#define TCP_RTO_MAX_MS 60000U
+#define TCP_RTO_G_MS 1U
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
 #define WOLFIP_POLL_BUDGET 128
 
@@ -124,6 +127,8 @@ struct wolfIP_icmp_packet;
 #define PKT_FLAG_ACKED   0x02U
 #define PKT_FLAG_FIN     0x04U
 #define PKT_FLAG_RETRANS 0x08U
+#define PKT_FLAG_WAS_RETRANS 0x10U
+
 #define TX_WRITABLE_THRESHOLD 1
 
 #define TCP_SACK_MAX_BLOCKS 4
@@ -988,7 +993,9 @@ struct tcpsocket {
     enum tcp_state state;
     uint32_t last_ts, rtt, rto, cwnd, cwnd_count, ssthresh, tmr_rto, rto_backoff,
              seq, ack, last_ack, last, bytes_in_flight, snd_una;
+    uint32_t srtt, rttvar;
     uint32_t last_early_rexmit_ack;
+    uint8_t rto_initialized;
     uint8_t dup_acks;
     uint8_t early_rexmit_done;
     uint8_t ctrl_rto_retries;
@@ -1036,6 +1043,7 @@ static void close_socket(struct tsocket *ts);
 static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n);
 static inline int tcp_seq_leq(uint32_t a, uint32_t b);
 static inline int tcp_seq_lt(uint32_t a, uint32_t b);
+static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms);
 static void tcp_rto_cb(void *arg);
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
@@ -1661,8 +1669,11 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->S = s;
             t->if_idx = 0;
             t->sock.tcp.state = TCP_CLOSED;
-            t->sock.tcp.rto = 1000;
+            t->sock.tcp.rto = TCP_RTO_MIN_MS;
             t->sock.tcp.rtt = 0;
+            t->sock.tcp.srtt = 0;
+            t->sock.tcp.rttvar = 0;
+            t->sock.tcp.rto_initialized = 0;
             t->sock.tcp.rto_backoff = 0;
             t->sock.tcp.bytes_in_flight = 0;
             t->sock.tcp.snd_una = t->sock.tcp.seq;
@@ -2419,6 +2430,7 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
         uint32_t frame_len)
 {
     struct tcp_parsed_opts po;
+    uint32_t sample;
 
     tcp_parse_options(tcp, frame_len, &po);
     if (!po.ts_found)
@@ -2428,14 +2440,49 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
         return -1; /* No echoed timestamp; fall back to coarse RTT. */
     if (po.ts_ecr > t->S->last_tick)
         return -1; /* Echoed timestamp in the future; ignore. */
-    if (t->sock.tcp.rtt == 0)
-        t->sock.tcp.rtt = (uint32_t)(t->S->last_tick - po.ts_ecr);
-    else {
-        uint64_t rtt_scaled = (uint64_t)t->sock.tcp.rtt << 3;
-        uint64_t sample_scaled = (t->S->last_tick - po.ts_ecr) << 3;
-        t->sock.tcp.rtt = (uint32_t)(7 * rtt_scaled + sample_scaled);
-    }
+    sample = (uint32_t)(t->S->last_tick - po.ts_ecr);
+    tcp_rto_update_from_sample(t, sample);
     return 0;
+}
+
+static uint32_t tcp_rto_clamp(uint32_t rto_ms)
+{
+    if (rto_ms < TCP_RTO_MIN_MS)
+        return TCP_RTO_MIN_MS;
+    if (rto_ms > TCP_RTO_MAX_MS)
+        return TCP_RTO_MAX_MS;
+    return rto_ms;
+}
+
+static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms)
+{
+    uint32_t srtt_ms;
+    uint32_t rto_ms;
+    uint32_t err_ms;
+
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (sample_ms == 0)
+        sample_ms = 1;
+
+    if (!t->sock.tcp.rto_initialized) {
+        t->sock.tcp.srtt = sample_ms << 3;   /* SRTT in ms*8 */
+        t->sock.tcp.rttvar = sample_ms << 1; /* RTTVAR in ms*4, initialized to R/2 */
+        t->sock.tcp.rto_initialized = 1;
+    } else {
+        srtt_ms = t->sock.tcp.srtt >> 3;
+        if (srtt_ms > sample_ms)
+            err_ms = srtt_ms - sample_ms;
+        else
+            err_ms = sample_ms - srtt_ms;
+        t->sock.tcp.rttvar = (3U * t->sock.tcp.rttvar + (err_ms << 2)) >> 2;
+        t->sock.tcp.srtt = (7U * t->sock.tcp.srtt + (sample_ms << 3)) >> 3;
+    }
+
+    srtt_ms = t->sock.tcp.srtt >> 3;
+    rto_ms = srtt_ms + ((t->sock.tcp.rttvar > TCP_RTO_G_MS) ? t->sock.tcp.rttvar : TCP_RTO_G_MS);
+    t->sock.tcp.rtt = srtt_ms;
+    t->sock.tcp.rto = tcp_rto_clamp(rto_ms);
 }
 
 #define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
@@ -2691,7 +2738,9 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     }
     if (ack_count > 0) {
         struct pkt_desc *fresh_desc = NULL;
-        struct wolfIP_tcp_seg *seg;
+        uint32_t ack_ip_len = ee16(tcp->ip.len);
+        uint32_t ack_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
+        uint32_t ack_frame_len = 0;
         /* This ACK ackwnowledged some data. */
         desc = fifo_peek(&t->sock.tcp.txbuf);
         while (desc && (desc->flags & PKT_FLAG_ACKED)) {
@@ -2699,17 +2748,16 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             desc = fifo_peek(&t->sock.tcp.txbuf);
         }
         if (fresh_desc) {
-            seg = (struct wolfIP_tcp_seg *)(t->txmem + fresh_desc->pos + sizeof(*fresh_desc));
-            /* Update rtt */
-            if (tcp_process_ts(t, seg, fresh_desc->len) < 0) {
-                /* No timestamp option, use coarse RTT estimation */
-                if (t->S->last_tick >= fresh_desc->time_sent) {
-                    uint32_t rtt = (uint32_t)(t->S->last_tick - fresh_desc->time_sent);
-                    if (t->sock.tcp.rtt == 0) {
-                        t->sock.tcp.rtt = rtt;
-                    } else {
-                        uint64_t rtt_scaled = (uint64_t)t->sock.tcp.rtt << 3;
-                        t->sock.tcp.rtt = (uint32_t)(7 * rtt_scaled + ((uint64_t)rtt << 3));
+            /* Karn rule: ignore RTT samples for retransmitted segments. */
+            if (!(fresh_desc->flags & PKT_FLAG_WAS_RETRANS)) {
+                if (ack_ip_len >= ack_hdr_len)
+                    ack_frame_len = ETH_HEADER_LEN + ack_ip_len;
+                /* Prefer timestamp-based RTT sample from the incoming ACK. */
+                if (ack_frame_len == 0 || tcp_process_ts(t, tcp, ack_frame_len) < 0) {
+                    /* No usable TS echo; use coarse RTT sample from send timestamp. */
+                    if (t->S->last_tick >= fresh_desc->time_sent) {
+                        uint32_t rtt = (uint32_t)(t->S->last_tick - fresh_desc->time_sent);
+                        tcp_rto_update_from_sample(t, rtt);
                     }
                 }
             }
@@ -5376,6 +5424,8 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         }
                         desc->flags |= PKT_FLAG_SENT;
                         desc->flags &= ~PKT_FLAG_RETRANS;
+                        if (is_retrans)
+                            desc->flags |= PKT_FLAG_WAS_RETRANS;
                         desc->time_sent = now;
                         if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
                             desc = fifo_pop(&ts->sock.tcp.txbuf);

@@ -31,6 +31,7 @@ A single network interface can be associated with the device.
 | **Transport** | TCP | Connection management, reliable delivery | [RFC 793](https://datatracker.ietf.org/doc/html/rfc793), [RFC 9293](https://datatracker.ietf.org/doc/html/rfc9293) |
 | **Transport** | TCP | Maximum Segment Size negotiation | [RFC 793](https://datatracker.ietf.org/doc/html/rfc793) |
 | **Transport** | TCP | TCP Timestamps, RTT measurement, PAWS, Window Scaling | [RFC 7323](https://datatracker.ietf.org/doc/html/rfc7323) |
+| **Transport** | TCP | Retransmission timeout (RTO) computation | [RFC 6298](https://datatracker.ietf.org/doc/html/rfc6298) |
 | **Transport** | TCP | TCP SACK | [RFC 2018](https://datatracker.ietf.org/doc/html/rfc2018), [RFC 2883](https://datatracker.ietf.org/doc/html/rfc2883), [RFC 6675](https://datatracker.ietf.org/doc/html/rfc6675) |
 | **Transport** | TCP | Congestion Control: Slow start, congestion avoidance | [RFC 5681](https://datatracker.ietf.org/doc/html/rfc5681) |
 | **Transport** | TCP | Fast Retransmit, triple duplicate ACK detection | [RFC 5681](https://datatracker.ietf.org/doc/html/rfc5681) |
