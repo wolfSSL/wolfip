@@ -5900,7 +5900,39 @@ START_TEST(test_tcp_rto_cb_clears_sack_and_marks_lowest_only)
     ck_assert_int_ne(desc2->flags & PKT_FLAG_SENT, 0);
     ck_assert_int_eq(desc2->flags & PKT_FLAG_RETRANS, 0);
     ck_assert_uint_eq(ts->sock.tcp.cwnd, TCP_MSS);
-    ck_assert_uint_eq(ts->sock.tcp.ssthresh, TCP_MSS * 4);
+    ck_assert_uint_eq(ts->sock.tcp.ssthresh, TCP_MSS * 2);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_ssthresh_uses_inflight_not_cwnd)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.snd_una = 101;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS * 10;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, 0x18), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, TCP_MSS);
+    ck_assert_uint_eq(ts->sock.tcp.ssthresh, TCP_MSS * 5);
 }
 END_TEST
 
@@ -14642,6 +14674,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_cancels_existing_timer);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_rto_cb_clears_sack_and_marks_lowest_only);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_ssthresh_uses_inflight_not_cwnd);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_rto_cb_ssthresh_floor_two_mss);
     tcase_add_test(tc_utils, test_tcp_rto_cb_fallback_marks_lowest_sent_when_no_snd_una_cover);

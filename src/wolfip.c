@@ -3019,7 +3019,7 @@ static void tcp_rto_cb(void *arg)
     uint32_t guard = 0;
     uint32_t budget;
     uint32_t first_sent_seq = 0;
-    uint32_t prev_cwnd;
+    uint32_t prev_in_flight;
     if (ts->proto != WI_IPPROTO_TCP)
         return;
     if (tcp_ctrl_state_needs_rto(ts) || ts->sock.tcp.ctrl_rto_active) {
@@ -3116,8 +3116,11 @@ static void tcp_rto_cb(void *arg)
             ts->events |= CB_EVENT_WRITABLE;
     }
     if (pending) {
+        prev_in_flight = ts->sock.tcp.bytes_in_flight;
         /* RTO implies all in-flight data is considered lost. */
         ts->sock.tcp.bytes_in_flight = 0;
+    } else {
+        prev_in_flight = 0;
     }
 
     if (ts->sock.tcp.tmr_rto != NO_TIMER) {
@@ -3125,10 +3128,9 @@ static void tcp_rto_cb(void *arg)
         ts->sock.tcp.tmr_rto = NO_TIMER;
     }
     if (pending) {
-        prev_cwnd = ts->sock.tcp.cwnd;
         ts->sock.tcp.rto_backoff++;
         ts->sock.tcp.cwnd = TCP_MSS;
-        ts->sock.tcp.ssthresh = prev_cwnd / 2;
+        ts->sock.tcp.ssthresh = prev_in_flight / 2;
         if (ts->sock.tcp.ssthresh < (2 * TCP_MSS))
             ts->sock.tcp.ssthresh = 2 * TCP_MSS;
 
