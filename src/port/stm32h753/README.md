@@ -100,7 +100,7 @@ nc <device-ip> 7
 ### TLS Client Test
 
 When built with `ENABLE_TLS=1`, the device automatically connects to Google
-(142.250.189.174:443) after 5 seconds and performs an HTTPS GET request.
+(142.250.189.174:443) after ~2 seconds and performs an HTTPS GET request.
 The response is printed on the serial console.
 
 ## Memory Map
@@ -169,10 +169,11 @@ stm32h753/
 ├── ivt.c             # Interrupt vector table
 ├── syscalls.c        # Newlib stubs
 ├── main.c            # Application entry point
-├── stm32h7_eth.c     # Ethernet MAC/PHY driver
-├── stm32h7_eth.h     # Ethernet driver header
-├── tls_client.c      # TLS 1.3 client
-└── tls_client.h      # TLS client header
+├── stm32h7_eth.c          # Ethernet MAC/PHY driver
+├── stm32h7_eth.h          # Ethernet driver header
+├── stm32_hash_register.h  # STM32 HASH peripheral register definitions
+├── tls_client.c           # TLS 1.3 client
+└── tls_client.h           # TLS client header
 ```
 
 ## License

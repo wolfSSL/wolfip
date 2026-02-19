@@ -57,6 +57,7 @@ static struct {
     uint16_t server_port;
     char sni_host[64];
     int got_response;
+    int connect_ready_count;
 } client;
 
 /* External functions from wolfssl_io.c */
@@ -183,7 +184,6 @@ int tls_client_poll(void)
             /* Check if TCP connection is established by calling connect again */
             {
                 struct wolfIP_sockaddr_in addr;
-                static int connect_ready_count = 0;
 
                 memset(&addr, 0, sizeof(addr));
                 addr.sin_family = AF_INET;
@@ -194,7 +194,7 @@ int tls_client_poll(void)
                                           (struct wolfIP_sockaddr *)&addr, sizeof(addr));
                 if (ret == -WOLFIP_EAGAIN) {
                     /* Still connecting, keep polling */
-                    connect_ready_count = 0;
+                    client.connect_ready_count = 0;
                     return 0;
                 }
                 if (ret < 0) {
@@ -203,11 +203,11 @@ int tls_client_poll(void)
                     return -1;
                 }
                 /* Connection established - wait a few poll cycles to let stack settle */
-                connect_ready_count++;
-                if (connect_ready_count < 10) {
+                client.connect_ready_count++;
+                if (client.connect_ready_count < 10) {
                     return 0;
                 }
-                connect_ready_count = 0;
+                client.connect_ready_count = 0;
             }
             debug_print("TLS Client: TLS handshake...\n");
 
@@ -326,6 +326,8 @@ void tls_client_close(void)
         wolfIP_sock_close(client.stack, client.fd);
         client.fd = -1;
     }
+    client.got_response = 0;
+    client.connect_ready_count = 0;
     client.state = TLS_CLIENT_STATE_IDLE;
 }
 

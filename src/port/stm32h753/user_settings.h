@@ -85,7 +85,6 @@ extern "C" {
 
 /* Session - disable to save RAM */
 #define NO_SESSION_CACHE
-#define SMALL_SESSION_CACHE
 
 /* ------------------------------------------------------------------------- */
 /* Cipher Suites
