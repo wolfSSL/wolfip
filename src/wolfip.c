@@ -114,9 +114,11 @@ struct wolfIP_icmp_packet;
 #define TCP_MSS (WI_IP_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
 #define TCP_DEFAULT_MSS 536U
 #define TCP_CTRL_RTO_MAXRTX 6U
+
 #define TCP_RTO_MIN_MS 1000U
 #define TCP_RTO_MAX_MS 60000U
 #define TCP_RTO_G_MS 1U
+
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
 #define WOLFIP_POLL_BUDGET 128
 
