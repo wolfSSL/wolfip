@@ -117,6 +117,8 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=unmatchedSuppression --inconclusive \
 			   --suppress=comparePointers:src/port/stm32h563/startup.c \
 			   --suppress=comparePointers:src/port/stm32h563/syscalls.c \
+			   --suppress=comparePointers:src/port/stm32h753/startup.c \
+			   --suppress=comparePointers:src/port/stm32h753/syscalls.c \
 			   --disable=style \
 			   --std=c99 --language=c \
 			   --platform=unix64 \
