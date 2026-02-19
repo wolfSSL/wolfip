@@ -504,6 +504,16 @@ static uint32_t queue_len(struct queue *q)
     return (q->size - 1) - queue_space(q);
 }
 
+
+/* Subtract two TCP sequence numbers: a - b (wraps at 2^32) */
+static inline uint32_t tcp_seq_diff(uint32_t a, uint32_t b)
+{
+    if (a >= b)
+        return a - b;
+    return UINT32_MAX - (b - a - 1);
+}
+
+
 /* Insert data into the queue */
 static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
 {
@@ -526,7 +536,7 @@ static int queue_insert(struct queue *q, void *data, uint32_t seq, uint32_t len)
         /* Sequence arithmetic is modulo 2^32. Use signed relative distance
          * so contiguous inserts across wrap are accepted and old data behind
          * seq_base is rejected. */
-        rel = (int32_t)(seq - q->seq_base);
+        rel = tcp_seq_diff(seq, q->seq_base);
         if (rel < 0) {
             /* Old data that is behind the current receive base. */
             return -1;
@@ -1886,14 +1896,6 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
     memcpy(t->sock.tcp.ooo[slot].data, data, len);
     tcp_rebuild_rx_sack(t);
     return 0;
-}
-
-/* Subtract two TCP sequence numbers: a - b (wraps at 2^32) */
-static inline uint32_t tcp_seq_diff(uint32_t a, uint32_t b)
-{
-    if (a >= b)
-        return a - b;
-    return UINT32_MAX - (b - a - 1);
 }
 
 static void tcp_consume_ooo(struct tsocket *t)
