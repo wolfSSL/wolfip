@@ -9373,6 +9373,49 @@ START_TEST(test_tcp_mark_unsacked_retransmits_partially_acked_segment)
 }
 END_TEST
 
+START_TEST(test_tcp_mark_unsacked_rescans_after_clearing_stale_sack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct pkt_desc *desc;
+    int ret;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->sock.tcp.peer_sack_count = 1;
+    ts->sock.tcp.peer_sack[0].left = 100;
+    ts->sock.tcp.peer_sack[0].right = 101;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* First pass sees stale peer SACK covering the only hole and would skip it.
+     * Function must clear SACK once and rescan, then mark the segment. */
+    ret = tcp_mark_unsacked_for_retransmit(ts, 100);
+    ck_assert_int_eq(ret, 1);
+    ck_assert_uint_eq(ts->sock.tcp.peer_sack_count, 0);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_sack_blocks_clamped_and_dropped)
 {
     struct wolfIP s;
@@ -14482,6 +14525,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_wraparound_delta_saturates_inflight);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_for_retransmit_wrap_seg_end);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_retransmits_partially_acked_segment);
+    tcase_add_test(tc_utils, test_tcp_mark_unsacked_rescans_after_clearing_stale_sack);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);

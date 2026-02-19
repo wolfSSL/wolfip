@@ -1456,9 +1456,9 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct 
             continue;
         }
         if (ret < 0) {
-        errno = -ret;
-        pthread_mutex_unlock(&wolfIP_mutex);
-        return -1;
+            errno = -ret;
+            pthread_mutex_unlock(&wolfIP_mutex);
+            return -1;
         }
     }
     pthread_mutex_unlock(&wolfIP_mutex);
@@ -1632,7 +1632,7 @@ void *wolfIP_sock_posix_ip_loop(void *arg) {
 }
 
 void __attribute__((constructor)) init_wolfip_posix() {
-    struct in_addr host_stack_ip; 
+    struct in_addr host_stack_ip;
     const char *host_stack_ip_str;
     const char *wolfip_ip_str;
     const char *wolfip_mask_str;

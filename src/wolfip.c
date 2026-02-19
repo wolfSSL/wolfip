@@ -24,7 +24,6 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdio.h>
 #ifdef WOLF_POSIX
 #include <poll.h>
 #include <sys/socket.h>
@@ -430,6 +429,15 @@ static uint32_t fifo_max_push_payload(const struct fifo *f, uint32_t frame_base,
     return best;
 }
 
+/* Return the maximum number of descriptors that can be enqueued in a single
+ * operation.
+ *
+ * guard budget for descriptor walks using fifo_next():
+ * Base budget is the number of pkt_desc-sized slots in the buffer.
+ * +2U gives headroom for wrap/alignment transitions, where fifo_next()
+ * might need one extra step to cross the wrap boundary and one more to
+ * hit the stop condition.
+ */
 static uint32_t fifo_desc_budget(const struct fifo *f)
 {
     if (!f || f->size < sizeof(struct pkt_desc))
@@ -2453,92 +2461,92 @@ static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
     uint32_t guard;
     uint32_t budget;
     int cover_found;
+    int allow_rescan = 1;
 
-retry_scan:
-    desc = fifo_peek(&t->sock.tcp.txbuf);
-    pending = NULL;
-    guard = 0;
-    budget = fifo_desc_budget(&t->sock.tcp.txbuf);
-    cover_found = 0;
+    while (1) {
+        desc = fifo_peek(&t->sock.tcp.txbuf);
+        pending = NULL;
+        guard = 0;
+        budget = fifo_desc_budget(&t->sock.tcp.txbuf);
+        cover_found = 0;
 
-    while (desc) {
-        struct wolfIP_tcp_seg *seg;
-        uint32_t seg_len;
-        uint32_t seg_start;
-        uint32_t seg_end;
+        while (desc) {
+            struct wolfIP_tcp_seg *seg;
+            uint32_t seg_len;
+            uint32_t seg_start;
+            uint32_t seg_end;
 
-        if (guard++ >= budget)
-            break;
-        seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
-        seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
-        if (seg_len == 0) {
-            desc = fifo_next(&t->sock.tcp.txbuf, desc);
-            continue;
-        }
-        seg_start = ee32(seg->seq);
-        seg_end = tcp_seq_inc(seg_start, seg_len);
-        /* Retransmit even when ACK is in the middle of this segment.
-         * Otherwise a lost tail fragment can stall forever while later
-         * segments are repeatedly retransmitted. */
-        if (tcp_seq_leq(seg_end, ack)) {
-            desc = fifo_next(&t->sock.tcp.txbuf, desc);
-            continue;
-        }
-        if (tcp_is_range_sacked(t, seg_start, seg_end)) {
-            desc = fifo_next(&t->sock.tcp.txbuf, desc);
-            continue;
-        }
-        if (tcp_seq_leq(seg_start, ack) && tcp_seq_lt(ack, seg_end)) {
-            cover_found = 1;
-            if (!(desc->flags & PKT_FLAG_SENT)) {
-                /* Hole-covering segment is already queued (or pending retransmit)
-                 * but not sent yet: do not jump to newer sequence ranges. */
+            if (guard++ >= budget)
+                break;
+            seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
+            seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            if (seg_len == 0) {
+                desc = fifo_next(&t->sock.tcp.txbuf, desc);
+                continue;
+            }
+            seg_start = ee32(seg->seq);
+            seg_end = tcp_seq_inc(seg_start, seg_len);
+            /* Retransmit even when ACK is in the middle of this segment.
+             * Otherwise a lost tail fragment can stall forever while later
+             * segments are repeatedly retransmitted. */
+            if (tcp_seq_leq(seg_end, ack)) {
+                desc = fifo_next(&t->sock.tcp.txbuf, desc);
+                continue;
+            }
+            if (tcp_is_range_sacked(t, seg_start, seg_end)) {
+                desc = fifo_next(&t->sock.tcp.txbuf, desc);
+                continue;
+            }
+            if (tcp_seq_leq(seg_start, ack) && tcp_seq_lt(ack, seg_end)) {
+                cover_found = 1;
+                if (!(desc->flags & PKT_FLAG_SENT)) {
+                    /* Hole-covering segment is already queued (or pending retransmit)
+                     * but not sent yet: do not jump to newer sequence ranges. */
+                    pending = desc;
+                    break;
+                }
+            } else {
+                /* Do not retransmit above snd_una/ack while the covering segment
+                 * is unknown; this prevents getting stuck replaying later data. */
+                desc = fifo_next(&t->sock.tcp.txbuf, desc);
+                continue;
+            }
+            if ((desc->flags & PKT_FLAG_RETRANS) && !(desc->flags & PKT_FLAG_SENT)) {
+                /* A lower sequence is already queued for retransmission but not yet
+                 * transmitted. Do not mark newer segments before that hole is sent. */
                 pending = desc;
                 break;
             }
-        } else {
-            /* Do not retransmit above snd_una/ack while the covering segment
-             * is unknown; this prevents getting stuck replaying later data. */
-            desc = fifo_next(&t->sock.tcp.txbuf, desc);
-            continue;
+            if (!(desc->flags & PKT_FLAG_SENT)) {
+                desc = fifo_next(&t->sock.tcp.txbuf, desc);
+                continue;
+            }
+            /* FIFO order already tracks lowest in-flight sequence first.
+             * Select first eligible unsacked segment and defer all others. */
+            desc->flags &= ~PKT_FLAG_SENT;
+            desc->flags |= PKT_FLAG_RETRANS;
+            if (seg_len >= t->sock.tcp.bytes_in_flight)
+                t->sock.tcp.bytes_in_flight = 0;
+            else
+                t->sock.tcp.bytes_in_flight -= seg_len;
+            if (tx_has_writable_space(t))
+                t->events |= CB_EVENT_WRITABLE;
+            return 1;
         }
-        if ((desc->flags & PKT_FLAG_RETRANS) && !(desc->flags & PKT_FLAG_SENT)) {
-            /* A lower sequence is already queued for retransmission but not yet
-             * transmitted. Do not mark newer segments before that hole is sent. */
-            pending = desc;
-            break;
+        if (pending) {
+            if (tx_has_writable_space(t))
+                t->events |= CB_EVENT_WRITABLE;
+            return 1;
         }
-        if (!(desc->flags & PKT_FLAG_SENT)) {
-            desc = fifo_next(&t->sock.tcp.txbuf, desc);
-            continue;
-        }
-        /* FIFO order already tracks lowest in-flight sequence first.
-         * Select first eligible unsacked segment and defer all others. */
-        desc->flags &= ~PKT_FLAG_SENT;
-        desc->flags |= PKT_FLAG_RETRANS;
-        if (seg_len >= t->sock.tcp.bytes_in_flight)
-            t->sock.tcp.bytes_in_flight = 0;
-        else
-            t->sock.tcp.bytes_in_flight -= seg_len;
-        if (tx_has_writable_space(t))
-            t->events |= CB_EVENT_WRITABLE;
-        return 1;
-    }
-    if (pending) {
-        if (tx_has_writable_space(t))
-            t->events |= CB_EVENT_WRITABLE;
-        return 1;
-    }
-    if (!cover_found) {
-        if (t->sock.tcp.peer_sack_count > 0) {
+        if (!cover_found && allow_rescan && t->sock.tcp.peer_sack_count > 0) {
             /* Scoreboard can become stale/reneged and mask the actual hole.
              * Drop peer SACK state once and rescan without SACK filtering. */
             t->sock.tcp.peer_sack_count = 0;
-            goto retry_scan;
+            allow_rescan = 0;
+            continue;
         }
         return 0;
     }
-    return 0;
 }
 
 /* Receive an ack */
