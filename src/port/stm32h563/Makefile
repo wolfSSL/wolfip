@@ -28,7 +28,8 @@ WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
 # Base compiler flags
 CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ffunction-sections
 CFLAGS += -g -ggdb -Wall -Wextra -Werror
-CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src
+CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port/stm32
+CFLAGS += -DSTM32H5
 
 # Relaxed warnings for external libraries (wolfSSL has many unused var warnings)
 CFLAGS_WOLFSSL := $(CFLAGS)
@@ -47,7 +48,7 @@ endif
 LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
 
 # Base source files
-SRCS := startup.c ivt.c syscalls.c main.c stm32h5_eth.c $(ROOT)/src/wolfip.c
+SRCS := startup.c ivt.c syscalls.c main.c $(ROOT)/src/port/stm32/stm32_eth.c $(ROOT)/src/wolfip.c
 
 # -----------------------------------------------------------------------------
 # TLS Support (wolfSSL)
@@ -236,6 +237,7 @@ clean:
 	rm -f *.o app.elf app.bin
 	rm -f $(ROOT)/src/*.o
 	rm -f $(ROOT)/src/port/*.o
+	rm -f $(ROOT)/src/port/stm32/*.o
 ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o

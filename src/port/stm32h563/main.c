@@ -22,7 +22,7 @@
 #include <string.h>
 #include "config.h"
 #include "wolfip.h"
-#include "stm32h5_eth.h"
+#include "stm32_eth.h"
 
 #ifdef ENABLE_TLS
 #include "tls_server.h"
@@ -553,9 +553,9 @@ int main(void)
 
     uart_puts("Initializing Ethernet MAC...\n");
     ll = wolfIP_getdev(IPStack);
-    ret = stm32h5_eth_init(ll, NULL);
+    ret = stm32_eth_init(ll, NULL);
     if (ret < 0) {
-        uart_puts("  ERROR: stm32h5_eth_init failed (");
+        uart_puts("  ERROR: stm32_eth_init failed (");
         uart_puthex((uint32_t)ret);
         uart_puts(")\n");
     } else {
