@@ -1008,6 +1008,7 @@ struct tcpsocket {
     uint32_t peer_rwnd;
     uint16_t peer_mss;
     uint8_t snd_wscale, rcv_wscale, ws_enabled, ws_offer;
+    uint8_t ts_enabled, ts_offer;
     uint8_t sack_offer, sack_permitted;
     uint8_t rx_sack_count, peer_sack_count;
     struct tcp_sack_block rx_sack[TCP_SACK_MAX_BLOCKS];
@@ -1701,6 +1702,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.peer_mss = TCP_DEFAULT_MSS;
             t->sock.tcp.snd_wscale = 0;
             t->sock.tcp.ws_enabled = 0;
+            t->sock.tcp.ts_enabled = 0;
             t->sock.tcp.sack_offer = 1;
             t->sock.tcp.sack_permitted = 0;
             t->sock.tcp.rx_sack_count = 0;
@@ -1716,6 +1718,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             /* We always include WS in the initial SYN (shift may be 0), so
              * mark that we offered it to accept the peer's WS in SYN-ACK. */
             t->sock.tcp.ws_offer = 1;
+            t->sock.tcp.ts_offer = 1;
 
             queue_init(&t->sock.tcp.rxbuf, t->rxmem, RXBUF_SIZE, 0);
             fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
@@ -1998,17 +2001,20 @@ static void tcp_consume_ooo(struct tsocket *t)
 
 static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t max_len)
 {
-    struct tcp_opt_ts *ts = (struct tcp_opt_ts *)opt;
+    struct tcp_opt_ts *ts;
     uint8_t len = 0;
 
-    if (max_len < TCP_OPTION_TS_LEN)
-        return 0;
-    ts->opt = TCP_OPTION_TS;
-    ts->len = TCP_OPTION_TS_LEN;
-    ts->val = ee32(t->S->last_tick & 0xFFFFFFFFU);
-    ts->ecr = t->sock.tcp.last_ts;
-    len += TCP_OPTION_TS_LEN;
-    opt += TCP_OPTION_TS_LEN;
+    if (t->sock.tcp.ts_enabled) {
+        if (max_len < TCP_OPTION_TS_LEN)
+            return 0;
+        ts = (struct tcp_opt_ts *)opt;
+        ts->opt = TCP_OPTION_TS;
+        ts->len = TCP_OPTION_TS_LEN;
+        ts->val = ee32(t->S->last_tick & 0xFFFFFFFFU);
+        ts->ecr = t->sock.tcp.last_ts;
+        len += TCP_OPTION_TS_LEN;
+        opt += TCP_OPTION_TS_LEN;
+    }
 
     /* SACK option is sent only after successful negotiation and only while we
      * still hold non-contiguous data above cumulative ACK. */
@@ -2082,6 +2088,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
     uint8_t include_ws = 0;
     uint8_t include_sack = 0;
+    uint8_t include_ts = 0;
     uint8_t opt_len = 0;
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
@@ -2090,10 +2097,12 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
             /* SYN-ACK: include WS only when enabled on this socket. */
             include_ws = t->sock.tcp.ws_enabled;
             include_sack = t->sock.tcp.sack_permitted;
+            include_ts = t->sock.tcp.ts_enabled;
         } else {
             /* Initial SYN: always include WS to allow peer scaling. */
             include_ws = 1;
             include_sack = t->sock.tcp.sack_offer;
+            include_ts = t->sock.tcp.ts_offer;
         }
     }
     tcp->src_port = ee16(t->src_port);
@@ -2105,15 +2114,17 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     tcp->csum = 0;
     tcp->urg = 0;
     opt = tcp->data;
-    ts = (struct tcp_opt_ts *)opt;
-    ts->opt = TCP_OPTION_TS;
-    ts->len = TCP_OPTION_TS_LEN;
-    ts->val = ee32(t->S->last_tick & 0xFFFFFFFFU);
-    ts->ecr = t->sock.tcp.last_ts;
-    ts->pad = TCP_OPTION_NOP;
-    ts->eoo = TCP_OPTION_NOP;
-    opt += sizeof(*ts);
-    opt_len += sizeof(*ts);
+    if (include_ts) {
+        ts = (struct tcp_opt_ts *)opt;
+        ts->opt = TCP_OPTION_TS;
+        ts->len = TCP_OPTION_TS_LEN;
+        ts->val = ee32(t->S->last_tick & 0xFFFFFFFFU);
+        ts->ecr = t->sock.tcp.last_ts;
+        ts->pad = TCP_OPTION_NOP;
+        ts->eoo = TCP_OPTION_NOP;
+        opt += sizeof(*ts);
+        opt_len += sizeof(*ts);
+    }
     mss = (struct tcp_opt_mss *)opt;
     mss->opt = TCP_OPTION_MSS;
     mss->len = TCP_OPTION_MSS_LEN;
@@ -3054,6 +3065,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* Server side: enable if peer offered WS. */
                     t->sock.tcp.peer_mss = po.mss_found ? po.mss : TCP_DEFAULT_MSS;
                     t->sock.tcp.ws_enabled = po.ws_found ? 1 : 0;
+                    t->sock.tcp.ts_enabled = po.ts_found ? 1 : 0;
                     if (po.ws_found)
                         t->sock.tcp.snd_wscale = po.ws_shift;
                     t->sock.tcp.sack_permitted =
@@ -3070,6 +3082,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->sock.tcp.ws_enabled = 0;
                         t->sock.tcp.snd_wscale = 0;
                     }
+                    t->sock.tcp.ts_enabled = (t->sock.tcp.ts_offer && po.ts_found) ? 1 : 0;
                     t->sock.tcp.sack_permitted =
                         (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
                 }
@@ -3666,6 +3679,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.rcv_wscale = ts->sock.tcp.rcv_wscale;
             newts->sock.tcp.ws_enabled = ts->sock.tcp.ws_enabled;
             newts->sock.tcp.ws_offer = ts->sock.tcp.ws_offer;
+            newts->sock.tcp.ts_enabled = ts->sock.tcp.ts_enabled;
+            newts->sock.tcp.ts_offer = ts->sock.tcp.ts_offer;
             newts->sock.tcp.sack_offer = ts->sock.tcp.sack_offer;
             newts->sock.tcp.sack_permitted = ts->sock.tcp.sack_permitted;
             newts->sock.tcp.state = TCP_ESTABLISHED;
@@ -3725,8 +3740,6 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
     if (IS_SOCKET_TCP(sockfd)) {
         size_t sent = 0;
         unsigned int push_iter = 0;
-        struct tcp_opt_ts *tsopt = (struct tcp_opt_ts *)tcp->data;
-        const uint32_t frame_base = (uint32_t)(sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN);
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
 
@@ -3737,6 +3750,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         while (sent < len) {
             uint32_t payload_len;
             uint32_t payload_cap = (uint32_t)(len - sent);
+            uint32_t opt_len = ts->sock.tcp.ts_enabled ? TCP_OPTIONS_LEN : 0;
+            uint32_t frame_base = (uint32_t)(sizeof(struct wolfIP_tcp_seg) + opt_len);
             uint32_t tx_cap = tcp_tx_payload_cap(ts);
             push_iter++;
             if (payload_cap > tx_cap)
@@ -3752,20 +3767,23 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tcp->dst_port = ee16(ts->dst_port);
             tcp->seq = ee32(ts->sock.tcp.seq);
             tcp->ack = ee32(ts->sock.tcp.ack);
-            tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+            tcp->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
             tcp->flags = 0x10 | ((sent == 0)? 0x08 : 0); /* ACK; PSH only on first */
             tcp->win = ee16(tcp_adv_win(ts));
             tcp->csum = 0;
             tcp->urg = 0;
-            tsopt->opt = TCP_OPTION_TS;
-            tsopt->len = TCP_OPTION_TS_LEN;
-            tsopt->val = ee32(s->last_tick & 0xFFFFFFFF);
-            tsopt->ecr = ts->sock.tcp.last_ts;
-            tsopt->pad = 0x01;
-            tsopt->eoo = 0x00;
-            memcpy((uint8_t *)tcp->data + TCP_OPTIONS_LEN, (const uint8_t *)buf + sent, payload_len);
+            if (ts->sock.tcp.ts_enabled) {
+                struct tcp_opt_ts *tsopt = (struct tcp_opt_ts *)tcp->data;
+                tsopt->opt = TCP_OPTION_TS;
+                tsopt->len = TCP_OPTION_TS_LEN;
+                tsopt->val = ee32(s->last_tick & 0xFFFFFFFF);
+                tsopt->ecr = ts->sock.tcp.last_ts;
+                tsopt->pad = 0x01;
+                tsopt->eoo = 0x00;
+            }
+            memcpy((uint8_t *)tcp->data + opt_len, (const uint8_t *)buf + sent, payload_len);
             if (fifo_push(&ts->sock.tcp.txbuf, tcp,
-                    sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + payload_len) < 0) {
+                    sizeof(struct wolfIP_tcp_seg) + opt_len + payload_len) < 0) {
                 break;
             }
             sent += payload_len;

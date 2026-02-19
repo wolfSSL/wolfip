@@ -8809,6 +8809,7 @@ START_TEST(test_tcp_build_ack_options_does_not_write_past_returned_len)
     memset(ts, 0, sizeof(*ts));
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
+    ts->sock.tcp.ts_enabled = 1;
     ts->sock.tcp.sack_permitted = 0;
     ts->sock.tcp.rx_sack_count = 0;
 
@@ -8817,6 +8818,29 @@ START_TEST(test_tcp_build_ack_options_does_not_write_past_returned_len)
     ck_assert_uint_eq(len, TCP_OPTION_TS_LEN + 2); /* TS + 2-byte NOP pad */
     ck_assert_uint_eq((uint8_t)(len % 4), 0);
     ck_assert_uint_eq(opts[len], 0xCC);
+}
+END_TEST
+
+START_TEST(test_tcp_build_ack_options_omits_ts_when_not_negotiated)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t opts[TCP_MAX_OPTIONS_LEN];
+    uint8_t len;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.ts_enabled = 0;
+    ts->sock.tcp.sack_permitted = 0;
+    ts->sock.tcp.rx_sack_count = 0;
+
+    memset(opts, 0xCC, sizeof(opts));
+    len = tcp_build_ack_options(ts, opts, sizeof(opts));
+    ck_assert_uint_eq(len, 0);
+    ck_assert_uint_eq(opts[0], 0xCC);
 }
 END_TEST
 
@@ -14740,6 +14764,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_process_ts_updates_rtt_when_set);
     tcase_add_test(tc_utils, test_tcp_send_syn_advertises_sack_permitted);
     tcase_add_test(tc_utils, test_tcp_build_ack_options_does_not_write_past_returned_len);
+    tcase_add_test(tc_utils, test_tcp_build_ack_options_omits_ts_when_not_negotiated);
     tcase_add_test(tc_utils, test_tcp_sort_sack_blocks_swaps_out_of_order);
     tcase_add_test(tc_utils, test_tcp_merge_sack_blocks_adjacent_and_disjoint);
     tcase_add_test(tc_utils, test_tcp_recv_tracks_holes_and_sack_blocks);
