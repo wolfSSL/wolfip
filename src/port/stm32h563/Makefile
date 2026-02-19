@@ -1,5 +1,5 @@
-CC ?= arm-none-eabi-gcc
-OBJCOPY ?= arm-none-eabi-objcopy
+CC:=arm-none-eabi-gcc
+OBJCOPY:=arm-none-eabi-objcopy
 
 ROOT := ../../..
 
@@ -19,6 +19,12 @@ ENABLE_SSH ?= 0
 
 # MQTT support: set ENABLE_MQTT=1 to include wolfMQTT client (requires TLS)
 ENABLE_MQTT ?= 0
+
+# Build mode for m33mu testing: SERVER, CLIENT, or empty for combined
+BUILD_MODE ?=
+
+# m33mu test mode: set M33MU_TEST=1 to enable test mode with breakpoint on success
+M33MU_TEST ?= 0
 
 # Library paths - default to sibling directories (clone alongside pattern)
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
@@ -45,6 +51,22 @@ else
 endif
 
 LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
+
+# Add build mode defines
+ifeq ($(BUILD_MODE),SERVER)
+  CFLAGS += -DBUILD_TLS_SERVER_ONLY
+endif
+
+ifeq ($(BUILD_MODE),CLIENT)
+  CFLAGS += -DBUILD_TLS_CLIENT_ONLY
+endif
+
+# Add m33mu test mode define
+ifeq ($(M33MU_TEST),1)
+  CFLAGS += -DM33MU_TEST=1
+  # Disable DHCP for deterministic IPs in tests
+  CFLAGS += -DWOLFIP_ENABLE_DHCP=0
+endif
 
 # Base source files
 SRCS := startup.c ivt.c syscalls.c main.c stm32h5_eth.c $(ROOT)/src/wolfip.c
@@ -232,8 +254,34 @@ app.bin: app.elf
 $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
 	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH) -I$(WOLFSSL_ROOT) -c $< -o $@
 
+# -----------------------------------------------------------------------------
+# m33mu Test Targets
+# -----------------------------------------------------------------------------
+
+# Build TLS server/client for m33mu testing (same recipe)
+test-server test-client:
+	$(MAKE) app-$(subst test-,,$@).bin ENABLE_TLS=1 M33MU_TEST=1 BUILD_MODE=$(if $(findstring server,$@),SERVER,CLIENT)
+
+# Build both TLS server and client for m33mu testing
+test-m33mu:
+	$(MAKE) clean
+	$(MAKE) app-server.bin ENABLE_TLS=1 M33MU_TEST=1 BUILD_MODE=SERVER
+	$(MAKE) app-client.bin ENABLE_TLS=1 M33MU_TEST=1 BUILD_MODE=CLIENT
+
+app-server.elf: $(OBJS) $(LDSCRIPT)
+	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -Wl,--start-group -lc -lm -lgcc -lnosys -Wl,--end-group -o $@
+
+app-server.bin: app-server.elf
+	$(OBJCOPY) -O binary $< $@
+
+app-client.elf: $(OBJS) $(LDSCRIPT)
+	$(CC) $(CFLAGS) $(OBJS) $(LDFLAGS) -Wl,--start-group -lc -lm -lgcc -lnosys -Wl,--end-group -o $@
+
+app-client.bin: app-client.elf
+	$(OBJCOPY) -O binary $< $@
+
 clean:
-	rm -f *.o app.elf app.bin
+	rm -f *.o app.elf app.bin app-server.elf app-server.bin app-client.elf app-client.bin
 	rm -f $(ROOT)/src/*.o
 	rm -f $(ROOT)/src/port/*.o
 ifeq ($(ENABLE_TLS),1)
@@ -267,7 +315,7 @@ size: app.elf
 	@echo "Flash usage: $$(arm-none-eabi-size app.elf | awk 'NR==2{printf "%.1f%% (%d / %d bytes)", ($$1+$$2)*100/2097152, $$1+$$2, 2097152}')"
 	@echo "RAM usage (static): $$(arm-none-eabi-size app.elf | awk 'NR==2{printf "%.1f%% (%d / %d bytes)", ($$2+$$3)*100/655360, $$2+$$3, 655360}')"
 
-.PHONY: all clean verify size
+.PHONY: all clean verify size test-server test-client test-m33mu
 
 # -----------------------------------------------------------------------------
 # Help
