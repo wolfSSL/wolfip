@@ -2244,7 +2244,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     uint8_t probe_frame[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 1];
     struct wolfIP_tcp_seg *probe = (struct wolfIP_tcp_seg *)probe_frame;
     uint8_t probe_byte = 0;
-    uint32_t probe_seq = t->sock.tcp.snd_una;
+    uint32_t probe_seq;
     unsigned int tx_if;
 #ifdef ETHERNET
     struct ipconf *conf;
@@ -2253,6 +2253,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
 
     if (!t || t->proto != WI_IPPROTO_TCP)
         return -1;
+    probe_seq = t->sock.tcp.snd_una;
     budget = fifo_desc_budget(&t->sock.tcp.txbuf);
     desc = fifo_peek(&t->sock.tcp.txbuf);
     while (desc && guard++ < budget) {
@@ -3403,7 +3404,9 @@ static struct pkt_desc *tcp_find_pending_retrans(struct tsocket *ts, struct pkt_
 
 static void close_socket(struct tsocket *ts)
 {
-    if (ts && ts->proto == WI_IPPROTO_TCP)
+    if (!ts)
+        return;
+    if (ts->proto == WI_IPPROTO_TCP)
         tcp_persist_stop(ts);
     memset(ts, 0, sizeof(struct tsocket));
 }
