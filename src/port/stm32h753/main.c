@@ -10,7 +10,7 @@
 #include <string.h>
 #include "config.h"
 #include "wolfip.h"
-#include "stm32h7_eth.h"
+#include "stm32_eth.h"
 
 #ifdef ENABLE_TLS
 #include "tls_client.h"
@@ -1015,9 +1015,9 @@ int main(void)
 
     uart_puts("Initializing Ethernet MAC...\n");
     ll = wolfIP_getdev(IPStack);
-    ret = stm32h7_eth_init(ll, NULL);
+    ret = stm32_eth_init(ll, NULL);
     if (ret < 0) {
-        uart_puts("  ERROR: stm32h7_eth_init failed (");
+        uart_puts("  ERROR: stm32_eth_init failed (");
         uart_puthex((uint32_t)ret);
         uart_puts(")\n");
         led_red_on();
@@ -1094,7 +1094,7 @@ int main(void)
                 if ((elapsed < 10) ||
                     (elapsed % 2000) == 0) {
                     uint32_t polls, pkts;
-                    stm32h7_eth_get_stats(&polls, &pkts);
+                    stm32_eth_get_stats(&polls, &pkts);
                     uart_puts("  tick=");
                     uart_putdec(elapsed);
                     uart_puts(" rx_polls=");
@@ -1102,9 +1102,9 @@ int main(void)
                     uart_puts(" rx_pkts=");
                     uart_putdec(pkts);
                     uart_puts(" DMACSR=");
-                    uart_puthex(stm32h7_eth_get_dmacsr());
+                    uart_puthex(stm32_eth_get_dmacsr());
                     uart_puts(" des3=");
-                    uart_puthex(stm32h7_eth_get_rx_des3());
+                    uart_puthex(stm32_eth_get_rx_des3());
                     uart_puts("\n");
                 }
 #endif
