@@ -8593,6 +8593,29 @@ START_TEST(test_tcp_process_ts_uses_ecr)
     s.last_tick = 1000;
     ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), 0);
     ck_assert_uint_eq(ts->sock.tcp.rtt, 100);
+    ck_assert_uint_eq(ts->sock.tcp.rto, TCP_RTO_MIN_MS);
+    ck_assert_uint_eq(ts->sock.tcp.rto_initialized, 1);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_update_second_sample_rfc6298)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+
+    tcp_rto_update_from_sample(ts, 2000);
+    ck_assert_uint_eq(ts->sock.tcp.rtt, 2000);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 6000);
+
+    tcp_rto_update_from_sample(ts, 1000);
+    ck_assert_uint_eq(ts->sock.tcp.rtt, 1875);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 5875);
 }
 END_TEST
 
@@ -10216,6 +10239,58 @@ START_TEST(test_tcp_ack_fresh_desc_updates_rtt_existing)
     tcp_ack(ts, &ackseg);
     ck_assert_uint_gt(ts->sock.tcp.rtt, 0);
     ck_assert_uint_eq(ts->events & CB_EVENT_WRITABLE, CB_EVENT_WRITABLE);
+}
+END_TEST
+
+START_TEST(test_tcp_ack_retransmitted_desc_skips_rtt_update)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+    uint32_t seq = 300;
+    uint32_t old_rtt;
+    uint32_t old_rto;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    s.last_tick = 1000;
+
+    tcp_rto_update_from_sample(ts, 200);
+    old_rtt = ts->sock.tcp.rtt;
+    old_rto = ts->sock.tcp.rto;
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    seg->data[0] = TCP_OPTION_EOO;
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    desc->flags |= PKT_FLAG_WAS_RETRANS;
+    desc->time_sent = 800;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + 1;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(seq + 1);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = 0x10;
+
+    tcp_ack(ts, &ackseg);
+    ck_assert_uint_eq(ts->sock.tcp.rtt, old_rtt);
+    ck_assert_uint_eq(ts->sock.tcp.rto, old_rto);
 }
 END_TEST
 
@@ -14630,6 +14705,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_last_seq_match_no_close);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_ack_fresh_desc_updates_rtt_existing);
+    tcase_add_test(tc_utils, test_tcp_ack_retransmitted_desc_skips_rtt_update);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_zero_len_segment_large_ack);
     suite_add_tcase(s, tc_utils);
@@ -14678,6 +14754,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_queue_full_sends_ack);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_process_ts_uses_ecr);
+    tcase_add_test(tc_utils, test_tcp_rto_update_second_sample_rfc6298);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_process_ts_nop_then_ts);
     suite_add_tcase(s, tc_utils);
