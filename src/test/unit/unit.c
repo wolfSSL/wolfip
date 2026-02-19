@@ -5652,11 +5652,188 @@ START_TEST(test_tcp_rto_cb_non_established_noop)
     memset(ts, 0, sizeof(*ts));
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
-    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.state = TCP_CLOSED;
     ts->sock.tcp.rto_backoff = 2;
 
     tcp_rto_cb(ts);
     ck_assert_uint_eq(ts->sock.tcp.rto_backoff, 2);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.rto = 100;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(seg->flags, 0x02);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_tcp_input_synack_cancels_control_rto)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg synack;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.ctrl_rto_retries = 3;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->src_port = 2222;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    tmr.arg = ts;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    memset(&synack, 0, sizeof(synack));
+    synack.ip.ttl = 64;
+    synack.ip.src = ee32(0x0A000002U);
+    synack.ip.dst = ee32(0x0A000001U);
+    synack.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    synack.src_port = ee16(5001);
+    synack.dst_port = ee16(ts->src_port);
+    synack.seq = ee32(1000);
+    synack.ack = ee32(ts->sock.tcp.seq + 1);
+    synack.hlen = TCP_HEADER_LEN << 2;
+    synack.flags = 0x12;
+    synack.win = ee16(65535);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &synack,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_last_ack_requeues_finack_and_arms_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.rto = 100;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(seg->flags, 0x11);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_stops_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->sock.tcp.last = 100;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = 2;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 200;
+    tmr.arg = ts;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = 0x10;
+    ackseg.ack = ee32(101);
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_control_retry_cap_closes_socket)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = TCP_CTRL_RTO_MAXRTX;
+
+    tcp_rto_cb(ts);
+    ck_assert_int_eq(ts->proto, 0);
 }
 END_TEST
 
@@ -9949,7 +10126,7 @@ START_TEST(test_tcp_ack_closes_last_ack_socket)
     desc->flags |= PKT_FLAG_SENT;
 
     memset(&ackseg, 0, sizeof(ackseg));
-    ackseg.ack = ee32(seq);
+    ackseg.ack = ee32(seq + 1);
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = 0x10;
 
@@ -14381,6 +14558,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_tcp_noop);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_established_noop);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer);
+    tcase_add_test(tc_utils, test_tcp_input_synack_cancels_control_rto);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_requeues_finack_and_arms_timer);
+    tcase_add_test(tc_utils, test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_stops_timer);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_control_retry_cap_closes_socket);
     suite_add_tcase(s, tc_utils);
     tcase_add_test(tc_utils, test_tcp_rto_cb_cancels_existing_timer);
     suite_add_tcase(s, tc_utils);
