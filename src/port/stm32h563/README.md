@@ -8,7 +8,7 @@ This directory contains a bare-metal port of wolfIP for the STM32H563 microcontr
    ```bash
    cd src/port/stm32h563
    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
-   make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+   make ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
    ```
 
 2. **Flash to board:**
@@ -321,15 +321,16 @@ make ENABLE_TLS=1 WOLFSSL_ROOT=/path/to/wolfssl
 
 ### Building with HTTPS Web Server
 
-The HTTPS web server provides a status page accessible via browser:
+The HTTPS web server provides a status page accessible via browser.
+TLS is automatically enabled:
 
 ```bash
-make ENABLE_TLS=1 ENABLE_HTTPS=1
+make ENABLE_HTTPS=1
 ```
 
 ### Building with SSH Server
 
-SSH server requires both wolfSSL and wolfSSH:
+SSH server requires wolfSSH. TLS is automatically enabled:
 
 ```bash
 # Clone wolfSSH alongside wolfip
@@ -337,21 +338,22 @@ cd /path/to/parent
 git clone https://github.com/wolfSSL/wolfssh.git
 
 # Build with SSH support
-make ENABLE_TLS=1 ENABLE_SSH=1
+make ENABLE_SSH=1
 ```
 
 Or specify a custom wolfSSH path:
 
 ```bash
-make ENABLE_TLS=1 ENABLE_SSH=1 WOLFSSH_ROOT=/path/to/wolfssh
+make ENABLE_SSH=1 WOLFSSH_ROOT=/path/to/wolfssh
 ```
 
 ### Full Featured Build
 
-Build with all features (TLS echo, HTTPS web server, and SSH shell):
+Build with all features (TLS echo, HTTPS web server, and SSH shell).
+TLS is automatically enabled when any feature that requires it is set:
 
 ```bash
-make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1
+make ENABLE_HTTPS=1 ENABLE_SSH=1
 ```
 
 This provides:
@@ -434,7 +436,7 @@ The self-signed certificate warning is expected for development. Replace with a 
 
 ### TLS Client (Google Test)
 
-The TLS build includes a client example that connects to Google over HTTPS to verify outbound TLS connectivity. This runs automatically ~5 seconds after boot.
+The TLS build includes a client example that connects to Google over HTTPS to verify outbound TLS connectivity. This runs automatically after boot.
 
 **Example Output:**
 ```
@@ -472,7 +474,7 @@ The TLS configuration is in `user_settings.h`:
 | File | Description |
 |------|-------------|
 | `user_settings.h` | wolfSSL compile-time configuration |
-| `certs.h` | Embedded ECC P-256 test certificate |
+| `../certs.h` | Embedded ECC P-256 test certificate (shared) |
 | `tls_server.c/h` | TLS echo server implementation |
 | `tls_client.c/h` | TLS client (for outbound connections) |
 
@@ -497,7 +499,7 @@ When built with `ENABLE_HTTPS=1`, the device serves a status web page on port 44
 ### Building HTTPS Mode
 
 ```bash
-make ENABLE_TLS=1 ENABLE_HTTPS=1
+make ENABLE_HTTPS=1
 ```
 
 ### Expected Serial Output (HTTPS Mode)
@@ -567,9 +569,9 @@ When built with `ENABLE_SSH=1`, the device provides an SSH shell on port 22.
 cd /path/to/parent
 git clone https://github.com/wolfSSL/wolfssh.git
 
-# Build with SSH support (requires TLS)
+# Build with SSH support (TLS automatically enabled)
 cd wolfip/src/port/stm32h563
-make ENABLE_TLS=1 ENABLE_SSH=1
+make ENABLE_SSH=1
 ```
 
 ### Expected Serial Output (SSH Mode)
@@ -671,14 +673,14 @@ git clone https://github.com/wolfSSL/wolfMQTT.git
 ### Building MQTT Mode
 
 ```bash
-# MQTT requires TLS
-make ENABLE_TLS=1 ENABLE_MQTT=1
+# TLS is automatically enabled
+make ENABLE_MQTT=1
 ```
 
 Or specify a custom wolfMQTT path:
 
 ```bash
-make ENABLE_TLS=1 ENABLE_MQTT=1 WOLFMQTT_ROOT=/path/to/wolfmqtt
+make ENABLE_MQTT=1 WOLFMQTT_ROOT=/path/to/wolfmqtt
 ```
 
 ### Expected Serial Output (MQTT Mode)
@@ -730,7 +732,7 @@ mosquitto_sub -h test.mosquitto.org -t "wolfip/status" -v
 Build with all features (TLS, HTTPS, SSH, and MQTT):
 
 ```bash
-make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+make ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
 ```
 
 This provides:
@@ -763,7 +765,7 @@ This provides:
 | `config.h` | Build configuration |
 | `Makefile` | Build system |
 | `user_settings.h` | wolfSSL/wolfSSH/wolfMQTT configuration |
-| `certs.h` | Embedded TLS certificates (TLS builds only) |
+| `../certs.h` | Embedded TLS certificates, shared (TLS builds only) |
 | `tls_server.c/h` | TLS echo server (TLS builds only) |
 | `tls_client.c/h` | TLS client for outbound connections (TLS builds only) |
 | `../http/httpd.c` | HTTPS web server - wolfIP httpd (HTTPS builds only) |
@@ -799,7 +801,7 @@ If you don't see "Initializing TLS/HTTPS/SSH/MQTT" messages in UART output:
 **Solution:** Rebuild with required flags:
 ```bash
 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
-make clean && make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+make clean && make ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
 ```
 
 **Verify build:** Check that strings exist in binary:

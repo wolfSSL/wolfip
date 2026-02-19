@@ -3,12 +3,25 @@ OBJCOPY ?= arm-none-eabi-objcopy
 
 ROOT := ../../..
 
-# TLS support: set ENABLE_TLS=1 to include wolfSSL TLS client
+# TLS support: set ENABLE_TLS=1 to include wolfSSL
 # Requires wolfSSL cloned alongside wolfip (or set WOLFSSL_ROOT)
 ENABLE_TLS ?= 0
 
-# HTTPS web server: set ENABLE_HTTPS=1 to include HTTPS web server (requires TLS)
+# TLS client test: set ENABLE_TLS_CLIENT=1 to include TLS client (Google test)
+# Automatically enables TLS if needed
+ENABLE_TLS_CLIENT ?= 0
+
+# HTTPS web server: set ENABLE_HTTPS=1 to include HTTPS web server
+# Automatically enables TLS if needed
 ENABLE_HTTPS ?= 0
+
+# Auto-enable TLS when any feature that requires it is enabled
+ifeq ($(ENABLE_TLS_CLIENT),1)
+  ENABLE_TLS = 1
+endif
+ifeq ($(ENABLE_HTTPS),1)
+  ENABLE_TLS = 1
+endif
 
 # Library paths - default to sibling directories
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
@@ -17,7 +30,7 @@ WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
 CFLAGS := -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
 CFLAGS += -Os -ffreestanding -fdata-sections -ffunction-sections
 CFLAGS += -g -ggdb -Wall -Wextra -Werror
-CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port/stm32
+CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port -I$(ROOT)/src/port/stm32
 CFLAGS += -DSTM32H7
 
 # Relaxed warnings for external libraries
@@ -46,14 +59,13 @@ CFLAGS += -DWOLFSSL_USER_SETTINGS
 CFLAGS += -DWOLFSSL_WOLFIP
 CFLAGS += -I$(WOLFSSL_ROOT)
 
-# TLS client and wolfIP-wolfSSL glue
-SRCS += tls_client.c
+# wolfIP-wolfSSL glue
 SRCS += $(ROOT)/src/port/wolfssl_io.c
 
-# HTTPS web server (requires TLS)
-ifeq ($(ENABLE_HTTPS),1)
-CFLAGS += -DENABLE_HTTPS
-SRCS += $(ROOT)/src/http/httpd.c
+# TLS client (Google test)
+ifeq ($(ENABLE_TLS_CLIENT),1)
+CFLAGS += -DENABLE_TLS_CLIENT
+SRCS += tls_client.c
 endif
 
 # wolfSSL source files (minimal set for TLS 1.3 client with ECC)
@@ -106,12 +118,20 @@ SRCS += $(WOLFSSL_SRCS)
 endif # ENABLE_TLS
 
 # -----------------------------------------------------------------------------
+# HTTPS web server (requires TLS) - uses existing wolfIP httpd
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_HTTPS),1)
+CFLAGS += -DENABLE_HTTPS
+SRCS += $(ROOT)/src/http/httpd.c
+endif
+
+# -----------------------------------------------------------------------------
 # Build rules
 # -----------------------------------------------------------------------------
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS)"
+	@echo "Built with ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
 endif
@@ -172,15 +192,17 @@ help:
 	@echo "  help     Show this help"
 	@echo ""
 	@echo "Options:"
-	@echo "  ENABLE_TLS=1    Enable TLS 1.3 client (requires wolfSSL)"
-	@echo "  ENABLE_HTTPS=1  Enable HTTPS web server (requires TLS)"
-	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
-	@echo "  CC=             C compiler (default: arm-none-eabi-gcc)"
+	@echo "  ENABLE_TLS=1         Enable wolfSSL TLS support"
+	@echo "  ENABLE_TLS_CLIENT=1  Enable TLS client test (Google)"
+	@echo "  ENABLE_HTTPS=1       Enable HTTPS web server (port 443)"
+	@echo "  WOLFSSL_ROOT=        Path to wolfSSL (default: ../wolfssl)"
+	@echo "  CC=                  C compiler (default: arm-none-eabi-gcc)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make                              # Basic TCP echo (port 7)"
-	@echo "  make ENABLE_TLS=1                 # TLS 1.3 client"
-	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1  # TLS + HTTPS server"
+	@echo "  make                                        # Basic TCP echo (port 7)"
+	@echo "  make ENABLE_HTTPS=1                         # HTTPS web server"
+	@echo "  make ENABLE_TLS_CLIENT=1                    # TLS client (Google test)"
+	@echo "  make ENABLE_TLS_CLIENT=1 ENABLE_HTTPS=1    # All features"
 	@echo ""
 	@echo "Testing:"
 	@echo "  nc <ip> 7                         # TCP echo test"

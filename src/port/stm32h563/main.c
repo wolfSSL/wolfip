@@ -689,7 +689,19 @@ int main(void)
 #endif
 
     uart_puts("Entering main loop. Ready for connections!\n");
-    uart_puts("Loop starting...\n");
+    uart_puts("  TCP Echo: port 7\n");
+#ifdef ENABLE_TLS
+    uart_puts("  TLS Client: will connect to Google after ~2s\n");
+#endif
+#ifdef ENABLE_HTTPS
+    uart_puts("  HTTPS Server: port 443\n");
+#endif
+#ifdef ENABLE_SSH
+    uart_puts("  SSH Server: port 22\n");
+#endif
+#ifdef ENABLE_MQTT
+    uart_puts("  MQTT Client: connecting to broker\n");
+#endif
 
     for (;;) {
         (void)wolfIP_poll(IPStack, tick++);

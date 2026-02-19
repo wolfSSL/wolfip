@@ -119,9 +119,9 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
     } else {
         snprintf(txt_response, sizeof(txt_response), "HTTP/1.1 %d %s\r\n"
             "Content-Type: %s\r\n"
-            "Content-Length: %zu\r\n"
+            "Content-Length: %lu\r\n"
             "\r\n",
-            status_code, status_text, content_type, content_length);
+            status_code, status_text, content_type, (unsigned long)content_length);
     }
     if (hc->ssl) {
         rc = wolfSSL_write(hc->ssl, txt_response, strlen(txt_response));
