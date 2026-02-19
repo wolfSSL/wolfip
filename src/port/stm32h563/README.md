@@ -753,8 +753,8 @@ This provides:
 | File | Description |
 |------|-------------|
 | `main.c` | Application entry point, wolfIP initialization, echo server |
-| `stm32h5_eth.c` | Ethernet MAC/DMA driver for STM32H5 |
-| `stm32h5_eth.h` | Ethernet driver header |
+| `../stm32/stm32_eth.c` | Ethernet MAC/DMA driver (shared) |
+| `../stm32/stm32_eth.h` | Ethernet driver header (shared) |
 | `startup.c` | Startup code and data initialization |
 | `ivt.c` | Interrupt vector table |
 | `syscalls.c` | Newlib syscall stubs |

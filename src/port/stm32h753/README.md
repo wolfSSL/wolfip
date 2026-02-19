@@ -169,8 +169,8 @@ stm32h753/
 ├── ivt.c             # Interrupt vector table
 ├── syscalls.c        # Newlib stubs
 ├── main.c            # Application entry point
-├── stm32h7_eth.c          # Ethernet MAC/PHY driver
-├── stm32h7_eth.h          # Ethernet driver header
+├── ../stm32/stm32_eth.c   # Ethernet MAC/PHY driver (shared)
+├── ../stm32/stm32_eth.h   # Ethernet driver header (shared)
 ├── stm32_hash_register.h  # STM32 HASH peripheral register definitions
 ├── tls_client.c           # TLS 1.3 client
 └── tls_client.h           # TLS client header
