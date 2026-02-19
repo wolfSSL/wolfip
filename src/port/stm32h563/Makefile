@@ -11,14 +11,28 @@ TZEN ?= 0
 # Requires wolfSSL cloned alongside wolfip (or set WOLFSSL_ROOT)
 ENABLE_TLS ?= 0
 
-# HTTPS web server: set ENABLE_HTTPS=1 to include HTTPS web server (requires TLS)
+# HTTPS web server: set ENABLE_HTTPS=1 to include HTTPS web server
+# Automatically enables TLS if needed
 ENABLE_HTTPS ?= 0
 
-# SSH support: set ENABLE_SSH=1 to include wolfSSH server (requires TLS)
+# SSH support: set ENABLE_SSH=1 to include wolfSSH server
+# Automatically enables TLS if needed
 ENABLE_SSH ?= 0
 
-# MQTT support: set ENABLE_MQTT=1 to include wolfMQTT client (requires TLS)
+# MQTT support: set ENABLE_MQTT=1 to include wolfMQTT client
+# Automatically enables TLS if needed
 ENABLE_MQTT ?= 0
+
+# Auto-enable TLS when any feature that requires it is enabled
+ifeq ($(ENABLE_HTTPS),1)
+  ENABLE_TLS = 1
+endif
+ifeq ($(ENABLE_SSH),1)
+  ENABLE_TLS = 1
+endif
+ifeq ($(ENABLE_MQTT),1)
+  ENABLE_TLS = 1
+endif
 
 # Library paths - default to sibling directories (clone alongside pattern)
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
@@ -28,7 +42,7 @@ WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
 # Base compiler flags
 CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ffunction-sections
 CFLAGS += -g -ggdb -Wall -Wextra -Werror
-CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port/stm32
+CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port -I$(ROOT)/src/port/stm32
 CFLAGS += -DSTM32H5
 
 # Relaxed warnings for external libraries (wolfSSL has many unused var warnings)
@@ -70,14 +84,8 @@ SRCS += tls_server.c
 SRCS += tls_client.c
 SRCS += $(ROOT)/src/port/wolfssl_io.c
 
-# HTTPS web server (requires TLS) - uses existing wolfIP httpd
+# HTTPS web server - uses existing wolfIP httpd
 ifeq ($(ENABLE_HTTPS),1)
-
-# HTTPS requires TLS
-ifeq ($(ENABLE_TLS),0)
-  $(error ENABLE_HTTPS=1 requires ENABLE_TLS=1)
-endif
-
 CFLAGS += -DENABLE_HTTPS
 SRCS += $(ROOT)/src/http/httpd.c
 endif
@@ -127,14 +135,9 @@ SRCS += $(WOLFSSL_SRCS)
 endif # ENABLE_TLS
 
 # -----------------------------------------------------------------------------
-# SSH Support (wolfSSH) - requires TLS
+# SSH Support (wolfSSH)
 # -----------------------------------------------------------------------------
 ifeq ($(ENABLE_SSH),1)
-
-# SSH requires TLS
-ifeq ($(ENABLE_TLS),0)
-  $(error ENABLE_SSH=1 requires ENABLE_TLS=1)
-endif
 
 # Validate wolfSSH exists
 ifeq ($(wildcard $(WOLFSSH_ROOT)/wolfssh/ssh.h),)
@@ -167,14 +170,9 @@ $(WOLFSSH_ROOT)/%.o: $(WOLFSSH_ROOT)/%.c
 endif # ENABLE_SSH
 
 # -----------------------------------------------------------------------------
-# MQTT Support (wolfMQTT) - requires TLS
+# MQTT Support (wolfMQTT)
 # -----------------------------------------------------------------------------
 ifeq ($(ENABLE_MQTT),1)
-
-# MQTT requires TLS
-ifeq ($(ENABLE_TLS),0)
-  $(error ENABLE_MQTT=1 requires ENABLE_TLS=1)
-endif
 
 # Validate wolfMQTT exists
 ifeq ($(wildcard $(WOLFMQTT_ROOT)/wolfmqtt/mqtt_client.h),)

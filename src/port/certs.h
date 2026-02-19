@@ -1,6 +1,6 @@
 /* certs.h
  *
- * Embedded TLS certificates for STM32H563 wolfIP example
+ * Embedded TLS test certificates for wolfIP examples
  *
  * Copyright (C) 2024 wolfSSL Inc.
  *

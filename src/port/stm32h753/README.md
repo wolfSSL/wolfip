@@ -45,11 +45,14 @@ STM32H753ZI microcontroller (NUCLEO-H753ZI board).
 # Basic TCP echo server (no TLS)
 make
 
-# With TLS 1.3 client support
-make ENABLE_TLS=1
+# HTTPS web server (port 443) - automatically enables TLS
+make ENABLE_HTTPS=1
 
-# With TLS + HTTPS server
-make ENABLE_TLS=1 ENABLE_HTTPS=1
+# TLS client test (connects to Google) - automatically enables TLS
+make ENABLE_TLS_CLIENT=1
+
+# All features
+make ENABLE_TLS_CLIENT=1 ENABLE_HTTPS=1
 
 # Clean build
 make clean
@@ -99,9 +102,17 @@ nc <device-ip> 7
 
 ### TLS Client Test
 
-When built with `ENABLE_TLS=1`, the device automatically connects to Google
+When built with `ENABLE_TLS_CLIENT=1`, the device automatically connects to Google
 (142.250.189.174:443) after ~2 seconds and performs an HTTPS GET request.
 The response is printed on the serial console.
+
+### HTTPS Server Test
+
+When built with `ENABLE_HTTPS=1`, the device runs an HTTPS web server on port 443:
+
+```bash
+curl -k https://<device-ip>/
+```
 
 ## Memory Map
 
@@ -160,20 +171,21 @@ Enable these in `user_settings.h`:
 
 ```
 stm32h753/
-├── Makefile          # Build system
-├── README.md         # This file
-├── config.h          # wolfIP configuration
-├── user_settings.h   # wolfSSL configuration
-├── target.ld         # Linker script
-├── startup.c         # Cortex-M7 startup code
-├── ivt.c             # Interrupt vector table
-├── syscalls.c        # Newlib stubs
-├── main.c            # Application entry point
+├── Makefile               # Build system
+├── README.md              # This file
+├── config.h               # wolfIP configuration
+├── user_settings.h        # wolfSSL configuration
+├── target.ld              # Linker script
+├── startup.c              # Cortex-M7 startup code
+├── ivt.c                  # Interrupt vector table
+├── syscalls.c             # Newlib stubs
+├── main.c                 # Application entry point
+├── stm32_hash_register.h  # STM32 HASH peripheral register definitions
+├── tls_client.c           # TLS 1.3 client (ENABLE_TLS_CLIENT)
+├── tls_client.h           # TLS client header
 ├── ../stm32/stm32_eth.c   # Ethernet MAC/PHY driver (shared)
 ├── ../stm32/stm32_eth.h   # Ethernet driver header (shared)
-├── stm32_hash_register.h  # STM32 HASH peripheral register definitions
-├── tls_client.c           # TLS 1.3 client
-└── tls_client.h           # TLS client header
+└── ../certs.h             # Embedded TLS test certificates (shared)
 ```
 
 ## License
