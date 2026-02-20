@@ -2841,7 +2841,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* Reject SYNs that match an already-active connection
                      * with the same tuple (local_port, remote_port, remote_ip), that is already
                      * in the established state.
-                     * */
+                     */
                     for (int k = 0; k < MAX_TCPSOCKETS; k++) {
                         struct tsocket *tk = &S->tcpsockets[k];
                         if (tk == t)
