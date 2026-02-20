@@ -2081,7 +2081,7 @@ static void tcp_send_ack(struct tsocket *t)
 
 static void tcp_send_finack(struct tsocket *t)
 {
-    tcp_send_empty(t, 0x11);
+    tcp_send_empty(t, TCP_FLAG_FIN | TCP_FLAG_ACK);
     t->sock.tcp.last = t->sock.tcp.seq;
 }
 
@@ -3077,7 +3077,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 return; /* malformed: TCP header exceeds IP length */
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
-            if (tcp->flags & 0x02) {
+            if (tcp->flags & TCP_FLAG_SYN) {
                 struct tcp_parsed_opts po;
                 tcp_parse_options(tcp, frame_len, &po);
                 /* Window scale is negotiated only during SYN/SYN-ACK. */
@@ -3159,7 +3159,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
             }
             /* Check if SYN */
-            if (tcp->flags & 0x02) {
+            if (tcp->flags & TCP_FLAG_SYN) {
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     ip4 syn_dst = ee32(tcp->ip.dst);
                     int dst_match = 0;
@@ -3210,7 +3210,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     tcp_process_ts(t, tcp, frame_len);
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
-                    if (tcp->flags == 0x12) {
+                    if (tcp->flags == (TCP_FLAG_SYN | TCP_FLAG_ACK)) {
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
@@ -3304,9 +3304,9 @@ static void tcp_rto_cb(void *arg)
         }
         ts->sock.tcp.ctrl_rto_retries++;
         if (ts->sock.tcp.state == TCP_SYN_SENT) {
-            tcp_send_syn(ts, 0x02);
+            tcp_send_syn(ts, TCP_FLAG_SYN);
         } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
-            tcp_send_syn(ts, 0x12);
+            tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK);
         } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
             tcp_send_finack(ts);
         }
@@ -3656,7 +3656,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             return -1;
         }
         ts->sock.tcp.ctrl_rto_retries = 0;
-        tcp_send_syn(ts, 0x02);
+        tcp_send_syn(ts, TCP_FLAG_SYN);
         tcp_ctrl_rto_start(ts, s->last_tick);
         return -WOLFIP_EAGAIN;
     }
@@ -3721,7 +3721,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * the caller could still close the listening socket
              * while we're still accepting.
              */
-            tcp_send_syn(newts, 0x12);
+            tcp_send_syn(newts, TCP_FLAG_SYN | TCP_FLAG_ACK);
             newts->sock.tcp.seq++;
             if (sin) {
                 sin->sin_family = AF_INET;
