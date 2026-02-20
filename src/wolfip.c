@@ -2840,8 +2840,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         continue;
 
                     /* Reject SYNs that match an already-active connection
-                     * with the same tuple (local_port, remote_port, remote_ip), that is already
-                     * in the established state.
+                     * with the same 4-tuple (local_ip, local_port, remote_ip, remote_port).
                      */
                     for (int k = 0; k < MAX_TCPSOCKETS; k++) {
                         struct tsocket *tk = &S->tcpsockets[k];
@@ -2852,7 +2851,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                             continue;
                         if (tk->src_port == t->src_port &&
                             tk->dst_port == ee16(tcp->src_port) &&
-                            tk->remote_ip == ee32(tcp->ip.src)) {
+                            tk->remote_ip == ee32(tcp->ip.src) &&
+                            tk->local_ip == syn_dst) {
                             dup_found = 1;
                             break;
                         }
