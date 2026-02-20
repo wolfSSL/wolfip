@@ -1,0 +1,63 @@
+name: wolfIP Autocov
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  autocov:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential check gcovr libwolfssl-dev
+
+      - name: Run autocov
+        run: make clean autocov
+
+      - name: Generate coverage JSON
+        run: |
+          gcovr -r . --exclude "src/test/unit/unit.c" --json -o build/coverage/coverage.json
+
+      - name: Enforce 100% function coverage for src/wolfip.c
+        run: |
+          python3 - <<'PY'
+          import json
+          import sys
+
+          with open("build/coverage/coverage.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          target = None
+          for file_entry in data.get("files", []):
+              if file_entry.get("file", "").endswith("src/wolfip.c"):
+                  target = file_entry
+                  break
+
+          if target is None:
+              print("ERROR: src/wolfip.c not found in coverage JSON")
+              sys.exit(1)
+
+          functions = target.get("functions", [])
+          if not functions:
+              print("ERROR: No function coverage data for src/wolfip.c")
+              sys.exit(1)
+
+          total = len(functions)
+          covered = sum(1 for fn in functions if fn.get("execution_count", 0) > 0)
+          pct = (covered * 100.0) / total
+          print(f"src/wolfip.c function coverage: {covered}/{total} ({pct:.2f}%)")
+
+          if covered != total:
+              print("ERROR: src/wolfip.c function coverage must be 100%")
+              sys.exit(1)
+          PY

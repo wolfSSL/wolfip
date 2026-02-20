@@ -355,13 +355,21 @@ cov: unit $(COV_UNIT)
 	@gcovr -r . --exclude "src/test/unit/unit.c" --html-details -o build/coverage/index.html
 	@$(OPEN_CMD) build/coverage/index.html
 
+autocov: unit $(COV_UNIT)
+	@echo "[RUN] unit (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_UNIT)
+	@echo "[COV] gcovr html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/unit.c" --html-details -o build/coverage/index.html
+
 # Install dynamic library to re-link linux applications
 #
 install:
 	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
-.PHONY: clean all static cppcheck cov
+.PHONY: clean all static cppcheck cov autocov
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml
