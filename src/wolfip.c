@@ -2273,6 +2273,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     struct wolfIP_tcp_seg *probe = (struct wolfIP_tcp_seg *)probe_frame;
     uint8_t probe_byte = 0;
     uint32_t probe_seq;
+    uint32_t probe_off = 0;
     unsigned int tx_if;
 #ifdef ETHERNET
     struct ipconf *conf;
@@ -2295,13 +2296,16 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
             continue;
         }
         payload = (const uint8_t *)seg->ip.data + hdr_len;
-        probe_byte = payload[0];
         if (tcp_seq_leq(seg_seq, t->sock.tcp.snd_una) &&
                 tcp_seq_lt(t->sock.tcp.snd_una, tcp_seq_inc(seg_seq, seg_len))) {
             probe_seq = t->sock.tcp.snd_una;
+            probe_off = probe_seq - seg_seq;
+            probe_byte = payload[probe_off];
             break;
         }
         probe_seq = seg_seq;
+        probe_off = 0;
+        probe_byte = payload[probe_off];
         break;
     }
     if (!desc)
