@@ -1064,6 +1064,7 @@ static void tcp_rto_cb(void *arg);
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
+static int tcp_has_pending_unsent_payload(const struct tsocket *t);
 
 #ifdef ETHERNET
 struct PACKED arp_packet {
@@ -2164,10 +2165,18 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
 {
     if (!t || t->proto != WI_IPPROTO_TCP)
         return 0;
-    return (t->sock.tcp.state == TCP_SYN_SENT) ||
-           (t->sock.tcp.state == TCP_SYN_RCVD) ||
-           (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
-           (t->sock.tcp.state == TCP_LAST_ACK);
+    if ((t->sock.tcp.state == TCP_SYN_SENT) ||
+            (t->sock.tcp.state == TCP_SYN_RCVD) ||
+            (t->sock.tcp.state == TCP_LAST_ACK))
+        return 1;
+    /* In FIN_WAIT_1 keep data-RTO active while payload is still outstanding.
+     * Switch to control-RTO only after data is fully drained and only FIN/ACK
+     * teardown control traffic remains. */
+    if ((t->sock.tcp.state == TCP_FIN_WAIT_1) &&
+            (t->sock.tcp.bytes_in_flight == 0) &&
+            !tcp_has_pending_unsent_payload(t))
+        return 1;
+    return 0;
 }
 
 /* Stop control-RTO retransmission tracking for this socket and reset counters. */
@@ -2203,7 +2212,7 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
     t->sock.tcp.ctrl_rto_active = 1;
 }
 
-static int tcp_has_pending_unsent_payload(struct tsocket *t)
+static int tcp_has_pending_unsent_payload(const struct tsocket *t)
 {
     struct pkt_desc *desc;
     uint32_t guard = 0;
@@ -3304,7 +3313,8 @@ static void tcp_rto_cb(void *arg)
         tcp_ctrl_rto_start(ts, ts->S->last_tick);
         return;
     }
-    if (ts->sock.tcp.state != TCP_ESTABLISHED)
+    if (ts->sock.tcp.state != TCP_ESTABLISHED &&
+            ts->sock.tcp.state != TCP_FIN_WAIT_1)
         return;
     /* RFC 6675 / RFC 2018 guidance: after an RTO, SACK scoreboard must not be
      * trusted (receiver may renege). Fall back to cumulative-ACK driven
