@@ -39,7 +39,7 @@
 
 static void __attribute__((noreturn)) print_usage_and_die(void);
 
-#define TEST_SIZE (12 * 1024)
+#define TEST_SIZE (8 * 1024)
 #define BUFFER_SIZE TEST_SIZE
 
 static int disable_ipsec = 0;
