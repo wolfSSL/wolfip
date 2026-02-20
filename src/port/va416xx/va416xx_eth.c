@@ -360,14 +360,22 @@ static void eth_start(void)
     /* Enable MAC TX and RX */
     VOR_ETH->MAC_CONFIG |= ETH_MAC_CONFIG_TE_Msk | ETH_MAC_CONFIG_RE_Msk;
 
-    /* Brief settling delay after TE/RE assertion (TX FIFO init time) */
-    { volatile uint32_t _d; for (_d = 0; _d < 10000U; _d++) { } }
+    /* Settling delay after TE/RE assertion.
+     * The DWC GMAC needs time for the TX/RX FIFO controllers to initialize
+     * after TE/RE are set.  Without sufficient delay, the DMA may start
+     * before the FIFOs are ready, causing silent frame drops.
+     * 100K cycles at 100MHz = ~1ms — matches delay previously provided
+     * by debug printf statements between init steps. */
+    { volatile uint32_t _d; for (_d = 0; _d < 100000U; _d++) { } }
 
     /* Start DMA TX and RX via DMA_OPER_MODE */
     VOR_ETH->DMA_OPER_MODE |= ETH_DMA_OPER_MODE_ST_Msk |
                                ETH_DMA_OPER_MODE_SR_Msk;
 
     __DSB();
+
+    /* Settling delay after DMA start */
+    { volatile uint32_t _d; for (_d = 0; _d < 100000U; _d++) { } }
 
     /* Kick RX DMA to start processing descriptors */
     VOR_ETH->DMA_RX_POLL_DEMAND = 0;
@@ -742,6 +750,11 @@ void va416xx_eth_get_stats(uint32_t *polls, uint32_t *pkts, uint32_t *tx_pkts,
     if (tx_errs)  *tx_errs  = tx_err_count;
 }
 
+uint32_t va416xx_eth_get_dma_status(void)
+{
+    return VOR_ETH->DMA_STATUS;
+}
+
 /* ========================================================================= */
 /* Initialization                                                            */
 /* ========================================================================= */
@@ -787,6 +800,13 @@ int va416xx_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     /* 7. Configure MAC speed/duplex.  Always run this regardless of link
      *    state so MAC_CONFIG is correct even if link came up late. */
     eth_config_speed_duplex();
+
+    /* Settling delay between MAC config and DMA start.
+     * The MAC clock domain needs time to stabilize after speed/duplex
+     * changes before the DMA engines are started.  Previously, debug
+     * printf statements between these steps provided ~10-50ms of implicit
+     * delay; now we add it explicitly. */
+    { volatile uint32_t _d; for (_d = 0; _d < 500000U; _d++) { } } /* ~5ms */
 
     /* 8. Start MAC and DMA */
     eth_start();

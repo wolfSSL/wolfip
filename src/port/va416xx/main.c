@@ -40,16 +40,42 @@
  * time rather than depending on CPU loop speed. */
 extern volatile uint64_t HAL_time_ms;
 
-#define ECHO_PORT       7
 #define RX_BUF_SIZE     1024
 
-/* DHCP timeout in milliseconds */
-#define DHCP_TIMEOUT_MS 60000U
+/* DHCP timeout: total time to wait for DHCP before static IP fallback.
+ * wolfIP's internal DHCP state machine only retries for ~8 seconds
+ * (DHCP_DISCOVER_RETRIES=3 × 2s timeout).  After that it sets state to
+ * DHCP_OFF and the UDP socket stops accepting unicast DHCP responses
+ * (because DHCP_IS_RUNNING becomes false).  We re-init periodically to
+ * keep trying, but must space re-inits apart to avoid socket churn
+ * (close/reopen loses in-flight responses). */
+#define DHCP_TIMEOUT_MS     120000U  /* 120s total before static fallback */
+#define DHCP_REINIT_MS      15000U   /* 15s between DHCP re-init attempts */
 
 static struct wolfIP *IPStack;
+static uint8_t rx_buf[RX_BUF_SIZE];
+
+#ifdef SPEED_TEST
+
+/* Combined speed test service (port 9)
+ * - RX test: host sends data, device counts bytes (discard)
+ * - TX test: device sends data as fast as possible (chargen)
+ * Both directions measured simultaneously on one connection. */
+#define SPEED_PORT      9
+static int speed_listen_fd = -1;
+static int speed_client_fd = -1;
+static uint32_t speed_rx_bytes;
+static uint32_t speed_tx_bytes;
+static uint64_t speed_start_ms;
+
+#else
+
+/* Echo server (port 7) */
+#define ECHO_PORT       7
 static int listen_fd = -1;
 static int client_fd = -1;
-static uint8_t rx_buf[RX_BUF_SIZE];
+
+#endif /* SPEED_TEST */
 
 /* ========================================================================= */
 /* wolfIP random number generator (required by stack)                        */
@@ -163,6 +189,78 @@ static void uart_putip4(ip4 ip)
         (unsigned)(ip & 0xFF));
 }
 
+#ifdef SPEED_TEST
+
+/* ========================================================================= */
+/* Combined Speed Test Callback (port 9)                                     */
+/* Measures RX (discard incoming) and TX (chargen outgoing) simultaneously.  */
+/*   RX test: dd if=/dev/zero bs=1460 count=700 | nc <ip> 9                 */
+/*   TX test: nc <ip> 9 </dev/null | pv >/dev/null                          */
+/* ========================================================================= */
+
+static void speed_cb(int fd, uint16_t event, void *arg)
+{
+    struct wolfIP *s = (struct wolfIP *)arg;
+    int ret;
+
+    /* Accept new connection */
+    if ((fd == speed_listen_fd) && (event & CB_EVENT_READABLE) &&
+        (speed_client_fd == -1)) {
+        speed_client_fd = wolfIP_sock_accept(s, speed_listen_fd, NULL, NULL);
+        if (speed_client_fd > 0) {
+            printf("Speed: client connected (fd=%d)\n", speed_client_fd);
+            wolfIP_register_callback(s, speed_client_fd, speed_cb, s);
+            speed_rx_bytes = 0;
+            speed_tx_bytes = 0;
+            speed_start_ms = HAL_time_ms;
+        }
+        return;
+    }
+
+    if (fd != speed_client_fd)
+        return;
+
+    /* RX: read and discard incoming data */
+    if (event & CB_EVENT_READABLE) {
+        ret = wolfIP_sock_recvfrom(s, speed_client_fd, rx_buf, sizeof(rx_buf),
+                                    0, NULL, NULL);
+        if (ret > 0) {
+            speed_rx_bytes += (uint32_t)ret;
+        } else if (ret == 0) {
+            goto speed_done;
+        }
+    }
+
+    /* TX: send pattern data when buffer has space */
+    if (event & CB_EVENT_WRITABLE) {
+        ret = wolfIP_sock_send(s, speed_client_fd, rx_buf, 1460, 0);
+        if (ret > 0) {
+            speed_tx_bytes += (uint32_t)ret;
+        }
+    }
+
+    if (event & CB_EVENT_CLOSED) {
+speed_done:
+        {
+            uint32_t elapsed = (uint32_t)(HAL_time_ms - speed_start_ms);
+            uint32_t rx_bps = 0, tx_bps = 0;
+            if (elapsed > 0) {
+                rx_bps = speed_rx_bytes / (elapsed / 1000U + 1U);
+                tx_bps = speed_tx_bytes / (elapsed / 1000U + 1U);
+            }
+            printf("Speed: %lu ms, RX %lu bytes (~%lu B/s), "
+                   "TX %lu bytes (~%lu B/s)\n",
+                   (unsigned long)elapsed,
+                   (unsigned long)speed_rx_bytes, (unsigned long)rx_bps,
+                   (unsigned long)speed_tx_bytes, (unsigned long)tx_bps);
+        }
+        wolfIP_sock_close(s, speed_client_fd);
+        speed_client_fd = -1;
+    }
+}
+
+#else /* !SPEED_TEST */
+
 /* ========================================================================= */
 /* TCP Echo Server Callback                                                  */
 /* ========================================================================= */
@@ -200,6 +298,8 @@ static void echo_cb(int fd, uint16_t event, void *arg)
         client_fd = -1;
     }
 }
+
+#endif /* SPEED_TEST */
 
 /* ========================================================================= */
 /* Main                                                                      */
@@ -251,50 +351,14 @@ int main(void)
         printf("  ERROR: va416xx_eth_init failed (%d)\n", ret);
     }
 
-    /* 8. IP configuration: DHCP with static fallback */
+    /* 8. IP configuration: DHCP (non-blocking) or static */
 #ifdef DHCP
-    {
-        uint64_t dhcp_start_ms;
-
-        printf("Starting DHCP...\n");
-        /* Prime wolfIP's last_tick before starting DHCP.  Without this,
-         * last_tick=0 but HAL_time_ms is already ~2000 (boot time elapsed),
-         * so the first DHCP timer expires immediately. */
-        (void)wolfIP_poll(IPStack, HAL_time_ms);
-        if (dhcp_client_init(IPStack) >= 0) {
-            dhcp_start_ms = HAL_time_ms;
-            while (!dhcp_bound(IPStack)) {
-                (void)wolfIP_poll(IPStack, HAL_time_ms);
-                if ((HAL_time_ms - dhcp_start_ms) > DHCP_TIMEOUT_MS)
-                    break;
-            }
-            if (dhcp_bound(IPStack)) {
-                ip4 ip = 0, nm = 0, gw = 0;
-                wolfIP_ipconfig_get(IPStack, &ip, &nm, &gw);
-                printf("DHCP bound:\n");
-                printf("  IP:   "); uart_putip4(ip); printf("\n");
-                printf("  Mask: "); uart_putip4(nm); printf("\n");
-                printf("  GW:   "); uart_putip4(gw); printf("\n");
-            } else {
-                printf("DHCP timeout, using static IP\n");
-                {
-                    ip4 ip = atoip4("10.0.4.90");
-                    ip4 nm = atoip4("255.255.255.0");
-                    ip4 gw = atoip4("10.0.4.1");
-                    wolfIP_ipconfig_set(IPStack, ip, nm, gw);
-                    printf("  IP:   "); uart_putip4(ip); printf("\n");
-                }
-            }
-        } else {
-            printf("DHCP init failed, using static IP\n");
-            {
-                ip4 ip = atoip4("192.168.1.100");
-                ip4 nm = atoip4("255.255.255.0");
-                ip4 gw = atoip4("192.168.1.1");
-                wolfIP_ipconfig_set(IPStack, ip, nm, gw);
-            }
-        }
-    }
+    printf("Starting DHCP...\n");
+    /* Prime wolfIP's last_tick before starting DHCP.  Without this,
+     * last_tick=0 but HAL_time_ms is already ~2000 (boot time elapsed),
+     * so the first DHCP timer expires immediately. */
+    (void)wolfIP_poll(IPStack, HAL_time_ms);
+    (void)dhcp_client_init(IPStack);
 #else
     {
         ip4 ip = atoip4(WOLFIP_IP);
@@ -308,15 +372,34 @@ int main(void)
     }
 #endif
 
-    /* 9. Create TCP echo server on port 7 */
+    /* Create TCP services */
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = 0;
+
+#ifdef SPEED_TEST
+    printf("=== Speed Test Mode ===\n");
+
+    /* Speed test service on port 9 (RX + TX throughput) */
+    printf("Creating TCP speed test service on port %d...\n", SPEED_PORT);
+    speed_listen_fd = wolfIP_sock_socket(IPStack, AF_INET,
+                                          IPSTACK_SOCK_STREAM, 0);
+    wolfIP_register_callback(IPStack, speed_listen_fd, speed_cb, IPStack);
+    addr.sin_port = ee16(SPEED_PORT);
+    (void)wolfIP_sock_bind(IPStack, speed_listen_fd,
+                           (struct wolfIP_sockaddr *)&addr, sizeof(addr));
+    (void)wolfIP_sock_listen(IPStack, speed_listen_fd, 1);
+
+    printf("Ready! Test with:\n");
+    printf("  ping <ip>\n");
+    printf("  dd if=/dev/zero bs=1460 count=700 | nc <ip> 9  (RX test)\n");
+    printf("  nc <ip> 9 </dev/null | pv >/dev/null  (TX test)\n");
+#else
+    /* Echo server on port 7 */
     printf("Creating TCP echo server on port %d...\n", ECHO_PORT);
     listen_fd = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
     wolfIP_register_callback(IPStack, listen_fd, echo_cb, IPStack);
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
     addr.sin_port = ee16(ECHO_PORT);
-    addr.sin_addr.s_addr = 0;
     (void)wolfIP_sock_bind(IPStack, listen_fd,
                            (struct wolfIP_sockaddr *)&addr, sizeof(addr));
     (void)wolfIP_sock_listen(IPStack, listen_fd, 1);
@@ -324,6 +407,7 @@ int main(void)
     printf("Ready! Test with:\n");
     printf("  ping <ip>\n");
     printf("  echo 'hello' | nc <ip> 7\n");
+#endif
     printf("\nEntering main loop...\n");
 
     /* 10. Main loop — use HAL_time_ms (SysTick-based, 10ms resolution)
@@ -331,10 +415,63 @@ int main(void)
     {
         uint64_t last_led_ms = 0;
         uint64_t last_diag_ms = 0;
+#ifdef DHCP
+        uint64_t dhcp_start_ms = HAL_time_ms;
+        uint64_t dhcp_reinit_ms = HAL_time_ms;
+        int dhcp_done = 0;
+#endif
 
         for (;;) {
             uint64_t now = HAL_time_ms;
             (void)wolfIP_poll(IPStack, now);
+
+#ifdef DHCP
+            /* Non-blocking DHCP handling.
+             *
+             * wolfIP's internal DHCP state machine gives up after ~8s
+             * (3 retries × 2s).  When state goes to DHCP_OFF, the UDP
+             * socket stops accepting unicast DHCP responses (the
+             * DHCP_IS_RUNNING check in udp_process fails).
+             *
+             * We periodically re-init DHCP (every 15s) to restart the
+             * state machine and keep the UDP socket accepting responses.
+             * Must space re-inits apart to avoid socket churn (the
+             * close/reopen cycle can lose in-flight responses). */
+            if (!dhcp_done) {
+                if (dhcp_bound(IPStack)) {
+                    ip4 ip = 0, nm = 0, gw = 0;
+                    wolfIP_ipconfig_get(IPStack, &ip, &nm, &gw);
+                    printf("DHCP bound:\n");
+                    printf("  IP:   "); uart_putip4(ip); printf("\n");
+                    printf("  Mask: "); uart_putip4(nm); printf("\n");
+                    printf("  GW:   "); uart_putip4(gw); printf("\n");
+                    dhcp_done = 1;
+                } else if ((now - dhcp_start_ms) > DHCP_TIMEOUT_MS) {
+                    /* Final timeout: check for partial IP from DHCP offer */
+                    ip4 ip = 0, nm = 0, gw = 0;
+                    wolfIP_ipconfig_get(IPStack, &ip, &nm, &gw);
+                    if (ip != 0) {
+                        printf("DHCP assigned IP:\n");
+                    } else {
+                        printf("DHCP timeout, using static IP\n");
+                        ip = atoip4("10.0.4.90");
+                        nm = atoip4("255.255.255.0");
+                        gw = atoip4("10.0.4.1");
+                        wolfIP_ipconfig_set(IPStack, ip, nm, gw);
+                    }
+                    printf("  IP:   "); uart_putip4(ip); printf("\n");
+                    printf("  Mask: "); uart_putip4(nm); printf("\n");
+                    printf("  GW:   "); uart_putip4(gw); printf("\n");
+                    dhcp_done = 1;
+                } else if ((now - dhcp_reinit_ms) > DHCP_REINIT_MS) {
+                    /* Re-init DHCP if internal state machine expired.
+                     * dhcp_client_init only succeeds when state==DHCP_OFF,
+                     * so this is a no-op while DHCP is still active. */
+                    (void)dhcp_client_init(IPStack);
+                    dhcp_reinit_ms = now;
+                }
+            }
+#endif
 
             /* LED heartbeat: toggle every ~2 seconds */
             if ((now - last_led_ms) >= 2000U) {
@@ -345,10 +482,12 @@ int main(void)
             /* Periodic diagnostics every ~10 seconds */
             if ((now - last_diag_ms) >= 10000U) {
                 uint32_t polls, pkts, tx_pkts, tx_errs;
+                uint32_t dma_st = va416xx_eth_get_dma_status();
                 va416xx_eth_get_stats(&polls, &pkts, &tx_pkts, &tx_errs);
-                printf("[%lu ms] rx=%lu tx=%lu tx_err=%lu\n",
+                printf("[%lu ms] rx=%lu tx=%lu tx_err=%lu dma=0x%08lX\n",
                        (unsigned long)now, (unsigned long)pkts,
-                       (unsigned long)tx_pkts, (unsigned long)tx_errs);
+                       (unsigned long)tx_pkts, (unsigned long)tx_errs,
+                       (unsigned long)dma_st);
                 last_diag_ms = now;
             }
         }

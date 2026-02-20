@@ -31,12 +31,11 @@
 #define LINK_MTU                1536
 
 /* Memory-constrained: 64KB SRAM total
- * Socket buffers: 4 sockets * (1536 + 1536) = 12,288 bytes
+ * Each TCP socket: ~9KB (TX/RX bufs + OOO reassembly 4*1460)
  * DMA buffers: 6 * 1536 + 1536 staging = 10,752 bytes
- * OOO reassembly: 2 TCP * 4 segs * 1460 = 11,680 bytes
  * ARP pending: 2 * 1536 = 3,072 bytes
  * TCP state, timers, misc: ~4KB
- * Total estimated: ~42KB (fits in 64KB)
+ * Total estimated: ~42KB (fits in 64KB with stack room)
  */
 #define MAX_TCPSOCKETS          2    /* listen + 1 client */
 #define MAX_UDPSOCKETS          1    /* for DHCP */

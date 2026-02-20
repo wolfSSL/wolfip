@@ -30,5 +30,6 @@
 int va416xx_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac);
 void va416xx_eth_get_stats(uint32_t *polls, uint32_t *pkts, uint32_t *tx_pkts,
                            uint32_t *tx_errs);
+uint32_t va416xx_eth_get_dma_status(void);
 
 #endif /* WOLFIP_VA416XX_ETH_H */
