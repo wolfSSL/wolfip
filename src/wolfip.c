@@ -4363,38 +4363,6 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             }
         }
         return 0;
-    } else if (IS_SOCKET_ICMP(sockfd)) {
-        if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
-            return -WOLFIP_EINVAL;
-        ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
-        if (ts->src_port != 0)
-            return -1;
-        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
-            return -1;
-        {
-            ip4 prev_ip = ts->local_ip;
-            uint16_t prev_id = ts->src_port;
-            uint16_t new_id = ee16(sin->sin_port);
-            ts->if_idx = (uint8_t)if_idx;
-            if (bind_ip != IPADDR_ANY)
-                ts->local_ip = bind_ip;
-            else if (conf && conf->ip != IPADDR_ANY)
-                ts->local_ip = conf->ip;
-            else {
-                struct ipconf *primary = wolfIP_primary_ipconf(s);
-                if (primary && primary->ip != IPADDR_ANY)
-                    ts->local_ip = primary->ip;
-            }
-            ts->src_port = new_id;
-            if (wolfIP_filter_notify_socket_event(
-                    WOLFIP_FILT_BINDING, s, ts,
-                    ts->local_ip, new_id, IPADDR_ANY, 0) != 0) {
-                ts->local_ip = prev_ip;
-                ts->src_port = prev_id;
-                return -1;
-            }
-        }
-        return 0;
     } else return -1;
 
 }

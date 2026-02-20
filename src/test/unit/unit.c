@@ -3861,6 +3861,55 @@ START_TEST(test_sock_setsockopt_recvttl_invalid_params)
 }
 END_TEST
 
+START_TEST(test_sock_can_read_write_paths)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    int tcp_sd;
+    int udp_sd;
+    int icmp_sd;
+    uint8_t payload[4] = {1, 2, 3, 4};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, -1), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_can_write(&s, -1), -WOLFIP_EINVAL);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ck_assert_int_eq(wolfIP_sock_can_write(&s, tcp_sd), 0);
+
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, tcp_sd), 0);
+    ck_assert_int_eq(wolfIP_sock_can_write(&s, tcp_sd), 1);
+    ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, payload, 0, sizeof(payload)), 0);
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, tcp_sd), 1);
+
+    while (enqueue_tcp_tx(ts, 16, TCP_FLAG_ACK | TCP_FLAG_PSH) == 0) {
+    }
+    ck_assert_int_eq(wolfIP_sock_can_write(&s, tcp_sd), 0);
+
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, tcp_sd), 1);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, udp_sd), 0);
+    enqueue_udp_rx(ts, payload, sizeof(payload), 4000);
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, udp_sd), 1);
+    ck_assert_int_eq(wolfIP_sock_can_write(&s, udp_sd), 1);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ck_assert_int_eq(wolfIP_sock_can_write(&s, icmp_sd), 1);
+}
+END_TEST
+
 START_TEST(test_sock_getsockopt_recvttl_invalid_params)
 {
     struct wolfIP s;
@@ -3878,6 +3927,53 @@ START_TEST(test_sock_getsockopt_recvttl_invalid_params)
     ck_assert_int_eq(wolfIP_sock_getsockopt(&s, udp_sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL, &value, NULL), -WOLFIP_EINVAL);
     len = 1;
     ck_assert_int_eq(wolfIP_sock_getsockopt(&s, udp_sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL, &value, &len), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_dns_wrapper_apis)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    int dns_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(nslookup(NULL, "example.com", &id, test_dns_lookup_cb), -22);
+    ck_assert_int_eq(nslookup(&s, NULL, &id, test_dns_lookup_cb), -22);
+    ck_assert_int_eq(nslookup(&s, "example.com", NULL, test_dns_lookup_cb), -22);
+    ck_assert_int_eq(nslookup(&s, "example.com", &id, NULL), -22);
+
+    ck_assert_int_eq(wolfIP_dns_ptr_lookup(NULL, 0x01020304U, &id, test_dns_ptr_cb), -22);
+    ck_assert_int_eq(wolfIP_dns_ptr_lookup(&s, 0x01020304U, NULL, test_dns_ptr_cb), -22);
+    ck_assert_int_eq(wolfIP_dns_ptr_lookup(&s, 0x01020304U, &id, NULL), -22);
+
+    s.dns_server = 0x08080808U;
+    dns_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(dns_sd, 0);
+    s.dns_udp_sd = dns_sd;
+
+    ck_assert_int_eq(nslookup(&s, "example.com", &id, test_dns_lookup_cb), 0);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_ptr_eq(s.dns_ptr_cb, NULL);
+    ck_assert_uint_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    s.dns_id = 0;
+    ck_assert_int_eq(wolfIP_dns_ptr_lookup(&s, 0x01020304U, &id, test_dns_ptr_cb), 0);
+    ck_assert_ptr_eq(s.dns_ptr_cb, test_dns_ptr_cb);
+    ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
+    ck_assert_uint_eq(s.dns_query_type, DNS_QUERY_TYPE_PTR);
+}
+END_TEST
+
+START_TEST(test_wolfip_static_instance_apis)
+{
+    struct wolfIP *s = NULL;
+
+    wolfIP_init_static(NULL);
+    wolfIP_init_static(&s);
+    ck_assert_ptr_nonnull(s);
+    ck_assert_uint_gt(wolfIP_instance_size(), 0U);
 }
 END_TEST
 START_TEST(test_dhcp_parse_offer_and_ack)
@@ -7030,6 +7126,22 @@ START_TEST(test_tcp_fin_wait_1_to_closing)
 }
 END_TEST
 
+START_TEST(test_dhcp_callback_null_and_off_state)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    dhcp_callback(0, 0, NULL);
+
+    s.dhcp_state = DHCP_OFF;
+    s.dhcp_udp_sd = 0;
+    dhcp_callback(0, 0, &s);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+}
+END_TEST
+
 #if WOLFIP_ENABLE_FORWARDING
 START_TEST(test_forward_prepare_paths)
 {
@@ -8733,6 +8845,75 @@ START_TEST(test_fifo_push_full) {
 
     ret = fifo_push(&f, data, sizeof(data));
     ck_assert_int_eq(ret, -1); // Ensure push returns -1 when FIFO is full
+}
+END_TEST
+
+START_TEST(test_fifo_can_push_len_null_and_oversized)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    ck_assert_int_eq(fifo_can_push_len(NULL, 1), 0);
+    fifo_init(&f, data, sizeof(data));
+    ck_assert_int_eq(fifo_can_push_len(&f, (uint32_t)(sizeof(data) - sizeof(struct pkt_desc) + 1)), 0);
+}
+END_TEST
+
+START_TEST(test_fifo_can_push_len_head_tail_equal_with_wrap)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 8;
+    f.tail = 8;
+    f.h_wrap = 32;
+
+    ck_assert_int_eq(fifo_can_push_len(&f, 1), 0);
+}
+END_TEST
+
+START_TEST(test_fifo_can_push_len_wrap_tail_too_small_rejects)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 60;
+    f.tail = 8;
+    f.h_wrap = 0;
+
+    ck_assert_int_eq(fifo_can_push_len(&f, 1), 0);
+}
+END_TEST
+
+START_TEST(test_fifo_can_push_len_wrap_to_zero_then_accepts)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 60;
+    f.tail = 40;
+    f.h_wrap = 0;
+
+    ck_assert_int_eq(fifo_can_push_len(&f, 1), 1);
+}
+END_TEST
+
+START_TEST(test_fifo_can_push_len_head_at_wrap_boundary)
+{
+    struct fifo f;
+    uint8_t data[64];
+
+    fifo_init(&f, data, sizeof(data));
+    f.head = 32;
+    f.tail = 48;
+    f.h_wrap = 32;
+    ck_assert_int_eq(fifo_can_push_len(&f, 0), 1);
+
+    f.tail = 12;
+    ck_assert_int_eq(fifo_can_push_len(&f, 1), 0);
 }
 END_TEST
 
@@ -13070,6 +13251,69 @@ START_TEST(test_tcp_input_window_reopen_stops_persist)
 }
 END_TEST
 
+START_TEST(test_tcp_persist_cb_stops_when_state_invalid)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.persist_active = 1;
+    ts->sock.tcp.persist_backoff = 4;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    ts->sock.tcp.tmr_persist = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_backoff, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_tcp_persist_cb_stops_when_window_reopens)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.peer_rwnd = 64;
+    ts->sock.tcp.persist_active = 1;
+    ts->sock.tcp.persist_backoff = 2;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    ts->sock.tcp.tmr_persist = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_backoff, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
 START_TEST(test_queue_insert_len_gt_size)
 {
     struct queue q;
@@ -14666,6 +14910,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_pop_success);
     tcase_add_test(tc_core, test_fifo_pop_empty);
     tcase_add_test(tc_core, test_fifo_push_full);
+    tcase_add_test(tc_core, test_fifo_can_push_len_null_and_oversized);
+    tcase_add_test(tc_core, test_fifo_can_push_len_head_tail_equal_with_wrap);
+    tcase_add_test(tc_core, test_fifo_can_push_len_wrap_tail_too_small_rejects);
+    tcase_add_test(tc_core, test_fifo_can_push_len_wrap_to_zero_then_accepts);
+    tcase_add_test(tc_core, test_fifo_can_push_len_head_at_wrap_boundary);
     tcase_add_test(tc_core, test_fifo_push_wrap);
     tcase_add_test(tc_core, test_fifo_push_wrap_multiple);
     tcase_add_test(tc_core, test_fifo_space_wrap_sets_hwrap);
@@ -14816,6 +15065,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_setsockopt_recvttl_invalid_params);
     tcase_add_test(tc_utils, test_sock_getsockopt_recvttl_value);
     tcase_add_test(tc_utils, test_sock_getsockopt_invalid_socket);
+    tcase_add_test(tc_utils, test_sock_can_read_write_paths);
     tcase_add_test(tc_utils, test_sock_getsockopt_recvttl_invalid_params);
     tcase_add_test(tc_utils, test_sock_get_recv_ttl_invalid_socket);
     tcase_add_test(tc_utils, test_sock_accept_wrong_state);
@@ -14877,6 +15127,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
     tcase_add_test(tc_utils, test_tcp_persist_probe_byte_matches_snd_una_offset);
     tcase_add_test(tc_utils, test_tcp_input_window_reopen_stops_persist);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_stops_when_state_invalid);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_stops_when_window_reopens);
     tcase_add_test(tc_utils, test_poll_tcp_arp_request_on_miss);
     tcase_add_test(tc_utils, test_poll_udp_send_on_arp_hit);
     tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_hit);
@@ -14897,6 +15149,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_parse_offer_no_match);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_invalid);
     tcase_add_test(tc_utils, test_dhcp_poll_no_data_and_wrong_state);
+    tcase_add_test(tc_utils, test_dhcp_callback_null_and_off_state);
 #if WOLFIP_ENABLE_FORWARDING
     tcase_add_test(tc_utils, test_forward_prepare_paths);
     tcase_add_test(tc_utils, test_forward_prepare_loopback_no_ll);
@@ -14910,6 +15163,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_skip_and_copy_name);
     tcase_add_test(tc_utils, test_sock_opts_and_names);
     tcase_add_test(tc_utils, test_dns_send_query_errors);
+    tcase_add_test(tc_utils, test_dns_wrapper_apis);
+    tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_no_pending_resets_backoff);
     tcase_add_test(tc_utils, test_tcp_rto_cb_skips_unsent_desc);
