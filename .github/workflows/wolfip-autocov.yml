@@ -13,11 +13,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential check gcovr
+          sudo apt-get install -y build-essential check gcovr libwolfssl-dev
 
       - name: Run autocov
         run: make clean autocov
