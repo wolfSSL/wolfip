@@ -1064,7 +1064,7 @@ static void tcp_rto_cb(void *arg);
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
-static int tcp_has_pending_unsent_payload(const struct tsocket *t);
+static int tcp_has_pending_unsent_payload(struct tsocket *t);
 
 #ifdef ETHERNET
 struct PACKED arp_packet {
@@ -2174,7 +2174,7 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
      * teardown control traffic remains. */
     if ((t->sock.tcp.state == TCP_FIN_WAIT_1) &&
             (t->sock.tcp.bytes_in_flight == 0) &&
-            !tcp_has_pending_unsent_payload(t))
+            !tcp_has_pending_unsent_payload((struct tsocket *)t))
         return 1;
     return 0;
 }
@@ -2212,7 +2212,7 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
     t->sock.tcp.ctrl_rto_active = 1;
 }
 
-static int tcp_has_pending_unsent_payload(const struct tsocket *t)
+static int tcp_has_pending_unsent_payload(struct tsocket *t)
 {
     struct pkt_desc *desc;
     uint32_t guard = 0;
