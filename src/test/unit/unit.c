@@ -6228,6 +6228,45 @@ START_TEST(test_sock_close_tcp_other_state_closes)
 }
 END_TEST
 
+START_TEST(test_sock_close_tcp_cancels_rto_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer tmr;
+    int sd;
+    uint32_t rto_id;
+    uint32_t i;
+    int found_canceled = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.ctrl_rto_active = 1;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 1234;
+    rto_id = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(rto_id, NO_TIMER);
+    ts->sock.tcp.tmr_rto = rto_id;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->proto, 0);
+    for (i = 0; i < s.timers.size; i++) {
+        if (s.timers.timers[i].id == rto_id) {
+            found_canceled = 1;
+            ck_assert_uint_eq(s.timers.timers[i].expires, 0);
+            break;
+        }
+    }
+    ck_assert_int_eq(found_canceled, 1);
+}
+END_TEST
+
 START_TEST(test_sock_close_tcp_closed_returns_minus_one)
 {
     struct wolfIP s;
@@ -14856,6 +14895,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_close_invalid_fds);
     tcase_add_test(tc_utils, test_sock_close_tcp_fin_wait_1);
     tcase_add_test(tc_utils, test_sock_close_tcp_other_state_closes);
+    tcase_add_test(tc_utils, test_sock_close_tcp_cancels_rto_timer);
     tcase_add_test(tc_utils, test_sock_close_tcp_closed_returns_minus_one);
     tcase_add_test(tc_utils, test_tcp_syn_sent_to_established);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_unexpected_flags);

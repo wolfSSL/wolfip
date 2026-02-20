@@ -3477,8 +3477,13 @@ static void close_socket(struct tsocket *ts)
 {
     if (!ts)
         return;
-    if (ts->proto == WI_IPPROTO_TCP)
+    if (ts->proto == WI_IPPROTO_TCP) {
         tcp_persist_stop(ts);
+        if (ts->sock.tcp.tmr_rto != NO_TIMER) {
+            timer_binheap_cancel(&ts->S->timers, ts->sock.tcp.tmr_rto);
+            ts->sock.tcp.tmr_rto = NO_TIMER;
+        }
+    }
     memset(ts, 0, sizeof(struct tsocket));
 }
 
