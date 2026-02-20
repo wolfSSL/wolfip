@@ -2,7 +2,9 @@
 #define WOLFESP_H
 
 /* size of static pool */
-#define WOLFIP_ESP_NUM_SA  3
+#ifndef WOLFIP_ESP_NUM_SA
+#define WOLFIP_ESP_NUM_SA  2
+#endif /* WOLFIP_ESP_NUM_SA */
 /* ESP packet parameters */
 #define ESP_SPI_LEN               4
 #define ESP_SEQ_LEN               4
