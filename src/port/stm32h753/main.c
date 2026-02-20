@@ -29,8 +29,13 @@ static int tls_client_test_done = 0;
 #ifdef ENABLE_HTTPS
 #include <stdio.h>
 #include "http/httpd.h"
-#include "certs.h"
+#include "../certs.h"
 #define HTTPS_WEB_PORT 443
+#endif
+
+#ifdef ENABLE_MQTT_BROKER
+#include "mqtt_broker.h"
+extern volatile unsigned long broker_uptime_sec;
 #endif
 
 #ifdef ENABLE_HTTPS
@@ -1256,6 +1261,19 @@ int main(void)
     }
 #endif
 
+#ifdef ENABLE_MQTT_BROKER
+    uart_puts("Initializing MQTT broker on port 8883 (TLS)...\n");
+    {
+        mqtt_broker_config_t broker_config = {
+            .port = 8883,
+            .use_tls = 1
+        };
+        if (mqtt_broker_init(IPStack, &broker_config, uart_puts) < 0) {
+            uart_puts("ERROR: MQTT broker init failed\n");
+        }
+    }
+#endif
+
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("  TCP Echo: port 7\n");
 #ifdef ENABLE_TLS_CLIENT
@@ -1312,6 +1330,14 @@ int main(void)
         /* Update HTTPS server status info for handler */
         wolfIP_ipconfig_get(IPStack, &https_device_ip, NULL, NULL);
         https_uptime_sec = (uint32_t)(tick / 125);  /* ~8ms per tick */
+#endif
+
+#ifdef ENABLE_MQTT_BROKER
+        /* Poll MQTT broker */
+        mqtt_broker_poll();
+        
+        /* Update broker uptime counter */
+        broker_uptime_sec = (unsigned long)(tick / 125);  /* ~8ms per tick */
 #endif
 
         /* Toggle green LED every ~256K iterations as heartbeat */

@@ -171,6 +171,69 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* #define WOLFSSL_DEBUG_TLS */
 /* #define DEBUG_STM32_HASH */
 
+/* ------------------------------------------------------------------------- */
+/* wolfMQTT Broker Settings (when ENABLE_MQTT_BROKER=1)
+ * ------------------------------------------------------------------------- */
+#ifdef ENABLE_MQTT_BROKER
+/* Enable the broker module */
+#define WOLFMQTT_BROKER
+
+/* Use wolfIP network backend */
+#define WOLFMQTT_WOLFIP
+
+/* Custom network backend - TLS context managed by application */
+#define WOLFMQTT_BROKER_CUSTOM_NET
+
+/* Non-blocking mode for integration with wolfIP event loop */
+#define WOLFMQTT_NONBLOCK
+
+/* No standard I/O available on bare-metal */
+#define WOLFMQTT_NO_STDIO
+
+/* Override PRINTF to suppress warnings - use empty do-while for bare-metal */
+#ifndef PRINTF
+    #define PRINTF(...) do { (void)0; } while(0)
+#endif
+
+/* Disable error strings to save space */
+#define WOLFMQTT_NO_ERROR_STRINGS
+
+/* Static memory allocation (no malloc for broker structures) */
+#define WOLFMQTT_STATIC_MEMORY
+
+/* Use TLS for secure MQTT connections */
+#define ENABLE_MQTT_TLS
+
+/* Embedded-sized broker limits - reduced for H753's 512KB RAM */
+#define BROKER_MAX_CLIENTS         3      /* Reduced from 4 on H563 */
+#define BROKER_MAX_SUBS           16
+#define BROKER_RX_BUF_SZ        1024
+#define BROKER_TX_BUF_SZ        1024
+#define BROKER_LISTEN_BACKLOG      4
+#define BROKER_MAX_RETAINED        4
+#define BROKER_MAX_PAYLOAD_LEN  1024
+
+/* Minimal logging (errors only) */
+#define BROKER_LOG_LEVEL_DEFAULT   1 /* BROKER_LOG_ERROR */
+
+/* Disable optional features to save space */
+#define WOLFMQTT_BROKER_NO_WILDCARDS
+#define WOLFMQTT_BROKER_NO_AUTH
+
+/* Time abstraction: use tick counter from main loop */
+extern volatile unsigned long broker_uptime_sec;
+#define WOLFMQTT_BROKER_GET_TIME_S() \
+    ((unsigned long)broker_uptime_sec)
+
+/* Define POSIX error codes for bare-metal */
+#ifndef EWOULDBLOCK
+#define EWOULDBLOCK 11
+#endif
+#ifndef EAGAIN
+#define EAGAIN 11
+#endif
+#endif /* ENABLE_MQTT_BROKER */
+
 #ifdef __cplusplus
 }
 #endif

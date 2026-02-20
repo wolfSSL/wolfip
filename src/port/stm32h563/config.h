@@ -28,11 +28,11 @@
 #define ETHERNET
 #define LINK_MTU                1536
 
-#define MAX_TCPSOCKETS          12   /* Need enough for listen + accepted sockets */
+#define MAX_TCPSOCKETS          17   /* 12 base + 5 for MQTT broker (listen + 4 clients) */
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         1    /* Reduced from 2 */
-#define RXBUF_SIZE              (LINK_MTU * 8)   /* Reduced from 16 */
-#define TXBUF_SIZE              (LINK_MTU * 8)   /* Reduced from 16 */
+#define RXBUF_SIZE              (LINK_MTU * 4)   /* Reduced for RAM fit with broker */
+#define TXBUF_SIZE              (LINK_MTU * 4)   /* Reduced for RAM fit with broker */
 
 #define MAX_NEIGHBORS            16
 

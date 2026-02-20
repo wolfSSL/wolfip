@@ -28,12 +28,13 @@
 #define ETHERNET
 #define LINK_MTU                1536
 
-/* Socket configuration - STM32H753 has 512KB SRAM, can be generous */
-#define MAX_TCPSOCKETS          8
+/* Socket configuration - STM32H753 has 512KB SRAM
+ * Adjusted for MQTT broker: 1 listen socket + 3 broker clients + headroom */
+#define MAX_TCPSOCKETS          12   /* Increased from 8 for broker support */
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         1
-#define RXBUF_SIZE              (LINK_MTU * 8)   /* 12KB */
-#define TXBUF_SIZE              (LINK_MTU * 8)   /* 12KB */
+#define RXBUF_SIZE              (LINK_MTU * 6)   /* 9KB (reduced from 12KB) */
+#define TXBUF_SIZE              (LINK_MTU * 6)   /* 9KB (reduced from 12KB) */
 
 #define MAX_NEIGHBORS           16
 
