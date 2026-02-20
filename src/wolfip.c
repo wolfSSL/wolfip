@@ -505,12 +505,13 @@ static uint32_t queue_len(struct queue *q)
 }
 
 
-/* Subtract two TCP sequence numbers: a - b (wraps at 2^32) */
-static inline uint32_t tcp_seq_diff(uint32_t a, uint32_t b)
+/* Signed relative distance between two TCP sequence numbers: a - b.
+ * Unsigned subtraction wraps modulo 2^32 (well-defined), and the cast to
+ * int32_t gives a negative result when b is ahead of a in sequence space,
+ * correctly handling wrap-around for gaps up to 2^31. */
+static inline int32_t tcp_seq_diff(uint32_t a, uint32_t b)
 {
-    if (a >= b)
-        return a - b;
-    return UINT32_MAX - (b - a - 1);
+    return (int32_t)(a - b);
 }
 
 
@@ -1932,7 +1933,7 @@ static void tcp_consume_ooo(struct tsocket *t)
                     break;
                 } else {
                     /* Keep only the still-unacknowledged suffix. */
-                    uint32_t trim = tcp_seq_diff(t->sock.tcp.ack, t->sock.tcp.ooo[i].seq);
+                    uint32_t trim = (uint32_t)tcp_seq_diff(t->sock.tcp.ack, t->sock.tcp.ooo[i].seq);
                     memmove(t->sock.tcp.ooo[i].data,
                             t->sock.tcp.ooo[i].data + trim,
                             t->sock.tcp.ooo[i].len - trim);
@@ -2127,7 +2128,7 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
     if (seg_len == 0)
         return;
     if (tcp_seq_lt(seq, t->sock.tcp.ack)) {
-        uint32_t consumed = tcp_seq_diff(t->sock.tcp.ack, seq);
+        uint32_t consumed = (uint32_t)tcp_seq_diff(t->sock.tcp.ack, seq);
         /* Retransmitted/overlapping data below ACK is already delivered.
          * Trim it so only bytes above ACK participate in hole handling. */
         if (consumed >= seg_len) {
