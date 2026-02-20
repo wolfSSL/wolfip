@@ -15,6 +15,9 @@ ENABLE_TLS_CLIENT ?= 0
 # Automatically enables TLS if needed
 ENABLE_HTTPS ?= 0
 
+# MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
+ENABLE_MQTT_BROKER ?= 0
+
 # Auto-enable TLS when any feature that requires it is enabled
 ifeq ($(ENABLE_TLS_CLIENT),1)
   ENABLE_TLS = 1
@@ -22,9 +25,13 @@ endif
 ifeq ($(ENABLE_HTTPS),1)
   ENABLE_TLS = 1
 endif
+ifeq ($(ENABLE_MQTT_BROKER),1)
+  ENABLE_TLS = 1
+endif
 
 # Library paths - default to sibling directories
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
+WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
 
 # STM32H753ZI - Cortex-M7 with FPU
 CFLAGS := -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
@@ -126,14 +133,56 @@ SRCS += $(ROOT)/src/http/httpd.c
 endif
 
 # -----------------------------------------------------------------------------
+# MQTT Broker Support (wolfMQTT broker) - requires TLS
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_MQTT_BROKER),1)
+
+# MQTT Broker requires TLS
+ifeq ($(ENABLE_TLS),0)
+  $(error ENABLE_MQTT_BROKER=1 requires ENABLE_TLS=1)
+endif
+
+# Validate wolfMQTT exists
+ifeq ($(wildcard $(WOLFMQTT_ROOT)/wolfmqtt/mqtt_broker.h),)
+  $(error wolfMQTT (with broker) not found at $(WOLFMQTT_ROOT). Clone it: git clone https://github.com/wolfSSL/wolfMQTT.git)
+endif
+
+CFLAGS += -DENABLE_MQTT_BROKER
+CFLAGS += -DWOLFMQTT_USER_SETTINGS
+CFLAGS += -I$(WOLFMQTT_ROOT)
+
+# MQTT broker wrapper
+SRCS += mqtt_broker.c
+
+# wolfIP-wolfMQTT glue
+SRCS += $(ROOT)/src/port/wolfmqtt_io.c
+
+# wolfMQTT broker source files
+WOLFMQTT_BROKER_SRCS := \
+    $(WOLFMQTT_ROOT)/src/mqtt_broker.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_client.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_packet.c \
+    $(WOLFMQTT_ROOT)/src/mqtt_socket.c
+
+SRCS += $(WOLFMQTT_BROKER_SRCS)
+
+# wolfMQTT objects use relaxed warnings + include paths + user_settings.h
+$(WOLFMQTT_ROOT)/%.o: $(WOLFMQTT_ROOT)/%.c
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT_BROKER -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
+endif # ENABLE_MQTT_BROKER
+
+# -----------------------------------------------------------------------------
 # Build rules
 # -----------------------------------------------------------------------------
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS)"
+	@echo "Built with ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
+endif
+ifeq ($(ENABLE_MQTT_BROKER),1)
+	@echo "  wolfMQTT (broker): $(WOLFMQTT_ROOT)"
 endif
 
 app.elf: $(OBJS) $(LDSCRIPT)
@@ -160,6 +209,9 @@ ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/*.o
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/test/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o
+endif
+ifeq ($(ENABLE_MQTT_BROKER),1)
+	rm -f $(WOLFMQTT_ROOT)/src/*.o
 endif
 
 # Show memory usage
@@ -192,20 +244,24 @@ help:
 	@echo "  help     Show this help"
 	@echo ""
 	@echo "Options:"
-	@echo "  ENABLE_TLS=1         Enable wolfSSL TLS support"
-	@echo "  ENABLE_TLS_CLIENT=1  Enable TLS client test (Google)"
-	@echo "  ENABLE_HTTPS=1       Enable HTTPS web server (port 443)"
-	@echo "  WOLFSSL_ROOT=        Path to wolfSSL (default: ../wolfssl)"
-	@echo "  CC=                  C compiler (default: arm-none-eabi-gcc)"
+	@echo "  ENABLE_TLS=1             Enable wolfSSL TLS support"
+	@echo "  ENABLE_TLS_CLIENT=1      Enable TLS client test (Google)"
+	@echo "  ENABLE_HTTPS=1           Enable HTTPS web server (port 443)"
+	@echo "  ENABLE_MQTT_BROKER=1     Enable MQTT broker (port 8883 with TLS)"
+	@echo "  WOLFSSL_ROOT=            Path to wolfSSL (default: ../wolfssl)"
+	@echo "  WOLFMQTT_ROOT=           Path to wolfMQTT (default: ../wolfmqtt)"
+	@echo "  CC=                      C compiler (default: arm-none-eabi-gcc)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make                                        # Basic TCP echo (port 7)"
 	@echo "  make ENABLE_HTTPS=1                         # HTTPS web server"
 	@echo "  make ENABLE_TLS_CLIENT=1                    # TLS client (Google test)"
-	@echo "  make ENABLE_TLS_CLIENT=1 ENABLE_HTTPS=1    # All features"
+	@echo "  make ENABLE_MQTT_BROKER=1                   # MQTT broker with TLS"
+	@echo "  make ENABLE_TLS_CLIENT=1 ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1  # All features"
 	@echo ""
 	@echo "Testing:"
-	@echo "  nc <ip> 7                         # TCP echo test"
-	@echo "  curl -k https://<ip>/             # HTTPS test"
+	@echo "  nc <ip> 7                                   # TCP echo test"
+	@echo "  curl -k https://<ip>/                       # HTTPS test"
+	@echo "  mosquitto_pub -h <ip> -p 8883 --insecure -t test -m hello  # MQTT broker test"
 
 .PHONY: help
