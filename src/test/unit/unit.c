@@ -8651,6 +8651,56 @@ START_TEST(test_tcp_rto_update_second_sample_rfc6298)
 }
 END_TEST
 
+START_TEST(test_tcp_rto_update_sequence_known_deviation)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    const uint32_t samples[] = {4000U, 2000U, 2000U, 2000U};
+    const uint32_t exp_srtt[] = {32000U, 30000U, 28250U, 26718U};
+    const uint32_t exp_rttvar[] = {8000U, 8000U, 7750U, 7343U};
+    const uint32_t exp_rto[] = {12000U, 11750U, 11281U, 10682U};
+    size_t i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+
+    for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        tcp_rto_update_from_sample(ts, samples[i]);
+        ck_assert_uint_eq(ts->sock.tcp.srtt, exp_srtt[i]);
+        ck_assert_uint_eq(ts->sock.tcp.rttvar, exp_rttvar[i]);
+        ck_assert_uint_eq(ts->sock.tcp.rto, exp_rto[i]);
+    }
+}
+END_TEST
+
+START_TEST(test_tcp_rto_update_slow_convergence_intermediate_values)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    const uint32_t samples[] = {8000U, 2000U, 2000U, 2000U, 2000U, 2000U, 2000U, 2000U, 2000U};
+    const uint32_t exp_srtt_ms[] = {8000U, 7250U, 6593U, 6019U, 5517U, 5077U, 4692U, 4356U, 4061U};
+    size_t i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+
+    for (i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        tcp_rto_update_from_sample(ts, samples[i]);
+        ck_assert_uint_eq(ts->sock.tcp.rtt, exp_srtt_ms[i]);
+        if (i > 0)
+            ck_assert_uint_lt(ts->sock.tcp.rtt, exp_srtt_ms[i - 1]);
+    }
+    /* Convergence is intentionally smooth, not immediate. */
+    ck_assert_uint_gt(ts->sock.tcp.rtt, 2000U);
+}
+END_TEST
+
 START_TEST(test_tcp_process_ts_nop_then_ts)
 {
     struct wolfIP s;
@@ -14582,6 +14632,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_queue_full_sends_ack);
     tcase_add_test(tc_utils, test_tcp_process_ts_uses_ecr);
     tcase_add_test(tc_utils, test_tcp_rto_update_second_sample_rfc6298);
+    tcase_add_test(tc_utils, test_tcp_rto_update_sequence_known_deviation);
+    tcase_add_test(tc_utils, test_tcp_rto_update_slow_convergence_intermediate_values);
     tcase_add_test(tc_utils, test_tcp_process_ts_nop_then_ts);
     tcase_add_test(tc_utils, test_tcp_process_ts_skips_unknown_option);
     tcase_add_test(tc_utils, test_tcp_process_ts_no_ecr);
