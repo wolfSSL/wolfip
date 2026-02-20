@@ -8584,6 +8584,7 @@ START_TEST(test_tcp_last_ack_closes_socket)
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
     ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.last = 9;
     ts->local_ip = local_ip;
     ts->remote_ip = remote_ip;
     ts->src_port = local_port;
@@ -8597,7 +8598,7 @@ START_TEST(test_tcp_last_ack_closes_socket)
     ts->sock.tcp.tmr_rto = ctrl_rto_id;
 
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
-            10, 0, 0x10);
+            10, 10, 0x10);
     ck_assert_int_eq(ts->proto, 0);
     for (i = 0; i < s.timers.size; i++) {
         if (s.timers.timers[i].id == ctrl_rto_id) {
@@ -8607,6 +8608,59 @@ START_TEST(test_tcp_last_ack_closes_socket)
         }
     }
     ck_assert_int_eq(found_canceled, 1);
+}
+END_TEST
+
+START_TEST(test_tcp_last_ack_partial_ack_keeps_socket_and_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer tmr;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000E2U;
+    uint16_t local_port = 6667;
+    uint16_t remote_port = 7778;
+    uint32_t ctrl_rto_id;
+    uint32_t i;
+    int found_active = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.last = 9;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->src_port = local_port;
+    ts->dst_port = remote_port;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 12345;
+    ctrl_rto_id = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ctrl_rto_id, NO_TIMER);
+    ts->sock.tcp.tmr_rto = ctrl_rto_id;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            10, 9, 0x10);
+
+    ck_assert_int_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 1);
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, ctrl_rto_id);
+    for (i = 0; i < s.timers.size; i++) {
+        if (s.timers.timers[i].id == ctrl_rto_id) {
+            found_active = 1;
+            ck_assert_uint_eq(s.timers.timers[i].expires, 12345);
+            break;
+        }
+    }
+    ck_assert_int_eq(found_active, 1);
 }
 END_TEST
 START_TEST(test_fifo_pop_success) {
@@ -14822,6 +14876,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rst_syn_rcvd_returns_to_listen);
     tcase_add_test(tc_utils, test_tcp_fin_wait_1_to_closing);
     tcase_add_test(tc_utils, test_tcp_last_ack_closes_socket);
+    tcase_add_test(tc_utils, test_tcp_last_ack_partial_ack_keeps_socket_and_timer);
     tcase_add_test(tc_utils, test_tcp_ack_acks_data_and_sets_writable);
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_resend_clears_sent);
     tcase_add_test(tc_utils, test_tcp_ack_discards_zero_len_segment);

@@ -136,6 +136,12 @@ struct wolfIP_icmp_packet;
 #define TCP_SACK_MAX_BLOCKS 4
 #define TCP_OOO_MAX_SEGS 4
 
+#define TCP_FLAG_FIN 0x01U
+#define TCP_FLAG_SYN 0x02U
+#define TCP_FLAG_RST 0x04U
+#define TCP_FLAG_PSH 0x08U
+#define TCP_FLAG_ACK 0x10U
+
 /* Random number generator, provided by the user */
 //extern uint32_t wolfIP_getrandom(void);
 
@@ -2069,7 +2075,7 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
 
 static void tcp_send_ack(struct tsocket *t)
 {
-    return tcp_send_empty(t, 0x10);
+    return tcp_send_empty(t, TCP_FLAG_ACK);
 }
 
 static void tcp_send_finack(struct tsocket *t)
@@ -2092,8 +2098,8 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     uint8_t opt_len = 0;
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
-    if (flags & 0x02) {
-        if ((flags & 0x10) != 0) {
+    if (flags & TCP_FLAG_SYN) {
+        if ((flags & TCP_FLAG_ACK) != 0) {
             /* SYN-ACK: include WS only when enabled on this socket. */
             include_ws = t->sock.tcp.ws_enabled;
             include_sack = t->sock.tcp.sack_permitted;
@@ -2317,7 +2323,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     probe->seq = ee32(probe_seq);
     probe->ack = ee32(t->sock.tcp.ack);
     probe->hlen = TCP_HEADER_LEN << 2;
-    probe->flags = 0x10;
+    probe->flags = TCP_FLAG_ACK;
     probe->win = ee16(tcp_adv_win(t));
     probe->data[0] = probe_byte;
 
@@ -3210,7 +3216,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
             /* Check if pure ACK to SYN-ACK */
             if ((tcplen == 0) && (t->sock.tcp.state == TCP_SYN_RCVD)) {
-                if (tcp->flags == 0x10)  {
+                if (tcp->flags == TCP_FLAG_ACK)  {
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
                     t->sock.tcp.ack = ee32(tcp->seq);
@@ -3222,9 +3228,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->events |= CB_EVENT_WRITABLE;
                 }
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
-                tcp_send_ack(t);
-                tcp_ctrl_rto_stop(t);
-                close_socket(t);
+                if (tcp->flags & TCP_FLAG_ACK) {
+                    tcp_ack(t, tcp);
+                    tcp_process_ts(t, tcp, frame_len);
+                }
             }
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
@@ -3242,7 +3249,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->events |= CB_EVENT_CLOSED | CB_EVENT_READABLE;
                     tcp_send_ack(t);
                 }
-                if (tcp->flags & 0x10) {
+                if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
                     tcp_process_ts(t, tcp, frame_len);
                 }
@@ -3776,7 +3783,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tcp->seq = ee32(ts->sock.tcp.seq);
             tcp->ack = ee32(ts->sock.tcp.ack);
             tcp->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
-            tcp->flags = 0x10 | ((sent == 0)? 0x08 : 0); /* ACK; PSH only on first */
+            tcp->flags = TCP_FLAG_ACK | ((sent == 0) ? TCP_FLAG_PSH : 0); /* ACK; PSH only on first */
             tcp->win = ee16(tcp_adv_win(ts));
             tcp->csum = 0;
             tcp->urg = 0;
