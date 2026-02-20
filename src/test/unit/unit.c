@@ -12795,6 +12795,7 @@ START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
     struct wolfIP_tcp_seg *tcp;
     uint32_t ip_len;
     uint32_t tcp_hlen;
+    uint8_t payload[8] = {0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c};
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -12816,14 +12817,15 @@ START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
     ts->if_idx = TEST_PRIMARY_IF;
     ts->src_port = 1111;
     ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
     ts->sock.tcp.ack = 20;
-    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.snd_una = 13;
     ts->sock.tcp.rto = 100;
     ts->sock.tcp.cwnd = TCP_MSS * 4;
     ts->sock.tcp.peer_rwnd = 0;
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, 0x18), 0);
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload), 0x18), 0);
     s.last_tick = 500;
     tcp_persist_cb(ts);
 
@@ -12833,6 +12835,8 @@ START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
     ip_len = ee16(ip->len);
     tcp_hlen = (uint32_t)(tcp->hlen >> 2);
     ck_assert_uint_eq(ip_len - (IP_HEADER_LEN + tcp_hlen), 1U);
+    ck_assert_uint_eq(ee32(tcp->seq), ts->sock.tcp.snd_una);
+    ck_assert_uint_eq(tcp->data[0], 0x18U);
     ck_assert_uint_eq(tcp->flags & 0x10, 0x10);
     ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
     ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
