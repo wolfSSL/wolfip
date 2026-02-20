@@ -3223,6 +3223,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
                 tcp_send_ack(t);
+                tcp_ctrl_rto_stop(t);
                 close_socket(t);
             }
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
