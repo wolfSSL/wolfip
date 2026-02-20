@@ -27,6 +27,7 @@ A single network interface can be associated with the device.
 | **Network** | IPv4 | Datagram delivery, TTL handling | [RFC 791](https://datatracker.ietf.org/doc/html/rfc791) |
 | **Network** | IPv4 Forwarding | Multi-interface routing (optional) | [RFC 1812](https://datatracker.ietf.org/doc/html/rfc1812) |
 | **Network** | ICMP | Echo request/reply, TTL exceeded | [RFC 792](https://datatracker.ietf.org/doc/html/rfc792) |
+| **Network** | IPsec | ESP Transport mode | [RFC 4303](https://datatracker.ietf.org/doc/html/rfc4303) |
 | **Transport** | UDP | Unicast datagrams, checksum | [RFC 768](https://datatracker.ietf.org/doc/html/rfc768) |
 | **Transport** | TCP | Connection management, reliable delivery | [RFC 793](https://datatracker.ietf.org/doc/html/rfc793), [RFC 9293](https://datatracker.ietf.org/doc/html/rfc9293) |
 | **Transport** | TCP | Maximum Segment Size negotiation | [RFC 793](https://datatracker.ietf.org/doc/html/rfc793) |
