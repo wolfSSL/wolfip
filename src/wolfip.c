@@ -2128,6 +2128,8 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
 }
 
+/* Returns true when handshake/teardown control traffic is outstanding and
+ * should be driven by control-RTO retransmission (SYN/SYN-ACK/FIN states). */
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
 {
     if (!t || t->proto != WI_IPPROTO_TCP)
@@ -2138,6 +2140,7 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
            (t->sock.tcp.state == TCP_LAST_ACK);
 }
 
+/* Stop control-RTO retransmission tracking for this socket and reset counters. */
 static void tcp_ctrl_rto_stop(struct tsocket *t)
 {
     if (!t || t->proto != WI_IPPROTO_TCP)
@@ -2150,6 +2153,8 @@ static void tcp_ctrl_rto_stop(struct tsocket *t)
     t->sock.tcp.ctrl_rto_retries = 0;
 }
 
+/* Arm/re-arm control-RTO timer using exponential backoff over the current base RTO.
+ * This path is dedicated to SYN/SYN-ACK/FIN reliability (not data-loss recovery). */
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
 {
     struct wolfIP_timer tmr = {0};
@@ -2445,6 +2450,7 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     return 0;
 }
 
+/* Apply RFC6298-style implementation bounds to computed RTO (milliseconds). */
 static uint32_t tcp_rto_clamp(uint32_t rto_ms)
 {
     if (rto_ms < TCP_RTO_MIN_MS)
@@ -2454,6 +2460,11 @@ static uint32_t tcp_rto_clamp(uint32_t rto_ms)
     return rto_ms;
 }
 
+/* Update SRTT/RTTVAR/RTO from one RTT sample using RFC6298 fixed-point math.
+ * Internal scaling:
+ * - srtt   in ms*8
+ * - rttvar in ms*4
+ * Exposed t->sock.tcp.rtt/rto remain in milliseconds. */
 static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms)
 {
     uint32_t srtt_ms;
