@@ -3196,6 +3196,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
+                    t->sock.tcp.ctrl_rto_retries = 0;
+                    tcp_ctrl_rto_start(t, S->last_tick);
                     tcp_process_ts(t, tcp, frame_len);
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {

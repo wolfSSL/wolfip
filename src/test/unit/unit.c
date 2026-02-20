@@ -9248,6 +9248,40 @@ START_TEST(test_tcp_input_listen_syn_without_sack_disables_sack)
 }
 END_TEST
 
+START_TEST(test_tcp_input_listen_syn_arms_control_rto)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.last_tick = 777;
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U, 40000, 1234, 1, 0, 0x02);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 1);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_sent_synack_without_sack_disables_sack)
 {
     struct wolfIP s;
@@ -14966,6 +15000,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_drop_fully_acked);
     tcase_add_test(tc_utils, test_tcp_ack_sack_early_retransmit_before_three_dupack);
     tcase_add_test(tc_utils, test_tcp_input_listen_syn_without_sack_disables_sack);
+    tcase_add_test(tc_utils, test_tcp_input_listen_syn_arms_control_rto);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_without_sack_disables_sack);
     tcase_add_test(tc_utils, test_tcp_recv_partial_hole_fill_consumes_stored_ooo);
     tcase_add_test(tc_utils, test_tcp_ack_ignores_sack_when_not_negotiated);
