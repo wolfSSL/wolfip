@@ -410,6 +410,76 @@ int main(void)
 #endif
     printf("\nEntering main loop...\n");
 
+#ifdef TX_SELFTEST
+    /* TX Self-Test: send gratuitous ARP frames directly via ll->send() to
+     * exercise the TX path at startup before any external traffic arrives.
+     * The per-TX diagnostic in eth_send() will print TXFSTS (TX FIFO fill
+     * level) at 3 time points: pre-kick, +10µs, +500µs.
+     * If hw_tx > 0 after this, the MAC is transmitting to the wire.
+     * If hw_tx == 0, the diagnostic TXFSTS values tell us where it breaks. */
+    {
+        uint8_t garp[42];
+        ip4 self_ip = 0, dummy_nm = 0, dummy_gw = 0;
+        int i;
+
+        wolfIP_ipconfig_get(IPStack, &self_ip, &dummy_nm, &dummy_gw);
+
+        /* Ethernet header: broadcast dst, our src MAC, ARP ethertype */
+        memset(garp, 0xFF, 6);              /* dst: broadcast */
+        memcpy(garp + 6, ll->mac, 6);       /* src: our MAC */
+        garp[12] = 0x08; garp[13] = 0x06;  /* ethertype: ARP (0x0806) */
+
+        /* ARP payload (28 bytes, gratuitous request) */
+        garp[14] = 0x00; garp[15] = 0x01;  /* htype = Ethernet */
+        garp[16] = 0x08; garp[17] = 0x00;  /* ptype = IPv4 */
+        garp[18] = 6;                       /* hlen = 6 */
+        garp[19] = 4;                       /* plen = 4 */
+        garp[20] = 0x00; garp[21] = 0x01;  /* op = ARP request */
+        memcpy(garp + 22, ll->mac, 6);      /* sha = our MAC */
+        garp[28] = (uint8_t)((self_ip >> 24) & 0xFF); /* spa = our IP */
+        garp[29] = (uint8_t)((self_ip >> 16) & 0xFF);
+        garp[30] = (uint8_t)((self_ip >>  8) & 0xFF);
+        garp[31] = (uint8_t)( self_ip        & 0xFF);
+        memset(garp + 32, 0, 6);            /* tha = 0:0:0:0:0:0 */
+        garp[38] = garp[28]; garp[39] = garp[29]; /* tpa = our IP */
+        garp[40] = garp[30]; garp[41] = garp[31];
+
+        printf("TX Self-Test: sending 3 gratuitous ARP frames via ll->send()\n");
+        printf("  self_ip=%lu.%lu.%lu.%lu src_mac=%02X:%02X:%02X:%02X:%02X:%02X\n",
+               (unsigned long)((self_ip >> 24) & 0xFF),
+               (unsigned long)((self_ip >> 16) & 0xFF),
+               (unsigned long)((self_ip >>  8) & 0xFF),
+               (unsigned long)( self_ip        & 0xFF),
+               ll->mac[0], ll->mac[1], ll->mac[2],
+               ll->mac[3], ll->mac[4], ll->mac[5]);
+
+        for (i = 0; i < 3; i++) {
+            int r = ll->send(ll, garp, 42);
+            printf("  send[%d] = %d\n", i, r);
+            /* ~50ms delay (at 100MHz: 5M cycles) */
+            for (volatile uint32_t d = 0; d < 5000000U; d++) { }
+        }
+
+        /* Wait ~200ms then sample MAC MMC counters */
+        for (volatile uint32_t d = 0; d < 20000000U; d++) { }
+        {
+            uint32_t mac_cfg2, mac_dbg2, hw_tx2;
+            uint32_t dma_st2;
+            va416xx_eth_get_mac_diag(&mac_cfg2, &mac_dbg2, &hw_tx2);
+            dma_st2 = va416xx_eth_get_dma_status();
+            printf("  Post self-test: hw_tx=%lu dbg=0x%08lX dma=0x%08lX TS=%lu\n",
+                   (unsigned long)hw_tx2,
+                   (unsigned long)mac_dbg2,
+                   (unsigned long)dma_st2,
+                   (unsigned long)((dma_st2 >> 20) & 0x7U));
+            if (hw_tx2 > 0)
+                printf("  *** TX OK: MAC IS TRANSMITTING - issue is MII/PHY ***\n");
+            else
+                printf("  *** TX FAIL: hw_tx=0 - DMA->MAC TX FIFO path broken ***\n");
+        }
+    }
+#endif /* MAC_LOOPBACK_TEST */
+
     /* 10. Main loop — use HAL_time_ms (SysTick-based, 10ms resolution)
      * so wolfIP timers (TCP, ARP, etc.) run in real wall-clock time. */
     {
@@ -482,12 +552,25 @@ int main(void)
             /* Periodic diagnostics every ~10 seconds */
             if ((now - last_diag_ms) >= 10000U) {
                 uint32_t polls, pkts, tx_pkts, tx_errs;
-                uint32_t dma_st = va416xx_eth_get_dma_status();
+                uint32_t mac_cfg, mac_dbg, hw_tx, dma_st;
                 va416xx_eth_get_stats(&polls, &pkts, &tx_pkts, &tx_errs);
-                printf("[%lu ms] rx=%lu tx=%lu tx_err=%lu dma=0x%08lX\n",
-                       (unsigned long)now, (unsigned long)pkts,
-                       (unsigned long)tx_pkts, (unsigned long)tx_errs,
-                       (unsigned long)dma_st);
+                va416xx_eth_get_mac_diag(&mac_cfg, &mac_dbg, &hw_tx);
+                dma_st = va416xx_eth_get_dma_status();
+                /* mac_dbg full 32-bit: TX bits are in [22:16] (TWCSTS=22,
+                 * TRCSTS=[21:20], TFCSTS=[18:17], TPESTS=16).
+                 * Masking with 0xFFFF would hide all TX activity. */
+                printf("[%lu] rx=%lu tx=%lu/%lu hw_tx=%lu "
+                       "cfg=0x%04lX dbg=0x%08lX "
+                       "dma=0x%08lX TS=%lu\n",
+                       (unsigned long)(now / 1000U),
+                       (unsigned long)pkts,
+                       (unsigned long)tx_pkts,
+                       (unsigned long)tx_errs,
+                       (unsigned long)hw_tx,
+                       (unsigned long)(mac_cfg & 0xFFFF),
+                       (unsigned long)mac_dbg,
+                       (unsigned long)dma_st,
+                       (unsigned long)((dma_st >> 20) & 0x7U));
                 last_diag_ms = now;
             }
         }

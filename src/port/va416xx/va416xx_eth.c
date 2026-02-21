@@ -222,35 +222,46 @@ static void eth_config_speed_duplex(void)
               ctrl2, (unsigned long)opmode);
 
     /* Configure MAC speed and duplex.
-     * PS=1: MII port select (required for VA416xx 10/100 MAC)
-     * FES: 1=100Mbps, 0=10Mbps (may be read-only on some variants)
-     * DM:  Always set to Full Duplex.  In Half Duplex mode the DWC GMAC
-     *      checks the CRS (Carrier Sense) MII signal before transmitting.
-     *      On this silicon, CRS appears unreliable — the MAC defers
-     *      indefinitely and TX frames never reach the wire.  Full Duplex
-     *      bypasses CRS entirely, which is correct for point-to-point
-     *      switched Ethernet and avoids the CRS issue.
-     * ACS: Auto pad/CRC strip
-     * IPC: IP checksum offload */
+     * PS=1:   MII port select (required for VA416xx 10/100 MAC)
+     * FES:    1=100Mbps, 0=10Mbps (may be read-only on some variants)
+     * DM:     Always set to Full Duplex.  In Half Duplex mode the DWC GMAC
+     *         checks CRS before transmitting; CRS is unreliable on this
+     *         silicon so MAC defers indefinitely in HD mode.
+     * DCRS=1: Explicitly disable CRS check.  This is a no-op in FD mode
+     *         but provides defense-in-depth in case DM is somehow ignored.
+     * ACS:    Auto pad/CRC strip (RX)
+     * IPC:    IP checksum offload (RX)
+     * LM:     Loopback mode — compile with -DMAC_LOOPBACK_TEST to enable.
+     *         Loops TX back to RX internally (bypasses MII).  Used to verify
+     *         whether the DMA→MAC TX path works independently of the PHY. */
     maccr = ETH_MAC_CONFIG_PS_Msk |
             ETH_MAC_CONFIG_DM_Msk |
+            ETH_MAC_CONFIG_DCRS_Msk |
             ETH_MAC_CONFIG_ACS_Msk |
             ETH_MAC_CONFIG_IPC_Msk;
     if (speed_100)
         maccr |= ETH_MAC_CONFIG_FES_Msk;
+#ifdef MAC_LOOPBACK_TEST
+    maccr |= ETH_MAC_CONFIG_LM_Msk;
+    printf("  *** MAC LOOPBACK MODE ENABLED ***\n");
+#endif
 
     VOR_ETH->MAC_CONFIG = maccr;
 
-    /* Read back to verify — FES may be read-only on some VA416xx variants */
+    /* Read back to verify — FES/DM may be read-only on some variants */
     readback = VOR_ETH->MAC_CONFIG;
     actual_100 = !!(readback & ETH_MAC_CONFIG_FES_Msk);
     printf("  PHY: %s %s Duplex (negotiated)\n",
            speed_100 ? "100M" : "10M",
            full_duplex ? "Full" : "Half");
-    printf("  MAC: %s Full Duplex\n", actual_100 ? "100M" : "10M");
+    printf("  MAC: %s %s Duplex (MAC_CONFIG=0x%08lX)\n",
+           actual_100 ? "100M" : "10M",
+           (readback & ETH_MAC_CONFIG_DM_Msk) ? "Full" : "Half",
+           (unsigned long)readback);
     if (speed_100 && !actual_100)
         printf("  NOTE: FES read-only, MAC limited to 10M\n");
-    ETH_DEBUG("  MAC_CONFIG: 0x%08lX\n", (unsigned long)readback);
+    if (!(readback & ETH_MAC_CONFIG_DM_Msk))
+        printf("  WARNING: DM bit not retained! MAC stuck in Half Duplex\n");
 }
 
 /* ========================================================================= */
@@ -268,17 +279,16 @@ static void eth_config_dma(void)
     VOR_ETH->DMA_BUS_MODE = (8U << ETH_DMA_BUS_MODE_PBL_Pos);
 
     /* Operation Mode:
-     * - TX: threshold mode, 16-byte threshold (TTC=7).
-     *   Store-and-Forward (TSF) requires the entire frame to reside in the
-     *   MAC TX FIFO before transmission begins.  The VA416xx GMAC TX FIFO
-     *   size is implementation-specific; if it is smaller than one frame,
-     *   TSF silently prevents transmission.  Threshold mode allows cut-through
-     *   TX that works regardless of FIFO depth.
-     * - RX: Store-and-Forward (RSF=1) - keeps working as before.
-     * - OSF removed: "Operate on Second Frame" is only useful with a deep
-     *   descriptor ring and adds complexity during bring-up. */
-    VOR_ETH->DMA_OPER_MODE = (7U << ETH_DMA_OPER_MODE_TTC_Pos) | /* TTC=16B */
-                              ETH_DMA_OPER_MODE_RSF_Msk;
+     * - TX: Threshold mode TTC=7 (16-byte threshold).  Previous testing with
+     *   TSF (Store-and-Forward) showed TXFSTS=0 at ALL times including the
+     *   10µs post-kick sample window, proving the DMA was NOT writing frame
+     *   data to the TX FIFO in TSF mode.  TTC threshold mode starts MAC TX
+     *   as soon as 16 bytes are in the FIFO rather than waiting for the
+     *   complete frame, which may work if TSF's "frame complete" gating
+     *   is the issue on this silicon.
+     * - RX: Store-and-Forward (RSF=1) - keeps working as before. */
+    VOR_ETH->DMA_OPER_MODE = ETH_DMA_OPER_MODE_RSF_Msk |
+                              (7U << ETH_DMA_OPER_MODE_TTC_Pos); /* TTC=7 = 16B threshold */
 
     /* Disable all DMA interrupts (polling mode) */
     VOR_ETH->DMA_INTR_EN = 0;
@@ -349,14 +359,6 @@ static void eth_start(void)
     /* Ensure MMC counters are not frozen (bit 3 = freeze) */
     VOR_ETH->MMC_CNTRL &= ~(1U << 3);
 
-    /* NOTE: FTF (Flush TX FIFO) intentionally omitted.
-     * DWC GMAC databook states FTF should only be set when DMA TX is already
-     * in SUSPEND state (ST=1 but all descriptors have OWN=0).  Setting FTF
-     * before ST=1 (as was done here) leaves the TX FIFO controller in an
-     * undefined state on this silicon and silently prevents any DMA->FIFO
-     * transfers.  The TX FIFO is already empty after DMA SWR, so FTF is
-     * redundant and harmful here. */
-
     /* Enable MAC TX and RX */
     VOR_ETH->MAC_CONFIG |= ETH_MAC_CONFIG_TE_Msk | ETH_MAC_CONFIG_RE_Msk;
 
@@ -374,8 +376,22 @@ static void eth_start(void)
 
     __DSB();
 
-    /* Settling delay after DMA start */
+    /* Settling delay after DMA start.
+     * NOTE: FTF (Flush TX FIFO, bit 20) is intentionally NOT set here.
+     * Testing showed FTF (even after ST=1) may latch on this silicon and
+     * permanently flush any data the DMA writes to the TX FIFO, keeping
+     * hw_tx=0. The TX FIFO is already empty after SWR so no flush is needed. */
     { volatile uint32_t _d; for (_d = 0; _d < 100000U; _d++) { } }
+
+    {
+        uint32_t oper = VOR_ETH->DMA_OPER_MODE;
+        printf("  DMA_OPER_MODE=0x%08lX (FTF=%lu TSF=%lu TTC=%lu ST=%lu)\n",
+               (unsigned long)oper,
+               (unsigned long)!!(oper & ETH_DMA_OPER_MODE_FTF_Msk),
+               (unsigned long)!!(oper & ETH_DMA_OPER_MODE_TSF_Msk),
+               (unsigned long)((oper & ETH_DMA_OPER_MODE_TTC_Msk) >> ETH_DMA_OPER_MODE_TTC_Pos),
+               (unsigned long)!!(oper & ETH_DMA_OPER_MODE_ST_Msk));
+    }
 
     /* Kick RX DMA to start processing descriptors */
     VOR_ETH->DMA_RX_POLL_DEMAND = 0;
@@ -711,13 +727,97 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 
     __DSB();
 
-    /* Clear TU (Transmit Buffer Unavailable) if set */
-    if (VOR_ETH->DMA_STATUS & ETH_DMA_STATUS_TU_Msk) {
-        VOR_ETH->DMA_STATUS = ETH_DMA_STATUS_TU_Msk;
-    }
+    /* Capture MAC_DEBUG BEFORE kick for first few TX diagnostics.
+     * TXFSTS bits [25:24] show TX FIFO fill level from any previous frame.
+     * If TXFSTS≠0 before kick, prior frame is still in FIFO (MAC not draining). */
+    {
+        uint32_t mac_dbg_before = (tx_pkt_count <= 5U) ? VOR_ETH->MAC_DEBUG : 0U;
 
-    /* Kick TX DMA to start polling descriptors */
-    VOR_ETH->DMA_TX_POLL_DEMAND = 0;
+        /* Clear TU (Transmit Buffer Unavailable) if set */
+        if (VOR_ETH->DMA_STATUS & ETH_DMA_STATUS_TU_Msk) {
+            VOR_ETH->DMA_STATUS = ETH_DMA_STATUS_TU_Msk;
+        }
+
+        /* Kick TX DMA to start polling descriptors */
+        VOR_ETH->DMA_TX_POLL_DEMAND = 0;
+
+        /* Diagnostic: dump DMA state and TX FIFO status at three time points.
+         *
+         * At 10M MII a 60-byte frame takes ~48µs to transmit (2.5MHz nibble clock).
+         * Sampling MAC_DEBUG at ~10µs catches the MAC mid-transmission.
+         * Sampling at ~500µs should show an empty FIFO if MAC TX worked.
+         *
+         * MAC_DEBUG bits of interest:
+         *   [25:24] TXFSTS  — TX FIFO fill: 0=empty,1=≥threshold,2=full,3=not-empty
+         *   [21:20] TRCSTS  — MAC TX read state: 0=idle,1=waiting,2=pause,3=transfer
+         *   [18:17] TFCSTS  — MAC TX flow-ctrl: 0=idle,1=wait,2=pause,3=xfr-data
+         *   [16]    TPESTS  — MAC TX paused
+         * If TXFSTS≠0 at 10µs but =0 at 500µs → MAC transmitted ✓
+         * If TXFSTS≠0 at both → MAC TX stuck (TXCLK missing or FIFO not draining)
+         * If TXFSTS=0 at both → DMA did NOT write to TX FIFO! */
+        if (tx_pkt_count <= 5U) {
+            volatile uint32_t _d;
+            uint32_t mac_dbg_imm, mac_dbg_10us, mac_dbg_500us;
+            uint32_t dma_st, dma_oper, des0_wb, cur_desc, cur_bufr;
+
+            /* Sample immediately after kick (DMA just started, FIFO not yet filled) */
+            mac_dbg_imm = VOR_ETH->MAC_DEBUG;
+
+            /* ~10µs: DMA has written frame to FIFO, MAC may be mid-transmission */
+            for (_d = 0; _d < 1000U; _d++) { }
+            mac_dbg_10us = VOR_ETH->MAC_DEBUG;
+
+            /* ~500µs: well past 10M 60-byte TX time (48µs), FIFO should be empty */
+            for (_d = 0; _d < 50000U; _d++) { }
+            mac_dbg_500us = VOR_ETH->MAC_DEBUG;
+
+            dma_st   = VOR_ETH->DMA_STATUS;
+            dma_oper = VOR_ETH->DMA_OPER_MODE;
+            des0_wb  = desc->des0;
+            cur_desc = VOR_ETH->DMA_CURR_TX_DESC;
+            cur_bufr = VOR_ETH->DMA_CURR_TX_BUFR_ADDR;
+
+            printf("  TX#%lu: des0_set=0x%08lX des0_wb=0x%08lX "
+                   "des1=0x%08lX des2=0x%08lX des3=0x%08lX\n",
+                   (unsigned long)tx_pkt_count,
+                   (unsigned long)(TDES0_OWN | TDES0_FS | TDES0_LS |
+                                   TDES0_IC  | TDES0_TCH),
+                   (unsigned long)des0_wb,
+                   (unsigned long)desc->des1,
+                   (unsigned long)desc->des2,
+                   (unsigned long)desc->des3);
+            printf("  DMA_STATUS=0x%08lX TS=%lu cur_desc=0x%08lX cur_bufr=0x%08lX\n",
+                   (unsigned long)dma_st,
+                   (unsigned long)((dma_st >> 20) & 0x7U),
+                   (unsigned long)cur_desc,
+                   (unsigned long)cur_bufr);
+            printf("  DMA_OPER=0x%08lX FTF=%lu TSF=%lu ST=%lu\n",
+                   (unsigned long)dma_oper,
+                   (unsigned long)!!(dma_oper & ETH_DMA_OPER_MODE_FTF_Msk),
+                   (unsigned long)!!(dma_oper & ETH_DMA_OPER_MODE_TSF_Msk),
+                   (unsigned long)!!(dma_oper & ETH_DMA_OPER_MODE_ST_Msk));
+            printf("  MAC_DEBUG: bef=0x%08lX imm=0x%08lX @10us=0x%08lX @500us=0x%08lX\n",
+                   (unsigned long)mac_dbg_before,
+                   (unsigned long)mac_dbg_imm,
+                   (unsigned long)mac_dbg_10us,
+                   (unsigned long)mac_dbg_500us);
+            printf("  TXFSTS: bef=%lu imm=%lu @10us=%lu @500us=%lu  "
+                   "TRCSTS: @10us=%lu @500us=%lu\n",
+                   (unsigned long)((mac_dbg_before >> 24) & 3U),
+                   (unsigned long)((mac_dbg_imm    >> 24) & 3U),
+                   (unsigned long)((mac_dbg_10us   >> 24) & 3U),
+                   (unsigned long)((mac_dbg_500us  >> 24) & 3U),
+                   (unsigned long)((mac_dbg_10us   >> 20) & 3U),
+                   (unsigned long)((mac_dbg_500us  >> 20) & 3U));
+            if (dma_st & (1U << 13))
+                printf("  *** FATAL BUS ERROR (FBI) ***\n");
+            if (des0_wb & (1U << 15))
+                printf("  *** TX ERROR SUMMARY (ES): des0=0x%08lX ***\n",
+                       (unsigned long)des0_wb);
+            if (dma_oper & ETH_DMA_OPER_MODE_FTF_Msk)
+                printf("  *** FTF IS STILL SET - TX FIFO STUCK IN FLUSH ***\n");
+        }
+    }
 
     tx_idx = (tx_idx + 1U) % TX_DESC_COUNT;
     return (int)len;
@@ -753,6 +853,14 @@ void va416xx_eth_get_stats(uint32_t *polls, uint32_t *pkts, uint32_t *tx_pkts,
 uint32_t va416xx_eth_get_dma_status(void)
 {
     return VOR_ETH->DMA_STATUS;
+}
+
+void va416xx_eth_get_mac_diag(uint32_t *mac_cfg, uint32_t *mac_dbg,
+                               uint32_t *tx_frames_gb)
+{
+    if (mac_cfg)      *mac_cfg      = VOR_ETH->MAC_CONFIG;
+    if (mac_dbg)      *mac_dbg      = VOR_ETH->MAC_DEBUG;
+    if (tx_frames_gb) *tx_frames_gb = VOR_ETH->TXFRAMECOUNT_GB;
 }
 
 /* ========================================================================= */
