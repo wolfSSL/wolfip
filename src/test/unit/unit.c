@@ -5608,7 +5608,9 @@ START_TEST(test_sock_accept_success)
     new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
     ck_assert_int_gt(new_sd, 0);
     new_ts = &s.tcpsockets[SOCKET_UNMARK(new_sd)];
-    ck_assert_int_eq(new_ts->sock.tcp.state, TCP_ESTABLISHED);
+    /* After accept(), socket stays in SYN_RCVD until final ACK completes
+     * the three-way handshake (SYN-ACK retransmission fix). */
+    ck_assert_int_eq(new_ts->sock.tcp.state, TCP_SYN_RCVD);
     ck_assert_uint_eq(sin.sin_port, ee16(new_ts->dst_port));
 
     listen_ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
@@ -14706,7 +14708,8 @@ START_TEST(test_tcp_listen_accepts_bound_interface)
     client = &s.tcpsockets[SOCKET_UNMARK(client_fd)];
     ck_assert_uint_eq(client->local_ip, secondary_ip);
     ck_assert_uint_eq(client->bound_local_ip, secondary_ip);
-    ck_assert_int_eq(client->sock.tcp.state, TCP_ESTABLISHED);
+    /* After accept(), socket stays in SYN_RCVD until final ACK. */
+    ck_assert_int_eq(client->sock.tcp.state, TCP_SYN_RCVD);
 }
 END_TEST
 
@@ -14745,7 +14748,8 @@ START_TEST(test_tcp_listen_accepts_any_interface)
     ck_assert_int_ge(client_fd, 0);
     client = &s.tcpsockets[SOCKET_UNMARK(client_fd)];
     ck_assert_uint_eq(client->local_ip, secondary_ip);
-    ck_assert_int_eq(client->sock.tcp.state, TCP_ESTABLISHED);
+    /* After accept(), socket stays in SYN_RCVD until final ACK. */
+    ck_assert_int_eq(client->sock.tcp.state, TCP_SYN_RCVD);
 }
 END_TEST
 

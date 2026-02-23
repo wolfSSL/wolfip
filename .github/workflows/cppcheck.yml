@@ -2,7 +2,7 @@ name: CppCheck code linter
 
 on:
   push:
-    branches: [ 'master', 'main', 'release/**' ]
+    branches: [ '*' ]
   pull_request:
     branches: [ '*' ]
 

@@ -2,7 +2,7 @@ name: FreeBSD interop tests
 
 on:
   push:
-    branches: [ 'master', 'main', 'release/**' ]
+    branches: [ '*' ]
   pull_request:
     branches: [ '*' ]
 
