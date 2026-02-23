@@ -24,9 +24,11 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 #include "config.h"
 #include "wolfip.h"
 #include <wolfssl/options.h>
@@ -176,6 +178,11 @@ void *pt_echoclient(void *arg)
     unsigned i;
     uint8_t local_buf[BUFFER_SIZE];
     uint32_t *srv_addr = (uint32_t *)arg;
+    int old_flags = -1;
+    fd_set wfds, rfds;
+    struct timeval tv;
+    socklen_t errlen;
+    int err;
     struct sockaddr_in remote_sock = {
         .sin_family = AF_INET,
         .sin_port = ntohs(8), /* Echo */
@@ -205,12 +212,71 @@ void *pt_echoclient(void *arg)
     sleep(1);
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
     printf("Connecting to echo server\n");
-    ret = connect(fd, (struct sockaddr *)&remote_sock, sizeof(remote_sock));
-    if (ret < 0) {
-        printf("test client connect: %d\n", ret);
-        perror("connect");
+
+    /* Use non-blocking connect with select() loop for robustness */
+    old_flags = fcntl(fd, F_GETFL, 0);
+    if (old_flags < 0) {
+        perror("fcntl(F_GETFL)");
+        close(fd);
         return (void *)-1;
     }
+    if (fcntl(fd, F_SETFL, old_flags | O_NONBLOCK) < 0) {
+        perror("fcntl(F_SETFL)");
+        close(fd);
+        return (void *)-1;
+    }
+    ret = connect(fd, (struct sockaddr *)&remote_sock, sizeof(remote_sock));
+    if (ret < 0) {
+        err = errno;
+        printf("test client connect returned %d, errno=%d (%s)\n", ret, err, strerror(err));
+        if (err != EINPROGRESS) {
+            perror("connect");
+            close(fd);
+            return (void *)-1;
+        }
+        printf("Waiting for connect to complete...\n");
+        while (1) {
+            tv.tv_sec = 5;
+            tv.tv_usec = 0;
+            FD_ZERO(&rfds);
+            FD_ZERO(&wfds);
+            FD_SET(fd, &rfds);
+            FD_SET(fd, &wfds);
+            ret = select(fd + 1, &rfds, &wfds, NULL, &tv);
+            if (ret <= 0) {
+                printf("select returned %d (timeout or error)\n", ret);
+                if (ret < 0) {
+                    perror("select");
+                    close(fd);
+                    return (void *)-1;
+                }
+            }
+            errlen = sizeof(err);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) {
+                perror("getsockopt(SO_ERROR)");
+                close(fd);
+                return (void *)-1;
+            }
+            if (err == 0) {
+                printf("connect completed after select()\n");
+                break;
+            }
+            if (ret == 0) {
+                printf("connect still in progress after timeout\n");
+                continue;
+            }
+            if (err != EINPROGRESS && err != EALREADY && err != EWOULDBLOCK && err != EAGAIN) {
+                printf("connect completed with error: %d (%s)\n", err, strerror(err));
+                close(fd);
+                return (void *)-1;
+            }
+        }
+    } else {
+        printf("connect returned immediately\n");
+    }
+    /* Restore blocking mode for TLS operations */
+    if (fcntl(fd, F_SETFL, old_flags) < 0)
+        perror("fcntl(restore)");
     printf("Linux client: TCP connection established\n");
     ret = wolfSSL_connect(client_ssl);
     if (ret != SSL_SUCCESS) {

@@ -3069,6 +3069,160 @@ START_TEST(test_sock_accept_bound_local_ip_no_match)
 }
 END_TEST
 
+START_TEST(test_sock_accept_starts_rto_timer)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *listener;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    /* Accepted socket should be in SYN_RCVD state with RTO timer active */
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 1);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_retries, 0);
+    ck_assert_int_ne(accepted->sock.tcp.tmr_rto, NO_TIMER);
+
+    /* Listening socket should have returned to LISTEN with RTO stopped */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(listener->sock.tcp.ctrl_rto_active, 0);
+}
+END_TEST
+
+START_TEST(test_sock_accept_synack_retransmission)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Clear tx buffer to prepare for retransmission check */
+    fifo_init(&accepted->sock.tcp.txbuf, accepted->txmem, TXBUF_SIZE);
+    s.last_tick = 10000;
+
+    /* Simulate RTO timeout by calling tcp_rto_cb */
+    tcp_rto_cb(accepted);
+
+    /* Verify SYN-ACK was retransmitted */
+    desc = fifo_peek(&accepted->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(accepted->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(seg->flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_retries, 1);
+    ck_assert_int_ne(accepted->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_sock_accept_ack_transitions_to_established)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg ack;
+    struct wolfIP_ll_dev *ll;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 1);
+
+    /* Send pure ACK to complete the handshake */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(&ack, 0, sizeof(ack));
+    memcpy(ack.ip.eth.dst, ll->mac, 6);
+    ack.ip.eth.type = ee16(ETH_TYPE_IP);
+    ack.ip.ver_ihl = 0x45;
+    ack.ip.ttl = 64;
+    ack.ip.proto = WI_IPPROTO_TCP;
+    ack.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ack.ip.src = ee32(0x0A0000A1U);  /* Remote IP from inject_tcp_syn */
+    ack.ip.dst = ee32(0x0A000001U);
+    ack.ip.csum = 0;
+    iphdr_set_checksum(&ack.ip);
+    ack.src_port = ee16(40000);      /* Remote port from inject_tcp_syn */
+    ack.dst_port = ee16(1234);
+    ack.seq = ee32(accepted->sock.tcp.ack);
+    ack.ack = ee32(accepted->sock.tcp.seq);
+    ack.hlen = TCP_HEADER_LEN << 2;
+    ack.flags = TCP_FLAG_ACK;
+    ack.win = ee16(65535);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &ack,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    /* Verify socket transitioned to ESTABLISHED and RTO stopped */
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_retries, 0);
+    ck_assert_int_eq(accepted->sock.tcp.tmr_rto, NO_TIMER);
+    /* Should be signaled as writable */
+    ck_assert(accepted->events & CB_EVENT_WRITABLE);
+}
+END_TEST
+
 START_TEST(test_sock_sendto_error_paths)
 {
     struct wolfIP s;
@@ -15151,6 +15305,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_no_free_socket_syn_rcvd);
     tcase_add_test(tc_utils, test_sock_accept_listen_no_connection);
     tcase_add_test(tc_utils, test_sock_accept_bound_local_ip_no_match);
+    tcase_add_test(tc_utils, test_sock_accept_starts_rto_timer);
+    tcase_add_test(tc_utils, test_sock_accept_synack_retransmission);
+    tcase_add_test(tc_utils, test_sock_accept_ack_transitions_to_established);
     tcase_add_test(tc_utils, test_sock_sendto_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_null_buf_or_len_zero);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_not_established);

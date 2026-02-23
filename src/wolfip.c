@@ -3697,8 +3697,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             if (!newts)
                 return -1;
             ts->events &= ~CB_EVENT_READABLE;
-            if (tx_has_writable_space(newts))
-                newts->events |= CB_EVENT_WRITABLE;
+            /* Don't signal writable until connection fully established */
+            newts->events &= ~CB_EVENT_WRITABLE;
             newts->callback = ts->callback;
             newts->callback_arg = ts->callback_arg;
             newts->local_ip = ts->local_ip;
@@ -3722,7 +3722,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.ts_offer = ts->sock.tcp.ts_offer;
             newts->sock.tcp.sack_offer = ts->sock.tcp.sack_offer;
             newts->sock.tcp.sack_permitted = ts->sock.tcp.sack_permitted;
-            newts->sock.tcp.state = TCP_ESTABLISHED;
+            newts->sock.tcp.state = TCP_SYN_RCVD;
             /* Send SYN-ACK to accept connection.
              * Send the syn-ack from the newly established socket:
              * the caller could still close the listening socket
@@ -3730,12 +3730,15 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              */
             tcp_send_syn(newts, TCP_FLAG_SYN | TCP_FLAG_ACK);
             newts->sock.tcp.seq++;
+            newts->sock.tcp.ctrl_rto_retries = 0;
+            tcp_ctrl_rto_start(newts, s->last_tick);
             if (sin) {
                 sin->sin_family = AF_INET;
                 sin->sin_port = ee16(ts->dst_port);
                 sin->sin_addr.s_addr = ee32(ts->remote_ip);
             }
             ts->sock.tcp.state = TCP_LISTEN;
+            tcp_ctrl_rto_stop(ts);
             ts->sock.tcp.seq = wolfIP_getrandom();
             if (ts->bound_local_ip != IPADDR_ANY) {
                 int bound_match = 0;
