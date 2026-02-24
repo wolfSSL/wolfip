@@ -661,7 +661,7 @@ entirely.
 
 **Fix (already applied):** `ssh_server.c` detects `wolfIP_sock_accept()` returning
 `-1` and automatically calls `ssh_reinit_listen()` to close and recreate the
-listen socket on port 22.  In addition, `wolfSSH_shutdown()` is now skipped for
+listen socket on the configured SSH port.  In addition, `wolfSSH_shutdown()` is now skipped for
 connections that never reached the authenticated (`CONNECTED`) state, which
 reduces the CLOSING-state latency and narrows the timing window.
 
@@ -669,7 +669,7 @@ reduces the CLOSING-state latency and narrows the timing window.
 UART will now show:
 
 ```
-SSH: Listen socket error, reinitializing
+SSH: Reinitializing listen socket
 SSH: Listen socket recovered
 ```
 

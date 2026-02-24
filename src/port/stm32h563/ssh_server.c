@@ -157,9 +157,9 @@ static int handle_command(const char *cmd, char *response, int max_len)
             "  uptime  - Show uptime in seconds\r\n"
             "  exit    - Close SSH session\r\n\r\n";
         len = strlen(help);
-        if (len < max_len) {
-            memcpy(response, help, len);
-        }
+        if (len >= max_len)
+            len = max_len - 1;
+        memcpy(response, help, len);
     }
     else if (strncmp(cmd, "info", 4) == 0) {
         const char *info =
@@ -168,9 +168,9 @@ static int handle_command(const char *cmd, char *response, int max_len)
             "SSH:    wolfSSH\r\n"
             "TLS:    wolfSSL TLS 1.3\r\n\r\n";
         len = strlen(info);
-        if (len < max_len) {
-            memcpy(response, info, len);
-        }
+        if (len >= max_len)
+            len = max_len - 1;
+        memcpy(response, info, len);
     }
     else if (strncmp(cmd, "uptime", 6) == 0) {
         uint32_t uptime = ssh_server_get_uptime();
@@ -182,22 +182,25 @@ static int handle_command(const char *cmd, char *response, int max_len)
             strcpy(response, prefix);
             strcat(response, num_buf);
             strcat(response, suffix);
+        } else {
+            len = 0;
         }
     }
     else if (strncmp(cmd, "exit", 4) == 0 || strncmp(cmd, "quit", 4) == 0) {
         const char *bye = "\r\nGoodbye!\r\n";
         len = strlen(bye);
-        if (len < max_len) {
-            memcpy(response, bye, len + 1); /* include null terminator */
-        }
+        if (len >= max_len)
+            len = max_len - 1;
+        memcpy(response, bye, len);
+        response[len] = '\0';
         return -len; /* Negative = close, magnitude = byte count to send */
     }
     else if (cmd[0] != '\0' && cmd[0] != '\r' && cmd[0] != '\n') {
         const char *unknown = "\r\nUnknown command. Type 'help' for available commands.\r\n\r\n";
         len = strlen(unknown);
-        if (len < max_len) {
-            memcpy(response, unknown, len);
-        }
+        if (len >= max_len)
+            len = max_len - 1;
+        memcpy(response, unknown, len);
     }
     else {
         /* Empty command - just return prompt */
@@ -371,7 +374,10 @@ int ssh_server_poll(void)
                  * client ACK arrived before wolfIP_sock_accept() was called,
                  * or destroyed after TCP_CTRL_RTO_MAXRTX retries).
                  * Reinitialize to recover. */
-                ssh_reinit_listen();
+                if (ssh_reinit_listen() < 0) {
+                    debug_print("SSH: Listen reinit failed\n");
+                    return -1;
+                }
             }
             break;
 
