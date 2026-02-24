@@ -348,15 +348,15 @@ clean-unit:
 	@rm -f build/test/unit build/test/unit.o
 
 unit-asan: CFLAGS+=-fsanitize=address
-unit-asan: LDFLAGS+=-fsanitize=address
+unit-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
 unit-asan: clean-unit build/test/unit
 
 unit-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
-unit-ubsan: LDFLAGS+=-fsanitize=undefined
+unit-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
 unit-ubsan: clean-unit build/test/unit
 
 unit-leaksan: CFLAGS+=-fsanitize=leak
-unit-leaksan: LDFLAGS+=-fsanitize=leak
+unit-leaksan: LDFLAGS+=-fsanitize=leak $(UNIT_LIBS)
 unit-leaksan: clean-unit build/test/unit
 
 COV_DIR:=build/coverage
