@@ -342,6 +342,23 @@ build/test/unit:
 	@echo "[LD] $@"
 	@$(CC) build/test/unit.o -o build/test/unit $(UNIT_LDFLAGS) $(LDFLAGS)
 
+# Unit tests with sanitizers
+# Force clean rebuild to ensure sanitizer flags are applied
+clean-unit:
+	@rm -f build/test/unit build/test/unit.o
+
+unit-asan: CFLAGS+=-fsanitize=address
+unit-asan: LDFLAGS+=-fsanitize=address
+unit-asan: clean-unit build/test/unit
+
+unit-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
+unit-ubsan: LDFLAGS+=-fsanitize=undefined
+unit-ubsan: clean-unit build/test/unit
+
+unit-leaksan: CFLAGS+=-fsanitize=leak
+unit-leaksan: LDFLAGS+=-fsanitize=leak
+unit-leaksan: clean-unit build/test/unit
+
 COV_DIR:=build/coverage
 COV_UNIT:=$(COV_DIR)/unit
 COV_UNIT_O:=$(COV_DIR)/unit.o
@@ -379,7 +396,7 @@ install:
 	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
-.PHONY: clean all static cppcheck cov autocov
+.PHONY: clean all static cppcheck cov autocov unit-asan unit-ubsan unit-leaksan clean-unit
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml

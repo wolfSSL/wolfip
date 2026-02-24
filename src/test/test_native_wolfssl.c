@@ -275,8 +275,11 @@ void *pt_echoclient(void *arg)
         printf("connect returned immediately\n");
     }
     /* Restore blocking mode for TLS operations */
-    if (fcntl(fd, F_SETFL, old_flags) < 0)
+    if (fcntl(fd, F_SETFL, old_flags) < 0) {
         perror("fcntl(restore)");
+        close(fd);
+        return (void *)-1;
+    }
     printf("Linux client: TCP connection established\n");
     ret = wolfSSL_connect(client_ssl);
     if (ret != SSL_SUCCESS) {

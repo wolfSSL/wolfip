@@ -21,10 +21,13 @@ jobs:
         include:
           - name: "ASan"
             target: "asan"
+            unit_target: "unit-asan"
           - name: "UBSan"
             target: "ubsan"
+            unit_target: "unit-ubsan"
           - name: "LeakSan"
             target: "leaksan"
+            unit_target: "unit-leaksan"
 
     steps:
       - name: Workaround high-entropy ASLR
@@ -46,8 +49,8 @@ jobs:
           mkdir -p build/port
           make ${{ matrix.target }}
 
-      - name: Build unit tests
-        run: make unit
+      - name: Build unit tests with ${{ matrix.name }}
+        run: make ${{ matrix.unit_target }}
 
       - name: Run unit tests
         run: ./build/test/unit
