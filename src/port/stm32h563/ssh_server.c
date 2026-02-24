@@ -59,11 +59,14 @@ static struct {
     int rx_len;
     uint32_t start_tick;
     int channel_open;
+    uint16_t port;              /* saved for listen socket recovery */
+    uint8_t session_established; /* 1 if SSH channel opened (CONNECTED reached) */
 } server;
 
 /* External functions from wolfssh_io.c */
 extern void wolfSSH_CTX_SetIO_wolfIP(WOLFSSH_CTX *ctx);
 extern int wolfSSH_SetIO_wolfIP(WOLFSSH *ssh, struct wolfIP *stack, int fd);
+extern void wolfSSH_CleanupIO_wolfIP(WOLFSSH *ssh);
 
 #ifdef DEBUG_WOLFSSH
 /* wolfSSH logging callback */
@@ -185,9 +188,9 @@ static int handle_command(const char *cmd, char *response, int max_len)
         const char *bye = "\r\nGoodbye!\r\n";
         len = strlen(bye);
         if (len < max_len) {
-            memcpy(response, bye, len);
+            memcpy(response, bye, len + 1); /* include null terminator */
         }
-        return -1; /* Signal to close connection */
+        return -len; /* Negative = close, magnitude = byte count to send */
     }
     else if (cmd[0] != '\0' && cmd[0] != '\r' && cmd[0] != '\n') {
         const char *unknown = "\r\nUnknown command. Type 'help' for available commands.\r\n\r\n";
@@ -215,6 +218,7 @@ int ssh_server_init(struct wolfIP *stack, uint16_t port, ssh_debug_cb debug)
     server.listen_fd = -1;
     server.client_fd = -1;
     server.state = SSH_STATE_LISTENING;
+    server.port = port;
 
     debug_print("SSH: Initializing wolfSSH\n");
 
@@ -295,6 +299,56 @@ int ssh_server_init(struct wolfIP *stack, uint16_t port, ssh_debug_cb debug)
     return 0;
 }
 
+/* Re-open the listen socket when wolfIP has corrupted it (e.g. listen socket
+ * got stuck in TCP_ESTABLISHED after the RTO fired and the client ACK arrived
+ * before wolfIP_sock_accept() was called). */
+static int ssh_reinit_listen(void)
+{
+    struct wolfIP_sockaddr_in addr;
+    int ret;
+
+    debug_print("SSH: Reinitializing listen socket\n");
+
+    /* Close the broken listen socket (ignore errors) */
+    if (server.listen_fd >= 0) {
+        wolfIP_sock_close(server.stack, server.listen_fd);
+        server.listen_fd = -1;
+    }
+
+    /* Create a new listen socket */
+    server.listen_fd = wolfIP_sock_socket(server.stack,
+                                          AF_INET, IPSTACK_SOCK_STREAM, 0);
+    if (server.listen_fd < 0) {
+        debug_print("SSH: reinit socket() failed\n");
+        return -1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = ee16(server.port);
+    addr.sin_addr.s_addr = 0;
+
+    ret = wolfIP_sock_bind(server.stack, server.listen_fd,
+                           (struct wolfIP_sockaddr *)&addr, sizeof(addr));
+    if (ret < 0) {
+        debug_print("SSH: reinit bind() failed\n");
+        wolfIP_sock_close(server.stack, server.listen_fd);
+        server.listen_fd = -1;
+        return -1;
+    }
+
+    ret = wolfIP_sock_listen(server.stack, server.listen_fd, 1);
+    if (ret < 0) {
+        debug_print("SSH: reinit listen() failed\n");
+        wolfIP_sock_close(server.stack, server.listen_fd);
+        server.listen_fd = -1;
+        return -1;
+    }
+
+    debug_print("SSH: Listen socket recovered\n");
+    return 0;
+}
+
 int ssh_server_poll(void)
 {
     int ret;
@@ -308,8 +362,16 @@ int ssh_server_poll(void)
                 (struct wolfIP_sockaddr *)&client_addr, &addr_len);
             if (ret >= 0) {
                 server.client_fd = ret;
+                server.session_established = 0;
                 debug_print("SSH: Client connected\n");
                 server.state = SSH_STATE_ACCEPTING;
+            } else if (ret == -1) {
+                /* Listen socket in unexpected state (e.g. stuck in
+                 * TCP_ESTABLISHED after wolfIP's RTO mechanism fired and the
+                 * client ACK arrived before wolfIP_sock_accept() was called,
+                 * or destroyed after TCP_CTRL_RTO_MAXRTX retries).
+                 * Reinitialize to recover. */
+                ssh_reinit_listen();
             }
             break;
 
@@ -339,6 +401,7 @@ int ssh_server_poll(void)
             ret = wolfSSH_accept(server.ssh);
             if (ret == WS_SUCCESS) {
                 debug_print("SSH: Handshake complete\n");
+                server.session_established = 1;
                 server.state = SSH_STATE_CONNECTED;
                 server.rx_len = 0;
 
@@ -350,7 +413,10 @@ int ssh_server_poll(void)
                 wolfSSH_stream_send(server.ssh, (byte *)welcome, strlen(welcome));
             } else {
                 int err = wolfSSH_get_error(server.ssh);
-                if (err != WS_WANT_READ && err != WS_WANT_WRITE) {
+                /* Check both ret and err: wolfSSH may return WANT_READ/WRITE
+                 * either as the return value or stored via wolfSSH_get_error() */
+                if (err != WS_WANT_READ && err != WS_WANT_WRITE &&
+                    ret != WS_WANT_READ && ret != WS_WANT_WRITE) {
                     debug_print("SSH: Handshake failed\n");
                     server.state = SSH_STATE_CLOSING;
                 }
@@ -384,8 +450,8 @@ int ssh_server_poll(void)
                                                   response, sizeof(response));
 
                     if (resp_len < 0) {
-                        /* Exit requested */
-                        wolfSSH_stream_send(server.ssh, (byte *)response, strlen(response));
+                        /* Exit requested: magnitude encodes byte count */
+                        wolfSSH_stream_send(server.ssh, (byte *)response, (word32)(-resp_len));
                         server.state = SSH_STATE_CLOSING;
                         break;
                     }
@@ -404,7 +470,8 @@ int ssh_server_poll(void)
                 }
             } else if (ret < 0) {
                 int err = wolfSSH_get_error(server.ssh);
-                if (err != WS_WANT_READ && err != WS_WANT_WRITE) {
+                if (err != WS_WANT_READ && err != WS_WANT_WRITE &&
+                    ret != WS_WANT_READ && ret != WS_WANT_WRITE) {
                     debug_print("SSH: Connection closed\n");
                     server.state = SSH_STATE_CLOSING;
                 }
@@ -413,10 +480,19 @@ int ssh_server_poll(void)
 
         case SSH_STATE_CLOSING:
             if (server.ssh) {
-                wolfSSH_shutdown(server.ssh);
+                /* Only send SSH_MSG_DISCONNECT if the session was fully
+                 * established; calling wolfSSH_shutdown() on a half-open
+                 * session (e.g. auth failure) can trigger unexpected I/O
+                 * that delays the return to LISTENING and widens the window
+                 * in which a new SYN can corrupt the listen socket state. */
+                if (server.session_established) {
+                    wolfSSH_shutdown(server.ssh);
+                }
+                wolfSSH_CleanupIO_wolfIP(server.ssh);
                 wolfSSH_free(server.ssh);
                 server.ssh = NULL;
             }
+            server.session_established = 0;
             if (server.client_fd >= 0) {
                 wolfIP_sock_close(server.stack, server.client_fd);
                 server.client_fd = -1;

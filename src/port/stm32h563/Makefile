@@ -90,6 +90,7 @@ SRCS += $(ROOT)/src/port/wolfssl_io.c
 # HTTPS web server - uses existing wolfIP httpd
 ifeq ($(ENABLE_HTTPS),1)
 CFLAGS += -DENABLE_HTTPS
+CFLAGS += -DWOLFIP_ENABLE_HTTP
 SRCS += $(ROOT)/src/http/httpd.c
 endif
 

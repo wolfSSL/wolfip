@@ -641,6 +641,40 @@ Goodbye!
 Connection to 192.168.0.197 closed.
 ```
 
+### SSH Connection Hangs After Authentication Failure
+
+**Symptom:** After one or more failed SSH login attempts the next connection hangs
+— `ssh admin@<device-ip>` blocks and "SSH: Client connected" never appears in
+the UART log.
+
+**Root cause:** wolfIP's listen socket can be corrupted between connections.
+When a new client SYN arrives while the state machine is busy in
+`SSH_STATE_KEY_EXCHANGE` (e.g. because a concurrent connection is being torn
+down), wolfIP places the listen socket in `TCP_SYN_RCVD`.  If
+`wolfIP_sock_accept()` is not called within wolfIP's internal RTO window
+(≈200 ms), wolfIP re-sends the SYN-ACK directly from the listen socket.  When
+the client's ACK arrives the listen socket transitions from `TCP_SYN_RCVD` →
+`TCP_ESTABLISHED`, which is a state `wolfIP_sock_accept()` does not accept, so
+it returns `-1` on every call.  A secondary failure path exists when the RTO
+fires `TCP_CTRL_RTO_MAXRTX` (6) times: wolfIP then destroys the listen socket
+entirely.
+
+**Fix (already applied):** `ssh_server.c` detects `wolfIP_sock_accept()` returning
+`-1` and automatically calls `ssh_reinit_listen()` to close and recreate the
+listen socket on port 22.  In addition, `wolfSSH_shutdown()` is now skipped for
+connections that never reached the authenticated (`CONNECTED`) state, which
+reduces the CLOSING-state latency and narrows the timing window.
+
+**If the issue re-occurs** (e.g. after a very rapid series of failed attempts),
+UART will now show:
+
+```
+SSH: Listen socket error, reinitializing
+SSH: Listen socket recovered
+```
+
+and the next connection attempt will succeed.
+
 ### Generating Custom SSH Host Key
 
 The included test host key is for development only. Generate your own:
