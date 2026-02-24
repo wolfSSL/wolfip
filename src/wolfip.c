@@ -523,7 +523,12 @@ static uint32_t queue_len(struct queue *q)
 /* Signed relative distance between two TCP sequence numbers: a - b.
  * Unsigned subtraction wraps modulo 2^32 (well-defined), and the cast to
  * int32_t gives a negative result when b is ahead of a in sequence space,
- * correctly handling wrap-around for gaps up to 2^31. */
+ * correctly handling wrap-around for gaps up to 2^31.
+ * The no_sanitize attribute suppresses unsigned-integer-overflow since the
+ * wrapping is intentional here. */
+#ifdef __clang__
+__attribute__((no_sanitize("unsigned-integer-overflow")))
+#endif
 static inline int32_t tcp_seq_diff(uint32_t a, uint32_t b)
 {
     return (int32_t)(a - b);
