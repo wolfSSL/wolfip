@@ -1,0 +1,26 @@
+name: Codespell
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codespell:
+    name: Check spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout wolfIP
+        uses: actions/checkout@v4
+
+      - name: Run codespell
+        uses: codespell-project/actions-codespell@v2
+        with:
+          skip: .git,./IDE,*.der,*.pem
+          ignore_words_list: inh,inout,keypair,nd,parm,rcv,ser,tha,HSI,TE,UE

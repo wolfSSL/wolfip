@@ -910,7 +910,7 @@ rfc4106_enc_out:
 #endif /*WOLFSSL_AESGCM_STREAM */
 
 /**
- * In rfc4543(gcm(aes)) the AAD consists ofthe SPI, Sequence Number,
+ * In rfc4543(gcm(aes)) the AAD consists of the SPI, Sequence Number,
  * and ESP Payload, and the AES-GCM plaintext is zero-length, while in
  * rfc4106(gcm(aes)) the AAD consists only of the SPI and Sequence Number,
  * and the AES-GCM plaintext consists of the ESP Payload.
