@@ -1119,7 +1119,7 @@ START_TEST(test_queue_insert_no_head_update_when_pos_plus_len_le_head)
 {
     struct queue q;
     uint8_t data[16];
-    uint8_t payload[4] = {1,2,3,4};
+    uint8_t payload[8] = {1,2,3,4,5,6,7,8};
     uint32_t head_before;
 
     queue_init(&q, data, sizeof(data), 0);
@@ -7044,7 +7044,8 @@ START_TEST(test_udp_try_recv_conf_null)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_udp_datagram udp;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
     uint32_t dst_ip = 0x0A000001U;
 
     wolfIP_init(&s);
@@ -7057,11 +7058,11 @@ START_TEST(test_udp_try_recv_conf_null)
     ts->local_ip = dst_ip;
     ts->remote_ip = 0;
 
-    memset(&udp, 0, sizeof(udp));
-    udp.ip.dst = ee32(dst_ip);
-    udp.dst_port = ee16(1234);
-    udp.len = ee16(UDP_HEADER_LEN + 4);
-    udp_try_recv(&s, TEST_PRIMARY_IF, &udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.dst = ee32(dst_ip);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
@@ -7096,7 +7097,8 @@ START_TEST(test_udp_try_recv_dhcp_running_local_zero)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_udp_datagram udp;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
     uint32_t local_ip = 0x0A000001U;
 
     wolfIP_init(&s);
@@ -7109,11 +7111,11 @@ START_TEST(test_udp_try_recv_dhcp_running_local_zero)
     ts->src_port = 1234;
     ts->local_ip = 0;
 
-    memset(&udp, 0, sizeof(udp));
-    udp.ip.dst = ee32(local_ip);
-    udp.dst_port = ee16(1234);
-    udp.len = ee16(UDP_HEADER_LEN + 4);
-    udp_try_recv(&s, TEST_PRIMARY_IF, &udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.dst = ee32(local_ip);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
@@ -8266,7 +8268,9 @@ END_TEST
 START_TEST(test_ip_recv_forward_ttl_exceeded)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet ip;
+    /* Buffer must be at least ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE (14+28=42) bytes */
+    uint8_t ip_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
 
@@ -8274,18 +8278,18 @@ START_TEST(test_ip_recv_forward_ttl_exceeded)
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
-    memset(&ip, 0, sizeof(ip));
-    ip.eth.type = ee16(ETH_TYPE_IP);
-    memcpy(ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
-    memcpy(ip.eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip.ver_ihl = 0x45;
-    ip.ttl = 1;
-    ip.proto = WI_IPPROTO_UDP;
-    ip.len = ee16(IP_HEADER_LEN);
-    ip.src = ee32(primary_ip);
-    ip.dst = ee32(0xC0A80155U);
+    memset(ip_buf, 0, sizeof(ip_buf));
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_UDP;
+    ip->len = ee16(IP_HEADER_LEN);
+    ip->src = ee32(primary_ip);
+    ip->dst = ee32(0xC0A80155U);
 
-    ip_recv(&s, TEST_PRIMARY_IF, &ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN));
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
     ck_assert_uint_gt(last_frame_sent_size, 0);
 }
 END_TEST
@@ -8446,14 +8450,15 @@ END_TEST
 START_TEST(test_arp_queue_packet_truncates_len)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet ip;
+    uint8_t ip_buf[LINK_MTU + 16];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
     uint32_t len = LINK_MTU + 16;
 
     wolfIP_init(&s);
     mock_link_init(&s);
-    memset(&ip, 0, sizeof(ip));
+    memset(ip_buf, 0, sizeof(ip_buf));
 
-    arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A0000A3U, &ip, len);
+    arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A0000A3U, ip, len);
     ck_assert_uint_eq(s.arp_pending[0].len, LINK_MTU);
 }
 END_TEST
@@ -8894,7 +8899,9 @@ END_TEST
 START_TEST(test_send_ttl_exceeded_filter_drop)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet ip;
+    /* Buffer must be at least ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE (14+28=42) bytes */
+    uint8_t ip_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -8904,12 +8911,12 @@ START_TEST(test_send_ttl_exceeded_filter_drop)
     wolfIP_filter_set_icmp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
     last_frame_sent_size = 0;
 
-    memset(&ip, 0, sizeof(ip));
-    memcpy(ip.eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip.src = ee32(0x0A000002U);
-    ip.dst = ee32(0x0A000001U);
+    memset(ip_buf, 0, sizeof(ip_buf));
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->src = ee32(0x0A000002U);
+    ip->dst = ee32(0x0A000001U);
 
-    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, &ip);
+    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
     ck_assert_uint_eq(last_frame_sent_size, 0);
 
     wolfIP_filter_set_callback(NULL, NULL);
@@ -8920,7 +8927,9 @@ END_TEST
 START_TEST(test_send_ttl_exceeded_ip_filter_drop)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet ip;
+    /* Buffer must be at least ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE (14+28=42) bytes */
+    uint8_t ip_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -8931,12 +8940,12 @@ START_TEST(test_send_ttl_exceeded_ip_filter_drop)
     wolfIP_filter_set_icmp_mask(0);
     last_frame_sent_size = 0;
 
-    memset(&ip, 0, sizeof(ip));
-    memcpy(ip.eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip.src = ee32(0x0A000002U);
-    ip.dst = ee32(0x0A000001U);
+    memset(ip_buf, 0, sizeof(ip_buf));
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->src = ee32(0x0A000002U);
+    ip->dst = ee32(0x0A000001U);
 
-    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, &ip);
+    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
     ck_assert_uint_eq(last_frame_sent_size, 0);
 
     wolfIP_filter_set_callback(NULL, NULL);
@@ -8947,7 +8956,9 @@ END_TEST
 START_TEST(test_send_ttl_exceeded_eth_filter_drop)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet ip;
+    /* Buffer must be at least ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE (14+28=42) bytes */
+    uint8_t ip_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -8959,12 +8970,12 @@ START_TEST(test_send_ttl_exceeded_eth_filter_drop)
     wolfIP_filter_set_ip_mask(0);
     last_frame_sent_size = 0;
 
-    memset(&ip, 0, sizeof(ip));
-    memcpy(ip.eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip.src = ee32(0x0A000002U);
-    ip.dst = ee32(0x0A000001U);
+    memset(ip_buf, 0, sizeof(ip_buf));
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->src = ee32(0x0A000002U);
+    ip->dst = ee32(0x0A000001U);
 
-    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, &ip);
+    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
     ck_assert_uint_eq(last_frame_sent_size, 0);
 
     wolfIP_filter_set_callback(NULL, NULL);
@@ -9349,7 +9360,9 @@ END_TEST
 START_TEST(test_wolfip_recv_on_forward_ttl_exceeded)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet ip;
+    /* Buffer must be at least ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE (14+28=42) bytes */
+    uint8_t ip_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
 
@@ -9357,16 +9370,16 @@ START_TEST(test_wolfip_recv_on_forward_ttl_exceeded)
     mock_link_init(&s);
     last_frame_sent_size = 0;
 
-    memset(&ip, 0, sizeof(ip));
-    ip.eth.type = ee16(ETH_TYPE_IP);
-    memcpy(ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
-    memcpy(ip.eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip.ver_ihl = 0x45;
-    ip.ttl = 1;
-    ip.src = ee32(0x0A000099U);
-    ip.dst = ee32(0xC0A80199U);
+    memset(ip_buf, 0, sizeof(ip_buf));
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->src = ee32(0x0A000099U);
+    ip->dst = ee32(0xC0A80199U);
 
-    wolfIP_recv_on(&s, TEST_PRIMARY_IF, &ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN));
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(((struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent)->type, ICMP_TTL_EXCEEDED);
 }
@@ -9458,7 +9471,7 @@ END_TEST
 START_TEST(test_forward_packet_filter_drop)
 {
     struct wolfIP s;
-    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN];
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
 
     wolfIP_init(&s);
@@ -9467,7 +9480,7 @@ START_TEST(test_forward_packet_filter_drop)
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
     filter_block_reason = WOLFIP_FILT_SENDING;
 
-    memset(ip, 0, sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_TCP;
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), NULL, 1);
@@ -9480,7 +9493,7 @@ END_TEST
 START_TEST(test_forward_packet_send_paths)
 {
     struct wolfIP s;
-    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN];
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
     uint8_t mac[6] = {0x01,0x02,0x03,0x04,0x05,0x06};
 
@@ -9488,19 +9501,19 @@ START_TEST(test_forward_packet_send_paths)
     mock_link_init(&s);
     wolfIP_filter_set_callback(NULL, NULL);
 
-    memset(ip, 0, sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_TCP;
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), mac, 0);
     ck_assert_uint_gt(last_frame_sent_size, 0);
 
-    memset(ip, 0, sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_UDP;
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), mac, 1);
     ck_assert_uint_gt(last_frame_sent_size, 0);
 
-    memset(ip, 0, sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_ICMP;
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), mac, 0);
@@ -9511,7 +9524,7 @@ END_TEST
 START_TEST(test_forward_packet_filter_drop_udp_icmp)
 {
     struct wolfIP s;
-    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN];
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
 
     wolfIP_init(&s);
@@ -9520,13 +9533,13 @@ START_TEST(test_forward_packet_filter_drop_udp_icmp)
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
     filter_block_reason = WOLFIP_FILT_SENDING;
 
-    memset(ip, 0, sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_UDP;
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), NULL, 1);
     ck_assert_uint_eq(last_frame_sent_size, 0);
 
-    memset(ip, 0, sizeof(buf));
+    memset(buf, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_ICMP;
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), NULL, 1);
@@ -12288,7 +12301,8 @@ START_TEST(test_tcp_recv_ack_mismatch_does_nothing)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_tcp_seg seg;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 1];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
 
     wolfIP_init(&s);
     ts = &s.tcpsockets[0];
@@ -12299,12 +12313,12 @@ START_TEST(test_tcp_recv_ack_mismatch_does_nothing)
     ts->sock.tcp.ack = 10;
     queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
 
-    memset(&seg, 0, sizeof(seg));
-    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
-    seg.hlen = TCP_HEADER_LEN << 2;
-    seg.seq = ee32(11);
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(11);
 
-    tcp_recv(ts, &seg);
+    tcp_recv(ts, seg);
     ck_assert_uint_eq(queue_len(&ts->sock.tcp.rxbuf), 0U);
 }
 END_TEST
@@ -15128,7 +15142,9 @@ END_TEST
 START_TEST(test_wolfip_forwarding_basic)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet frame;
+    /* Buffer needs space for UDP header for filter notify */
+    uint8_t frame_buf[sizeof(struct wolfIP_ip_packet) + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
     struct wolfIP_ip_packet *fwd;
     uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
     uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
@@ -15147,26 +15163,26 @@ START_TEST(test_wolfip_forwarding_basic)
     s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
     memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
 
-    memset(&frame, 0, sizeof(frame));
-    memcpy(frame.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
-    memcpy(frame.eth.src, src_mac, 6);
-    frame.eth.type = ee16(ETH_TYPE_IP);
-    frame.ver_ihl = 0x45;
-    frame.ttl = initial_ttl;
-    frame.proto = WI_IPPROTO_UDP;
-    frame.len = ee16(IP_HEADER_LEN);
-    frame.src = ee32(0xC0A800AA);
-    frame.dst = ee32(dest_ip);
-    frame.csum = 0;
-    iphdr_set_checksum(&frame);
-    orig_csum = ee16(frame.csum);
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, src_mac, 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = initial_ttl;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    frame->src = ee32(0xC0A800AA);
+    frame->dst = ee32(dest_ip);
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
+    orig_csum = ee16(frame->csum);
 
     memset(last_frame_sent, 0, sizeof(last_frame_sent));
     last_frame_sent_size = 0;
 
-    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, &frame, sizeof(frame));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame_buf));
 
-    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct wolfIP_ip_packet));
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(frame_buf));
     fwd = (struct wolfIP_ip_packet *)last_frame_sent;
     ck_assert_mem_eq(fwd->eth.dst, next_hop_mac, 6);
     ck_assert_mem_eq(fwd->eth.src, s.ll_dev[TEST_SECOND_IF].mac, 6);
@@ -15185,7 +15201,9 @@ END_TEST
 START_TEST(test_wolfip_forwarding_ttl_expired)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet frame;
+    /* Extra bytes for TTL exceeded processing which reads TTL_EXCEEDED_ORIG_PACKET_SIZE */
+    uint8_t frame_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
     struct wolfIP_icmp_ttl_exceeded_packet *icmp;
     uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0xAA, 0xBB, 0xCC};
     uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
@@ -15197,23 +15215,23 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
     wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
 
-    memset(&frame, 0, sizeof(frame));
-    memcpy(frame.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
-    memcpy(frame.eth.src, src_mac, 6);
-    frame.eth.type = ee16(ETH_TYPE_IP);
-    frame.ver_ihl = 0x45;
-    frame.ttl = 1;
-    frame.proto = WI_IPPROTO_UDP;
-    frame.len = ee16(IP_HEADER_LEN);
-    frame.src = ee32(0xC0A800AA);
-    frame.dst = ee32(dest_ip);
-    frame.csum = 0;
-    iphdr_set_checksum(&frame);
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, src_mac, 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = 1;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN);
+    frame->src = ee32(0xC0A800AA);
+    frame->dst = ee32(dest_ip);
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
 
     memset(last_frame_sent, 0, sizeof(last_frame_sent));
     last_frame_sent_size = 0;
 
-    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, &frame, sizeof(frame));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(struct wolfIP_ip_packet));
 
     ck_assert_uint_eq(last_frame_sent_size,
             sizeof(struct wolfIP_icmp_ttl_exceeded_packet));
@@ -15227,12 +15245,12 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     ck_assert_uint_eq(ee16(icmp->ip.len),
             (uint16_t)(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
     ck_assert_uint_eq(ee32(icmp->ip.src), s.ipconf[TEST_PRIMARY_IF].ip);
-    ck_assert_uint_eq(ee32(icmp->ip.dst), ee32(frame.src));
+    ck_assert_uint_eq(ee32(icmp->ip.dst), ee32(frame->src));
     ck_assert_mem_eq(icmp->orig_packet,
-            ((uint8_t *)&frame) + ETH_HEADER_LEN,
-            ee16(frame.len) < TTL_EXCEEDED_ORIG_PACKET_SIZE ?
-            ee16(frame.len) : TTL_EXCEEDED_ORIG_PACKET_SIZE);
-    ck_assert_uint_eq(frame.ttl, 1); /* original packet should remain unchanged */
+            ((uint8_t *)frame) + ETH_HEADER_LEN,
+            ee16(frame->len) < TTL_EXCEEDED_ORIG_PACKET_SIZE ?
+            ee16(frame->len) : TTL_EXCEEDED_ORIG_PACKET_SIZE);
+    ck_assert_uint_eq(frame->ttl, 1); /* original packet should remain unchanged */
 }
 END_TEST
 
@@ -15821,13 +15839,12 @@ END_TEST
 // Test for `ip_output_add_header` to set up IP headers and calculate checksums
 START_TEST(test_ip_output_add_header) {
     struct tsocket t;
-    struct wolfIP_ip_packet ip;
+    struct wolfIP_tcp_seg seg;
     struct wolfIP S;
     int result;
-    struct wolfIP_tcp_seg *tcp;
 
     memset(&t, 0, sizeof(t));
-    memset(&ip, 0, sizeof(ip));
+    memset(&seg, 0, sizeof(seg));
     wolfIP_init(&S);
 
     // Setup socket and IP stack parameters
@@ -15836,33 +15853,31 @@ START_TEST(test_ip_output_add_header) {
     t.S = &S;
 
     // Run the function for a TCP packet
-    result = ip_output_add_header(&t, &ip, WI_IPPROTO_TCP, 40);
+    result = ip_output_add_header(&t, &seg.ip, WI_IPPROTO_TCP, 40);
     ck_assert_int_eq(result, 0);
 
     // Validate IP header fields
-    ck_assert_uint_eq(ip.ver_ihl, 0x45);
-    ck_assert_uint_eq(ip.ttl, 64);
-    ck_assert_uint_eq(ip.proto, WI_IPPROTO_TCP);
-    ck_assert_uint_eq(ip.src, ee32(t.local_ip));
-    ck_assert_uint_eq(ip.dst, ee32(t.remote_ip));
-    ck_assert_msg(ip.csum != 0, "IP header checksum should not be zero");
+    ck_assert_uint_eq(seg.ip.ver_ihl, 0x45);
+    ck_assert_uint_eq(seg.ip.ttl, 64);
+    ck_assert_uint_eq(seg.ip.proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(seg.ip.src, ee32(t.local_ip));
+    ck_assert_uint_eq(seg.ip.dst, ee32(t.remote_ip));
+    ck_assert_msg(seg.ip.csum != 0, "IP header checksum should not be zero");
 
     // Check the pseudo-header checksum calculation for TCP segment
-    tcp = (struct wolfIP_tcp_seg *)&ip;
-    ck_assert_msg(tcp->csum != 0, "TCP checksum should not be zero");
+    ck_assert_msg(seg.csum != 0, "TCP checksum should not be zero");
 }
 END_TEST
 
 START_TEST(test_ip_output_add_header_icmp)
 {
     struct tsocket t;
-    struct wolfIP_ip_packet ip;
+    struct wolfIP_icmp_packet icmp;
     struct wolfIP S;
     int result;
-    struct wolfIP_icmp_packet *icmp;
 
     memset(&t, 0, sizeof(t));
-    memset(&ip, 0, sizeof(ip));
+    memset(&icmp, 0, sizeof(icmp));
     wolfIP_init(&S);
 
     t.local_ip = 0xc0a80101;
@@ -15871,11 +15886,10 @@ START_TEST(test_ip_output_add_header_icmp)
     t.if_idx = TEST_PRIMARY_IF;
     mock_link_init(&S);
 
-    result = ip_output_add_header(&t, &ip, WI_IPPROTO_ICMP, IP_HEADER_LEN + ICMP_HEADER_LEN);
+    result = ip_output_add_header(&t, &icmp.ip, WI_IPPROTO_ICMP, IP_HEADER_LEN + ICMP_HEADER_LEN);
     ck_assert_int_eq(result, 0);
 
-    icmp = (struct wolfIP_icmp_packet *)&ip;
-    ck_assert_msg(icmp->csum != 0, "ICMP checksum should not be zero");
+    ck_assert_msg(icmp.csum != 0, "ICMP checksum should not be zero");
 }
 END_TEST
 
