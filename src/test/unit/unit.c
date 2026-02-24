@@ -16602,6 +16602,46 @@ START_TEST(test_regression_duplicate_syn_rejected_on_established)
 }
 END_TEST
 
+
+START_TEST(test_regression_timer_heap_insert_bounded_by_max_timers)
+{
+    struct timers_binheap h;
+    struct wolfIP_timer anchor, tmr;
+    int id;
+    int i;
+
+    memset(&h, 0, sizeof(h));
+
+    memset(&anchor, 0, sizeof(anchor));
+    anchor.expires = 50;
+    anchor.cb      = test_timer_cb;
+    anchor.arg     = NULL;
+    timers_binheap_insert(&h, anchor);
+    ck_assert_uint_eq(h.size, 1);
+
+    for (i = 0; i < MAX_TIMERS + 4; i++) {
+        memset(&tmr, 0, sizeof(tmr));
+        tmr.expires = 1000;
+        tmr.cb      = test_timer_cb;
+        tmr.arg     = NULL;
+        id = timers_binheap_insert(&h, tmr);
+
+        ck_assert_uint_le(h.size, (uint32_t)MAX_TIMERS);
+
+        timer_binheap_cancel(&h, id);
+    }
+
+    timers_binheap_pop(&h);
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = 300;
+    tmr.cb      = test_timer_cb;
+    tmr.arg     = NULL;
+    id = timers_binheap_insert(&h, tmr);
+    ck_assert_int_ne(id, 0);
+    ck_assert_uint_le(h.size, (uint32_t)MAX_TIMERS);
+}
+END_TEST
+
 /* ----------------------------------------------------------------------- */
 
 Suite *wolf_suite(void)
@@ -17157,6 +17197,7 @@ Suite *wolf_suite(void)
 
     tcase_add_test(tc_proto, test_regression_snd_una_initialized_on_syn_rcvd);
     tcase_add_test(tc_proto, test_regression_duplicate_syn_rejected_on_established);
+    tcase_add_test(tc_proto, test_regression_timer_heap_insert_bounded_by_max_timers);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);

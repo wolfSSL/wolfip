@@ -1529,6 +1529,8 @@ static int timers_binheap_insert(struct timers_binheap *heap, struct wolfIP_time
     if (heap->size >= MAX_TIMERS)
         return 0; /* heap full */
     tmr.id = timer_id++;
+    if (heap->size >= MAX_TIMERS)
+        return NO_TIMER;
     /* Insert at the end */
     heap->timers[heap->size] = tmr;
     heap->size++;
