@@ -114,6 +114,7 @@ struct wolfIP_icmp_packet;
 #define TCP_MSS (WI_IP_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
 #define TCP_DEFAULT_MSS 536U
 #define TCP_CTRL_RTO_MAXRTX 6U
+#define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 #define TCP_RTO_MIN_MS 1000U
 #define TCP_RTO_MAX_MS 60000U
 #define TCP_RTO_G_MS 1U
@@ -123,7 +124,7 @@ struct wolfIP_icmp_packet;
 #define WOLFIP_POLL_BUDGET 128
 
 /* Macros */
-#define IS_IP_BCAST(ip) (ip == 0xFFFFFFFF)
+#define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
 
 #define PKT_FLAG_SENT    0x01U
 #define PKT_FLAG_ACKED   0x02U
@@ -1398,6 +1399,8 @@ static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *
     return primary;
 }
 
+static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_data);
+static int transport_verify_checksum(union transport_pseudo_header *ph, void *data);
 #ifdef ETHERNET
 static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len);
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip);
@@ -1518,6 +1521,8 @@ static int timers_binheap_insert(struct timers_binheap *heap, struct wolfIP_time
         timer_id = 1;
     while (heap->size > 0 && heap->timers[0].expires == 0)
         timers_binheap_pop(heap);
+    if (heap->size >= MAX_TIMERS)
+        return 0; /* heap full */
     tmr.id = timer_id++;
     /* Insert at the end */
     heap->timers[heap->size] = tmr;
@@ -1588,6 +1593,22 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     if (frame_len < sizeof(struct wolfIP_udp_datagram))
         return;
 
+    /* validate frame length matches declared IP length before checksum */
+    if (frame_len < (uint32_t)(ETH_HEADER_LEN + ee16(udp->ip.len)))
+        return;
+
+    /* validate UDP checksum per RFC 1122 (only if non-zero) */
+    if (udp->csum != 0) {
+        union transport_pseudo_header ph;
+        ph.ph.src = udp->ip.src;
+        ph.ph.dst = udp->ip.dst;
+        ph.ph.zero = 0;
+        ph.ph.proto = 0x11; /* UDP */
+        ph.ph.len = udp->len;
+        if (transport_verify_checksum(&ph, (void *)&udp->src_port) != 0)
+            return;
+    }
+
     local_ip = conf ? conf->ip : IPADDR_ANY;
     dst_ip = ee32(udp->ip.dst);
 
@@ -1656,7 +1677,7 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
             continue;
         if (t->remote_ip != 0 && t->remote_ip != src_ip)
             continue;
-        if ((int)frame_len != ee16(icmp->ip.len) + ETH_HEADER_LEN)
+        if ((int)frame_len < ee16(icmp->ip.len) + ETH_HEADER_LEN)
             continue;
         fifo_push(&t->sock.udp.rxbuf, icmp, frame_len);
         t->last_pkt_ttl = icmp->ip.ttl;
@@ -2474,6 +2495,11 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
     return (uint16_t)~sum;
 }
 
+static int transport_verify_checksum(union transport_pseudo_header *ph, void *data)
+{
+    return (transport_checksum(ph, data) == 0) ? 0 : -1;
+}
+
 static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
 {
     uint32_t sum = 0;
@@ -2504,6 +2530,21 @@ static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
         sum = (sum & 0xffff) + (sum >> 16);
     }
     ip->csum = ee16((uint16_t)~sum);
+}
+
+static int iphdr_verify_checksum(struct wolfIP_ip_packet *ip)
+{
+    uint32_t sum = 0;
+    uint32_t i;
+    const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
+    for (i = 0; i < IP_HEADER_LEN; i += 2) {
+        uint16_t word;
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
+    }
+    while (sum >> 16)
+        sum = (sum & 0xffff) + (sum >> 16);
+    return ((uint16_t)sum == 0xffffU) ? 0 : -1;
 }
 
 #ifdef ETHERNET
@@ -3054,6 +3095,22 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
     if (frame_len < sizeof(struct wolfIP_tcp_seg))
         return;
 
+    /* validate frame length matches declared IP length before checksum */
+    if (frame_len < (uint32_t)(ETH_HEADER_LEN + ee16(tcp->ip.len)))
+        return;
+
+    /* validate TCP checksum per RFC 793 */
+    {
+        union transport_pseudo_header ph;
+        ph.ph.src = tcp->ip.src;
+        ph.ph.dst = tcp->ip.dst;
+        ph.ph.zero = 0;
+        ph.ph.proto = 0x06; /* TCP */
+        ph.ph.len = ee16(ee16(tcp->ip.len) - IP_HEADER_LEN);
+        if (transport_verify_checksum(&ph, (void *)&tcp->src_port) != 0)
+            return;
+    }
+
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len) != 0)
         return;
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
@@ -3413,6 +3470,12 @@ static void tcp_rto_cb(void *arg)
         ts->sock.tcp.tmr_rto = NO_TIMER;
     }
     if (pending) {
+        /* Check max retry limit and clamp to avoid undefined shift behavior */
+        if (ts->sock.tcp.rto_backoff >= TCP_RTO_MAX_BACKOFF) {
+            ts->sock.tcp.state = TCP_CLOSED;
+            close_socket(ts);
+            return;
+        }
         ts->sock.tcp.rto_backoff++;
         ts->sock.tcp.cwnd = TCP_MSS;
         ts->sock.tcp.ssthresh = prev_in_flight / 2;
@@ -4306,6 +4369,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
                     ts->local_ip = primary->ip;
+                else
+                    ts->local_ip = IPADDR_ANY;
             }
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
@@ -4316,14 +4381,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             }
             ts->src_port = new_port;
         }
-        ts->if_idx = (bind_ip != IPADDR_ANY) ? (uint8_t)if_idx : 0U;
-        if (bind_ip != IPADDR_ANY) {
-            ts->local_ip = bind_ip;
-        } else {
-            ts->local_ip = IPADDR_ANY;
-        }
-        ts->bound_local_ip = ts->local_ip;
-        ts->src_port = ee16(sin->sin_port);
+        ts->bound_local_ip = bind_ip;
         return 0;
     } else if (IS_SOCKET_UDP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
@@ -4346,6 +4404,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
                     ts->local_ip = primary->ip;
+                else
+                    ts->local_ip = IPADDR_ANY;
             }
             ts->src_port = new_port;
             if (wolfIP_filter_notify_socket_event(
@@ -4356,8 +4416,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 return -1;
             }
         }
-        ts->bound_local_ip = ts->local_ip;
-        ts->src_port = ee16(sin->sin_port);
+        ts->bound_local_ip = bind_ip;
         return 0;
     } else if (IS_SOCKET_ICMP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
@@ -4464,10 +4523,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         icmp->type = ICMP_ECHO_REPLY;
-        {
-            uint32_t sum = (uint16_t)icmp->csum + 8;
-            icmp->csum = (uint16_t)(sum + (sum >> 16));
-        }
+        /* Recompute full ICMP checksum for portability */
+        icmp->csum = 0;
+        icmp->csum = ee16(icmp_checksum(icmp, ee16(ip->len) - IP_HEADER_LEN));
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
@@ -5189,6 +5247,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     /* validate minimum packet length
      * (ethernet header + ip header, with no options) */
     if (len < sizeof(struct wolfIP_ip_packet))
+        return;
+    /* validate IP header checksum per RFC 1122 */
+    if (iphdr_verify_checksum(ip) != 0)
         return;
 #if WOLFIP_ENABLE_LOOPBACK
     if (!wolfIP_is_loopback_if(if_idx)) {
