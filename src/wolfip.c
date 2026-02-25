@@ -1604,6 +1604,10 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     if (frame_len < (uint32_t)(ETH_HEADER_LEN + ee16(udp->ip.len)))
         return;
 
+    /* validate UDP length field fits within the actual received buffer */
+    if (ee16(udp->len) > frame_len - ETH_HEADER_LEN - IP_HEADER_LEN)
+        return;
+
     /* validate UDP checksum per RFC 1122 (only if non-zero) */
     if (udp->csum != 0) {
         union transport_pseudo_header ph;
