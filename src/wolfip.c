@@ -3122,6 +3122,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
     if (frame_len < (uint32_t)(ETH_HEADER_LEN + ee16(tcp->ip.len)))
         return;
 
+    /* validate ip.len covers at least the IP header before subtracting */
+    if (ee16(tcp->ip.len) < IP_HEADER_LEN)
+        return;
+
     /* validate TCP checksum per RFC 793 */
     {
         union transport_pseudo_header ph;
