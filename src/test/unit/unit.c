@@ -16642,6 +16642,64 @@ START_TEST(test_regression_timer_heap_insert_bounded_by_max_timers)
 }
 END_TEST
 
+START_TEST(test_regression_icmp_inflated_ip_len)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);
+    icmp.ip.ttl = 64;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN + 256);
+    icmp.type   = ICMP_ECHO_REQUEST;
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+START_TEST(test_regression_udp_inflated_udp_len)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)buf;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = ee16(1234);
+    ts->local_ip = local_ip;
+
+    memset(buf, 0, sizeof(buf));
+    udp->ip.dst     = ee32(local_ip);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.proto   = WI_IPPROTO_UDP;
+    udp->ip.len  = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + 4096);
+    udp->csum = 0xFFFFU;
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp, frame_len);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+}
+END_TEST
+
 /* ----------------------------------------------------------------------- */
 
 Suite *wolf_suite(void)
@@ -17198,6 +17256,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_snd_una_initialized_on_syn_rcvd);
     tcase_add_test(tc_proto, test_regression_duplicate_syn_rejected_on_established);
     tcase_add_test(tc_proto, test_regression_timer_heap_insert_bounded_by_max_timers);
+    tcase_add_test(tc_proto, test_regression_icmp_inflated_ip_len);
+    tcase_add_test(tc_proto, test_regression_udp_inflated_udp_len);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
