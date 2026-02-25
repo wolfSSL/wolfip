@@ -22,12 +22,15 @@ jobs:
           - name: "ASan"
             target: "asan"
             unit_target: "unit-asan"
+            esp_unit_target: "unit-esp-asan"
           - name: "UBSan"
             target: "ubsan"
             unit_target: "unit-ubsan"
+            esp_unit_target: "unit-esp-ubsan"
           - name: "LeakSan"
             target: "leaksan"
             unit_target: "unit-leaksan"
+            esp_unit_target: "unit-esp-leaksan"
 
     steps:
       - name: Workaround high-entropy ASLR
@@ -54,6 +57,12 @@ jobs:
 
       - name: Run unit tests
         run: ./build/test/unit
+
+      - name: Build ESP unit tests with ${{ matrix.name }}
+        run: make ${{ matrix.esp_unit_target }}
+
+      - name: Run ESP unit tests
+        run: ./build/test/unit-esp
 
       - name: Run standalone TTL expired test
         run: ./build/test-ttl-expired

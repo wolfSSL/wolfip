@@ -344,10 +344,43 @@ build/test/unit:
 	@echo "[LD] $@"
 	@$(CC) build/test/unit.o -o build/test/unit $(UNIT_LDFLAGS) $(LDFLAGS)
 
+ESP_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
+ifeq ($(UNAME_S),Darwin)
+	ifneq ($(CHECK_PREFIX),)
+	ESP_UNIT_CHECK_CFLAGS += -I$(CHECK_PREFIX)/include
+endif
+endif
+
+unit-esp: build/test/unit-esp
+
+build/test/unit-esp: src/test/unit/unit_esp.c
+	@mkdir -p build/test/
+	@echo "[CC] unit_esp.c"
+	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(ESP_UNIT_CHECK_CFLAGS) \
+		-c src/test/unit/unit_esp.c -o build/test/unit_esp.o
+	@echo "[LD] $@"
+	@$(CC) build/test/unit_esp.o -o $@ \
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) -lwolfssl
+
 # Unit tests with sanitizers
 # Force clean rebuild to ensure sanitizer flags are applied
 clean-unit:
 	@rm -f build/test/unit build/test/unit.o
+
+clean-unit-esp:
+	@rm -f build/test/unit-esp build/test/unit_esp.o
+
+unit-esp-asan: CFLAGS+=-fsanitize=address
+unit-esp-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-esp-asan: clean-unit-esp build/test/unit-esp
+
+unit-esp-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
+unit-esp-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
+unit-esp-ubsan: clean-unit-esp build/test/unit-esp
+
+unit-esp-leaksan: CFLAGS+=-fsanitize=leak
+unit-esp-leaksan: LDFLAGS+=-fsanitize=leak $(UNIT_LIBS)
+unit-esp-leaksan: clean-unit-esp build/test/unit-esp
 
 unit-asan: CFLAGS+=-fsanitize=address
 unit-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
@@ -398,7 +431,8 @@ install:
 	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
-.PHONY: clean all static cppcheck cov autocov unit-asan unit-ubsan unit-leaksan clean-unit
+.PHONY: clean all static cppcheck cov autocov unit-asan unit-ubsan unit-leaksan clean-unit \
+        unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml

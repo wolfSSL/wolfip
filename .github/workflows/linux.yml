@@ -87,6 +87,16 @@ jobs:
           set -euo pipefail
           timeout --preserve-status 5m build/test/unit
 
+      - name: Build ESP unit tests
+        run: |
+          make unit-esp
+
+      - name: Run ESP unit tests
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 5m ./build/test/unit-esp
+
       - name: Cleanup IPsec state
         if: always()
         run: |

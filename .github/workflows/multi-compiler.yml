@@ -53,5 +53,11 @@ jobs:
       - name: Run unit tests
         run: ./build/test/unit
 
+      - name: Build ESP unit tests
+        run: make unit-esp CC=${{ matrix.cc }}
+
+      - name: Run ESP unit tests
+        run: ./build/test/unit-esp
+
       - name: Run standalone TTL expired test
         run: ./build/test-ttl-expired

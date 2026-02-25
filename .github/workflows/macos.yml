@@ -23,7 +23,7 @@ jobs:
       - name: Build tests
         run: |
           PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH" \
-          gmake build/test-evloop build/test-wolfssl build/test-ttl-expired unit
+          gmake build/test-evloop build/test-wolfssl build/test-ttl-expired unit unit-esp
 
       - name: Run event loop test
         run: |
@@ -38,6 +38,11 @@ jobs:
       - name: Run unit tests
         run: |
           ./build/test/unit
+        timeout-minutes: 2
+
+      - name: Run ESP unit tests
+        run: |
+          ./build/test/unit-esp
         timeout-minutes: 2
 
       - name: Run TTL expired test
