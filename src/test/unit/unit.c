@@ -16727,7 +16727,8 @@ START_TEST(test_regression_udp_len_below_header_discards_and_unblocks)
     udp->src_port = ee16(9999);
     udp->dst_port = ee16(1234);
     udp->len = ee16(4); /* underflow: 4 < UDP_HEADER_LEN(8) */
-    (void)fifo_push(&ts->sock.udp.rxbuf, udp, sizeof(struct wolfIP_udp_datagram));
+    ret = fifo_push(&ts->sock.udp.rxbuf, udp, sizeof(struct wolfIP_udp_datagram));
+    ck_assert_int_eq(ret, 0);
 
     /* recvfrom must return an error and discard the malformed packet */
     ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
