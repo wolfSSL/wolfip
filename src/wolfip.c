@@ -4103,8 +4103,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             sin->sin_addr.s_addr = udp->ip.src;
         }
         seg_len = ee16(udp->len) - UDP_HEADER_LEN;
-        if (seg_len > len)
-            return -1;
+        if (seg_len > len) {
+            fifo_pop(&ts->sock.udp.rxbuf);
+            return -WOLFIP_EINVAL;
+        }
         memcpy(buf, udp->data, seg_len);
         fifo_pop(&ts->sock.udp.rxbuf);
         return seg_len;

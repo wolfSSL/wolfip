@@ -16743,6 +16743,41 @@ START_TEST(test_regression_udp_len_below_header_discards_and_unblocks)
 }
 END_TEST
 
+START_TEST(test_regression_udp_payload_exceeds_buffer_discards_and_unblocks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[32];
+    uint8_t rxbuf[8]; /* smaller than payload */
+    int sd, ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = ee16(1234);
+    ts->local_ip = 0x0A000001U;
+
+    sd = (int)(MARK_UDP_SOCKET | (uint32_t)(ts - s.udpsockets));
+
+    /* Inject a valid UDP packet whose payload exceeds the caller's buffer. */
+    memset(payload, 0xAB, sizeof(payload));
+    enqueue_udp_rx(ts, payload, sizeof(payload), 9999);
+
+    /* recvfrom with a too-small buffer must discard the packet and return EINVAL */
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+
+    /* FIFO must be empty: packet was popped, not left to block subsequent reads */
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    /* A subsequent recvfrom must return EAGAIN, not the same error again */
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
 START_TEST(test_regression_icmp_ip_len_below_header)
 {
     struct wolfIP s;
@@ -17328,6 +17363,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_icmp_inflated_ip_len);
     tcase_add_test(tc_proto, test_regression_udp_inflated_udp_len);
     tcase_add_test(tc_proto, test_regression_udp_len_below_header_discards_and_unblocks);
+    tcase_add_test(tc_proto, test_regression_udp_payload_exceeds_buffer_discards_and_unblocks);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
