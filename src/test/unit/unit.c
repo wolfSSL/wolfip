@@ -17016,6 +17016,46 @@ START_TEST(test_regression_icmp_ip_len_below_header)
 END_TEST
 
 
+START_TEST(test_regression_tcp_ip_len_below_ip_header)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg seg;
+    struct wolfIP_ll_dev *ll;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    memset(&seg, 0, sizeof(seg));
+    memcpy(seg.ip.eth.dst, ll->mac, 6);
+    memcpy(seg.ip.eth.src, src_mac, 6);
+    seg.ip.eth.type = ee16(ETH_TYPE_IP);
+    seg.ip.ver_ihl  = 0x45;
+    seg.ip.ttl      = 64;
+    seg.ip.proto    = WI_IPPROTO_TCP;
+    seg.ip.src      = ee32(0x0A0000A1U);
+    seg.ip.dst      = ee32(0x0A000001U);
+    seg.ip.len      = ee16(2);
+    seg.src_port    = ee16(40000);
+    seg.dst_port    = ee16(80);
+    seg.flags       = TCP_FLAG_SYN;
+    seg.hlen        = TCP_HEADER_LEN << 2;
+    seg.win         = ee16(65535);
+    frame_len = (uint32_t)sizeof(struct wolfIP_tcp_seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, frame_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
 
 Suite *wolf_suite(void)
@@ -17583,6 +17623,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_udp_inflated_udp_len);
     tcase_add_test(tc_proto, test_regression_udp_len_below_header_discards_and_unblocks);
     tcase_add_test(tc_proto, test_regression_udp_payload_exceeds_buffer_discards_and_unblocks);
+    tcase_add_test(tc_proto, test_regression_tcp_ip_len_below_ip_header);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
