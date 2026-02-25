@@ -6390,6 +6390,50 @@ START_TEST(test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_stops_time
 }
 END_TEST
 
+START_TEST(test_tcp_ack_closing_ack_of_fin_moves_to_time_wait_and_stops_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    /* Simultaneous close: we sent FIN (last=100), peer sent FIN too,
+     * tcp_input moved us to CLOSING. Now peer's ACK of our FIN arrives. */
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.last = 100;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = 2;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 200;
+    tmr.arg = ts;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(101); /* acknowledges our FIN at seq 100 */
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_rto_cb_control_retry_cap_closes_socket)
 {
     struct wolfIP s;
@@ -17054,6 +17098,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_with_data_uses_data_recovery);
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_no_data_requeues_finack);
     tcase_add_test(tc_utils, test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_stops_timer);
+    tcase_add_test(tc_utils, test_tcp_ack_closing_ack_of_fin_moves_to_time_wait_and_stops_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_control_retry_cap_closes_socket);
     tcase_add_test(tc_utils, test_tcp_rto_cb_cancels_existing_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_clears_sack_and_marks_lowest_only);

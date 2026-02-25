@@ -2961,6 +2961,10 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         t->sock.tcp.state = TCP_FIN_WAIT_2;
         tcp_ctrl_rto_stop(t);
     }
+    if (t->sock.tcp.state == TCP_CLOSING && tcp_seq_leq(fin_acked, ack)) {
+        t->sock.tcp.state = TCP_TIME_WAIT;
+        tcp_ctrl_rto_stop(t);
+    }
 
     tcp_process_sack(t, tcp,
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + (tcp->hlen >> 2)));
