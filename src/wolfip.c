@@ -4524,6 +4524,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     /* validate minimum ICMP packet length */
     if (len < sizeof(struct wolfIP_icmp_packet))
         return;
+    /* validate ip->len covers at least the IP and ICMP headers */
+    if (ee16(ip->len) < IP_HEADER_LEN + ICMP_HEADER_LEN)
+        return;
     /* validate ip->len doesn't exceed actual received data */
     if (len < (uint32_t)(ETH_HEADER_LEN + ee16(ip->len)))
         return;

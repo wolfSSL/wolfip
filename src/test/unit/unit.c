@@ -16700,6 +16700,32 @@ START_TEST(test_regression_udp_inflated_udp_len)
 }
 END_TEST
 
+START_TEST(test_regression_icmp_ip_len_below_header)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);
+    icmp.ip.ttl = 64;
+    icmp.ip.len = 0;
+    icmp.type   = ICMP_ECHO_REQUEST;
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
 
 Suite *wolf_suite(void)
@@ -17265,6 +17291,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_eth_output_add_header_invalid_if);
     tcase_add_test(tc_utils, test_ip_output_add_header);
     tcase_add_test(tc_utils, test_ip_output_add_header_icmp);
+    tcase_add_test(tc_utils, test_regression_icmp_ip_len_below_header);
 
     tcase_add_test(tc_wolfssl, test_wolfssl_io_ctx_registers_callbacks);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_success);
