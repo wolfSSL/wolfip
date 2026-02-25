@@ -16700,6 +16700,48 @@ START_TEST(test_regression_udp_inflated_udp_len)
 }
 END_TEST
 
+START_TEST(test_regression_udp_len_below_header_discards_and_unblocks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_udp_datagram) + 64];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)buf;
+    uint8_t rxbuf[64];
+    int sd, ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = ee16(1234);
+    ts->local_ip = 0x0A000001U;
+
+    /* Compute the socket descriptor from the slot index */
+    sd = (int)(MARK_UDP_SOCKET | (uint32_t)(ts - s.udpsockets));
+
+    /* Inject a malformed UDP packet with udp->len < UDP_HEADER_LEN (8).
+     * Push directly into the socket rxbuf to bypass ingress filtering,
+     * simulating a crafted packet that reaches recvfrom. */
+    memset(buf, 0, sizeof(buf));
+    udp->src_port = ee16(9999);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(4); /* underflow: 4 < UDP_HEADER_LEN(8) */
+    (void)fifo_push(&ts->sock.udp.rxbuf, udp, sizeof(struct wolfIP_udp_datagram));
+
+    /* recvfrom must return an error and discard the malformed packet */
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_lt(ret, 0);
+
+    /* FIFO must be empty: the malformed packet was popped, not left behind */
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    /* A subsequent recvfrom must return EAGAIN, not the same error again */
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
 START_TEST(test_regression_icmp_ip_len_below_header)
 {
     struct wolfIP s;
@@ -17284,6 +17326,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_timer_heap_insert_bounded_by_max_timers);
     tcase_add_test(tc_proto, test_regression_icmp_inflated_ip_len);
     tcase_add_test(tc_proto, test_regression_udp_inflated_udp_len);
+    tcase_add_test(tc_proto, test_regression_udp_len_below_header_discards_and_unblocks);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
