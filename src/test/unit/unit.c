@@ -5425,7 +5425,8 @@ START_TEST(test_sock_recvfrom_udp_payload_too_long)
             payload, sizeof(payload));
 
     ret = wolfIP_sock_recvfrom(&s, udp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
-    ck_assert_int_eq(ret, -1);
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+    ck_assert_ptr_eq(fifo_peek(&s.udpsockets[SOCKET_UNMARK(udp_sd)].sock.udp.rxbuf), NULL);
 }
 END_TEST
 
@@ -7140,7 +7141,7 @@ START_TEST(test_udp_try_recv_short_frame)
 
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
     ts->local_ip = local_ip;
 
     memset(&udp, 0, sizeof(udp));
@@ -7165,7 +7166,7 @@ START_TEST(test_udp_try_recv_filter_drop)
 
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
     ts->local_ip = local_ip;
 
     filter_block_reason = WOLFIP_FILT_RECEIVING;
@@ -7279,7 +7280,7 @@ START_TEST(test_udp_try_recv_short_expected_len)
 
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
     ts->local_ip = local_ip;
 
     memset(&udp, 0, sizeof(udp));
@@ -9434,7 +9435,7 @@ START_TEST(test_icmp_try_recv_mismatch_src_port)
     ts = icmp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
     ts->local_ip = 0;
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
 
     memset(&icmp, 0, sizeof(icmp));
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
@@ -16769,7 +16770,7 @@ START_TEST(test_regression_udp_inflated_udp_len)
 
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
     ts->local_ip = local_ip;
 
     memset(buf, 0, sizeof(buf));
@@ -16801,7 +16802,7 @@ START_TEST(test_regression_udp_len_below_header_discards_and_unblocks)
 
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
     ts->local_ip = 0x0A000001U;
 
     /* Compute the socket descriptor from the slot index */
@@ -16843,7 +16844,7 @@ START_TEST(test_regression_udp_payload_exceeds_buffer_discards_and_unblocks)
 
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = ee16(1234);
+    ts->src_port = 1234;
     ts->local_ip = 0x0A000001U;
 
     sd = (int)(MARK_UDP_SOCKET | (uint32_t)(ts - s.udpsockets));
