@@ -11,6 +11,10 @@ TZEN ?= 0
 # Requires wolfSSL cloned alongside wolfip (or set WOLFSSL_ROOT)
 ENABLE_TLS ?= 0
 
+# TLS client test: set ENABLE_TLS_CLIENT=1 to include TLS client (Google test)
+# Automatically enables TLS if needed
+ENABLE_TLS_CLIENT ?= 0
+
 # HTTPS web server: set ENABLE_HTTPS=1 to include HTTPS web server
 # Automatically enables TLS if needed
 ENABLE_HTTPS ?= 0
@@ -24,6 +28,9 @@ ENABLE_SSH ?= 0
 ENABLE_MQTT ?= 0
 
 # Auto-enable TLS when any feature that requires it is enabled
+ifeq ($(ENABLE_TLS_CLIENT),1)
+  ENABLE_TLS = 1
+endif
 ifeq ($(ENABLE_HTTPS),1)
   ENABLE_TLS = 1
 endif
@@ -84,7 +91,11 @@ CFLAGS += -I$(WOLFSSL_ROOT)
 
 # TLS server, client and wolfIP-wolfSSL glue
 SRCS += tls_server.c
+# TLS client (Google test)
+ifeq ($(ENABLE_TLS_CLIENT),1)
+CFLAGS += -DENABLE_TLS_CLIENT
 SRCS += tls_client.c
+endif
 SRCS += $(ROOT)/src/port/wolfssl_io.c
 
 # HTTPS web server - uses existing wolfIP httpd
@@ -257,7 +268,7 @@ endif # ENABLE_MQTT_BROKER
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
+	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
 endif
@@ -344,6 +355,7 @@ help:
 	@echo "Options:"
 	@echo "  TZEN=1          Enable TrustZone support"
 	@echo "  ENABLE_TLS=1    Enable TLS server (requires wolfSSL)"
+	@echo "  ENABLE_TLS_CLIENT=1 Enable TLS client test (Google)"
 	@echo "  ENABLE_HTTPS=1  Enable HTTPS web server (requires TLS)"
 	@echo "  ENABLE_SSH=1    Enable SSH server (requires TLS + wolfSSH)"
 	@echo "  ENABLE_MQTT=1   Enable MQTT client (requires TLS + wolfMQTT)"
@@ -359,8 +371,9 @@ help:
 	@echo "  make ENABLE_TLS=1                                           # TLS echo server (port 8443)"
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1                            # TLS + HTTPS web (port 443)"
 	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                              # TLS + SSH shell (port 22)"
+	@echo "  make ENABLE_TLS=1 ENABLE_TLS_CLIENT=1                       # TLS client (Google test)"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT=1                             # TLS + MQTT client"
-	@echo "  make ENABLE_TLS=1 ENABLE_MQTT_BROKER=1                       # TLS + MQTT broker"
+	@echo "  make ENABLE_TLS=1 ENABLE_MQTT_BROKER=1                      # TLS + MQTT broker"
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 ENABLE_MQTT_BROKER=1 # Full featured"
 	@echo ""
 	@echo "Full Build Command (recommended):"

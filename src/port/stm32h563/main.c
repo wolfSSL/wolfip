@@ -51,7 +51,7 @@
 extern volatile unsigned long broker_uptime_sec;
 #endif
 
-#ifdef ENABLE_TLS
+#ifdef ENABLE_TLS_CLIENT
 
 /* Google IP for TLS client test (run: dig +short google.com) */
 #define GOOGLE_IP "142.250.189.174"
@@ -438,7 +438,7 @@ static void eth_gpio_init(void)
     gpio_eth_pin(GPIOG_BASE, 13);  /* TXD0 */
 }
 
-#ifdef ENABLE_TLS
+#ifdef ENABLE_TLS_CLIENT
 /* Callback for TLS client responses */
 static void tls_response_cb(const char *data, int len, void *ctx)
 {
@@ -641,10 +641,12 @@ int main(void)
         uart_puts("ERROR: TLS server init failed\n");
     }
 
+#ifdef ENABLE_TLS_CLIENT
     uart_puts("Initializing TLS client...\n");
     if (tls_client_init(IPStack, uart_puts) < 0) {
         uart_puts("ERROR: TLS client init failed\n");
     }
+#endif
 #endif
 
 #ifdef ENABLE_HTTPS
@@ -789,7 +791,7 @@ int main(void)
         broker_uptime_sec = (unsigned long)(tick / 1000);
 #endif
 
-#ifdef ENABLE_TLS
+#ifdef ENABLE_TLS_CLIENT
         /* TLS client test: connect to Google after network settles */
         if (!tls_client_test_started && tick > 5000) {
             uart_puts("\n--- TLS Client Test: Connecting to Google ---\n");
