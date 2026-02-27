@@ -160,6 +160,7 @@ static int handle_command(const char *cmd, char *response, int max_len)
         if (len >= max_len)
             len = max_len - 1;
         memcpy(response, help, len);
+        response[len] = '\0';
     }
     else if (strncmp(cmd, "info", 4) == 0) {
         const char *info =
@@ -171,6 +172,7 @@ static int handle_command(const char *cmd, char *response, int max_len)
         if (len >= max_len)
             len = max_len - 1;
         memcpy(response, info, len);
+        response[len] = '\0';
     }
     else if (strncmp(cmd, "uptime", 6) == 0) {
         uint32_t uptime = ssh_server_get_uptime();
@@ -201,6 +203,7 @@ static int handle_command(const char *cmd, char *response, int max_len)
         if (len >= max_len)
             len = max_len - 1;
         memcpy(response, unknown, len);
+        response[len] = '\0';
     }
     else {
         /* Empty command - just return prompt */
