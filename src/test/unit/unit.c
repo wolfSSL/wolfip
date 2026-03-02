@@ -3685,6 +3685,7 @@ START_TEST(test_sock_sendto_tcp_multiple_segments_flags)
     ck_assert_int_gt(tcp_sd, 0);
     ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
     ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.peer_mss = TCP_MSS;
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
@@ -3699,12 +3700,12 @@ START_TEST(test_sock_sendto_tcp_multiple_segments_flags)
     first = fifo_peek(&ts->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(first);
     tcp1 = (struct wolfIP_tcp_seg *)(txbuf + first->pos + sizeof(*first));
-    ck_assert_uint_eq(tcp1->flags & (TCP_FLAG_ACK | TCP_FLAG_PSH), (TCP_FLAG_ACK | TCP_FLAG_PSH));
+    ck_assert_uint_eq(tcp1->flags & (TCP_FLAG_ACK | TCP_FLAG_PSH), TCP_FLAG_ACK);
 
     second = fifo_next(&ts->sock.tcp.txbuf, first);
     ck_assert_ptr_nonnull(second);
     tcp2 = (struct wolfIP_tcp_seg *)(txbuf + second->pos + sizeof(*second));
-    ck_assert_uint_eq(tcp2->flags & (TCP_FLAG_ACK | TCP_FLAG_PSH), TCP_FLAG_ACK);
+    ck_assert_uint_eq(tcp2->flags & (TCP_FLAG_ACK | TCP_FLAG_PSH), (TCP_FLAG_ACK | TCP_FLAG_PSH));
 }
 END_TEST
 

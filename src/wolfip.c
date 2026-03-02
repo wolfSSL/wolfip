@@ -3897,7 +3897,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tcp->seq = ee32(ts->sock.tcp.seq);
             tcp->ack = ee32(ts->sock.tcp.ack);
             tcp->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
-            tcp->flags = TCP_FLAG_ACK | ((sent == 0) ? TCP_FLAG_PSH : 0); /* ACK; PSH only on first */
+            tcp->flags = TCP_FLAG_ACK;
             tcp->win = ee16(tcp_adv_win(ts));
             tcp->csum = 0;
             tcp->urg = 0;
@@ -3923,8 +3923,27 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         }
         if (sent == 0) {
             return -WOLFIP_EAGAIN;
-        } else
+        } else {
+            struct pkt_desc *desc;
+            struct pkt_desc *last_desc = NULL;
+            uint32_t guard = 0;
+            uint32_t budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
+            desc = fifo_peek(&ts->sock.tcp.txbuf);
+            while (desc && guard++ < budget) {
+                struct pkt_desc *next = fifo_next(&ts->sock.tcp.txbuf, desc);
+                last_desc = desc;
+                if (next == desc)
+                    break;
+                desc = next;
+            }
+            if (last_desc) {
+                /* PSH flag is set on the last segment in this train */
+                struct wolfIP_tcp_seg *last_tcp =
+                    (struct wolfIP_tcp_seg *)((uint8_t *)last_desc + sizeof(*last_desc));
+                last_tcp->flags |= TCP_FLAG_PSH;
+            }
             return sent;
+        }
     } else if (IS_SOCKET_UDP(sockfd)) {
         const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)dest_addr;
         unsigned int if_idx;
