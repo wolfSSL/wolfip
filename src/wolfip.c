@@ -3795,6 +3795,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->dst_port = ts->dst_port;
             newts->sock.tcp.ack = ts->sock.tcp.ack;
             newts->sock.tcp.seq = ts->sock.tcp.seq;
+            newts->sock.tcp.snd_una = newts->sock.tcp.seq;
             newts->sock.tcp.last_ts = ts->sock.tcp.last_ts;
             newts->sock.tcp.peer_rwnd = ts->sock.tcp.peer_rwnd;
             newts->sock.tcp.cwnd = tcp_initial_cwnd(newts->sock.tcp.peer_rwnd);

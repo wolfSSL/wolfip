@@ -3163,6 +3163,49 @@ START_TEST(test_sock_accept_starts_rto_timer)
 }
 END_TEST
 
+START_TEST(test_sock_accept_initializes_snd_una)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *listener;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Force a high ISN to exercise wrap-aware ordering. */
+    {
+        uint32_t isn = 0x80000000U;
+        listener->sock.tcp.seq = isn;
+        listener->sock.tcp.snd_una = isn;
+    }
+
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_uint_eq(accepted->sock.tcp.seq, (uint32_t)(0x80000000U + 1U));
+    ck_assert_uint_eq(accepted->sock.tcp.snd_una, 0x80000000U);
+    ck_assert_int_eq(tcp_seq_leq(accepted->sock.tcp.snd_una, accepted->sock.tcp.seq), 1);
+}
+END_TEST
+
 START_TEST(test_sock_accept_synack_retransmission)
 {
     struct wolfIP s;
@@ -16947,6 +16990,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_listen_no_connection);
     tcase_add_test(tc_utils, test_sock_accept_bound_local_ip_no_match);
     tcase_add_test(tc_utils, test_sock_accept_starts_rto_timer);
+    tcase_add_test(tc_utils, test_sock_accept_initializes_snd_una);
     tcase_add_test(tc_utils, test_sock_accept_synack_retransmission);
     tcase_add_test(tc_utils, test_sock_accept_ack_transitions_to_established);
     tcase_add_test(tc_utils, test_sock_sendto_error_paths);
