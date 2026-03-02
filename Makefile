@@ -197,8 +197,7 @@ leaksan:CFLAGS+=-fsanitize=leak
 leaksan:LDFLAGS+=-fsanitize=leak
 
 ESP_CFLAGS = \
-    -DWOLFIP_ESP  -DWOLFSSL_WOLFIP \
-    -DDEBUG_IP -DDEBUG_UDP -DDEBUG_ESP
+    -DWOLFIP_ESP  -DWOLFSSL_WOLFIP
 
 # Test
 
