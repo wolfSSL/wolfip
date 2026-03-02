@@ -1104,6 +1104,16 @@ struct arp_neighbor {
     uint8_t if_idx;
 };
 
+#ifndef ARP_PENDING_TTL_MS
+#define ARP_PENDING_TTL_MS 5000U
+#endif
+
+struct arp_pending_req {
+    ip4 ip;
+    uint8_t if_idx;
+    uint64_t ts;
+};
+
 #ifndef WOLFIP_ARP_PENDING_MAX
 #define WOLFIP_ARP_PENDING_MAX 4
 #endif
@@ -1169,6 +1179,7 @@ struct wolfIP {
     struct wolfIP_arp {
         uint64_t last_arp[WOLFIP_MAX_INTERFACES];
         struct arp_neighbor neighbors[MAX_NEIGHBORS];
+        struct arp_pending_req pending[WOLFIP_ARP_PENDING_MAX];
     } arp;
     struct arp_pending_entry arp_pending[WOLFIP_ARP_PENDING_MAX];
 #endif
@@ -5157,6 +5168,72 @@ static void arp_store_neighbor(struct wolfIP *s, unsigned int if_idx, ip4 ip,
     }
 }
 
+static int arp_neighbor_index(struct wolfIP *s, unsigned int if_idx, ip4 ip)
+{
+    int i;
+    if (!s)
+        return -1;
+    for (i = 0; i < MAX_NEIGHBORS; i++) {
+        if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx)
+            return i;
+    }
+    return -1;
+}
+
+static int arp_pending_match_and_clear(struct wolfIP *s, unsigned int if_idx, ip4 ip)
+{
+    int i;
+    uint64_t now;
+    if (!s)
+        return 0;
+    now = s->last_tick;
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        struct arp_pending_req *p = &s->arp.pending[i];
+        if (p->ip == IPADDR_ANY)
+            continue;
+        if (now - p->ts > (uint64_t)ARP_PENDING_TTL_MS) {
+            p->ip = IPADDR_ANY;
+            p->ts = 0;
+            continue;
+        }
+        if (p->ip == ip && p->if_idx == (uint8_t)if_idx) {
+            p->ip = IPADDR_ANY;
+            p->ts = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void arp_pending_record(struct wolfIP *s, unsigned int if_idx, ip4 ip)
+{
+    int i;
+    int slot = -1;
+    uint64_t oldest_ts = 0;
+    if (!s)
+        return;
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        struct arp_pending_req *p = &s->arp.pending[i];
+        if (p->ip == ip && p->if_idx == (uint8_t)if_idx) {
+            p->ts = s->last_tick;
+            return;
+        }
+        if (p->ip == IPADDR_ANY && slot < 0)
+            slot = i;
+        if (slot < 0) {
+            if (i == 0 || p->ts < oldest_ts) {
+                oldest_ts = p->ts;
+                slot = i;
+            }
+        }
+    }
+    if (slot < 0)
+        slot = 0;
+    s->arp.pending[slot].ip = ip;
+    s->arp.pending[slot].if_idx = (uint8_t)if_idx;
+    s->arp.pending[slot].ts = s->last_tick;
+}
+
 static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
 {
     struct arp_packet arp;
@@ -5184,6 +5261,7 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
     arp.sip = ee32(conf->ip);
     memset(arp.tma, 0, 6);
     arp.tip = ee32(tip);
+    arp_pending_record(s, if_idx, tip);
     if (ll->send) {
         if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp.eth,
                                      sizeof(struct arp_packet)) != 0)
@@ -5218,7 +5296,9 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
         memcpy(arp->sma, ll->mac, 6);
         arp->tip = arp->sip;
         arp->sip = ee32(conf->ip);
-        arp_store_neighbor(s, if_idx, ee32(sender_ip), sender_mac);
+        if (arp_neighbor_index(s, if_idx, ee32(sender_ip)) < 0) {
+            arp_store_neighbor(s, if_idx, ee32(sender_ip), sender_mac);
+        }
         eth_output_add_header(s, if_idx, arp->tma, &arp->eth, ETH_TYPE_ARP);
         if (ll->send) {
             if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp->eth, len) != 0)
@@ -5227,7 +5307,13 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
         }
     }
     if (arp->opcode == ee16(ARP_REPLY)) {
-        arp_store_neighbor(s, if_idx, ee32(arp->sip), arp->sma);
+        ip4 sip = ee32(arp->sip);
+        int idx = arp_neighbor_index(s, if_idx, sip);
+        int pending = arp_pending_match_and_clear(s, if_idx, sip);
+        /* Security trade-off: allow quick-path add, but block unsolicited overwrite. */
+        if (pending || idx < 0) {
+            arp_store_neighbor(s, if_idx, sip, arp->sma);
+        }
     }
 }
 

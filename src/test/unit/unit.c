@@ -15784,7 +15784,6 @@ START_TEST(test_arp_reply_handling) {
     struct arp_packet arp_reply;
     uint32_t reply_ip = 0xC0A80003; // 192.168.0.3
     uint8_t reply_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
-    uint8_t new_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
     struct wolfIP s;
 
     memset(&arp_reply, 0, sizeof(arp_reply));
@@ -15802,13 +15801,91 @@ START_TEST(test_arp_reply_handling) {
     /* Check if ARP table updated with reply IP and MAC */
     ck_assert_int_eq(s.arp.neighbors[0].ip, reply_ip);
     ck_assert_mem_eq(s.arp.neighbors[0].mac, reply_mac, 6);
+}
+END_TEST
 
-    /* Update same IP with a different MAC address */
-    memcpy(arp_reply.sma, new_mac, 6);
+START_TEST(test_arp_reply_unsolicited_does_not_overwrite_existing)
+{
+    struct arp_packet arp_reply;
+    uint32_t reply_ip = 0xC0A80003; /* 192.168.0.3 */
+    uint8_t reply_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+    uint8_t existing_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    struct wolfIP s;
+
+    memset(&arp_reply, 0, sizeof(arp_reply));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.arp.neighbors[0].ip = reply_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, existing_mac, 6);
+
+    arp_reply.opcode = ee16(ARP_REPLY);
+    arp_reply.sip = ee32(reply_ip);
+    memcpy(arp_reply.sma, reply_mac, 6);
+
     arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
 
-    /* Check if ARP table updates with new MAC */
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, existing_mac, 6);
+}
+END_TEST
+
+START_TEST(test_arp_reply_with_pending_request_updates)
+{
+    struct arp_packet arp_reply;
+    uint32_t reply_ip = 0xC0A80003; /* 192.168.0.3 */
+    uint8_t old_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+    uint8_t new_mac[6] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26};
+    struct wolfIP s;
+
+    memset(&arp_reply, 0, sizeof(arp_reply));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.arp.neighbors[0].ip = reply_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, old_mac, 6);
+
+    s.last_tick = 1000;
+    s.arp.last_arp[TEST_PRIMARY_IF] = 0;
+    arp_request(&s, TEST_PRIMARY_IF, reply_ip);
+
+    arp_reply.opcode = ee16(ARP_REPLY);
+    arp_reply.sip = ee32(reply_ip);
+    memcpy(arp_reply.sma, new_mac, 6);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
+
     ck_assert_mem_eq(s.arp.neighbors[0].mac, new_mac, 6);
+}
+END_TEST
+
+START_TEST(test_arp_request_does_not_overwrite_existing)
+{
+    struct arp_packet arp_req;
+    uint32_t req_ip = 0xC0A80002; /* 192.168.0.2 */
+    uint32_t device_ip = 0xC0A80001; /* 192.168.0.1 */
+    uint8_t existing_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t req_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    struct wolfIP s;
+
+    memset(&arp_req, 0, sizeof(arp_req));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.ipconf[TEST_PRIMARY_IF].ip = device_ip;
+
+    s.arp.neighbors[0].ip = req_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, existing_mac, 6);
+
+    arp_req.opcode = ee16(ARP_REQUEST);
+    arp_req.sip = ee32(req_ip);
+    memcpy(arp_req.sma, req_mac, 6);
+    arp_req.tip = ee32(device_ip);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
+
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, existing_mac, 6);
 }
 END_TEST
 
@@ -17711,6 +17788,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_request_target_ip);
     tcase_add_test(tc_proto, test_arp_request_handling);
     tcase_add_test(tc_proto, test_arp_reply_handling);
+    tcase_add_test(tc_proto, test_arp_reply_unsolicited_does_not_overwrite_existing);
+    tcase_add_test(tc_proto, test_arp_reply_with_pending_request_updates);
+    tcase_add_test(tc_proto, test_arp_request_does_not_overwrite_existing);
     tcase_add_test(tc_proto, test_arp_lookup_success);
     tcase_add_test(tc_proto, test_arp_lookup_failure);
     tcase_add_test(tc_proto, test_wolfip_recv_ex_multi_interface_arp_reply);
