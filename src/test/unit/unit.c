@@ -4328,6 +4328,46 @@ START_TEST(test_dhcp_parse_offer_and_ack)
 }
 END_TEST
 
+START_TEST(test_dhcp_parse_offer_defaults_mask_when_missing)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+    uint32_t offer_ip = 0x0A000064U;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t mask = 0xFFFFFF00U;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.yiaddr = ee32(offer_ip);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = (server_ip >> 24) & 0xFF;
+    opt->data[1] = (server_ip >> 16) & 0xFF;
+    opt->data[2] = (server_ip >> 8) & 0xFF;
+    opt->data[3] = (server_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), 0);
+    ck_assert_uint_eq(s.dhcp_ip, offer_ip);
+    ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
+    ck_assert_uint_eq(primary->mask, mask);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_tcp_states)
 {
     struct wolfIP s;
@@ -17499,6 +17539,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_udp_recvfrom_src_equals_local_ip_does_not_persist_remote);
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_and_ack);
+    tcase_add_test(tc_proto, test_dhcp_parse_offer_defaults_mask_when_missing);
     tcase_add_test(tc_proto, test_tcp_handshake_and_fin_close_wait);
 
     tcase_add_test(tc_proto, test_regression_snd_una_initialized_on_syn_rcvd);

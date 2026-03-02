@@ -4652,7 +4652,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
     uint8_t *opt_end;
     int saw_end = 0;
     uint32_t ip;
-    uint32_t netmask = 0xFFFFFF00;
+    uint32_t netmask = 0x00FFFFFF;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
