@@ -10236,6 +10236,21 @@ START_TEST(test_tcp_sort_sack_blocks_swaps_out_of_order)
 }
 END_TEST
 
+START_TEST(test_tcp_sort_sack_blocks_wrap_order)
+{
+    struct tcp_sack_block blocks[2];
+
+    blocks[0].left = 0x00000010U;
+    blocks[0].right = 0x00000020U;
+    blocks[1].left = 0xFFFFFFF0U;
+    blocks[1].right = 0xFFFFFFF8U;
+
+    tcp_sort_sack_blocks(blocks, 2);
+    ck_assert_uint_eq(blocks[0].left, 0xFFFFFFF0U);
+    ck_assert_uint_eq(blocks[1].left, 0x00000010U);
+}
+END_TEST
+
 START_TEST(test_tcp_merge_sack_blocks_adjacent_and_disjoint)
 {
     struct tcp_sack_block blocks[3];
@@ -10251,6 +10266,23 @@ START_TEST(test_tcp_merge_sack_blocks_adjacent_and_disjoint)
     ck_assert_uint_eq(blocks[0].right, 35);
     ck_assert_uint_eq(blocks[1].left, 40);
     ck_assert_uint_eq(blocks[1].right, 45);
+}
+END_TEST
+
+START_TEST(test_tcp_merge_sack_blocks_wrap_order)
+{
+    struct tcp_sack_block blocks[2];
+    uint8_t merged;
+
+    blocks[0].left = 0x00000010U;
+    blocks[0].right = 0x00000020U;
+    blocks[1].left = 0xFFFFFFF0U;
+    blocks[1].right = 0xFFFFFFF8U;
+
+    merged = tcp_merge_sack_blocks(blocks, 2);
+    ck_assert_uint_eq(merged, 2U);
+    ck_assert_uint_eq(blocks[0].left, 0xFFFFFFF0U);
+    ck_assert_uint_eq(blocks[1].left, 0x00000010U);
 }
 END_TEST
 
@@ -17299,7 +17331,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_build_ack_options_does_not_write_past_returned_len);
     tcase_add_test(tc_utils, test_tcp_build_ack_options_omits_ts_when_not_negotiated);
     tcase_add_test(tc_utils, test_tcp_sort_sack_blocks_swaps_out_of_order);
+    tcase_add_test(tc_utils, test_tcp_sort_sack_blocks_wrap_order);
     tcase_add_test(tc_utils, test_tcp_merge_sack_blocks_adjacent_and_disjoint);
+    tcase_add_test(tc_utils, test_tcp_merge_sack_blocks_wrap_order);
     tcase_add_test(tc_utils, test_tcp_recv_tracks_holes_and_sack_blocks);
     tcase_add_test(tc_utils, test_tcp_rebuild_rx_sack_right_edge_wraps);
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_trim_and_promote);

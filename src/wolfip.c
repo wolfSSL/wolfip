@@ -1879,7 +1879,7 @@ static void tcp_sort_sack_blocks(struct tcp_sack_block *blocks, uint8_t count)
     /* Small fixed-size sort (n <= 4) to normalize interval order before merge. */
     for (i = 0; i < count; i++) {
         for (j = (uint8_t)(i + 1); j < count; j++) {
-            if (blocks[j].left < blocks[i].left) {
+            if (tcp_seq_lt(blocks[j].left, blocks[i].left)) {
                 struct tcp_sack_block tmp = blocks[i];
                 blocks[i] = blocks[j];
                 blocks[j] = tmp;
@@ -1899,8 +1899,8 @@ static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t coun
      * - gap: keep as separate ranges */
     tcp_sort_sack_blocks(blocks, count);
     for (i = 1; i < count; i++) {
-        if (blocks[i].left < blocks[out].right) {
-            if (blocks[i].right > blocks[out].right)
+        if (tcp_seq_lt(blocks[i].left, blocks[out].right)) {
+            if (!tcp_seq_leq(blocks[i].right, blocks[out].right))
                 blocks[out].right = blocks[i].right;
         } else if (blocks[i].left == blocks[out].right) {
             blocks[out].right = blocks[i].right;
