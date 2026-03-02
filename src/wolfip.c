@@ -4646,7 +4646,7 @@ static void dhcp_cancel_timer(struct wolfIP *s)
         (opt)->data[3] = ((v) >>  0) & 0xFF;  \
     } while (0)
 
-/* Default netmask (returned if the offers does not deliver one)
+/* Default netmask (returned if the offer does not deliver one)
  * must be in network order (same order as DHCP_OPT_data_to_u32 on the field,
  * if present).
  */
