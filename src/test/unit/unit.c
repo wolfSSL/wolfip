@@ -14220,6 +14220,45 @@ START_TEST(test_fifo_push_wrap_multiple) {
 }
 END_TEST
 
+START_TEST(test_fifo_push_wrap_tail_equals_needed)
+{
+    struct fifo f;
+    uint8_t buffer[64];
+    uint8_t payload[8] = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44};
+    uint32_t needed = (uint32_t)(sizeof(struct pkt_desc) + sizeof(payload));
+    struct pkt_desc *desc;
+
+    fifo_init(&f, buffer, sizeof(buffer));
+    f.head = 60;
+    f.tail = needed;
+    f.h_wrap = 0;
+
+    ck_assert_int_eq(fifo_push(&f, payload, sizeof(payload)), 0);
+    ck_assert_uint_eq(f.h_wrap, 60U);
+    ck_assert_uint_eq(f.head, needed);
+
+    desc = (struct pkt_desc *)buffer;
+    ck_assert_uint_eq(desc->pos, 0U);
+    ck_assert_uint_eq(desc->len, sizeof(payload));
+}
+END_TEST
+
+START_TEST(test_fifo_can_push_len_wrap_tail_equals_needed)
+{
+    struct fifo f;
+    uint8_t buffer[64];
+    uint32_t len = 8U;
+    uint32_t needed = (uint32_t)(sizeof(struct pkt_desc) + len);
+
+    fifo_init(&f, buffer, sizeof(buffer));
+    f.head = 60;
+    f.tail = needed;
+    f.h_wrap = 0;
+
+    ck_assert_int_eq(fifo_can_push_len(&f, len), 1);
+}
+END_TEST
+
 START_TEST(test_fifo_space_wrap_sets_hwrap)
 {
     struct fifo f;
@@ -16991,6 +17030,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_can_push_len_head_at_wrap_boundary);
     tcase_add_test(tc_core, test_fifo_push_wrap);
     tcase_add_test(tc_core, test_fifo_push_wrap_multiple);
+    tcase_add_test(tc_core, test_fifo_push_wrap_tail_equals_needed);
+    tcase_add_test(tc_core, test_fifo_can_push_len_wrap_tail_equals_needed);
     tcase_add_test(tc_core, test_fifo_space_wrap_sets_hwrap);
     tcase_add_test(tc_core, test_fifo_space_wrap_returns_zero);
     tcase_add_test(tc_core, test_fifo_peek_wrap_to_start);
