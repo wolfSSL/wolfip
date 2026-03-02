@@ -2505,7 +2505,7 @@ static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_dat
     }
     if (len & 0x01) {
         uint16_t spare = 0;
-        spare |= data[len - 1] << 8;
+        spare |= (uint16_t)((uint16_t)data[len - 1] << 8);
         sum += spare;
     }
     while (sum >> 16) {
@@ -2528,6 +2528,11 @@ static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
     for (i = 0; i < (len & ~1u); i += 2) {
         memcpy(&word, ptr + i, sizeof(word));
         sum += ee16(word);
+    }
+    if (len & 0x01) {
+        uint16_t spare = 0;
+        spare |= (uint16_t)((uint16_t)ptr[len - 1] << 8);
+        sum += spare;
     }
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
@@ -3119,12 +3124,15 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         return;
 
     /* validate frame length matches declared IP length before checksum */
-    if (frame_len < (uint32_t)(ETH_HEADER_LEN + ee16(tcp->ip.len)))
-        return;
+    {
+        uint16_t ip_len = ee16(tcp->ip.len);
+        if (frame_len < (uint32_t)(ETH_HEADER_LEN + ip_len))
+            return;
 
-    /* validate ip.len covers at least the IP header before subtracting */
-    if (ee16(tcp->ip.len) < IP_HEADER_LEN)
-        return;
+        /* validate ip.len covers at least the IP header before subtracting */
+        if (ip_len < IP_HEADER_LEN)
+            return;
+    }
 
     /* validate TCP checksum per RFC 793 */
     {

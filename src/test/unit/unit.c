@@ -5515,6 +5515,65 @@ START_TEST(test_icmp_input_echo_request_reply_sent)
 }
 END_TEST
 
+START_TEST(test_icmp_input_echo_request_odd_len_reply_checksum)
+{
+    struct wolfIP s;
+    uint8_t frame[sizeof(struct wolfIP_icmp_packet) + 1];
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_icmp_packet *icmp;
+    struct wolfIP_icmp_packet *reply;
+    uint32_t frame_len;
+    uint16_t icmp_len;
+    uint32_t sum;
+    uint16_t word;
+    uint32_t i;
+    const uint8_t *ptr;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    ip   = (struct wolfIP_ip_packet  *)frame;
+    icmp = (struct wolfIP_icmp_packet *)frame;
+
+    icmp_len = ICMP_HEADER_LEN + 1;
+
+    ip->src     = ee32(0x0A000002U);
+    ip->dst     = ee32(0x0A000001U);
+    ip->ttl     = 64;
+    ip->len     = ee16(IP_HEADER_LEN + icmp_len);
+    icmp->type  = ICMP_ECHO_REQUEST;
+    icmp->code  = 0;
+    icmp->csum  = 0;
+    ((uint8_t *)&icmp->type)[ICMP_HEADER_LEN] = 0xAB;
+
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + icmp_len);
+    icmp_input(&s, TEST_PRIMARY_IF, ip, frame_len);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    reply = (struct wolfIP_icmp_packet *)last_frame_sent;
+    ck_assert_uint_eq(reply->type, ICMP_ECHO_REPLY);
+
+    ptr = (const uint8_t *)(&reply->type);
+    sum = 0;
+    for (i = 0; i < (uint32_t)(icmp_len & ~1u); i += 2) {
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
+    }
+    if (icmp_len & 0x01) {
+        uint16_t spare = 0;
+        spare |= ptr[icmp_len - 1] << 8;
+        sum += spare;
+    }
+    while (sum >> 16)
+        sum = (sum & 0xffff) + (sum >> 16);
+    ck_assert_uint_eq(sum, 0xFFFFU);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_dhcp_running_no_reply)
 {
     struct wolfIP s;
@@ -17601,6 +17660,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_socket_send_recv);
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_queues);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_reply_sent);
+    tcase_add_test(tc_proto, test_icmp_input_echo_request_odd_len_reply_checksum);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_dhcp_running_no_reply);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_filter_drop);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_ip_filter_drop);
