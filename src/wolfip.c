@@ -154,6 +154,8 @@ struct PACKED pkt_desc {
 
 struct fifo {
     uint32_t head, tail, size, h_wrap;
+    uint32_t last_pos;
+    uint8_t last_valid;
     uint8_t *data;
 };
 
@@ -208,6 +210,8 @@ static void fifo_init(struct fifo *f, uint8_t *data, uint32_t size)
     f->tail = 0;
     f->h_wrap = 0;
     f->size = size;
+    f->last_pos = 0;
+    f->last_valid = 0;
     f->data = data;
 }
 
@@ -361,6 +365,8 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
     }
     f->head = head;
     f->h_wrap = h_wrap;
+    f->last_pos = desc.pos;
+    f->last_valid = 1;
     return 0;
 }
 
@@ -479,6 +485,8 @@ static struct pkt_desc *fifo_pop(struct fifo *f)
         f->h_wrap = 0;
     if (f->tail >= f->size)
         f->tail %= f->size;
+    if (fifo_is_empty(f))
+        f->last_valid = 0;
     return desc;
 }
 
@@ -3869,6 +3877,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
     if (IS_SOCKET_TCP(sockfd)) {
         size_t sent = 0;
         unsigned int push_iter = 0;
+        uint32_t last_desc_pos = 0;
+        int last_desc_valid = 0;
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
 
@@ -3897,7 +3907,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tcp->seq = ee32(ts->sock.tcp.seq);
             tcp->ack = ee32(ts->sock.tcp.ack);
             tcp->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
-            tcp->flags = TCP_FLAG_ACK | ((sent == 0) ? TCP_FLAG_PSH : 0); /* ACK; PSH only on first */
+            tcp->flags = TCP_FLAG_ACK;
             tcp->win = ee16(tcp_adv_win(ts));
             tcp->csum = 0;
             tcp->urg = 0;
@@ -3915,6 +3925,10 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                     sizeof(struct wolfIP_tcp_seg) + opt_len + payload_len) < 0) {
                 break;
             }
+            if (ts->sock.tcp.txbuf.last_valid) {
+                last_desc_pos = ts->sock.tcp.txbuf.last_pos;
+                last_desc_valid = 1;
+            }
             sent += payload_len;
             ts->sock.tcp.seq += payload_len;
             if (push_iter > 256) {
@@ -3923,8 +3937,16 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         }
         if (sent == 0) {
             return -WOLFIP_EAGAIN;
-        } else
+        } else {
+            if (last_desc_valid) {
+                struct pkt_desc *last_desc =
+                    (struct pkt_desc *)(ts->sock.tcp.txbuf.data + last_desc_pos);
+                struct wolfIP_tcp_seg *last_tcp =
+                    (struct wolfIP_tcp_seg *)((uint8_t *)last_desc + sizeof(*last_desc));
+                last_tcp->flags |= TCP_FLAG_PSH;
+            }
             return sent;
+        }
     } else if (IS_SOCKET_UDP(sockfd)) {
         const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)dest_addr;
         unsigned int if_idx;
