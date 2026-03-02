@@ -334,7 +334,7 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
     if (h_wrap == 0 && head >= tail) {
         uint32_t end_space = f->size - head;
         if (end_space < needed) {
-            if (tail <= needed)
+            if (tail < needed)
                 return -1;
             h_wrap = head;
             head = 0;
@@ -404,7 +404,7 @@ static int fifo_can_push_len(const struct fifo *fin, uint32_t len)
     if (h_wrap == 0 && head >= tail) {
         uint32_t end_space = fin->size - head;
         if (end_space < needed) {
-            if (tail <= needed)
+            if (tail < needed)
                 return 0;
             h_wrap = head;
             head = 0;
