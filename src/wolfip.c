@@ -3159,6 +3159,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 wolfIP_send_ttl_exceeded(S, if_idx, &tcp->ip);
                 return;
             }
+            /* Validate minimum TCP header length (data offset). */
+            if ((tcp->hlen >> 2) < TCP_HEADER_LEN) {
+                return; /* malformed: TCP header below minimum length */
+            }
             /* Validate TCP header length fits in IP payload */
             if (iplen < (uint32_t)(IP_HEADER_LEN + (tcp->hlen >> 2))) {
                 return; /* malformed: TCP header exceeds IP length */

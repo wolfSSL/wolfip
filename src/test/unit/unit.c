@@ -13872,6 +13872,58 @@ START_TEST(test_tcp_input_fin_wait_1_fin_payload_ack_mismatch_no_transition)
 }
 END_TEST
 
+START_TEST(test_tcp_input_header_len_below_min_dropped)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    uint8_t payload[4] = {1, 2, 3, 4};
+    uint32_t ack = 100;
+    uint32_t seq = 100;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = ack;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + sizeof(payload));
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->seq = ee32(seq);
+    seg->ack = ee32(ack);
+    seg->flags = TCP_FLAG_ACK;
+    seg->hlen = 0; /* invalid: data offset below minimum */
+    memcpy(seg->data, payload, sizeof(payload));
+    fix_tcp_checksums(seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + sizeof(payload)));
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.ack, ack);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0);
+    ck_assert_uint_eq(queue_len(&ts->sock.tcp.rxbuf), 0U);
+}
+END_TEST
+
 START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
 {
     struct wolfIP s;
@@ -17343,6 +17395,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_out_of_order_no_transition);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_payload_out_of_order_no_transition);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_payload_ack_mismatch_no_transition);
+    tcase_add_test(tc_utils, test_tcp_input_header_len_below_min_dropped);
     tcase_add_test(tc_utils, test_socket_from_fd_invalid);
     tcase_add_test(tc_utils, test_socket_from_fd_valid);
 
