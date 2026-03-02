@@ -4658,13 +4658,19 @@ static void dhcp_cancel_timer(struct wolfIP *s)
         (opt)->data[3] = ((v) >>  0) & 0xFF;  \
     } while (0)
 
+/* Default netmask (returned if the offer does not deliver one)
+ * must be in network order (same order as DHCP_OPT_data_to_u32 on the field,
+ * if present).
+ */
+#define DHCP_DEFAULT_24BIT_NETMASK (0x00FFFFFFu)
+
 static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
     uint8_t *opt = (uint8_t *)msg->options;
     uint8_t *opt_end;
     int saw_end = 0;
     uint32_t ip;
-    uint32_t netmask = 0xFFFFFF00;
+    uint32_t netmask = DHCP_DEFAULT_24BIT_NETMASK;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
