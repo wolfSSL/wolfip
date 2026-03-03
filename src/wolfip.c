@@ -1855,6 +1855,7 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
 {
     uint32_t payload_len = frame_len;
     const uint8_t *packet = (const uint8_t *)ip;
+    uint32_t ip_len;
 #ifdef ETHERNET
     if (frame_len <= ETH_HEADER_LEN)
         return;
@@ -1863,6 +1864,12 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
 #endif
     if (payload_len < IP_HEADER_LEN)
         return;
+    ip_len = (uint32_t)ee16(ip->len);
+    if (ip_len < IP_HEADER_LEN)
+        return;
+    if (ip_len > payload_len)
+        return;
+    payload_len = ip_len;
     (void)if_idx;
     for (int i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];

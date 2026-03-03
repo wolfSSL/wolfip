@@ -1109,6 +1109,50 @@ START_TEST(test_raw_socket_recv_too_short_drop_returns_einval)
 }
 END_TEST
 
+START_TEST(test_raw_socket_recv_uses_ip_total_length)
+{
+    struct wolfIP s;
+    int sd;
+    uint8_t frame_buf[ETH_HEADER_LEN + IP_HEADER_LEN + 6];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    uint8_t payload[2] = {0xAB, 0xCD};
+    uint8_t padding[4] = {0x99, 0x98, 0x97, 0x96};
+    uint8_t rxbuf[64];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(frame, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, "\xaa\xbb\xcc\xdd\xee\xff", 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = 32;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + sizeof(payload));
+    frame->src = ee32(0x0A000002U);
+    frame->dst = ee32(0x0A000001U);
+    memcpy(frame->data, payload, sizeof(payload));
+    memcpy(frame->data + sizeof(payload), padding, sizeof(padding));
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+            ETH_HEADER_LEN + IP_HEADER_LEN + sizeof(payload) + sizeof(padding));
+
+    memset(rxbuf, 0, sizeof(rxbuf));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, (int)(IP_HEADER_LEN + sizeof(payload)));
+    ck_assert_mem_eq(rxbuf, ((uint8_t *)frame) + ETH_HEADER_LEN,
+            IP_HEADER_LEN + sizeof(payload));
+}
+END_TEST
+
 START_TEST(test_udp_short_frame_does_not_overread)
 {
     struct wolfIP s;
@@ -18406,6 +18450,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
     tcase_add_test(tc_proto, test_raw_socket_recv_short_frame_ignored);
     tcase_add_test(tc_proto, test_raw_socket_recv_too_short_drop_returns_einval);
+    tcase_add_test(tc_proto, test_raw_socket_recv_uses_ip_total_length);
     tcase_add_test(tc_proto, test_udp_short_frame_does_not_overread);
     tcase_add_test(tc_proto, test_raw_socket_close_clears_entry);
     tcase_add_test(tc_proto, test_packet_socket_close_clears_entry);
