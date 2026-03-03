@@ -383,6 +383,17 @@ START_TEST(test_replay_advance_hi_seq)
 }
 END_TEST
 
+/* A corrupted low hi_seq should not underflow the window floor. */
+START_TEST(test_replay_low_hi_seq_accepts_seq_one)
+{
+    replay_t r;
+    esp_replay_init(r);
+    r.hi_seq = 1U;
+    r.bitmap = 0U;
+    ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+}
+END_TEST
+
 /* A jump larger than the window width resets the bitmap. */
 START_TEST(test_replay_jump_resets_bitmap)
 {
@@ -944,6 +955,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_replay_multiple_in_window);
     tcase_add_test(tc, test_replay_below_window_rejected);
     tcase_add_test(tc, test_replay_advance_hi_seq);
+    tcase_add_test(tc, test_replay_low_hi_seq_accepts_seq_one);
     tcase_add_test(tc, test_replay_jump_resets_bitmap);
     tcase_add_test(tc, test_replay_old_seqs_after_jump);
     suite_add_tcase(s, tc);

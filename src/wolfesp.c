@@ -1060,10 +1060,15 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
     #else
     uint32_t diff = 0;
     uint32_t bitn = 0;
-    uint32_t seq_low = replay->hi_seq - (ESP_REPLAY_WIN - 1);
+    uint32_t seq_low = 1U;
 
     if (seq == 0) {
         return -1;
+    }
+
+    /* Clamp window floor to 1 when hi_seq is corrupted below window width. */
+    if (replay->hi_seq >= (ESP_REPLAY_WIN - 1U)) {
+        seq_low = replay->hi_seq - (ESP_REPLAY_WIN - 1U);
     }
 
     if (seq < seq_low) {
