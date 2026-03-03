@@ -5818,6 +5818,42 @@ START_TEST(test_dns_send_query_errors)
     ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), -16);
 }
 END_TEST
+START_TEST(test_dns_send_query_invalid_name)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    char name[260];
+    size_t pos = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.dns_id = 0;
+
+    memset(name, 'a', 64);
+    name[64] = '.';
+    memcpy(name + 65, "com", 3);
+    name[68] = 0;
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+
+    s.dns_id = 0;
+    memset(name, 'a', sizeof(name));
+    pos = 0;
+    memset(name + pos, 'a', 63);
+    pos += 63;
+    name[pos++] = '.';
+    memset(name + pos, 'b', 63);
+    pos += 63;
+    name[pos++] = '.';
+    memset(name + pos, 'c', 63);
+    pos += 63;
+    name[pos++] = '.';
+    memset(name + pos, 'd', 63);
+    pos += 63;
+    name[pos] = 0;
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+}
+END_TEST
 START_TEST(test_fifo_push_and_pop) {
     struct fifo f;
     struct pkt_desc *desc, *desc2;
@@ -17528,6 +17564,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_skip_and_copy_name);
     tcase_add_test(tc_utils, test_sock_opts_and_names);
     tcase_add_test(tc_utils, test_dns_send_query_errors);
+    tcase_add_test(tc_utils, test_dns_send_query_invalid_name);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);
