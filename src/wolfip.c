@@ -5208,7 +5208,8 @@ static int arp_pending_match_and_clear(struct wolfIP *s, unsigned int if_idx, ip
         struct arp_pending_req *p = &s->arp.pending[i];
         if (p->ip == IPADDR_ANY)
             continue;
-        if (now - p->ts > (uint64_t)ARP_PENDING_TTL_MS) {
+        if (now >= p->ts &&
+                (now - p->ts) > (uint64_t)ARP_PENDING_TTL_MS) {
             p->ip = IPADDR_ANY;
             p->ts = 0;
             continue;

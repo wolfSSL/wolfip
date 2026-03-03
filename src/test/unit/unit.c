@@ -9139,6 +9139,26 @@ START_TEST(test_arp_pending_record_prefers_empty_slot)
 }
 END_TEST
 
+START_TEST(test_arp_pending_match_and_clear_time_goes_back)
+{
+    struct wolfIP s;
+    ip4 ip = 0x0A000001U;
+    int matched;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.last_tick = 1000;
+    s.arp.pending[0].ip = ip;
+    s.arp.pending[0].if_idx = TEST_PRIMARY_IF;
+    s.arp.pending[0].ts = 2000;
+
+    matched = arp_pending_match_and_clear(&s, TEST_PRIMARY_IF, ip);
+    ck_assert_int_eq(matched, 1);
+    ck_assert_uint_eq(s.arp.pending[0].ip, IPADDR_ANY);
+}
+END_TEST
+
 START_TEST(test_arp_store_neighbor_no_space)
 {
     struct wolfIP s;
@@ -17907,6 +17927,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_store_neighbor_empty_slot);
     tcase_add_test(tc_proto, test_arp_store_neighbor_same_ip_diff_if);
     tcase_add_test(tc_proto, test_arp_pending_record_prefers_empty_slot);
+    tcase_add_test(tc_proto, test_arp_pending_match_and_clear_time_goes_back);
     tcase_add_test(tc_proto, test_arp_store_neighbor_no_space);
     tcase_add_test(tc_proto, test_arp_store_neighbor_null_stack);
     tcase_add_test(tc_proto, test_arp_lookup_if_idx_mismatch);
