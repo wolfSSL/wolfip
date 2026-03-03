@@ -1275,10 +1275,23 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     }
 
     /* Payload is now decrypted. We can now parse
-     * the ESP trailer for next header and padding. */
+     * the ESP trailer for next header and pad_len. */
     pad_len = *(ip->data + esp_len - esp_sa->icv_len - ESP_NEXT_HEADER_LEN
                 - ESP_PADDING_LEN);
     nxt_hdr = *(ip->data + esp_len - esp_sa->icv_len - ESP_NEXT_HEADER_LEN);
+
+    /* verify pad_len is honest */
+    {
+        uint32_t calc_esp_len = ESP_SPI_LEN + ESP_SEQ_LEN + iv_len
+                              + pad_len + ESP_PADDING_LEN
+                              + ESP_NEXT_HEADER_LEN + esp_sa->icv_len;
+        if (esp_len < calc_esp_len) {
+            /* invalid pad_len: more padding than payload data. */
+            ESP_LOG("error: esp: got esp_len %u, expected >= %u\n",
+                    esp_len, calc_esp_len);
+            return -1;
+        }
+    }
 
     #ifdef DEBUG_ESP
     wolfIP_print_esp(esp_sa, ip->data, esp_len, pad_len, nxt_hdr);
