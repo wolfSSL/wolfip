@@ -4178,7 +4178,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         }
         memcpy(buf, &icmp->type, seg_len);
         fifo_pop(&ts->sock.udp.rxbuf);
-        ts->events &= ~CB_EVENT_READABLE;
+        if (fifo_peek(&ts->sock.udp.rxbuf) == NULL)
+            ts->events &= ~CB_EVENT_READABLE;
         return (int)seg_len;
     } else
         return -WOLFIP_EINVAL;

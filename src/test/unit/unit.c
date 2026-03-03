@@ -5353,6 +5353,43 @@ START_TEST(test_sock_recvfrom_icmp_paths)
 }
 END_TEST
 
+START_TEST(test_sock_recvfrom_icmp_readable_stays_when_queue_nonempty)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct {
+        struct wolfIP_icmp_packet icmp;
+        uint8_t payload[2];
+    } icmp_frame;
+    uint8_t rxbuf[ICMP_HEADER_LEN + 2];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    fifo_init(&ts->sock.udp.rxbuf, ts->rxmem, RXBUF_SIZE);
+
+    memset(&icmp_frame, 0, sizeof(icmp_frame));
+    icmp_frame.icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN + sizeof(icmp_frame.payload));
+    icmp_frame.icmp.type = ICMP_ECHO_REPLY;
+    icmp_frame.icmp.code = 0;
+    icmp_frame.payload[0] = 0xAA;
+    icmp_frame.payload[1] = 0xBB;
+    ck_assert_int_eq(fifo_push(&ts->sock.udp.rxbuf, &icmp_frame, sizeof(icmp_frame)), 0);
+    ck_assert_int_eq(fifo_push(&ts->sock.udp.rxbuf, &icmp_frame, sizeof(icmp_frame)), 0);
+
+    ts->events |= CB_EVENT_READABLE;
+    ret = wolfIP_sock_recvfrom(&s, icmp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, ICMP_HEADER_LEN + 2);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+    ck_assert_uint_ne(ts->events & CB_EVENT_READABLE, 0U);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_udp_short_addrlen)
 {
     struct wolfIP s;
@@ -17348,6 +17385,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_invalid_socket_ids);
     tcase_add_test(tc_utils, test_sock_recvfrom_non_socket);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_success);
+    tcase_add_test(tc_utils, test_sock_recvfrom_icmp_readable_stays_when_queue_nonempty);
     tcase_add_test(tc_utils, test_sock_opts_unknown_level);
     tcase_add_test(tc_utils, test_sock_opts_sol_ip_unknown_optname);
     tcase_add_test(tc_utils, test_sock_setsockopt_recvttl);
