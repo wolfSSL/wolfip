@@ -3156,7 +3156,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             t->if_idx = (uint8_t)if_idx;
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
-            if (iplen > frame_len - sizeof(struct wolfIP_eth_frame)) {
+            if (iplen > frame_len - ETH_HEADER_LEN) {
                 return; /* discard */
             }
 
@@ -4178,7 +4178,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         }
         memcpy(buf, &icmp->type, seg_len);
         fifo_pop(&ts->sock.udp.rxbuf);
-        ts->events &= ~CB_EVENT_READABLE;
+        if (fifo_peek(&ts->sock.udp.rxbuf) == NULL)
+            ts->events &= ~CB_EVENT_READABLE;
         return (int)seg_len;
     } else
         return -WOLFIP_EINVAL;
@@ -4553,7 +4554,7 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
         return -WOLFIP_EINVAL;
 
     ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-    if (!sin || *addrlen < sizeof(struct wolfIP_sockaddr_in))
+    if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
     sin->sin_family = AF_INET;
     sin->sin_port = ee16(ts->dst_port);
@@ -4597,13 +4598,17 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         ip->id = ipcounter_next(s);
         ip->csum = 0;
         iphdr_set_checksum(ip);
+#ifdef ETHERNET
         eth_output_add_header(s, if_idx, ip->eth.src, &ip->eth, ETH_TYPE_IP);
+#endif
         if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp, len) != 0)
             return;
         if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, ip, len) != 0)
             return;
+#ifdef ETHERNET
         if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &ip->eth, len) != 0)
             return;
+#endif
         if (ll && ll->send)
             ll->send(ll, ip, len);
     }
@@ -5472,6 +5477,8 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define DNS_QUERY_TYPE_NONE 0
 #define DNS_QUERY_TYPE_A 1
 #define DNS_QUERY_TYPE_PTR 2
+#define MAX_DNS_NAME_LEN 255
+#define MAX_DNS_LABEL_LEN 63
 
 struct PACKED dns_header {
     uint16_t id;
@@ -5691,8 +5698,9 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     char *q_name, *tok_start, *tok_end;
     struct wolfIP_sockaddr_in dns_srv;
     uint32_t tok_len = 0;
+    uint32_t label_len = 0;
     if (!dname || !id) return -22;
-    if (strlen(dname) > 256) return -22; /* Invalid arguments */
+    if (strlen(dname) > MAX_DNS_NAME_LEN) return -22; /* Invalid arguments */
     if (s->dns_server == 0) return -101; /* Network unreachable: No DNS server configured */
     if (s->dns_id != 0) return -16; /* DNS query already in progress */
     if (s->dns_udp_sd <= 0) {
@@ -5718,11 +5726,14 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
         while ((*tok_end != '.') && (*tok_end != 0)) {
             tok_end++;
         }
-        *q_name = tok_end - tok_start;
+        label_len = (uint32_t)(tok_end - tok_start);
+        if (label_len > MAX_DNS_LABEL_LEN) return -22;
+        if (tok_len + label_len + 1 > MAX_DNS_NAME_LEN) return -22;
+        *q_name = (char)label_len;
         q_name++;
-        memcpy(q_name, tok_start, tok_end - tok_start);
-        q_name += tok_end - tok_start;
-        tok_len += (tok_end - tok_start) + 1;
+        memcpy(q_name, tok_start, label_len);
+        q_name += label_len;
+        tok_len += label_len + 1;
         if (*tok_end == 0)
             break;
         tok_start = tok_end + 1;

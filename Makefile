@@ -352,6 +352,13 @@ endif
 
 unit-esp: build/test/unit-esp
 
+unit-noeth: build/test/unit-noeth.o
+
+build/test/unit-noeth.o: src/test/unit/unit_noeth.c
+	@mkdir -p build/test/
+	@echo "[CC] unit_noeth.c"
+	@$(CC) $(CFLAGS) -c src/test/unit/unit_noeth.c -o build/test/unit-noeth.o
+
 build/test/unit-esp: src/test/unit/unit_esp.c
 	@mkdir -p build/test/
 	@echo "[CC] unit_esp.c"

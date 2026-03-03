@@ -20,6 +20,8 @@
  */
 #include "check.h"
 #include "../../../config.h"
+#undef DEBUG_UDP
+#define DEBUG_UDP 1
 #undef CONFIG_IPFILTER
 #define CONFIG_IPFILTER 1
 #undef WOLFIP_MAX_INTERFACES
@@ -4642,6 +4644,7 @@ START_TEST(test_sock_getpeername_errors)
     ck_assert_int_gt(tcp_sd, 0);
     ck_assert_int_eq(wolfIP_sock_getpeername(&s, tcp_sd, NULL, &len), -1);
     ck_assert_int_eq(wolfIP_sock_getpeername(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, &len), -1);
+    ck_assert_int_eq(wolfIP_sock_getpeername(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, NULL), -1);
 }
 END_TEST
 
@@ -5353,6 +5356,55 @@ START_TEST(test_sock_recvfrom_icmp_paths)
 }
 END_TEST
 
+#ifdef DEBUG_UDP
+START_TEST(test_wolfip_print_udp_short_len_no_oob)
+{
+    struct wolfIP_udp_datagram udp;
+
+    memset(&udp, 0, sizeof(udp));
+    udp.len = ee16(4); /* Invalid: shorter than UDP header. */
+    wolfIP_print_udp(&udp);
+}
+END_TEST
+#endif
+
+START_TEST(test_sock_recvfrom_icmp_readable_stays_when_queue_nonempty)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct {
+        struct wolfIP_icmp_packet icmp;
+        uint8_t payload[2];
+    } icmp_frame;
+    uint8_t rxbuf[ICMP_HEADER_LEN + 2];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    fifo_init(&ts->sock.udp.rxbuf, ts->rxmem, RXBUF_SIZE);
+
+    memset(&icmp_frame, 0, sizeof(icmp_frame));
+    icmp_frame.icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN + sizeof(icmp_frame.payload));
+    icmp_frame.icmp.type = ICMP_ECHO_REPLY;
+    icmp_frame.icmp.code = 0;
+    icmp_frame.payload[0] = 0xAA;
+    icmp_frame.payload[1] = 0xBB;
+    ck_assert_int_eq(fifo_push(&ts->sock.udp.rxbuf, &icmp_frame, sizeof(icmp_frame)), 0);
+    ck_assert_int_eq(fifo_push(&ts->sock.udp.rxbuf, &icmp_frame, sizeof(icmp_frame)), 0);
+
+    ts->events |= CB_EVENT_READABLE;
+    ret = wolfIP_sock_recvfrom(&s, icmp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, ICMP_HEADER_LEN + 2);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+    ck_assert_uint_ne(ts->events & CB_EVENT_READABLE, 0U);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_udp_short_addrlen)
 {
     struct wolfIP s;
@@ -5764,6 +5816,42 @@ START_TEST(test_dns_send_query_errors)
     s.dns_server = 0x08080808U;
     s.dns_id = 123;
     ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), -16);
+}
+END_TEST
+START_TEST(test_dns_send_query_invalid_name)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    char name[260];
+    size_t pos = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.dns_id = 0;
+
+    memset(name, 'a', 64);
+    name[64] = '.';
+    memcpy(name + 65, "com", 3);
+    name[68] = 0;
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+
+    s.dns_id = 0;
+    memset(name, 'a', sizeof(name));
+    pos = 0;
+    memset(name + pos, 'a', 63);
+    pos += 63;
+    name[pos++] = '.';
+    memset(name + pos, 'b', 63);
+    pos += 63;
+    name[pos++] = '.';
+    memset(name + pos, 'c', 63);
+    pos += 63;
+    name[pos++] = '.';
+    memset(name + pos, 'd', 63);
+    pos += 63;
+    name[pos] = 0;
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
 }
 END_TEST
 START_TEST(test_fifo_push_and_pop) {
@@ -17348,6 +17436,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_invalid_socket_ids);
     tcase_add_test(tc_utils, test_sock_recvfrom_non_socket);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_success);
+#ifdef DEBUG_UDP
+    tcase_add_test(tc_utils, test_wolfip_print_udp_short_len_no_oob);
+#endif
+    tcase_add_test(tc_utils, test_sock_recvfrom_icmp_readable_stays_when_queue_nonempty);
     tcase_add_test(tc_utils, test_sock_opts_unknown_level);
     tcase_add_test(tc_utils, test_sock_opts_sol_ip_unknown_optname);
     tcase_add_test(tc_utils, test_sock_setsockopt_recvttl);
@@ -17472,6 +17564,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_skip_and_copy_name);
     tcase_add_test(tc_utils, test_sock_opts_and_names);
     tcase_add_test(tc_utils, test_dns_send_query_errors);
+    tcase_add_test(tc_utils, test_dns_send_query_invalid_name);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);

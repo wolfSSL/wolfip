@@ -89,8 +89,11 @@ static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
     {
         /* show first 16 printable chars of payload */
         uint16_t max_len = 16;
-        size_t   print_len = (len - 8) < max_len ? (len  - 8): max_len;
         size_t   i = 0;
+        size_t   print_len = 0;
+        if (len <= UDP_HEADER_LEN)
+            return;
+        print_len = (len - 8) < max_len ? (len  - 8): max_len;
         memset(payload_str, '\0', sizeof(payload_str));
         memcpy(payload_str, udp->data, print_len);
         for (i = 0; i < print_len; i++) {
