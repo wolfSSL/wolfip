@@ -6137,6 +6137,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     }
     else if (ip->ver_ihl == 0x45 && ip->proto == 0x11) {
         struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
+        if (len < sizeof(struct wolfIP_udp_datagram))
+            return;
+        if (ee16(udp->len) < UDP_HEADER_LEN)
+            return;
+        if (ee16(udp->len) > len - ETH_HEADER_LEN - IP_HEADER_LEN)
+            return;
         #ifdef DEBUG_UDP
         wolfIP_print_udp(udp);
         #endif /* DEBUG_UDP */
