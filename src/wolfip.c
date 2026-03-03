@@ -5445,7 +5445,9 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (rs->ipheader_include) {
             if (len < IP_HEADER_LEN)
                 return -WOLFIP_EINVAL;
+#ifdef ETHERNET
             memset(rip, 0, ETH_HEADER_LEN);
+#endif
             memcpy(((uint8_t *)rip) + ETH_HEADER_LEN, buf, len);
             rip->ttl = ((const uint8_t *)buf)[8];
             total_len = (uint32_t)len + ETH_HEADER_LEN;
