@@ -20,6 +20,8 @@
  */
 #include "check.h"
 #include "../../../config.h"
+#undef DEBUG_UDP
+#define DEBUG_UDP 1
 #undef CONFIG_IPFILTER
 #define CONFIG_IPFILTER 1
 #undef WOLFIP_MAX_INTERFACES
@@ -5352,6 +5354,18 @@ START_TEST(test_sock_recvfrom_icmp_paths)
     ck_assert_int_eq(ret, ICMP_HEADER_LEN + 2);
 }
 END_TEST
+
+#ifdef DEBUG_UDP
+START_TEST(test_wolfip_print_udp_short_len_no_oob)
+{
+    struct wolfIP_udp_datagram udp;
+
+    memset(&udp, 0, sizeof(udp));
+    udp.len = ee16(4); /* Invalid: shorter than UDP header. */
+    wolfIP_print_udp(&udp);
+}
+END_TEST
+#endif
 
 START_TEST(test_sock_recvfrom_icmp_readable_stays_when_queue_nonempty)
 {
@@ -17385,6 +17399,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_invalid_socket_ids);
     tcase_add_test(tc_utils, test_sock_recvfrom_non_socket);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_success);
+#ifdef DEBUG_UDP
+    tcase_add_test(tc_utils, test_wolfip_print_udp_short_len_no_oob);
+#endif
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_readable_stays_when_queue_nonempty);
     tcase_add_test(tc_utils, test_sock_opts_unknown_level);
     tcase_add_test(tc_utils, test_sock_opts_sol_ip_unknown_optname);
