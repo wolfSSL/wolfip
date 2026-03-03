@@ -135,6 +135,20 @@ static void esp_setup(void)
     ck_assert_int_eq(ret, 0);
 }
 
+/* Creating an HMAC-only SA with valid params must succeed. */
+START_TEST(test_sa_hmac_good)
+{
+    int ret;
+    esp_setup();
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_a,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868,
+                                 (uint8_t *)k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+}
+END_TEST
+
 /* Creating a CBC+HMAC SA with valid params must succeed. */
 START_TEST(test_sa_cbc_hmac_good)
 {
@@ -496,6 +510,87 @@ START_TEST(test_unwrap_below_min_len)
 
     frame_len = build_ip_packet(buf, sizeof(buf), 0x32U,
                                 short_esp, sizeof(short_esp));
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
+/* A packet whose pad_len value is too big must be rejected. */
+START_TEST(test_unwrap_pad_too_big)
+{
+    uint8_t buf[LINK_MTU + 128];
+    uint32_t frame_len;
+    uint8_t ref[64];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    int ret;
+    uint32_t i = 0;
+    uint16_t ip_len;
+    uint8_t * pad_len = NULL;
+    wolfIP_esp_sa * esp_sa = NULL;
+    uint8_t * icv = NULL;
+
+    /* Fill reference payload with a known pattern. */
+    for (i = 0U; i < sizeof(ref); i++) {
+        ref[i] = (uint8_t)(i & 0xFFU);
+    }
+    esp_setup();
+
+    /* Outbound SA: encrypts packets sent to T_DST.
+     * esp_transport_wrap looks up by ip->dst == ee32(out_sa.dst). */
+    ret = wolfIP_esp_sa_new_hmac(0, (uint8_t *)spi_rt,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868, k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+    esp_sa = esp_sa_get(0, (uint8_t *)spi_rt);
+    ck_assert_ptr_nonnull(esp_sa);
+
+    /* Inbound SA: decrypts packets carrying spi_rt. */
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_rt,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868, k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    /* Build a plaintext IPv4/UDP packet. */
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                ref, sizeof(ref));
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    /* --- Wrap --- */
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+
+    pad_len = ip->data + ip_len - IP_HEADER_LEN - ESP_ICVLEN_HMAC_128
+            - ESP_NEXT_HEADER_LEN - ESP_PADDING_LEN;
+    /* The correct pad_len for this payload (64 bytes) and SA is 0x02 (2 bytes).
+     *
+     * The total esp packet len was:
+     *   ESP_SPI_LEN + ESP_SEQ_LEN + iv_len + payload_len + pad_len +
+     *   ESP_PADDING_LEN + ESP_NEXT_HEADER_LEN + esp_sa->icv_len
+     * which is
+     *   4 + 4 + 0 + 64 + 2 + 1 + 1 + 16 = 92
+     *
+     * Set an incorrect large pad_len value of 0x43 that will be
+     * larger than the esp packet size could allow.
+     *
+     * A pad_len of 0x43 (67) will result in a minimum length of
+     *   4 + 4 + 0 + 67 + 1 + 1 + 16 = 93
+     * */
+    *pad_len = 0x43;
+    /* recalculate the icv so we pass the unwrap icv check. */
+    icv = ip->data + ip_len - IP_HEADER_LEN - ESP_ICVLEN_HMAC_128;
+    ret = esp_calc_icv_hmac(icv, esp_sa, ip->data, ip_len - IP_HEADER_LEN);
+
+    /* esp_send normally fixes these up; we must do it manually. */
+    frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;
+    ip->proto   = 0x32U; /* IP proto = ESP */
+    ip->len     = ee16(ip_len);
+    ip->csum    = 0U;
+    iphdr_set_checksum(ip);
+
+    /* unwrap should fail with:
+     *  "error: esp pad_len: got esp_len 92, expected >= 93" */
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, -1);
 }
@@ -926,6 +1021,7 @@ static Suite *esp_suite(void)
 
     /* SA management */
     tc = tcase_create("sa_management");
+    tcase_add_test(tc, test_sa_hmac_good);
     tcase_add_test(tc, test_sa_cbc_hmac_good);
     tcase_add_test(tc, test_sa_cbc_bad_enc_key_len);
     tcase_add_test(tc, test_sa_cbc_bad_auth_key_len);
@@ -954,6 +1050,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_unwrap_esp_header_too_small);
     tcase_add_test(tc, test_unwrap_unknown_spi);
     tcase_add_test(tc, test_unwrap_below_min_len);
+    tcase_add_test(tc, test_unwrap_pad_too_big);
     suite_add_tcase(s, tc);
 
     /* Crypto round-trips */

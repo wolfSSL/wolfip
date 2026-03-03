@@ -167,7 +167,47 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     return err;
 }
 
+/* Configure a new hmac auth only Security Association.
+ * */
+int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
+                           esp_auth_t auth, uint8_t * auth_key,
+                           uint8_t auth_key_len, uint8_t icv_len)
+{
+    wolfIP_esp_sa * new_sa = NULL;
+
+    new_sa = esp_sa_get(in, NULL);
+    if (new_sa == NULL) {
+        ESP_LOG("error: sa %s pool is full\n", in == 1 ? "in" : "out");
+        return -1;
+    }
+
+    if (auth_key == NULL) {
+        return -1;
+    }
+
+    if (auth_key_len > ESP_MAX_KEY_LEN) {
+        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
+        return -1;
+    }
+
+    memset(new_sa, 0, sizeof(*new_sa));
+    esp_replay_init(new_sa->replay);
+    memcpy(new_sa->spi, spi, ESP_SPI_LEN);
+    memcpy(new_sa->auth_key, auth_key, auth_key_len);
+    new_sa->src          = src;
+    new_sa->dst          = dst;
+    new_sa->enc          = ESP_ENC_NONE;
+    new_sa->auth         = auth;
+    new_sa->auth_key_len = auth_key_len;
+    new_sa->icv_len      = icv_len;
+
+    ESP_DEBUG("info: esp_sa_new_cbc_hmac: %s\n", in == 1 ? "in" : "out");
+    return 0;
+}
+
 /* Configure a new Security Association based on aes-cbc with hmac.
+ *  - enc is required.
+ *  - auth may be null/none.
  * */
 int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                                uint8_t * enc_key, uint8_t enc_key_len,
@@ -213,6 +253,8 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
 
 #ifndef NO_DES3
 /* Configure a new Security Association based on des3 with hmac.
+ *  - enc is required.
+ *  - auth may be null/none.
  * */
 int
 wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
@@ -1199,8 +1241,8 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
                    ESP_PADDING_LEN + ESP_NEXT_HEADER_LEN + esp_sa->icv_len);
 
         if (esp_len < min_len) {
-            ESP_LOG("error: esp: got %d, expected >= %d frame len", esp_len,
-                   min_len);
+            ESP_LOG("error: esp: got %d, expected >= %d frame len\n",
+                    esp_len, min_len);
             return -1;
         }
     }
@@ -1282,7 +1324,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
                               + ESP_NEXT_HEADER_LEN + esp_sa->icv_len;
         if (esp_len < calc_esp_len) {
             /* invalid pad_len: more padding than payload data. */
-            ESP_LOG("error: esp: got esp_len %u, expected >= %u\n",
+            ESP_LOG("error: esp pad_len: got esp_len %u, expected >= %u\n",
                     esp_len, calc_esp_len);
             return -1;
         }
