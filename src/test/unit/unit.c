@@ -691,6 +691,14 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_src_port);
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_remote_ip);
     tcase_add_test(tc_proto, test_icmp_try_recv_full_fifo_does_not_signal_readable);
+    tcase_add_test(tc_proto, test_raw_socket_recv_captures_ip_header);
+    tcase_add_test(tc_proto, test_raw_socket_send_hdrincl_respected);
+    tcase_add_test(tc_proto, test_raw_socket_send_builds_ip_header);
+    tcase_add_test(tc_proto, test_packet_socket_recv_frame);
+    tcase_add_test(tc_proto, test_packet_socket_send_frame);
+    tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
+    tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
+    tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
     tcase_add_test(tc_proto, test_wolfip_recv_on_not_for_us);
     tcase_add_test(tc_proto, test_wolfip_recv_on_filter_drop_eth);
 #if WOLFIP_ENABLE_FORWARDING
