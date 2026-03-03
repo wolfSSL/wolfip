@@ -3891,6 +3891,9 @@ static struct packetsocket *wolfIP_packetsocket_from_fd(struct wolfIP *s, int so
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 {
     struct tsocket *ts;
+#if WOLFIP_RAWSOCKETS || WOLFIP_PACKET_SOCKETS
+    int base_type = type;
+#endif
     if (domain != AF_INET)
         goto packet_try;
     if (type == IPSTACK_SOCK_STREAM) {
@@ -3914,7 +3917,7 @@ int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
         }
     }
 #if WOLFIP_RAWSOCKETS
-    else if (type == IPSTACK_SOCK_RAW) {
+    else if (base_type == IPSTACK_SOCK_RAW) {
         struct rawsocket *rs;
         int hdrincl = 0;
 #ifdef IPPROTO_RAW

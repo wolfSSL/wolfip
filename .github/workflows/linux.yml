@@ -25,7 +25,8 @@ jobs:
       - name: Build linux tests
         run: |
           mkdir -p build/port
-          make CFLAGS="-DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1"
+          make EXTRA_CFLAGS="-DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1"
+          make EXTRA_CFLAGS="-DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1" build/raw_ping build/packet_ping
 
       - name: Run standalone "event loop" test
         timeout-minutes: 5

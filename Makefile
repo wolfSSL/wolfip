@@ -1,6 +1,8 @@
 CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
+EXTRA_CFLAGS?=
+CFLAGS+=$(EXTRA_CFLAGS)
 LDFLAGS+=-pthread
 # additional debug flags:
 #   CFLAGS+=-DDEBUG_TAP
@@ -155,7 +157,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/ipfilter-logger build/raw_ping build/packet_ping \
+	build/ipfilter-logger \
 	build/test-esp build/esp-server
 LIB=libwolfip.so
 
