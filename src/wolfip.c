@@ -4554,7 +4554,7 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
         return -WOLFIP_EINVAL;
 
     ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-    if (!sin || *addrlen < sizeof(struct wolfIP_sockaddr_in))
+    if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -1;
     sin->sin_family = AF_INET;
     sin->sin_port = ee16(ts->dst_port);

@@ -4644,6 +4644,7 @@ START_TEST(test_sock_getpeername_errors)
     ck_assert_int_gt(tcp_sd, 0);
     ck_assert_int_eq(wolfIP_sock_getpeername(&s, tcp_sd, NULL, &len), -1);
     ck_assert_int_eq(wolfIP_sock_getpeername(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, &len), -1);
+    ck_assert_int_eq(wolfIP_sock_getpeername(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, NULL), -1);
 }
 END_TEST
 
