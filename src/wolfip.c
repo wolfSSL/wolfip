@@ -3156,7 +3156,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             t->if_idx = (uint8_t)if_idx;
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
-            if (iplen > frame_len - sizeof(struct wolfIP_eth_frame)) {
+            if (iplen > frame_len - ETH_HEADER_LEN) {
                 return; /* discard */
             }
 
@@ -4597,13 +4597,17 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         ip->id = ipcounter_next(s);
         ip->csum = 0;
         iphdr_set_checksum(ip);
+#ifdef ETHERNET
         eth_output_add_header(s, if_idx, ip->eth.src, &ip->eth, ETH_TYPE_IP);
+#endif
         if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp, len) != 0)
             return;
         if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, ip, len) != 0)
             return;
+#ifdef ETHERNET
         if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &ip->eth, len) != 0)
             return;
+#endif
         if (ll && ll->send)
             ll->send(ll, ip, len);
     }
