@@ -1,0 +1,39 @@
+name: Coverity Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday at midnight UTC
+  workflow_dispatch:
+
+# Minimal permissions - read-only access to repository contents
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverity:
+    name: Coverity Scan
+    runs-on: ubuntu-latest
+
+    # Only run from the original repo (not forks) and only on default branch
+    # workflow_dispatch requires write access, so only maintainers can trigger manually
+    if: github.repository == 'wolfSSL/wolfip' && github.ref_name == github.event.repository.default_branch
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwolfssl-dev check
+
+      - name: Run Coverity Scan
+        uses: vapier/coverity-scan-action@2068473c7bdf8c2fb984a6a40ae76ee7facd7a85 # v1
+        with:
+          project: wolfIP
+          token: ${{ secrets.COVERITY_SCAN_TOKEN }}
+          email: ${{ secrets.COVERITY_SCAN_EMAIL }}
+          command: make
