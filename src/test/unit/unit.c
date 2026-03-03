@@ -979,6 +979,74 @@ START_TEST(test_raw_socket_recv_protocol_mismatch)
 }
 END_TEST
 
+START_TEST(test_raw_socket_close_clears_entry)
+{
+    struct wolfIP s;
+    int sd;
+    struct rawsocket *rs;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    rs = &s.rawsockets[SOCKET_UNMARK(sd)];
+    rs->used = 1;
+    rs->events = CB_EVENT_READABLE;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_uint_eq(rs->used, 0);
+    ck_assert_uint_eq(rs->events, 0);
+}
+END_TEST
+
+START_TEST(test_packet_socket_close_clears_entry)
+{
+#if WOLFIP_PACKET_SOCKETS
+    struct wolfIP s;
+    int sd;
+    struct packetsocket *ps;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ETH_TYPE_IP);
+    ck_assert_int_ge(sd, 0);
+    ps = &s.packetsockets[SOCKET_UNMARK(sd)];
+    ps->used = 1;
+    ps->events = CB_EVENT_READABLE;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_uint_eq(ps->used, 0);
+    ck_assert_uint_eq(ps->events, 0);
+#else
+    ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
+#endif
+}
+END_TEST
+
+START_TEST(test_arp_lookup_ex_basic)
+{
+#ifdef ETHERNET
+    struct wolfIP s;
+    uint8_t mac[6];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ck_assert_int_eq(wolfIP_arp_lookup_ex(&s, 0, ee32(0x0A000002U), mac), -1);
+
+    s.arp.neighbors[0].ip = ee32(0x0A000002U);
+    s.arp.neighbors[0].if_idx = 0;
+    memcpy(s.arp.neighbors[0].mac, "\x10\x20\x30\x40\x50\x60", 6);
+    ck_assert_int_eq(wolfIP_arp_lookup_ex(&s, 0, ee32(0x0A000002U), mac), 0);
+    ck_assert_mem_eq(mac, "\x10\x20\x30\x40\x50\x60", 6);
+#else
+    ck_abort_msg("ETHERNET disabled");
+#endif
+}
+END_TEST
+
 START_TEST(test_fifo_peek_wraps_tail_when_head_lt_tail)
 {
     struct fifo f;
@@ -18166,6 +18234,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
     tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
+    tcase_add_test(tc_proto, test_raw_socket_close_clears_entry);
+    tcase_add_test(tc_proto, test_packet_socket_close_clears_entry);
+    tcase_add_test(tc_proto, test_arp_lookup_ex_basic);
     tcase_add_test(tc_proto, test_wolfip_recv_on_not_for_us);
     tcase_add_test(tc_proto, test_wolfip_recv_on_filter_drop_eth);
 #if WOLFIP_ENABLE_FORWARDING
