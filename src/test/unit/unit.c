@@ -699,6 +699,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
     tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
+    tcase_add_test(tc_proto, test_raw_socket_close_clears_entry);
+    tcase_add_test(tc_proto, test_packet_socket_close_clears_entry);
+    tcase_add_test(tc_proto, test_arp_lookup_ex_basic);
     tcase_add_test(tc_proto, test_wolfip_recv_on_not_for_us);
     tcase_add_test(tc_proto, test_wolfip_recv_on_filter_drop_eth);
 #if WOLFIP_ENABLE_FORWARDING
