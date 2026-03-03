@@ -39,6 +39,7 @@
 #include <sys/uio.h>
 #include <net/if.h>
 #include <net/if_arp.h>
+#include <stdint.h>
 #include <limits.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -1236,13 +1237,13 @@ int wolfIP_sock_select(struct wolfIP *ipstack, int nfds, fd_set *readfds, fd_set
 int ioctl(int fd, unsigned long request, ...)
 {
     va_list ap;
-    unsigned long arg;
+    uintptr_t arg;
     void *argp;
     struct ifreq *ifr;
     int i;
 
     va_start(ap, request);
-    arg = va_arg(ap, unsigned long);
+    arg = va_arg(ap, uintptr_t);
     va_end(ap);
     argp = (void *)arg;
 
