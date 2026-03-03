@@ -694,12 +694,18 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_raw_socket_recv_captures_ip_header);
     tcase_add_test(tc_proto, test_raw_socket_send_hdrincl_respected);
     tcase_add_test(tc_proto, test_raw_socket_send_builds_ip_header);
+    tcase_add_test(tc_proto, test_raw_socket_sendto_short_addrlen_returns_einval);
+    tcase_add_test(tc_proto, test_getsockopt_invalid_fd_returns_einval);
+    tcase_add_test(tc_proto, test_getsockopt_invalid_raw_fd_returns_einval);
+    tcase_add_test(tc_proto, test_getsockopt_invalid_packet_fd_returns_einval);
+    tcase_add_test(tc_proto, test_getsockopt_unsupported_option_returns_einval);
     tcase_add_test(tc_proto, test_packet_socket_recv_frame);
     tcase_add_test(tc_proto, test_packet_socket_send_frame);
     tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
     tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
     tcase_add_test(tc_proto, test_raw_socket_recv_short_frame_ignored);
+    tcase_add_test(tc_proto, test_raw_socket_recv_too_short_drop_returns_einval);
     tcase_add_test(tc_proto, test_udp_short_frame_does_not_overread);
     tcase_add_test(tc_proto, test_raw_socket_close_clears_entry);
     tcase_add_test(tc_proto, test_packet_socket_close_clears_entry);

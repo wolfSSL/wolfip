@@ -36,7 +36,7 @@
 #endif
 
 #ifndef WOLFIP_RAWSOCKETS
-#define WOLFIP_RAWSOCKETS 1
+#define WOLFIP_RAWSOCKETS 0
 #endif
 
 #ifndef WOLFIP_MAX_RAWSOCKETS
@@ -44,7 +44,13 @@
 #endif
 
 #ifndef WOLFIP_PACKET_SOCKETS
-#define WOLFIP_PACKET_SOCKETS 1
+#define WOLFIP_PACKET_SOCKETS 0
+#endif
+
+#if WOLFIP_PACKET_SOCKETS && !defined(ETHERNET)
+#undef WOLFIP_PACKET_SOCKETS
+#define WOLFIP_PACKET_SOCKETS 0
+#error "WOLFIP_PACKET_SOCKETS requires ETHERNET to be defined. Please adjust your configuration."
 #endif
 
 #ifndef WOLFIP_MAX_PACKETSOCKETS
