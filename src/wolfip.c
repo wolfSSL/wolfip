@@ -1102,10 +1102,16 @@ struct arp_neighbor {
     ip4 ip;
     uint8_t mac[6];
     uint8_t if_idx;
+    uint64_t ts;
 };
 
 #ifndef ARP_PENDING_TTL_MS
 #define ARP_PENDING_TTL_MS 5000U
+#endif
+
+#ifndef ARP_AGING_TIMEOUT_MS
+/* Typical values: 60s–300s. For low‑power/quiet networks, 120s is a common compromise. */
+#define ARP_AGING_TIMEOUT_MS 120000U
 #endif
 
 struct arp_pending_req {
@@ -5146,6 +5152,7 @@ static void arp_store_neighbor(struct wolfIP *s, unsigned int if_idx, ip4 ip,
     for (i = 0; i < MAX_NEIGHBORS; i++) {
         if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx) {
             memcpy(s->arp.neighbors[i].mac, mac, 6);
+            s->arp.neighbors[i].ts = s->last_tick;
             stored = 1;
             break;
         }
@@ -5156,6 +5163,7 @@ static void arp_store_neighbor(struct wolfIP *s, unsigned int if_idx, ip4 ip,
                 s->arp.neighbors[i].ip = ip;
                 s->arp.neighbors[i].if_idx = (uint8_t)if_idx;
                 memcpy(s->arp.neighbors[i].mac, mac, 6);
+                s->arp.neighbors[i].ts = s->last_tick;
                 stored = 1;
                 break;
             }
@@ -5174,8 +5182,17 @@ static int arp_neighbor_index(struct wolfIP *s, unsigned int if_idx, ip4 ip)
     if (!s)
         return -1;
     for (i = 0; i < MAX_NEIGHBORS; i++) {
-        if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx)
+        if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx) {
+            if (s->last_tick >= s->arp.neighbors[i].ts &&
+                    (s->last_tick - s->arp.neighbors[i].ts) > (uint64_t)ARP_AGING_TIMEOUT_MS) {
+                s->arp.neighbors[i].ip = IPADDR_ANY;
+                s->arp.neighbors[i].if_idx = 0;
+                s->arp.neighbors[i].ts = 0;
+                memset(s->arp.neighbors[i].mac, 0, 6);
+                return -1;
+            }
             return i;
+        }
     }
     return -1;
 }
@@ -5208,8 +5225,9 @@ static int arp_pending_match_and_clear(struct wolfIP *s, unsigned int if_idx, ip
 static void arp_pending_record(struct wolfIP *s, unsigned int if_idx, ip4 ip)
 {
     int i;
-    int slot = -1;
-    uint64_t oldest_ts = 0;
+    int empty_slot = -1;
+    int oldest_slot = 0;
+    uint64_t oldest_ts = (uint64_t)-1;
     if (!s)
         return;
     for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
@@ -5218,20 +5236,18 @@ static void arp_pending_record(struct wolfIP *s, unsigned int if_idx, ip4 ip)
             p->ts = s->last_tick;
             return;
         }
-        if (p->ip == IPADDR_ANY && slot < 0)
-            slot = i;
-        if (slot < 0) {
-            if (i == 0 || p->ts < oldest_ts) {
-                oldest_ts = p->ts;
-                slot = i;
-            }
+        if (p->ip == IPADDR_ANY && empty_slot < 0)
+            empty_slot = i;
+        if (p->ip != IPADDR_ANY && p->ts < oldest_ts) {
+            oldest_ts = p->ts;
+            oldest_slot = i;
         }
     }
-    if (slot < 0)
-        slot = 0;
-    s->arp.pending[slot].ip = ip;
-    s->arp.pending[slot].if_idx = (uint8_t)if_idx;
-    s->arp.pending[slot].ts = s->last_tick;
+    if (empty_slot >= 0)
+        oldest_slot = empty_slot;
+    s->arp.pending[oldest_slot].ip = ip;
+    s->arp.pending[oldest_slot].if_idx = (uint8_t)if_idx;
+    s->arp.pending[oldest_slot].ts = s->last_tick;
 }
 
 static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
@@ -5319,10 +5335,10 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
 
 static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac)
 {
-    int i;
     memset(mac, 0, 6);
-    for (i = 0; i < MAX_NEIGHBORS; i++) {
-        if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx) {
+    if (s) {
+        int i = arp_neighbor_index(s, if_idx, ip);
+        if (i >= 0) {
             memcpy(mac, s->arp.neighbors[i].mac, 6);
             return 0;
         }

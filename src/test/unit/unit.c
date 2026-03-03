@@ -9110,6 +9110,35 @@ START_TEST(test_arp_store_neighbor_same_ip_diff_if)
 }
 END_TEST
 
+START_TEST(test_arp_pending_record_prefers_empty_slot)
+{
+    struct wolfIP s;
+    ip4 ip1 = 0x0A000001U;
+    ip4 ip2 = 0x0A000002U;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.last_tick = 1000;
+
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        s.arp.pending[i].ip = IPADDR_ANY;
+        s.arp.pending[i].if_idx = 0;
+        s.arp.pending[i].ts = 0;
+    }
+
+    s.arp.pending[0].ip = ip1;
+    s.arp.pending[0].if_idx = TEST_PRIMARY_IF;
+    s.arp.pending[0].ts = 900;
+
+    arp_pending_record(&s, TEST_PRIMARY_IF, ip2);
+
+    ck_assert_uint_eq(s.arp.pending[0].ip, ip1);
+    ck_assert_uint_eq(s.arp.pending[1].ip, ip2);
+    ck_assert_uint_eq(s.arp.pending[1].if_idx, TEST_PRIMARY_IF);
+}
+END_TEST
+
 START_TEST(test_arp_store_neighbor_no_space)
 {
     struct wolfIP s;
@@ -15928,6 +15957,57 @@ START_TEST(test_arp_lookup_failure) {
 }
 END_TEST
 
+START_TEST(test_arp_lookup_expired_entry_rejected)
+{
+    uint8_t found_mac[6];
+    uint32_t ip = 0xC0A80002;
+    const uint8_t mock_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+    struct wolfIP s;
+    int result;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.last_tick = 200000U;
+    s.arp.neighbors[0].ip = ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    s.arp.neighbors[0].ts = 0;
+    memcpy(s.arp.neighbors[0].mac, mock_mac, 6);
+
+    result = arp_lookup(&s, TEST_PRIMARY_IF, ip, found_mac);
+    ck_assert_int_eq(result, -1);
+    ck_assert_uint_eq(s.arp.neighbors[0].ip, IPADDR_ANY);
+}
+END_TEST
+
+START_TEST(test_arp_reply_updates_expired_entry)
+{
+    struct arp_packet arp_reply;
+    uint32_t reply_ip = 0xC0A80003; /* 192.168.0.3 */
+    uint8_t old_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+    uint8_t new_mac[6] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26};
+    struct wolfIP s;
+
+    memset(&arp_reply, 0, sizeof(arp_reply));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.last_tick = 200000U;
+    s.arp.neighbors[0].ip = reply_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    s.arp.neighbors[0].ts = 0;
+    memcpy(s.arp.neighbors[0].mac, old_mac, 6);
+
+    arp_reply.opcode = ee16(ARP_REPLY);
+    arp_reply.sip = ee32(reply_ip);
+    memcpy(arp_reply.sma, new_mac, 6);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
+
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, new_mac, 6);
+}
+END_TEST
+
 START_TEST(test_wolfip_getdev_ex_api)
 {
     struct wolfIP s;
@@ -17793,6 +17873,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_request_does_not_overwrite_existing);
     tcase_add_test(tc_proto, test_arp_lookup_success);
     tcase_add_test(tc_proto, test_arp_lookup_failure);
+    tcase_add_test(tc_proto, test_arp_lookup_expired_entry_rejected);
+    tcase_add_test(tc_proto, test_arp_reply_updates_expired_entry);
     tcase_add_test(tc_proto, test_wolfip_recv_ex_multi_interface_arp_reply);
     tcase_add_test(tc_proto, test_forward_prepare_null_args);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_filter_drop);
@@ -17824,6 +17906,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_store_neighbor_updates_existing);
     tcase_add_test(tc_proto, test_arp_store_neighbor_empty_slot);
     tcase_add_test(tc_proto, test_arp_store_neighbor_same_ip_diff_if);
+    tcase_add_test(tc_proto, test_arp_pending_record_prefers_empty_slot);
     tcase_add_test(tc_proto, test_arp_store_neighbor_no_space);
     tcase_add_test(tc_proto, test_arp_store_neighbor_null_stack);
     tcase_add_test(tc_proto, test_arp_lookup_if_idx_mismatch);
