@@ -73,6 +73,18 @@ jobs:
           set -euo pipefail
           timeout --preserve-status 2m sudo LD_PRELOAD=$PWD/libwolfip.so ping -c 5 10.10.10.1
 
+      - name: Testing raw sockets with raw_ping
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 2m sudo LD_PRELOAD=$PWD/libwolfip.so ./build/raw_ping 10.10.10.1
+
+      - name: Testing packet sockets with packet_ping
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 2m sudo LD_PRELOAD=$PWD/libwolfip.so ./build/packet_ping wtcp0 10.10.10.1
+
       - name: Install check
         run: |
           sudo apt-get install -y check
