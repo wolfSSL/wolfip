@@ -3313,6 +3313,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     if (tcp->flags == (TCP_FLAG_SYN | TCP_FLAG_ACK)) {
+                        if (ee32(tcp->ack) != tcp_seq_inc(t->sock.tcp.seq, 1))
+                            continue;
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
@@ -3333,6 +3335,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     if (tcplen == 0 && tcp->flags != TCP_FLAG_ACK) {
                         /* Ignore non-pure ACKs without payload in SYN_RCVD. */
                     } else {
+                        uint32_t expected_ack = tcp_seq_inc(t->sock.tcp.seq, 1);
+                        uint32_t expected_seq = t->sock.tcp.ack;
+                        if (ee32(tcp->ack) != expected_ack || ee32(tcp->seq) != expected_seq)
+                            continue;
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = ee32(tcp->seq);
