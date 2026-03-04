@@ -5779,6 +5779,8 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
             s->dns_id = 0;
             return;
         }
+        if (dns_len < (int)sizeof(struct dns_header))
+            return;
         /* Parse DNS response */
         if ((ee16(hdr->flags) & 0x8100) == 0x8100) {
             int pos = sizeof(struct dns_header);

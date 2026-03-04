@@ -7682,6 +7682,32 @@ START_TEST(test_dns_callback_bad_name)
 }
 END_TEST
 
+START_TEST(test_dns_callback_short_header_ignored)
+{
+    struct wolfIP s;
+    uint8_t response[10];
+    struct dns_header *hdr = (struct dns_header *)response;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    s.dns_query_type = DNS_QUERY_TYPE_A;
+    s.dns_id = 0x1234;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(s.dns_id);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = 0;
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response, sizeof(response), DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+    ck_assert_uint_eq(s.dns_id, 0x1234);
+}
+END_TEST
+
 START_TEST(test_tcp_input_ttl_zero_sends_icmp)
 {
     struct wolfIP s;
@@ -18259,6 +18285,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_remote_ip_matches_local_ip);
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
+    tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
     tcase_add_test(tc_utils, test_tcp_input_ttl_zero_sends_icmp);
     tcase_add_test(tc_utils, test_dns_callback_bad_rr_rdlen);
     tcase_add_test(tc_utils, test_dhcp_parse_offer_no_match);
