@@ -149,6 +149,34 @@ START_TEST(test_sa_hmac_good)
 }
 END_TEST
 
+START_TEST(test_sa_hmac_bad)
+{
+    int ret;
+    esp_setup();
+
+    /* auth with wrong icv len */
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_a,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868,
+                                 (uint8_t *)k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128 + 1);
+    ck_assert_int_eq(ret, -1);
+
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_a,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868,
+                                 (uint8_t *)k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128 - 1);
+    ck_assert_int_eq(ret, -1);
+
+    /* null auth is not ok for auth only */
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_a,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_NONE, NULL, 0, 0);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
 /* Creating a CBC+HMAC SA with valid params must succeed. */
 START_TEST(test_sa_cbc_hmac_good)
 {
@@ -161,6 +189,44 @@ START_TEST(test_sa_cbc_hmac_good)
                                      (uint8_t *)k_auth16, sizeof(k_auth16),
                                      ESP_ICVLEN_HMAC_128);
     ck_assert_int_eq(ret, 0);
+
+    /* null auth is ok */
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_a,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_NONE, NULL, 0, 0);
+    ck_assert_int_eq(ret, 0);
+}
+END_TEST
+
+START_TEST(test_sa_cbc_hmac_bad)
+{
+    int ret;
+    esp_setup();
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_a,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128 - 1);
+    ck_assert_int_eq(ret, -1);
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_a,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128) - 1,
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, -1);
+
+    /* null encrypt is not ok with cbc-hmac */
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_a,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     NULL, 0,
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, -1);
 }
 END_TEST
 
@@ -1022,7 +1088,9 @@ static Suite *esp_suite(void)
     /* SA management */
     tc = tcase_create("sa_management");
     tcase_add_test(tc, test_sa_hmac_good);
+    tcase_add_test(tc, test_sa_hmac_bad);
     tcase_add_test(tc, test_sa_cbc_hmac_good);
+    tcase_add_test(tc, test_sa_cbc_hmac_bad);
     tcase_add_test(tc, test_sa_cbc_bad_enc_key_len);
     tcase_add_test(tc, test_sa_cbc_bad_auth_key_len);
     tcase_add_test(tc, test_sa_gcm_good);
