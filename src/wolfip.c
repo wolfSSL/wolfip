@@ -1617,10 +1617,9 @@ static struct tsocket *udp_new_socket(struct wolfIP *s)
 static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
                          struct wolfIP_udp_datagram *udp, uint32_t frame_len)
 {
-    struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
     int i;
-    ip4 local_ip;
     ip4 dst_ip;
+    ip4 src_ip;
 
     /* validate minimum UDP datagram length */
     if (frame_len < sizeof(struct wolfIP_udp_datagram))
@@ -1646,8 +1645,8 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             return;
     }
 
-    local_ip = conf ? conf->ip : IPADDR_ANY;
     dst_ip = ee32(udp->ip.dst);
+    src_ip = ee32(udp->ip.src);
 
     if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len) != 0)
         return;
@@ -1656,7 +1655,7 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         uint32_t expected_len;
         if (t->src_port == ee16(udp->dst_port) && (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip != local_ip))) ) {
+                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip == src_ip))) ) {
 
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
@@ -1881,7 +1880,7 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
                 memcpy(&right, opt + 2 + (i * 8) + 4, sizeof(right));
                 left = ee32(left);
                 right = ee32(right);
-                if (right > left) {
+                if (tcp_seq_lt(left, right)) {
                     po->sack[po->sack_count].left = left;
                     po->sack[po->sack_count].right = right;
                     po->sack_count++;
@@ -2492,8 +2491,6 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
              * any cached OOO segments that now become contiguous. */
             t->sock.tcp.ack = tcp_seq_inc(seq, seg_len);
             tcp_consume_ooo(t);
-            timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
-            t->sock.tcp.tmr_rto = NO_TIMER;
             t->events |= CB_EVENT_READABLE;
         }
         tcp_send_ack(t);
@@ -3228,7 +3225,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
                 }
             }
-            {
+            if (!(tcp->flags & TCP_FLAG_RST)) {
                 uint32_t prev_peer_rwnd = t->sock.tcp.peer_rwnd;
                 uint16_t raw_win = ee16(tcp->win);
                 uint8_t ws_shift = t->sock.tcp.ws_enabled ? t->sock.tcp.snd_wscale : 0;
@@ -3240,7 +3237,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
             }
             /* Check if RST */
-            if (tcp->flags & 0x04) {
+            if (tcp->flags & TCP_FLAG_RST) {
+                uint32_t seg_seq = ee32(tcp->seq);
+                uint32_t rcv_nxt = t->sock.tcp.ack;
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     /* RFC 793: ignore RSTs in LISTEN to keep the server open. */
                     continue;
@@ -3252,6 +3251,15 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->remote_ip = IPADDR_ANY;
                     t->dst_port = 0;
                     t->sock.tcp.ack = 0;
+                    continue;
+                }
+                if (seg_seq != rcv_nxt) {
+                    uint32_t rcv_wnd = queue_space((struct queue *)&t->sock.tcp.rxbuf);
+                    if (rcv_wnd != 0) {
+                        uint32_t wnd_end = tcp_seq_inc(rcv_nxt, rcv_wnd);
+                        if (tcp_seq_leq(rcv_nxt, seg_seq) && tcp_seq_lt(seg_seq, wnd_end))
+                            tcp_send_ack(t);
+                    }
                     continue;
                 }
                 (void)wolfIP_filter_notify_socket_event(
@@ -3314,6 +3322,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     if (tcp->flags == (TCP_FLAG_SYN | TCP_FLAG_ACK)) {
+                        if (ee32(tcp->ack) != tcp_seq_inc(t->sock.tcp.seq, 1))
+                            continue;
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
@@ -3334,6 +3344,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     if (tcplen == 0 && tcp->flags != TCP_FLAG_ACK) {
                         /* Ignore non-pure ACKs without payload in SYN_RCVD. */
                     } else {
+                        uint32_t expected_ack = tcp_seq_inc(t->sock.tcp.snd_una, 1);
+                        uint32_t expected_seq = t->sock.tcp.ack;
+                        if (ee32(tcp->ack) != expected_ack || ee32(tcp->seq) != expected_seq)
+                            continue;
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = ee32(tcp->seq);
@@ -3698,6 +3712,10 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             return -WOLFIP_EINVAL;
 
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
+        if (addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -WOLFIP_EINVAL;
+        if (sin->sin_family != AF_INET)
+            return -WOLFIP_EINVAL;
         ts->dst_port = ee16(sin->sin_port);
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
         if (ts->bound_local_ip != IPADDR_ANY) {
@@ -4116,6 +4134,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
                 if (ret > 0) {
                     uint16_t win_after = tcp_adv_win(ts);
+                    if (queue_len(&ts->sock.tcp.rxbuf) > 0)
+                        ts->events |= CB_EVENT_READABLE;
                     if (win_after > win_before)
                         tcp_send_ack(ts);
                 }
@@ -5484,6 +5504,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 int broadcast = 0;
 
                 if (ip->ttl <= 1) {
+                    /* Need at least Ethernet header + 28 bytes of original packet. */
+                    if (len < (uint32_t)(ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE))
+                        return;
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
@@ -5758,6 +5781,8 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
             s->dns_id = 0;
             return;
         }
+        if (dns_len < (int)sizeof(struct dns_header))
+            return;
         /* Parse DNS response */
         if ((ee16(hdr->flags) & 0x8100) == 0x8100) {
             int pos = sizeof(struct dns_header);
@@ -5838,9 +5863,8 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     s->dns_query_type = (qtype == DNS_PTR) ? DNS_QUERY_TYPE_PTR : DNS_QUERY_TYPE_A;
     hdr = (struct dns_header *)buf;
     hdr->id = ee16(s->dns_id);
-    hdr->flags = ee16(DNS_QUERY);
     hdr->qdcount = ee16(1);
-    hdr->flags = ee16(DNS_RD);
+    hdr->flags = ee16(DNS_QUERY | DNS_RD);
     /* Prepare the DNS query name */
     q_name = (char *)(buf + sizeof(struct dns_header));
     tok_start = (char *)dname;
@@ -5887,12 +5911,10 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
 int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lookup_cb)(const char *name))
 {
     char ptr_name[128];
-    if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
-        return -22;
     if (!s || !id || !lookup_cb)
         return -22;
-    snprintf(ptr_name, sizeof(ptr_name), "%u.%u.%u.%u.in-addr.arpa",
-            (unsigned int)(ip & 0xFF), (unsigned int)((ip >> 8) & 0xFF), (unsigned int)((ip >> 16) & 0xFF), (unsigned int)((ip >> 24) & 0xFF));
+    if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
+        return -22;
     s->dns_ptr_cb = lookup_cb;
     s->dns_lookup_cb = NULL;
     s->dns_ptr_name[0] = '\0';
