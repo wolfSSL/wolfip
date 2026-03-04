@@ -9074,6 +9074,48 @@ START_TEST(test_arp_store_neighbor_updates_existing)
 }
 END_TEST
 
+START_TEST(test_arp_recv_reply_updates_existing_no_duplicate)
+{
+    struct wolfIP s;
+    struct arp_packet pkt;
+    uint8_t old_mac[6] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
+    uint8_t new_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+    ip4 ip = 0x0A0000A1U;
+    int i;
+    int count = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.arp.neighbors[0].ip = ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, old_mac, 6);
+    s.arp.neighbors[0].ts = 10;
+
+    s.arp.pending[0].ip = ip;
+    s.arp.pending[0].if_idx = TEST_PRIMARY_IF;
+    s.arp.pending[0].ts = 50;
+
+    s.last_tick = 100;
+
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.opcode = ee16(ARP_REPLY);
+    pkt.sip = ee32(ip);
+    memcpy(pkt.sma, new_mac, 6);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &pkt, (int)sizeof(pkt));
+
+    for (i = 0; i < MAX_NEIGHBORS; i++) {
+        if (s.arp.neighbors[i].ip == ip &&
+            s.arp.neighbors[i].if_idx == TEST_PRIMARY_IF)
+            count++;
+    }
+    ck_assert_int_eq(count, 1);
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, new_mac, 6);
+    ck_assert_uint_eq(s.arp.neighbors[0].ts, s.last_tick);
+}
+END_TEST
+
 START_TEST(test_arp_store_neighbor_empty_slot)
 {
     struct wolfIP s;
@@ -15909,7 +15951,7 @@ START_TEST(test_arp_reply_with_pending_request_updates)
 }
 END_TEST
 
-START_TEST(test_arp_request_does_not_overwrite_existing)
+START_TEST(test_arp_request_refreshes_existing_entry)
 {
     struct arp_packet arp_req;
     uint32_t req_ip = 0xC0A80002; /* 192.168.0.2 */
@@ -15922,10 +15964,12 @@ START_TEST(test_arp_request_does_not_overwrite_existing)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.ipconf[TEST_PRIMARY_IF].ip = device_ip;
+    s.last_tick = 42;
 
     s.arp.neighbors[0].ip = req_ip;
     s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
     memcpy(s.arp.neighbors[0].mac, existing_mac, 6);
+    s.arp.neighbors[0].ts = 10;
 
     arp_req.opcode = ee16(ARP_REQUEST);
     arp_req.sip = ee32(req_ip);
@@ -15935,6 +15979,38 @@ START_TEST(test_arp_request_does_not_overwrite_existing)
     arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
 
     ck_assert_mem_eq(s.arp.neighbors[0].mac, existing_mac, 6);
+    ck_assert_uint_eq(s.arp.neighbors[0].ts, 10);
+}
+END_TEST
+
+START_TEST(test_arp_request_refreshes_timestamp_on_same_mac)
+{
+    struct arp_packet arp_req;
+    uint32_t req_ip = 0xC0A80002; /* 192.168.0.2 */
+    uint32_t device_ip = 0xC0A80001; /* 192.168.0.1 */
+    uint8_t mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    struct wolfIP s;
+
+    memset(&arp_req, 0, sizeof(arp_req));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.ipconf[TEST_PRIMARY_IF].ip = device_ip;
+
+    s.arp.neighbors[0].ip = req_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, mac, 6);
+    s.arp.neighbors[0].ts = 10;
+    s.last_tick = 42;
+
+    arp_req.opcode = ee16(ARP_REQUEST);
+    arp_req.sip = ee32(req_ip);
+    memcpy(arp_req.sma, mac, 6);
+    arp_req.tip = ee32(device_ip);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
+
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, mac, 6);
+    ck_assert_uint_eq(s.arp.neighbors[0].ts, s.last_tick);
 }
 END_TEST
 
@@ -17890,7 +17966,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_reply_handling);
     tcase_add_test(tc_proto, test_arp_reply_unsolicited_does_not_overwrite_existing);
     tcase_add_test(tc_proto, test_arp_reply_with_pending_request_updates);
-    tcase_add_test(tc_proto, test_arp_request_does_not_overwrite_existing);
+    tcase_add_test(tc_proto, test_arp_request_refreshes_existing_entry);
+    tcase_add_test(tc_proto, test_arp_request_refreshes_timestamp_on_same_mac);
     tcase_add_test(tc_proto, test_arp_lookup_success);
     tcase_add_test(tc_proto, test_arp_lookup_failure);
     tcase_add_test(tc_proto, test_arp_lookup_expired_entry_rejected);
@@ -17924,6 +18001,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_queue_and_flush_matching_entry);
     tcase_add_test(tc_proto, test_arp_flush_pending_loopback_match);
     tcase_add_test(tc_proto, test_arp_store_neighbor_updates_existing);
+    tcase_add_test(tc_proto, test_arp_recv_reply_updates_existing_no_duplicate);
     tcase_add_test(tc_proto, test_arp_store_neighbor_empty_slot);
     tcase_add_test(tc_proto, test_arp_store_neighbor_same_ip_diff_if);
     tcase_add_test(tc_proto, test_arp_pending_record_prefers_empty_slot);

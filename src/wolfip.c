@@ -5326,8 +5326,15 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
         memcpy(arp->sma, ll->mac, 6);
         arp->tip = arp->sip;
         arp->sip = ee32(conf->ip);
-        if (arp_neighbor_index(s, if_idx, ee32(sender_ip)) < 0) {
-            arp_store_neighbor(s, if_idx, ee32(sender_ip), sender_mac);
+        {
+            ip4 sip = ee32(sender_ip);
+            int idx = arp_neighbor_index(s, if_idx, sip);
+            if (idx >= 0) {
+                if (memcmp(s->arp.neighbors[idx].mac, sender_mac, 6) == 0)
+                    s->arp.neighbors[idx].ts = s->last_tick;
+            } else {
+                arp_store_neighbor(s, if_idx, sip, sender_mac);
+            }
         }
         eth_output_add_header(s, if_idx, arp->tma, &arp->eth, ETH_TYPE_ARP);
         if (ll->send) {
