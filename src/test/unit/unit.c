@@ -11903,6 +11903,36 @@ START_TEST(test_tcp_input_syn_sent_synack_invalid_ack_rejected)
 }
 END_TEST
 
+START_TEST(test_tcp_parse_sack_wraparound_block_accepted)
+{
+    struct wolfIP_tcp_seg seg;
+    struct tcp_parsed_opts po;
+    uint32_t left = 0xFFFFFFF0U;
+    uint32_t right = 0x00000010U;
+    uint8_t *opt;
+    uint32_t frame_len;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.hlen = (uint8_t)((TCP_HEADER_LEN + 10) << 2);
+    opt = seg.data;
+    opt[0] = TCP_OPTION_SACK;
+    opt[1] = 10;
+    {
+        uint32_t left_be = ee32(left);
+        uint32_t right_be = ee32(right);
+        memcpy(opt + 2, &left_be, sizeof(left_be));
+        memcpy(opt + 6, &right_be, sizeof(right_be));
+    }
+
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 10;
+    tcp_parse_options(&seg, frame_len, &po);
+
+    ck_assert_int_eq(po.sack_count, 1);
+    ck_assert_uint_eq(po.sack[0].left, left);
+    ck_assert_uint_eq(po.sack[0].right, right);
+}
+END_TEST
+
 START_TEST(test_tcp_input_rst_bad_seq_ignored)
 {
     struct wolfIP s;
@@ -18247,6 +18277,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_unexpected_flags);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_transitions);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_invalid_ack_rejected);
+    tcase_add_test(tc_utils, test_tcp_parse_sack_wraparound_block_accepted);
     tcase_add_test(tc_utils, test_tcp_input_rst_bad_seq_ignored);
     tcase_add_test(tc_utils, test_tcp_input_rst_seq_in_window_sends_ack);
     tcase_add_test(tc_utils, test_tcp_input_rst_exact_seq_closes);

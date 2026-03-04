@@ -1880,7 +1880,7 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
                 memcpy(&right, opt + 2 + (i * 8) + 4, sizeof(right));
                 left = ee32(left);
                 right = ee32(right);
-                if (right > left) {
+                if (tcp_seq_lt(left, right)) {
                     po->sack[po->sack_count].left = left;
                     po->sack[po->sack_count].right = right;
                     po->sack_count++;
