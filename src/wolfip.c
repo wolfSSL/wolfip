@@ -4132,6 +4132,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
                 if (ret > 0) {
                     uint16_t win_after = tcp_adv_win(ts);
+                    if (queue_len(&ts->sock.tcp.rxbuf) > 0)
+                        ts->events |= CB_EVENT_READABLE;
                     if (win_after > win_before)
                         tcp_send_ack(ts);
                 }

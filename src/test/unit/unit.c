@@ -3917,6 +3917,30 @@ START_TEST(test_sock_recvfrom_tcp_close_wait_with_data)
 }
 END_TEST
 
+START_TEST(test_sock_recvfrom_tcp_close_wait_sets_readable)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    uint8_t buf[4];
+    uint8_t payload[8] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+
+    ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, payload, 0, sizeof(payload)), 0);
+    ts->events = 0;
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, tcp_sd, buf, sizeof(buf), 0, NULL, NULL), (int)sizeof(buf));
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_tcp_established_sets_readable)
 {
     struct wolfIP s;
@@ -17935,6 +17959,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_short_addrlen);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_short_addrlen);
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_fifo_alignment);
+    tcase_add_test(tc_utils, test_sock_recvfrom_tcp_close_wait_sets_readable);
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_readable_stays_when_queue_nonempty);
     tcase_add_test(tc_utils, test_sock_bind_non_local_ip_fails);
     tcase_add_test(tc_utils, test_sock_connect_bad_addrlen);
