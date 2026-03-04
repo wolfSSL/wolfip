@@ -2491,8 +2491,6 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
              * any cached OOO segments that now become contiguous. */
             t->sock.tcp.ack = tcp_seq_inc(seq, seg_len);
             tcp_consume_ooo(t);
-            timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
-            t->sock.tcp.tmr_rto = NO_TIMER;
             t->events |= CB_EVENT_READABLE;
         }
         tcp_send_ack(t);

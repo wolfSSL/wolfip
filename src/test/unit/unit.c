@@ -4031,6 +4031,51 @@ START_TEST(test_sock_recvfrom_tcp_established_no_remaining_data)
 }
 END_TEST
 
+START_TEST(test_tcp_recv_does_not_cancel_rto_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 1];
+    struct wolfIP_tcp_seg *seg;
+    struct wolfIP_timer tmr;
+    uint8_t payload[1] = {0xAB};
+    uint32_t rto_id;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 200;
+    ts->sock.tcp.bytes_in_flight = 1;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = 100;
+    tmr.arg = ts;
+    tmr.cb = tcp_rto_cb;
+    rto_id = timers_binheap_insert(&s.timers, tmr);
+    ts->sock.tcp.tmr_rto = rto_id;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg = (struct wolfIP_tcp_seg *)seg_buf;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + sizeof(payload));
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(ts->sock.tcp.ack);
+    memcpy(((uint8_t *)seg->ip.data) + TCP_HEADER_LEN, payload, sizeof(payload));
+
+    tcp_recv(ts, seg);
+
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, rto_id);
+    ck_assert_uint_ne(s.timers.timers[0].expires, 0U);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_invalid_socket_ids)
 {
     struct wolfIP s;
@@ -6551,7 +6596,8 @@ START_TEST(test_tcp_input_synack_cancels_control_rto)
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
 
     ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
-    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    /* Handshake RTO is control-plane; stop it once established. */
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
 }
@@ -11905,16 +11951,17 @@ END_TEST
 
 START_TEST(test_tcp_parse_sack_wraparound_block_accepted)
 {
-    struct wolfIP_tcp_seg seg;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 10];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
     struct tcp_parsed_opts po;
     uint32_t left = 0xFFFFFFF0U;
     uint32_t right = 0x00000010U;
     uint8_t *opt;
     uint32_t frame_len;
 
-    memset(&seg, 0, sizeof(seg));
-    seg.hlen = (uint8_t)((TCP_HEADER_LEN + 10) << 2);
-    opt = seg.data;
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 10) << 2);
+    opt = seg->data;
     opt[0] = TCP_OPTION_SACK;
     opt[1] = 10;
     {
@@ -11925,7 +11972,7 @@ START_TEST(test_tcp_parse_sack_wraparound_block_accepted)
     }
 
     frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 10;
-    tcp_parse_options(&seg, frame_len, &po);
+    tcp_parse_options(seg, frame_len, &po);
 
     ck_assert_int_eq(po.sack_count, 1);
     ck_assert_uint_eq(po.sack[0].left, left);
@@ -13502,6 +13549,7 @@ START_TEST(test_tcp_recv_queues_payload_and_advances_ack)
     ts->S = &s;
     ts->sock.tcp.state = TCP_ESTABLISHED;
     ts->sock.tcp.ack = seq;
+    ts->sock.tcp.bytes_in_flight = 1;
     queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, seq);
 
     memset(&tmr, 0, sizeof(tmr));
@@ -13519,7 +13567,8 @@ START_TEST(test_tcp_recv_queues_payload_and_advances_ack)
     tcp_recv(ts, seg);
     ck_assert_uint_eq(ts->sock.tcp.ack, seq + sizeof(payload));
     ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
-    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    /* RFC 6298: RTO is sender-side; receiving data must not cancel it. */
+    ck_assert_uint_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
 
     {
         uint8_t out[4] = {0};
@@ -18114,6 +18163,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_close_wait_with_data);
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_established_sets_readable);
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_established_no_remaining_data);
+    tcase_add_test(tc_utils, test_tcp_recv_does_not_cancel_rto_timer);
     tcase_add_test(tc_utils, test_sock_recvfrom_invalid_socket_ids);
     tcase_add_test(tc_utils, test_sock_recvfrom_non_socket);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_success);
