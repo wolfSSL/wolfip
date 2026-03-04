@@ -5910,12 +5910,10 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
 int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lookup_cb)(const char *name))
 {
     char ptr_name[128];
-    if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
-        return -22;
     if (!s || !id || !lookup_cb)
         return -22;
-    snprintf(ptr_name, sizeof(ptr_name), "%u.%u.%u.%u.in-addr.arpa",
-            (unsigned int)(ip & 0xFF), (unsigned int)((ip >> 8) & 0xFF), (unsigned int)((ip >> 16) & 0xFF), (unsigned int)((ip >> 24) & 0xFF));
+    if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
+        return -22;
     s->dns_ptr_cb = lookup_cb;
     s->dns_lookup_cb = NULL;
     s->dns_ptr_name[0] = '\0';
