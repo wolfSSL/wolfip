@@ -3240,6 +3240,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
             /* Check if RST */
             if (tcp->flags & 0x04) {
+                uint32_t seg_seq = ee32(tcp->seq);
+                uint32_t rcv_nxt = t->sock.tcp.ack;
                 if (t->sock.tcp.state == TCP_LISTEN) {
                     /* RFC 793: ignore RSTs in LISTEN to keep the server open. */
                     continue;
@@ -3251,6 +3253,15 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->remote_ip = IPADDR_ANY;
                     t->dst_port = 0;
                     t->sock.tcp.ack = 0;
+                    continue;
+                }
+                if (seg_seq != rcv_nxt) {
+                    uint32_t rcv_wnd = tcp_adv_win(t);
+                    if (rcv_wnd != 0) {
+                        uint32_t wnd_end = tcp_seq_inc(rcv_nxt, rcv_wnd);
+                        if (tcp_seq_leq(rcv_nxt, seg_seq) && tcp_seq_lt(seg_seq, wnd_end))
+                            tcp_send_ack(t);
+                    }
                     continue;
                 }
                 (void)wolfIP_filter_notify_socket_event(

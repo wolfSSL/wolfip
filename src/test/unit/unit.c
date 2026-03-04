@@ -7601,7 +7601,7 @@ START_TEST(test_tcp_rst_closes_socket)
     ts->dst_port = remote_port;
 
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
-            5, 0, TCP_FLAG_RST);
+            ts->sock.tcp.ack, 0, TCP_FLAG_RST);
     ck_assert_int_eq(ts->proto, 0);
 }
 END_TEST
@@ -11772,6 +11772,108 @@ START_TEST(test_tcp_input_syn_sent_synack_invalid_ack_rejected)
             4321, 1234, 10, 999, (TCP_FLAG_SYN | TCP_FLAG_ACK));
 
     ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+START_TEST(test_tcp_input_rst_bad_seq_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 50, 0, TCP_FLAG_RST);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_int_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    ck_assert_uint_eq(fifo_len(&ts->sock.tcp.txbuf), 0U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_rst_seq_in_window_sends_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg *sent;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 101, 0, TCP_FLAG_RST);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_gt(fifo_len(&ts->sock.tcp.txbuf), 0U);
+    {
+        struct pkt_desc *desc = fifo_peek(&ts->sock.tcp.txbuf);
+        ck_assert_ptr_nonnull(desc);
+        sent = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+        ck_assert_uint_eq(sent->flags & TCP_FLAG_ACK, TCP_FLAG_ACK);
+    }
+}
+END_TEST
+
+START_TEST(test_tcp_input_rst_exact_seq_closes)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 100, 0, TCP_FLAG_RST);
+
+    ck_assert_int_eq(ts->proto, 0);
 }
 END_TEST
 
@@ -18013,6 +18115,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_unexpected_flags);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_transitions);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_invalid_ack_rejected);
+    tcase_add_test(tc_utils, test_tcp_input_rst_bad_seq_ignored);
+    tcase_add_test(tc_utils, test_tcp_input_rst_seq_in_window_sends_ack);
+    tcase_add_test(tc_utils, test_tcp_input_rst_exact_seq_closes);
     tcase_add_test(tc_utils, test_tcp_input_syn_listen_mismatch);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_established);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_invalid_ack_rejected);
