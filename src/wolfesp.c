@@ -121,10 +121,15 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
+    if (enc_key == NULL) {
+        ESP_LOG("error: null aes-gcm key\n");
+        return -1;
+    }
+
     if (enc_key_len != (AES_128_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN) &&
         enc_key_len != (AES_192_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN) &&
         enc_key_len != (AES_256_KEY_SIZE + ESP_GCM_RFC4106_SALT_LEN)) {
-        ESP_LOG("error: bad gcm key len: %d\n", enc_key_len);
+        ESP_LOG("error: bad aes-gcm key len: %d\n", enc_key_len);
         return -1;
     }
 
@@ -267,6 +272,11 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
+    if (enc_key == NULL) {
+        ESP_LOG("error: null aes-cbc key\n");
+        return -1;
+    }
+
     if (enc_key_len != (AES_128_KEY_SIZE) &&
         enc_key_len != (AES_192_KEY_SIZE) &&
         enc_key_len != (AES_256_KEY_SIZE)) {
@@ -282,7 +292,9 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     esp_replay_init(new_sa->replay);
     memcpy(new_sa->spi, spi, ESP_SPI_LEN);
     memcpy(new_sa->enc_key, enc_key, enc_key_len);
-    memcpy(new_sa->auth_key, auth_key, auth_key_len);
+    if (auth_key != NULL) {
+        memcpy(new_sa->auth_key, auth_key, auth_key_len);
+    }
     new_sa->src          = src;
     new_sa->dst          = dst;
     new_sa->enc          = ESP_ENC_CBC_AES;
@@ -314,6 +326,11 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
+    if (enc_key == NULL) {
+        ESP_LOG("error: null des3 key\n");
+        return -1;
+    }
+
     if (esp_sa_valid_hmac_auth(auth, auth_key, auth_key_len, icv_len) != 0) {
         return -1;
     }
@@ -322,7 +339,9 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     esp_replay_init(new_sa->replay);
     memcpy(new_sa->spi, spi, ESP_SPI_LEN);
     memcpy(new_sa->enc_key, enc_key, ESP_DES3_KEY_LEN);
-    memcpy(new_sa->auth_key, auth_key, auth_key_len);
+    if (auth_key != NULL) {
+        memcpy(new_sa->auth_key, auth_key, auth_key_len);
+    }
     new_sa->src          = src;
     new_sa->dst          = dst;
     new_sa->enc          = ESP_ENC_CBC_DES3;
