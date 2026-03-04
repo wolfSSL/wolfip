@@ -1659,7 +1659,7 @@ START_TEST(test_udp_recvfrom_preserves_remote_ip)
     int ret;
     ip4 local_ip = 0x0A000001U;
     ip4 remote_ip = 0x0A000002U;
-    ip4 preset_remote_ip = 0x0A000099U;
+    ip4 preset_remote_ip = 0x0A000002U;
     uint16_t local_port = 4003;
     uint16_t remote_port = 5003;
     struct tsocket *ts;
@@ -11999,6 +11999,44 @@ START_TEST(test_udp_checksum_zero_accepted)
 }
 END_TEST
 
+START_TEST(test_udp_connected_rejects_wrong_source_ip)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {1, 2, 3, 4};
+    uint8_t rxbuf[8];
+    ip4 local_ip = 0x0A000001U;
+    ip4 connected_ip = 0x0A000002U;
+    ip4 other_ip = 0x0A000099U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5678);
+    sin.sin_addr.s_addr = ee32(connected_ip);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, other_ip, local_ip, 5678, 1234,
+            payload, (uint16_t)sizeof(payload));
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL),
+            -WOLFIP_EAGAIN);
+}
+END_TEST
+
 START_TEST(test_ip_checksum_invalid_rejected)
 {
     struct wolfIP s;
@@ -17943,6 +17981,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_checksum_valid_passes);
     tcase_add_test(tc_utils, test_udp_checksum_invalid_rejected);
     tcase_add_test(tc_utils, test_udp_checksum_zero_accepted);
+    tcase_add_test(tc_utils, test_udp_connected_rejects_wrong_source_ip);
     tcase_add_test(tc_utils, test_ip_checksum_invalid_rejected);
     tcase_add_test(tc_utils, test_ip_checksum_valid_passes);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_2_fin_sets_ack);

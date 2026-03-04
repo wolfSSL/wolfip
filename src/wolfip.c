@@ -1617,10 +1617,9 @@ static struct tsocket *udp_new_socket(struct wolfIP *s)
 static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
                          struct wolfIP_udp_datagram *udp, uint32_t frame_len)
 {
-    struct ipconf *conf = wolfIP_ipconf_at(s, if_idx);
     int i;
-    ip4 local_ip;
     ip4 dst_ip;
+    ip4 src_ip;
 
     /* validate minimum UDP datagram length */
     if (frame_len < sizeof(struct wolfIP_udp_datagram))
@@ -1646,8 +1645,8 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             return;
     }
 
-    local_ip = conf ? conf->ip : IPADDR_ANY;
     dst_ip = ee32(udp->ip.dst);
+    src_ip = ee32(udp->ip.src);
 
     if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len) != 0)
         return;
@@ -1656,7 +1655,7 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         uint32_t expected_len;
         if (t->src_port == ee16(udp->dst_port) && (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip != local_ip))) ) {
+                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip == src_ip))) ) {
 
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
