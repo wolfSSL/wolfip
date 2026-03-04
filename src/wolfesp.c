@@ -607,26 +607,26 @@ esp_const_memcmp(const uint8_t * vec_a, const uint8_t * vec_b, uint32_t len)
  * Get the encryption length for an ESP payload.
  * */
 #define esp_enc_len(esp_len, iv_len, icv_len) \
-        (esp_len) - ESP_SPI_LEN - ESP_SEQ_LEN \
-        - (iv_len) - (icv_len)
+       ((esp_len) - ESP_SPI_LEN - ESP_SEQ_LEN \
+        - (iv_len) - (icv_len))
 
 /**
  * Get pointer to raw encryption ESP IV, skipping ESP header.
  * */
-#define esp_enc_iv(data, iv_len) \
-        (data) + ESP_SPI_LEN + ESP_SEQ_LEN
+#define esp_enc_iv(data) \
+        ((data) + ESP_SPI_LEN + ESP_SEQ_LEN)
 
 /**
  * Get pointer to raw encryption ESP ICV.
  * */
 #define esp_enc_icv(data, esp_len, icv_len) \
-        (data) + (esp_len) - (icv_len)
+        ((data) + (esp_len) - (icv_len))
 
 /**
  * Get pointer to raw encryption ESP payload, skipping ESP header and IV.
  * */
 #define esp_enc_payload(data, iv_len) \
-        (data) + ESP_SPI_LEN + ESP_SEQ_LEN + (iv_len)
+        ((data) + ESP_SPI_LEN + ESP_SEQ_LEN + (iv_len))
 
 static int
 esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
@@ -638,14 +638,14 @@ esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t   iv_len = ESP_CBC_RFC3602_IV_LEN;
     uint8_t * enc_payload = NULL;
     uint8_t * iv = NULL;
-    uint16_t  enc_len = 0;
+    uint32_t  enc_len = 0;
     uint8_t   inited = 0;
 
     ESP_DEBUG("info: aes cbc dec: %d\n", esp_len);
 
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
 
     ret = wc_AesInit(&cbc_dec, NULL, INVALID_DEVID);
     if (ret != 0) {
@@ -687,14 +687,14 @@ esp_aes_rfc3602_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t      iv_len = ESP_CBC_RFC3602_IV_LEN;
     uint8_t *    enc_payload = NULL;
     uint8_t *    iv = NULL;
-    uint16_t     enc_len = 0;
+    uint32_t     enc_len = 0;
     uint8_t      inited = 0;
 
     ESP_DEBUG("info: aes cbc enc: %d\n", esp_len);
 
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
 
     /* Generate random iv block for cbc method. */
     ret = wc_RNG_GenerateBlock(&wc_rng, iv, iv_len);
@@ -743,7 +743,7 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t   iv_len = ESP_DES3_IV_LEN;
     uint8_t * enc_payload = NULL;
     uint8_t * iv = NULL;
-    uint16_t  enc_len = 0;
+    uint32_t  enc_len = 0;
     uint8_t   inited = 0;
 
     ESP_DEBUG("info: des3 dec: %d\n", esp_len);
@@ -756,7 +756,7 @@ esp_des3_rfc2451_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
 
     ret = wc_Des3Init(&des3_dec, NULL, INVALID_DEVID);
     if (ret != 0) {
@@ -797,7 +797,7 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t   iv_len = ESP_DES3_IV_LEN;
     uint8_t * enc_payload = NULL;
     uint8_t * iv = NULL;
-    uint16_t  enc_len = 0;
+    uint32_t  enc_len = 0;
     uint8_t   inited = 0;
 
     ESP_DEBUG("info: des3 enc: %d\n", esp_len);
@@ -810,7 +810,7 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
 
     ret = wc_Des3Init(&des3_enc, NULL, INVALID_DEVID);
     if (ret != 0) {
@@ -885,7 +885,7 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t         iv_len = ESP_GCM_RFC4106_IV_LEN;
     uint8_t *       enc_payload = NULL;
     uint8_t *       iv = NULL;
-    uint16_t        enc_len = 0;
+    uint32_t        enc_len = 0;
     uint8_t         inited = 0;
     uint8_t *       aad = NULL;
     uint16_t        aad_len = ESP_SPI_LEN + ESP_SEQ_LEN;
@@ -899,7 +899,7 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
     aad = esp_data;
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
     icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
 
     /* Get the salt, and construct nonce. */
@@ -955,7 +955,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t         iv_len = ESP_GCM_RFC4106_IV_LEN;
     uint8_t *       enc_payload = NULL;
     uint8_t *       iv = NULL;
-    uint16_t        enc_len = 0;
+    uint32_t        enc_len = 0;
     uint8_t         inited = 0;
     uint8_t *       aad = NULL;
     uint16_t        aad_len = ESP_SPI_LEN + ESP_SEQ_LEN;
@@ -969,7 +969,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     enc_len = esp_enc_len(esp_len, iv_len, icv_len);
     enc_payload = esp_enc_payload(esp_data, iv_len);
     aad = esp_data;
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
     icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
 
     /* Get the salt, and construct nonce. */
@@ -1036,7 +1036,7 @@ esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t         iv_len = ESP_GCM_RFC4106_IV_LEN;
     uint8_t *       iv = NULL;
     uint8_t *       aad = esp_data;
-    uint16_t        aad_len = esp_len - icv_len;
+    uint32_t        aad_len = esp_len - icv_len;
     const uint8_t * salt = NULL;
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
@@ -1044,7 +1044,7 @@ esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ESP_DEBUG("info: aes gcm rfc4543 dec: %d\n", esp_len);
 
     /* get enc payload, iv, and icv pointers. */
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
     icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
 
     /* Get the salt, and construct nonce. */
@@ -1076,7 +1076,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t *       iv = NULL;
     uint8_t         inited = 0;
     uint8_t *       aad = esp_data;
-    uint16_t        aad_len = esp_len - icv_len;
+    uint32_t        aad_len = esp_len - icv_len;
     const uint8_t * salt = NULL;
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
@@ -1084,7 +1084,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     ESP_DEBUG("info: aes gcm enc: %d\n", esp_len);
 
     /* get enc payload, iv, and icv pointers. */
-    iv = esp_enc_iv(esp_data, iv_len);
+    iv = esp_enc_iv(esp_data);
     icv = esp_enc_icv(esp_data, esp_len, esp_sa->icv_len);
 
     /* Get the salt. */
