@@ -5523,6 +5523,36 @@ START_TEST(test_sock_recvfrom_udp_payload_too_long)
 }
 END_TEST
 
+START_TEST(test_sock_recvfrom_udp_readable_stays_when_queue_nonempty)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    uint8_t payload1[2] = {0xAA, 0xBB};
+    uint8_t payload2[2] = {0xCC, 0xDD};
+    uint8_t buf[4];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = 1234;
+
+    enqueue_udp_rx(ts, payload1, sizeof(payload1), 1111);
+    enqueue_udp_rx(ts, payload2, sizeof(payload2), 2222);
+    ts->events |= CB_EVENT_READABLE;
+
+    memset(buf, 0, sizeof(buf));
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, buf, sizeof(buf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, (int)sizeof(payload1));
+    ck_assert_mem_eq(buf, payload1, sizeof(payload1));
+    ck_assert_uint_ne(ts->events & CB_EVENT_READABLE, 0U);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_icmp_payload_too_long)
 {
     struct wolfIP s;
@@ -17905,6 +17935,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_short_addrlen);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_short_addrlen);
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_fifo_alignment);
+    tcase_add_test(tc_utils, test_sock_recvfrom_udp_readable_stays_when_queue_nonempty);
     tcase_add_test(tc_utils, test_sock_bind_non_local_ip_fails);
     tcase_add_test(tc_utils, test_sock_connect_bad_addrlen);
     tcase_add_test(tc_utils, test_sock_connect_tcp_bad_addrlen);
