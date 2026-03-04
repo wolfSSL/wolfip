@@ -612,7 +612,7 @@ START_TEST(test_unwrap_pad_too_big)
     }
     esp_setup();
 
-    /* Outbound SA: encrypts packets sent to T_DST.
+    /* Outbound SA: hmac integrity protects packets sent to T_DST.
      * esp_transport_wrap looks up by ip->dst == ee32(out_sa.dst). */
     ret = wolfIP_esp_sa_new_hmac(0, (uint8_t *)spi_rt,
                                  atoip4(T_SRC), atoip4(T_DST),
@@ -622,7 +622,7 @@ START_TEST(test_unwrap_pad_too_big)
     esp_sa = esp_sa_get(0, (uint8_t *)spi_rt);
     ck_assert_ptr_nonnull(esp_sa);
 
-    /* Inbound SA: decrypts packets carrying spi_rt. */
+    /* Inbound SA: hmac verifies packets carrying spi_rt. */
     ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_rt,
                                  atoip4(T_SRC), atoip4(T_DST),
                                  ESP_AUTH_SHA256_RFC4868, k_auth16, sizeof(k_auth16),
@@ -658,6 +658,7 @@ START_TEST(test_unwrap_pad_too_big)
     /* recalculate the icv so we pass the unwrap icv check. */
     icv = ip->data + ip_len - IP_HEADER_LEN - ESP_ICVLEN_HMAC_128;
     ret = esp_calc_icv_hmac(icv, esp_sa, ip->data, ip_len - IP_HEADER_LEN);
+    ck_assert_int_eq(ret, 0);
 
     /* esp_send normally fixes these up; we must do it manually. */
     frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;

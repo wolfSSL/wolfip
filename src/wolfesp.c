@@ -195,7 +195,16 @@ esp_sa_valid_hmac_auth(esp_auth_t auth, uint8_t * auth_key,
     switch (auth) {
     case ESP_AUTH_MD5_RFC2403:
     case ESP_AUTH_SHA1_RFC2404:
+        if (icv_len != ESP_ICVLEN_HMAC_96) {
+            ESP_LOG("error: hmac-[md5, sha1]: bad icv_len: %d\n", icv_len);
+            return -1;
+        }
+        break;
     case ESP_AUTH_SHA256_RFC4868:
+        if (icv_len != ESP_ICVLEN_HMAC_96 && icv_len != ESP_ICVLEN_HMAC_128) {
+            ESP_LOG("error: hmac-sha256: bad icv_len: %d\n", icv_len);
+            return -1;
+        }
         break;
     case ESP_AUTH_NONE:
     default:
@@ -205,11 +214,6 @@ esp_sa_valid_hmac_auth(esp_auth_t auth, uint8_t * auth_key,
 
     if (auth_key_len > ESP_MAX_KEY_LEN) {
         ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
-        return -1;
-    }
-
-    if (icv_len != ESP_ICVLEN_HMAC_96 && icv_len != ESP_ICVLEN_HMAC_128) {
-        ESP_LOG("error: bad icv_len: %d\n", icv_len);
         return -1;
     }
 
