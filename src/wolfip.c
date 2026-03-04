@@ -1114,6 +1114,7 @@ struct arp_neighbor {
 #define ARP_AGING_TIMEOUT_MS 120000U
 #endif
 
+/* Lightweight tracking for pending ARP requests (separate from queued packet data). */
 struct arp_pending_req {
     ip4 ip;
     uint8_t if_idx;
@@ -5176,6 +5177,10 @@ static void arp_store_neighbor(struct wolfIP *s, unsigned int if_idx, ip4 ip,
     }
 }
 
+/* Lookup neighbor entry by IP/interface.
+ * Returns the index, or -1 if not found.
+ * If the entry has aged out, it is evicted and -1 is returned.
+ */
 static int arp_neighbor_index(struct wolfIP *s, unsigned int if_idx, ip4 ip)
 {
     int i;
@@ -5197,6 +5202,10 @@ static int arp_neighbor_index(struct wolfIP *s, unsigned int if_idx, ip4 ip)
     return -1;
 }
 
+/* Match a pending ARP request by IP/interface.
+ * Returns 1 if found (and clears it), 0 otherwise.
+ * Also expires stale pending entries.
+ */
 static int arp_pending_match_and_clear(struct wolfIP *s, unsigned int if_idx, ip4 ip)
 {
     int i;
@@ -5223,6 +5232,10 @@ static int arp_pending_match_and_clear(struct wolfIP *s, unsigned int if_idx, ip
     return 0;
 }
 
+/* Record a pending ARP request for IP/interface.
+ * Refreshes an existing entry, or uses the first empty slot,
+ * otherwise replaces the oldest entry.
+ */
 static void arp_pending_record(struct wolfIP *s, unsigned int if_idx, ip4 ip)
 {
     int i;
