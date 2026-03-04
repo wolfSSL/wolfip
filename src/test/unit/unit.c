@@ -2302,7 +2302,7 @@ START_TEST(test_sock_connect_bad_addrlen)
 
     udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(udp_sd, 0);
-    ck_assert_int_eq(wolfIP_sock_connect(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, (socklen_t)1), 0);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, (socklen_t)1), -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -2382,6 +2382,49 @@ START_TEST(test_sock_connect_udp_invalid_fd)
     sin.sin_addr.s_addr = ee32(0x0A000002U);
 
     ck_assert_int_eq(wolfIP_sock_connect(&s, bad_fd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_connect_udp_wrong_family)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = 0;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_connect_udp_short_addrlen)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t bad_len = (socklen_t)(sizeof(struct wolfIP_sockaddr_in) - 1);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, bad_len),
+            -WOLFIP_EINVAL);
 }
 END_TEST
 
@@ -17967,6 +18010,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_connect_invalid_args);
     tcase_add_test(tc_utils, test_sock_connect_invalid_tcp_fd);
     tcase_add_test(tc_utils, test_sock_connect_udp_invalid_fd);
+    tcase_add_test(tc_utils, test_sock_connect_udp_wrong_family);
+    tcase_add_test(tc_utils, test_sock_connect_udp_short_addrlen);
     tcase_add_test(tc_utils, test_sock_connect_icmp_invalid_fd);
     tcase_add_test(tc_utils, test_sock_connect_udp_sets_local_ip_from_conf);
     tcase_add_test(tc_utils, test_sock_connect_udp_falls_back_to_primary);

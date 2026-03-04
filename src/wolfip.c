@@ -3714,6 +3714,8 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             return -WOLFIP_EINVAL;
 
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
+        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
+            return -WOLFIP_EINVAL;
         ts->dst_port = ee16(sin->sin_port);
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
         if (ts->bound_local_ip != IPADDR_ANY) {
