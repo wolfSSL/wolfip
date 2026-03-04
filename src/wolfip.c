@@ -5504,6 +5504,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 int broadcast = 0;
 
                 if (ip->ttl <= 1) {
+                    /* Need at least Ethernet header + 28 bytes of original packet. */
+                    if (len < (uint32_t)(ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE))
+                        return;
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
