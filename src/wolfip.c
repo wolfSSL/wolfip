@@ -5861,9 +5861,8 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     s->dns_query_type = (qtype == DNS_PTR) ? DNS_QUERY_TYPE_PTR : DNS_QUERY_TYPE_A;
     hdr = (struct dns_header *)buf;
     hdr->id = ee16(s->dns_id);
-    hdr->flags = ee16(DNS_QUERY);
     hdr->qdcount = ee16(1);
-    hdr->flags = ee16(DNS_RD);
+    hdr->flags = ee16(DNS_QUERY | DNS_RD);
     /* Prepare the DNS query name */
     q_name = (char *)(buf + sizeof(struct dns_header));
     tok_start = (char *)dname;
