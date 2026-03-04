@@ -167,6 +167,50 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     return err;
 }
 
+/* Check if valid hmac auth config:
+ *  returns  0 if ok
+ *  returns -1 on err
+ * */
+static inline int
+esp_sa_valid_hmac_auth(esp_auth_t auth, uint8_t * auth_key,
+                       uint8_t auth_key_len, uint8_t icv_len)
+{
+    /* auth key is optional, but auth config must be correct if present. */
+    if (auth_key == NULL) {
+        /* null auth key is OK if all other fields are none or 0. */
+        if (auth == ESP_AUTH_NONE && auth_key_len == 0 && icv_len == 0) {
+            return 0;
+        }
+        else {
+            ESP_LOG("error: null auth key with non zero parameters\n");
+            return -1;
+        }
+    }
+
+    switch (auth) {
+    case ESP_AUTH_MD5_RFC2403:
+    case ESP_AUTH_SHA1_RFC2404:
+    case ESP_AUTH_SHA256_RFC4868:
+        break;
+    case ESP_AUTH_NONE:
+    default:
+        ESP_LOG("error: unsupported hmac auth: %d\n", auth);
+        return -1;
+    }
+
+    if (auth_key_len > ESP_MAX_KEY_LEN) {
+        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
+        return -1;
+    }
+
+    if (icv_len != ESP_ICVLEN_HMAC_96 && icv_len != ESP_ICVLEN_HMAC_128) {
+        ESP_LOG("error: bad icv_len: %d\n", icv_len);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* Configure a new hmac auth only Security Association.
  * */
 int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
@@ -182,11 +226,12 @@ int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     }
 
     if (auth_key == NULL) {
+        /* auth key not optional for auth only. */
+        ESP_LOG("error: null auth key with auth only\n");
         return -1;
     }
 
-    if (auth_key_len > ESP_MAX_KEY_LEN) {
-        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
+    if (esp_sa_valid_hmac_auth(auth, auth_key, auth_key_len, icv_len) != 0) {
         return -1;
     }
 
@@ -201,11 +246,11 @@ int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
 
-    ESP_DEBUG("info: esp_sa_new_cbc_hmac: %s\n", in == 1 ? "in" : "out");
+    ESP_DEBUG("info: esp_sa_new_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
 
-/* Configure a new Security Association based on aes-cbc with hmac.
+/* Configure a new Security Association based on aes-cbc with hmac auth.
  *  - enc is required.
  *  - auth may be null/none.
  * */
@@ -229,8 +274,7 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
-    if (auth_key_len > ESP_MAX_KEY_LEN) {
-        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
+    if (esp_sa_valid_hmac_auth(auth, auth_key, auth_key_len, icv_len) != 0) {
         return -1;
     }
 
@@ -270,8 +314,7 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
         return -1;
     }
 
-    if (auth_key_len > ESP_MAX_KEY_LEN) {
-        ESP_LOG("error: bad auth key len: %d\n", auth_key_len);
+    if (esp_sa_valid_hmac_auth(auth, auth_key, auth_key_len, icv_len) != 0) {
         return -1;
     }
 
