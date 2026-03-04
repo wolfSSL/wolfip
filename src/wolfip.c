@@ -3254,7 +3254,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
                 if (seg_seq != rcv_nxt) {
-                    uint32_t rcv_wnd = tcp_adv_win(t);
+                    uint32_t rcv_wnd = queue_space((struct queue *)&t->sock.tcp.rxbuf);
                     if (rcv_wnd != 0) {
                         uint32_t wnd_end = tcp_seq_inc(rcv_nxt, rcv_wnd);
                         if (tcp_seq_leq(rcv_nxt, seg_seq) && tcp_seq_lt(seg_seq, wnd_end))
