@@ -3345,7 +3345,7 @@ START_TEST(test_sock_accept_ack_transitions_to_established)
     ack.src_port = ee16(40000);      /* Remote port from inject_tcp_syn */
     ack.dst_port = ee16(1234);
     ack.seq = ee32(accepted->sock.tcp.ack);
-    ack.ack = ee32(accepted->sock.tcp.seq + 1);
+    ack.ack = ee32(accepted->sock.tcp.seq);
     ack.hlen = TCP_HEADER_LEN << 2;
     ack.flags = TCP_FLAG_ACK;
     ack.win = ee16(65535);
@@ -6115,7 +6115,7 @@ START_TEST(test_sock_accept_ack_with_payload_completes_handshake)
     seg->dst_port = ee16(local_port);
     base_seq = new_ts->sock.tcp.ack;
     seg->seq = ee32(base_seq);
-    seg->ack = ee32(new_ts->sock.tcp.seq + 1);
+    seg->ack = ee32(new_ts->sock.tcp.seq);
     seg->hlen = TCP_HEADER_LEN << 2;
     seg->flags = TCP_FLAG_ACK;
     memcpy(seg->data, payload, sizeof(payload));
@@ -6128,6 +6128,62 @@ START_TEST(test_sock_accept_ack_with_payload_completes_handshake)
     ck_assert_uint_eq(queue_pop(&new_ts->sock.tcp.rxbuf, out, sizeof(out)), (int)sizeof(out));
     ck_assert_mem_eq(out, payload, sizeof(payload));
     ck_assert_uint_eq(new_ts->sock.tcp.ack, tcp_seq_inc(base_seq, sizeof(payload)));
+}
+END_TEST
+
+START_TEST(test_sock_accept_ack_at_snd_nxt_completes_handshake)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int new_sd;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t alen = sizeof(sin);
+    struct tsocket *new_ts;
+    struct wolfIP_tcp_seg ackseg;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000A1U;
+    uint16_t local_port = 1234;
+    uint16_t remote_port = 40000;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(local_port);
+    sin.sin_addr.s_addr = ee32(local_ip);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, local_port);
+
+    new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
+    ck_assert_int_gt(new_sd, 0);
+    new_ts = &s.tcpsockets[SOCKET_UNMARK(new_sd)];
+    ck_assert_int_eq(new_ts->sock.tcp.state, TCP_SYN_RCVD);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ip.ver_ihl = 0x45;
+    ackseg.ip.ttl = 64;
+    ackseg.ip.proto = WI_IPPROTO_TCP;
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ackseg.ip.src = ee32(remote_ip);
+    ackseg.ip.dst = ee32(local_ip);
+    ackseg.src_port = ee16(remote_port);
+    ackseg.dst_port = ee16(local_port);
+    ackseg.seq = ee32(new_ts->sock.tcp.ack);
+    ackseg.ack = ee32(new_ts->sock.tcp.seq);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&ackseg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &ackseg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_int_eq(new_ts->sock.tcp.state, TCP_ESTABLISHED);
 }
 END_TEST
 
@@ -6180,7 +6236,7 @@ START_TEST(test_sock_accept_ack_psh_with_payload_completes_handshake)
     seg->dst_port = ee16(local_port);
     base_seq = new_ts->sock.tcp.ack;
     seg->seq = ee32(base_seq);
-    seg->ack = ee32(new_ts->sock.tcp.seq + 1);
+    seg->ack = ee32(new_ts->sock.tcp.seq);
     seg->hlen = TCP_HEADER_LEN << 2;
     seg->flags = (TCP_FLAG_ACK | TCP_FLAG_PSH);
     memcpy(seg->data, payload, sizeof(payload));
@@ -18258,6 +18314,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_payload_too_long);
     tcase_add_test(tc_utils, test_sock_accept_success);
     tcase_add_test(tc_utils, test_sock_accept_ack_with_payload_completes_handshake);
+    tcase_add_test(tc_utils, test_sock_accept_ack_at_snd_nxt_completes_handshake);
     tcase_add_test(tc_utils, test_sock_accept_ack_psh_with_payload_completes_handshake);
     tcase_add_test(tc_utils, test_sock_accept_filtered_out);
     tcase_add_test(tc_utils, test_poll_tcp_ack_only_skips_send);
