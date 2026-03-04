@@ -3225,7 +3225,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
                 }
             }
-            {
+            if (!(tcp->flags & TCP_FLAG_RST)) {
                 uint32_t prev_peer_rwnd = t->sock.tcp.peer_rwnd;
                 uint16_t raw_win = ee16(tcp->win);
                 uint8_t ws_shift = t->sock.tcp.ws_enabled ? t->sock.tcp.snd_wscale : 0;
@@ -3237,7 +3237,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
             }
             /* Check if RST */
-            if (tcp->flags & 0x04) {
+            if (tcp->flags & TCP_FLAG_RST) {
                 uint32_t seg_seq = ee32(tcp->seq);
                 uint32_t rcv_nxt = t->sock.tcp.ack;
                 if (t->sock.tcp.state == TCP_LISTEN) {
@@ -3712,7 +3712,9 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             return -WOLFIP_EINVAL;
 
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
-        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
+        if (addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -WOLFIP_EINVAL;
+        if (sin->sin_family != AF_INET)
             return -WOLFIP_EINVAL;
         ts->dst_port = ee16(sin->sin_port);
         ts->remote_ip = ee32(sin->sin_addr.s_addr);

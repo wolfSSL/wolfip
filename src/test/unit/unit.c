@@ -12181,6 +12181,64 @@ START_TEST(test_tcp_input_rst_seq_in_scaled_window_sends_ack)
 }
 END_TEST
 
+START_TEST(test_tcp_input_rst_out_of_window_does_not_update_peer_rwnd)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    union transport_pseudo_header ph;
+    uint32_t initial_rwnd = 8000;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.ws_enabled = 1;
+    ts->sock.tcp.snd_wscale = 2;
+    ts->sock.tcp.peer_rwnd = initial_rwnd;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.src_port = ee16(ts->dst_port);
+    seg.dst_port = ee16(ts->src_port);
+    seg.seq = ee32(50);
+    seg.ack = 0;
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_RST;
+    seg.win = ee16(1);
+    fix_ip_checksum(&seg.ip);
+
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = seg.ip.src;
+    ph.ph.dst = seg.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    seg.csum = ee16(transport_checksum(&ph, &seg.src_port));
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, initial_rwnd);
+}
+END_TEST
+
 START_TEST(test_tcp_input_rst_exact_seq_closes)
 {
     struct wolfIP s;
@@ -18459,6 +18517,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_rst_bad_seq_ignored);
     tcase_add_test(tc_utils, test_tcp_input_rst_seq_in_window_sends_ack);
     tcase_add_test(tc_utils, test_tcp_input_rst_seq_in_scaled_window_sends_ack);
+    tcase_add_test(tc_utils, test_tcp_input_rst_out_of_window_does_not_update_peer_rwnd);
     tcase_add_test(tc_utils, test_tcp_input_rst_exact_seq_closes);
     tcase_add_test(tc_utils, test_tcp_input_syn_listen_mismatch);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_established);
