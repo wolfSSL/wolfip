@@ -228,7 +228,7 @@ void *pt_echoclient(void *arg)
         return (void *)-1;
     }
     sleep(1);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
     printf("Connecting to echo server\n");
     old_flags = fcntl(fd, F_GETFL, 0);
     if (old_flags < 0) {
@@ -339,7 +339,7 @@ void *pt_echoclient(void *arg)
  */
 static void *pt_echoserver(void *arg)
 {
-    int fd, ret;
+    int fd, listen_fd, ret;
     unsigned total_r = 0;
     uint8_t local_buf[BUFFER_SIZE];
     struct sockaddr_in local_sock = {
@@ -354,21 +354,25 @@ static void *pt_echoserver(void *arg)
         return (void *)-1;
     }
     local_sock.sin_addr.s_addr = inet_addr(HOST_STACK_IP);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
     ret = bind(fd, (struct sockaddr *)&local_sock, sizeof(local_sock));
     if (ret < 0) {
         printf("test server bind: %d (%s)\n", ret, strerror(errno));
+        close(fd);
         return (void *)-1;
     }
     ret = listen(fd, 1);
     if (ret < 0) {
         printf("test server listen: %d\n", ret);
+        close(fd);
         return (void *)-1;
     }
+    listen_fd = fd;
     printf("Waiting for client\n");
     ret = accept(fd, NULL, NULL);
     if (ret < 0) {
         printf("test server accept: %d\n", ret);
+        close(listen_fd);
         return (void *)-1;
     }
     printf("test server: client %d connected\n", ret);
@@ -377,10 +381,14 @@ static void *pt_echoserver(void *arg)
         ret = read(fd, local_buf + total_r, sizeof(local_buf) - total_r);
         if (ret < 0) {
             printf("failed test server read: %d (%s) \n", ret, strerror(errno));
+            close(fd);
+            close(listen_fd);
             return (void *)-1;
         }
         if (ret == 0) {
             printf("test server read: client has closed the connection.\n");
+            close(fd);
+            close(listen_fd);
             if (wolfIP_closing)
                 return (void *)0;
             else

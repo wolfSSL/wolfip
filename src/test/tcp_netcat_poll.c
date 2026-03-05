@@ -81,7 +81,9 @@ int main() {
             if (bytes_read > 0) {
                 // Write stdin data to the socket
                 if (new_socket != -1) {
-                    send(new_socket, buffer, bytes_read, 0);
+                    if (send(new_socket, buffer, bytes_read, 0) < 0) {
+                        perror("send");
+                    }
                 }
             }
         }
@@ -115,7 +117,5 @@ int main() {
             }
         }
     }
-
-    close(server_fd);
-    return 0;
+    /* NOTREACHED */
 }

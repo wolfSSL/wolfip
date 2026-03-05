@@ -188,7 +188,7 @@ static inline void fifo_align_tail(struct fifo *f)
         f->tail = 0;
         f->h_wrap = 0;
     }
-    if (f->tail >= f->size)
+    if (f->size > 0 && f->tail >= f->size)
         f->tail %= f->size;
     if ((f->tail + sizeof(struct pkt_desc)) > f->size)
         f->tail = 0;
@@ -1782,6 +1782,9 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             {
                 uint32_t space = RXBUF_SIZE;
                 uint8_t shift = 0;
+                /* Note: with the default RXBUF_SIZE (20480), space fits in a
+                 * uint16_t so the loop body never executes and shift stays 0.
+                 * Kept for configurations that define a larger RXBUF_SIZE. */
                 while (shift < 14 && (space >> shift) > 0xFFFF)
                     shift++;
                 t->sock.tcp.rcv_wscale = shift;
@@ -2552,7 +2555,7 @@ static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
-    return (uint16_t)~sum;
+    return (uint16_t)(~sum & 0xFFFF);
 }
 
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
@@ -4086,6 +4089,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                     ts->local_ip = primary->ip;
             }
         }
+        if (sizeof(struct wolfIP_ip_packet) + payload_len > sizeof(frame))
+            return -WOLFIP_EINVAL;
         memcpy(&icmp->type, buf, payload_len);
         if (icmp->type == ICMP_ECHO_REQUEST)
             icmp_set_echo_id(icmp, ts->src_port);
@@ -4168,6 +4173,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (fifo_len(&ts->sock.udp.rxbuf) == 0)
             return -WOLFIP_EAGAIN;
         desc = fifo_peek(&ts->sock.udp.rxbuf);
+        if (!desc)
+            return -WOLFIP_EAGAIN;
         udp = (struct wolfIP_udp_datagram *)(ts->rxmem + desc->pos + sizeof(*desc));
         if (ee16(udp->len) < UDP_HEADER_LEN) {
             fifo_pop(&ts->sock.udp.rxbuf);
@@ -4903,8 +4910,6 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         }
         opt += 2 + len;
     }
-    if (!saw_end)
-        return -1;
     return -1;
 }
 
@@ -5812,7 +5817,12 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                     return;
                 }
                 if (s->dns_query_type == DNS_QUERY_TYPE_A && ee16(rr->type) == DNS_A && rdlen >= 4) {
-                    uint32_t ip = (buf[pos + 3] & 0xFF) |
+                    uint32_t ip;
+                    if (pos + 4 > dns_len) {
+                        s->dns_id = 0;
+                        return;
+                    }
+                    ip = (buf[pos + 3] & 0xFF) |
                             ((buf[pos + 2] & 0xFF) << 8) |
                             ((buf[pos + 1] & 0xFF) << 16) |
                             ((buf[pos + 0] & 0xFF) << 24);
