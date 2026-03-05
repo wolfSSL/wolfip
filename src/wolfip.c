@@ -2776,6 +2776,8 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     tcp_parse_options(tcp, frame_len, &po);
     if (!po.ts_found)
         return -1;
+    if (!t->S)
+        return -1; /* Socket was closed; ignore. */
     t->sock.tcp.last_ts = ee32(po.ts_val);
     if (po.ts_ecr == 0)
         return -1; /* No echoed timestamp; fall back to coarse RTT. */
@@ -3201,6 +3203,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         uint32_t tcplen;
         uint32_t iplen;
         struct tsocket *t = &S->tcpsockets[i];
+        if (t->proto == 0 || t->S == NULL)
+            continue;
         if (t->src_port == ee16(tcp->dst_port)) {
             t->if_idx = (uint8_t)if_idx;
             /* TCP segment sanity checks */
