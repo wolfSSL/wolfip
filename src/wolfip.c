@@ -5564,11 +5564,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     /* note: esp transport mode only handled here.
      * ip forwarding would require esp tunnel mode. */
     if (ip->proto == 0x32) {
+        int err;
         if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
             return;
         }
         /* proto is ESP 0x32 (50), try to unwrap. */
-        int err = esp_transport_unwrap(ip, &len);
+        err = esp_transport_unwrap(ip, &len);
         if (err) {
             LOG("info: failed to unwrap esp packet, dropping.\n");
             return;
