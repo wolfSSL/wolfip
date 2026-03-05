@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/random.h>
 #include <unistd.h>
 
 #include "config.h"
@@ -106,12 +107,15 @@ static uint16_t ones_csum(const void *buf, size_t len)
         acc += *((const uint8_t *)p);
     while (acc >> 16)
         acc = (acc & 0xFFFF) + (acc >> 16);
-    return (uint16_t)~acc;
+    return (uint16_t)(~acc & 0xFFFF);
 }
 
 uint32_t wolfIP_getrandom(void)
 {
-    return (uint32_t)rand();
+    uint32_t ret;
+    if (getrandom(&ret, sizeof(ret), 0) < 0)
+        ret = (uint32_t)rand();
+    return ret;
 }
 
 struct mem_link {

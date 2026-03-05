@@ -601,8 +601,16 @@ int main(void)
 
     mem_link_attach(wolfIP_getdev_ex(router_stack, 1), &link_router_server, 0,
             "rt1", mac_router1);
-    mem_link_attach(wolfIP_getdev(server_stack), &link_router_server, 1,
-            "srv0", mac_server);
+    {
+        struct wolfIP_ll_dev *srv_dev = wolfIP_getdev(server_stack);
+        if (!srv_dev) {
+            fprintf(stderr, "wolfIP_getdev(server_stack) returned NULL\n");
+            ret = 1;
+            goto cleanup;
+        }
+        mem_link_attach(srv_dev, &link_router_server, 1,
+                "srv0", mac_server);
+    }
 
     wolfIP_ipconfig_set_ex(router_stack, 0, router_lan_ip4, IP4(255,255,255,0), IP4(0,0,0,0));
     wolfIP_ipconfig_set_ex(router_stack, 1, router_wan_ip4, IP4(255,255,255,0), IP4(0,0,0,0));

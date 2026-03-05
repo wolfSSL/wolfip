@@ -137,6 +137,7 @@ int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ-1] = '\0';
     if (ioctl(sock_fd, SIOCGIFFLAGS, &ifr) < 0) {
         perror("ioctl SIOCGIFFLAGS");
         close(sock_fd);
@@ -173,6 +174,7 @@ int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
         close(sock_fd);
         return -1;
     }
+    close(sock_fd);
     printf("Successfully initialized tap device %s\n", ifname);
     return 0;
 }

@@ -36,7 +36,7 @@ int main() {
     char buffer[BUFFER_SIZE];
 
     // Create a socket
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket failed");
         exit(EXIT_FAILURE);
     }
@@ -80,7 +80,5 @@ int main() {
         printf("Client disconnected\n");
         close(client_fd);
     }
-
-    close(server_fd);
-    return 0;
+    /* NOTREACHED */
 }
