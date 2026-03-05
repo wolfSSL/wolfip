@@ -96,6 +96,7 @@ typedef uint32_t ip4;
 struct wolfIP_ll_dev {
     uint8_t mac[6];
     char ifname[16];
+    uint8_t non_ethernet;
     /* poll function */
     int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
     /* send function */

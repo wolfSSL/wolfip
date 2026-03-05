@@ -1650,6 +1650,8 @@ static int
 esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
          uint16_t len)
 {
+    if (!ll_dev || ll_dev->non_ethernet)
+        return 1;
     /**
      * 60 is reasonable max ESP overhead (for now), rounded up to 4 bytes.
      *      8 bytes (esp header)
