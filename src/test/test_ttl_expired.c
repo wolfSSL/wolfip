@@ -32,7 +32,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef __linux__
 #include <sys/random.h>
+#endif
 #include <unistd.h>
 
 #include "config.h"
@@ -113,8 +115,11 @@ static uint16_t ones_csum(const void *buf, size_t len)
 uint32_t wolfIP_getrandom(void)
 {
     uint32_t ret;
-    if (getrandom(&ret, sizeof(ret), 0) < 0)
-        ret = (uint32_t)rand();
+#ifdef __linux__
+    if (getrandom(&ret, sizeof(ret), 0) >= 0)
+        return ret;
+#endif
+    ret = (uint32_t)rand();
     return ret;
 }
 

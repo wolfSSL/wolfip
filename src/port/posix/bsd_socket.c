@@ -302,8 +302,12 @@ static int wolfip_fd_alloc(int internal_fd, int nonblock)
             fcntl(pipefds[1], F_SETFD, FD_CLOEXEC) < 0 ||
             fcntl(pipefds[0], F_SETFL, O_NONBLOCK) < 0 ||
             fcntl(pipefds[1], F_SETFL, O_NONBLOCK) < 0) {
-            close(pipefds[0]);
-            close(pipefds[1]);
+            /* Use host_close to avoid deadlock: close() is interposed and
+             * wolfip_fd_alloc may be called with wolfIP_mutex held. */
+            if (host_close) {
+                host_close(pipefds[0]);
+                host_close(pipefds[1]);
+            }
             return -errno;
         }
     }
@@ -1262,8 +1266,12 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
                 host_poll(&pfd, 1, -1);
                 pthread_mutex_lock(&wolfIP_mutex);
                 entry = wolfip_entry_from_public(sockfd);
-                if (entry)
-                    wolfip_drain_pipe_locked(entry);
+                if (!entry) {
+                    errno = EBADF;
+                    pthread_mutex_unlock(&wolfIP_mutex);
+                    return -1;
+                }
+                wolfip_drain_pipe_locked(entry);
             }
         } while (internal_ret == -EAGAIN);
         if (internal_ret < 0) {
@@ -1690,7 +1698,12 @@ void __attribute__((constructor)) init_wolfip_posix() {
     }
     fprintf(stderr, "wolfIP: Serving process PID=%d, TID=%x\n", getpid(),
         (unsigned short)pthread_self());
-    inet_aton(host_stack_ip_str, &host_stack_ip);
+    if (!wolfip_validate_ipv4(host_stack_ip_str) ||
+            inet_aton(host_stack_ip_str, &host_stack_ip) == 0) {
+        fprintf(stderr, "Invalid WOLFIP_HOST_IP, using default\n");
+        host_stack_ip_str = HOST_STACK_IP;
+        inet_aton(host_stack_ip_str, &host_stack_ip);
+    }
     swap_socketcall(socket, "socket");
     swap_socketcall(bind, "bind");
     swap_socketcall(listen, "listen");
