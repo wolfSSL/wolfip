@@ -10166,8 +10166,9 @@ END_TEST
 START_TEST(test_wolfip_forward_non_ethernet_in_to_ethernet_out)
 {
     struct wolfIP s;
-    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN];
-    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
+    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip_buf;
+    struct wolfIP_ip_packet *ip = &udp->ip;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
     uint8_t mac[6] = {0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff};
@@ -10182,9 +10183,12 @@ START_TEST(test_wolfip_forward_non_ethernet_in_to_ethernet_out)
     ip->ver_ihl = 0x45;
     ip->ttl = 4;
     ip->proto = WI_IPPROTO_UDP;
-    ip->len = ee16(IP_HEADER_LEN);
+    ip->len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
     ip->src = ee32(0x0A000099U);
     ip->dst = ee32(0xC0A80199U);
+    udp->src_port = ee16(1234);
+    udp->dst_port = ee16(5678);
+    udp->len = ee16(UDP_HEADER_LEN);
     fix_ip_checksum(ip);
 
     wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
@@ -10199,8 +10203,9 @@ END_TEST
 START_TEST(test_wolfip_forward_ethernet_in_to_non_ethernet_out)
 {
     struct wolfIP s;
-    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN];
-    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
+    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip_buf;
+    struct wolfIP_ip_packet *ip = &udp->ip;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
 
@@ -10216,9 +10221,12 @@ START_TEST(test_wolfip_forward_ethernet_in_to_non_ethernet_out)
     ip->ver_ihl = 0x45;
     ip->ttl = 4;
     ip->proto = WI_IPPROTO_UDP;
-    ip->len = ee16(IP_HEADER_LEN);
+    ip->len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
     ip->src = ee32(0x0A000099U);
     ip->dst = ee32(0xC0A80199U);
+    udp->src_port = ee16(1234);
+    udp->dst_port = ee16(5678);
+    udp->len = ee16(UDP_HEADER_LEN);
     fix_ip_checksum(ip);
 
     wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
