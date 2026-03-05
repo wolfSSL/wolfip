@@ -298,12 +298,14 @@ static int wolfip_fd_alloc(int internal_fd, int nonblock)
         host_fcntl(pipefds[0], F_SETFL, O_NONBLOCK);
         host_fcntl(pipefds[1], F_SETFL, O_NONBLOCK);
     } else {
-        if (fcntl(pipefds[0], F_SETFD, FD_CLOEXEC) < 0 ||
-            fcntl(pipefds[1], F_SETFD, FD_CLOEXEC) < 0 ||
-            fcntl(pipefds[0], F_SETFL, O_NONBLOCK) < 0 ||
-            fcntl(pipefds[1], F_SETFL, O_NONBLOCK) < 0) {
-            /* Use host_close to avoid deadlock: close() is interposed and
-             * wolfip_fd_alloc may be called with wolfIP_mutex held. */
+        /* Resolve the real libc fcntl via dlsym to avoid recursing into our
+         * interposed fcntl(), which would deadlock on wolfIP_mutex. */
+        int (*real_fcntl)(int, int, ...) = (int (*)(int, int, ...))dlsym(RTLD_NEXT, "fcntl");
+        if (!real_fcntl ||
+            real_fcntl(pipefds[0], F_SETFD, FD_CLOEXEC) < 0 ||
+            real_fcntl(pipefds[1], F_SETFD, FD_CLOEXEC) < 0 ||
+            real_fcntl(pipefds[0], F_SETFL, O_NONBLOCK) < 0 ||
+            real_fcntl(pipefds[1], F_SETFL, O_NONBLOCK) < 0) {
             if (host_close) {
                 host_close(pipefds[0]);
                 host_close(pipefds[1]);
@@ -1649,15 +1651,18 @@ void *wolfIP_sock_posix_ip_loop(void *arg) {
 
 static int wolfip_validate_ipv4(const char *s)
 {
-    int parts = 0, digits = 0, val = 0;
+    int parts = 0, digits = 0;
+    unsigned int val = 0;
     if (!s || !*s)
         return 0;
     while (*s) {
         if (*s >= '0' && *s <= '9') {
-            val = val * 10 + (*s - '0');
+            digits++;
+            if (digits > 3)
+                return 0;
+            val = val * 10 + (unsigned int)(*s - '0');
             if (val > 255)
                 return 0;
-            digits++;
         } else if (*s == '.') {
             if (digits == 0)
                 return 0;
@@ -1764,13 +1769,15 @@ void __attribute__((constructor)) init_wolfip_posix() {
     }
     wolfIP_start_tcpdump((tapdev && tapdev->ifname[0]) ? tapdev->ifname : "wtcp0");
 #endif
-    if (wolfip_validate_ipv4(wolfip_ip_str) && wolfip_validate_ipv4(wolfip_mask_str) &&
-            wolfip_validate_ipv4(host_stack_ip_str)) {
-        wolfIP_ipconfig_set(IPSTACK, atoip4(wolfip_ip_str), atoip4(wolfip_mask_str),
-                atoip4(host_stack_ip_str));
-    } else {
-        fprintf(stderr, "Invalid IP configuration, using defaults\n");
+    if (!wolfip_validate_ipv4(wolfip_ip_str) || !wolfip_validate_ipv4(wolfip_mask_str) ||
+            !wolfip_validate_ipv4(host_stack_ip_str)) {
+        fprintf(stderr, "Invalid IP configuration, falling back to defaults\n");
+        wolfip_ip_str = WOLFIP_IP;
+        wolfip_mask_str = "255.255.255.0";
+        host_stack_ip_str = HOST_STACK_IP;
     }
+    wolfIP_ipconfig_set(IPSTACK, atoip4(wolfip_ip_str), atoip4(wolfip_mask_str),
+            atoip4(host_stack_ip_str));
     pthread_mutex_unlock(&wolfIP_mutex);
     fprintf(stderr, "IP: manually configured - %s\n", wolfip_ip_str);
     /* Avoid penalizing startup fairness across stacks: once init is done,

@@ -1807,9 +1807,6 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             {
                 uint32_t space = RXBUF_SIZE;
                 uint8_t shift = 0;
-                /* Note: with the default RXBUF_SIZE (20480), space fits in a
-                 * uint16_t so the loop body never executes and shift stays 0.
-                 * Kept for configurations that define a larger RXBUF_SIZE. */
                 while (shift < 14 && (space >> shift) > 0xFFFF)
                     shift++;
                 t->sock.tcp.rcv_wscale = shift;

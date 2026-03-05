@@ -116,8 +116,14 @@ uint32_t wolfIP_getrandom(void)
 {
     uint32_t ret;
 #ifdef __linux__
-    if (getrandom(&ret, sizeof(ret), 0) >= 0)
-        return ret;
+    {
+        ssize_t n;
+        do {
+            n = getrandom(&ret, sizeof(ret), 0);
+        } while (n < 0 && errno == EINTR);
+        if (n == (ssize_t)sizeof(ret))
+            return ret;
+    }
 #endif
     ret = (uint32_t)rand();
     return ret;
