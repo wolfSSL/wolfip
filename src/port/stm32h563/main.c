@@ -334,6 +334,13 @@ static void uart_puthex(uint32_t val)
     }
 }
 
+static void uart_puthex8(uint8_t val)
+{
+    const char hex[] = "0123456789ABCDEF";
+    uart_putc(hex[(val >> 4) & 0xF]);
+    uart_putc(hex[val & 0xF]);
+}
+
 static void uart_putdec(uint32_t val)
 {
     char buf[12];
@@ -569,6 +576,14 @@ int main(void)
         uart_puts((ret & 0x100) ? "UP" : "DOWN");
         uart_puts(", PHY addr: ");
         uart_puthex(ret & 0xFF);
+        uart_puts("\n  MAC: ");
+        {
+            int mi;
+            for (mi = 0; mi < 6; mi++) {
+                if (mi > 0) uart_puts(":");
+                uart_puthex8(ll->mac[mi]);
+            }
+        }
         uart_puts("\n");
     }
 
@@ -576,19 +591,27 @@ int main(void)
     {
         uint32_t dhcp_start_tick;
         uint32_t dhcp_timeout;
+        int dhcp_ret;
 
-        dhcp_timeout = 30000;  /* 30 seconds timeout */
+        dhcp_timeout = 15000;  /* 15 seconds timeout */
 
-        if (dhcp_client_init(IPStack) >= 0) {
+        uart_puts("Starting DHCP client...\n");
+        dhcp_ret = dhcp_client_init(IPStack);
+        if (dhcp_ret < 0) {
+            uart_puts("  DHCP init failed (-");
+            uart_putdec((uint32_t)(-dhcp_ret));
+            uart_puts(")\n");
+        } else {
+            uart_puts("  DHCP discover sent, waiting for lease...\n");
             /* Wait for DHCP to complete - poll frequently */
             dhcp_start_tick = tick;
             while (!dhcp_bound(IPStack)) {
                 /* Poll the stack - this processes received packets and sends pending data */
                 (void)wolfIP_poll(IPStack, tick);
-                /* Increment tick counter (approximate 1ms per iteration) */
+                /* Increment tick counter (approximate 1ms per iteration at 64MHz HSI)
+                 * volatile loop ~8 cycles/iter: 8000 * 8 / 64MHz = 1ms */
                 tick++;
-                /* Small delay to allow Ethernet DMA to work */
-                delay(1000);
+                delay(8000);
                 /* Check for timeout */
                 if ((tick - dhcp_start_tick) > dhcp_timeout)
                     break;
@@ -603,6 +626,21 @@ int main(void)
                 uart_putip4(nm);
                 uart_puts("\n  GW: ");
                 uart_putip4(gw);
+                uart_puts("\n");
+            } else {
+                uint32_t polls = 0, pkts = 0;
+                stm32_eth_get_stats(&polls, &pkts);
+                uart_puts("  DHCP timeout - no lease obtained\n");
+                uart_puts("  ETH stats: polls=");
+                uart_puthex(polls);
+                uart_puts(" pkts=");
+                uart_puthex(pkts);
+                uart_puts("\n  DMACSR=");
+                uart_puthex(stm32_eth_get_dmacsr());
+                uart_puts(" RX_DES3=");
+                uart_puthex(stm32_eth_get_rx_des3());
+                uart_puts("\n  ticks=");
+                uart_puthex((uint32_t)(tick - dhcp_start_tick));
                 uart_puts("\n");
             }
         }
@@ -711,7 +749,7 @@ int main(void)
 
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("  TCP Echo: port 7\n");
-#ifdef ENABLE_TLS
+#ifdef ENABLE_TLS_CLIENT
     uart_puts("  TLS Client: will connect to Google after ~2s\n");
 #endif
 #ifdef ENABLE_HTTPS
