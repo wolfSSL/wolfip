@@ -44,14 +44,14 @@ extern volatile uint64_t HAL_time_ms;
 #define RX_BUF_SIZE     1024
 
 /* DHCP timeout: total time to wait for DHCP before static IP fallback.
- * wolfIP's internal DHCP state machine only retries for ~8 seconds
- * (DHCP_DISCOVER_RETRIES=3 × 2s timeout).  After that it sets state to
+ * wolfIP's internal DHCP state machine only retries for ~4 seconds
+ * (DHCP_DISCOVER_RETRIES=1 x 2s timeout).  After that it sets state to
  * DHCP_OFF and the UDP socket stops accepting unicast DHCP responses
  * (because DHCP_IS_RUNNING becomes false).  We re-init periodically to
  * keep trying, but must space re-inits apart to avoid socket churn
  * (close/reopen loses in-flight responses). */
-#define DHCP_TIMEOUT_MS     120000U  /* 120s total before static fallback */
-#define DHCP_REINIT_MS      15000U   /* 15s between DHCP re-init attempts */
+#define DHCP_TIMEOUT_MS     30000U   /* 30s total before static fallback */
+#define DHCP_REINIT_MS      10000U   /* 10s between DHCP re-init attempts */
 
 static struct wolfIP *IPStack;
 static uint8_t rx_buf[RX_BUF_SIZE];
@@ -703,12 +703,12 @@ int main(void)
 #ifdef DHCP
             /* Non-blocking DHCP handling.
              *
-             * wolfIP's internal DHCP state machine gives up after ~8s
-             * (3 retries × 2s).  When state goes to DHCP_OFF, the UDP
+             * wolfIP's internal DHCP state machine gives up after ~4s
+             * (1 retry x 2s).  When state goes to DHCP_OFF, the UDP
              * socket stops accepting unicast DHCP responses (the
              * DHCP_IS_RUNNING check in udp_process fails).
              *
-             * We periodically re-init DHCP (every 15s) to restart the
+             * We periodically re-init DHCP (every 10s) to restart the
              * state machine and keep the UDP socket accepting responses.
              * Must space re-inits apart to avoid socket churn (the
              * close/reopen cycle can lose in-flight responses). */
@@ -729,9 +729,9 @@ int main(void)
                         printf("DHCP assigned IP:\n");
                     } else {
                         printf("DHCP timeout, using static IP\n");
-                        ip = atoip4("192.168.12.11");
-                        nm = atoip4("255.255.255.0");
-                        gw = atoip4("192.168.12.1");
+                        ip = atoip4(WOLFIP_IP);
+                        nm = atoip4(WOLFIP_NETMASK);
+                        gw = atoip4(WOLFIP_GW);
                         wolfIP_ipconfig_set(IPStack, ip, nm, gw);
                     }
                     printf("  IP:   "); uart_putip4(ip); printf("\n");

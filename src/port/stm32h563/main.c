@@ -642,20 +642,18 @@ int main(void)
                 uart_putip4(gw);
                 uart_puts("\n");
             } else {
-                uint32_t polls = 0, pkts = 0;
-                stm32_eth_get_stats(&polls, &pkts);
-                uart_puts("  DHCP timeout - no lease obtained\n");
-                uart_puts("  ETH stats: polls=");
-                uart_puthex(polls);
-                uart_puts(" pkts=");
-                uart_puthex(pkts);
-                uart_puts("\n  DMACSR=");
-                uart_puthex(stm32_eth_get_dmacsr());
-                uart_puts(" RX_DES3=");
-                uart_puthex(stm32_eth_get_rx_des3());
-                uart_puts("\n  ticks=");
-                uart_puthex((uint32_t)(tick - dhcp_start_tick));
+                ip4 ip = atoip4(WOLFIP_IP);
+                ip4 nm = atoip4(WOLFIP_NETMASK);
+                ip4 gw = atoip4(WOLFIP_GW);
+                uart_puts("  DHCP timeout - falling back to static IP\n");
+                uart_puts("  IP: ");
+                uart_putip4(ip);
+                uart_puts("\n  Mask: ");
+                uart_putip4(nm);
+                uart_puts("\n  GW: ");
+                uart_putip4(gw);
                 uart_puts("\n");
+                wolfIP_ipconfig_set(IPStack, ip, nm, gw);
             }
         }
     }
