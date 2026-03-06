@@ -229,6 +229,7 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd);
 
 int dhcp_client_init(struct wolfIP *s);
 int dhcp_bound(struct wolfIP *s);
+int dhcp_client_is_running(struct wolfIP *s);
 
 /* DNS client */
 

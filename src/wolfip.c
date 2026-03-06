@@ -971,9 +971,9 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_OPTION_OFFER_IP 50
 #define DHCP_OPTION_END 0xFF
 #define DHCP_DISCOVER_TIMEOUT 2000
-#define DHCP_DISCOVER_RETRIES 3
+#define DHCP_DISCOVER_RETRIES 1
 #define DHCP_REQUEST_TIMEOUT 2000
-#define DHCP_REQUEST_RETRIES 3
+#define DHCP_REQUEST_RETRIES 1
 
 enum dhcp_state {
     DHCP_OFF = 0,
@@ -5065,6 +5065,11 @@ static int dhcp_send_discover(struct wolfIP *s)
 int dhcp_bound(struct wolfIP *s)
 {
     return (s->dhcp_state == DHCP_BOUND);
+}
+
+int dhcp_client_is_running(struct wolfIP *s)
+{
+    return DHCP_IS_RUNNING(s);
 }
 
 int dhcp_client_init(struct wolfIP *s)

@@ -729,9 +729,9 @@ int main(void)
                         printf("DHCP assigned IP:\n");
                     } else {
                         printf("DHCP timeout, using static IP\n");
-                        ip = atoip4("10.0.4.90");
+                        ip = atoip4("192.168.12.11");
                         nm = atoip4("255.255.255.0");
-                        gw = atoip4("10.0.4.1");
+                        gw = atoip4("192.168.12.1");
                         wolfIP_ipconfig_set(IPStack, ip, nm, gw);
                     }
                     printf("  IP:   "); uart_putip4(ip); printf("\n");

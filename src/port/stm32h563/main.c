@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include "config.h"
 #include "wolfip.h"
@@ -325,6 +327,18 @@ static void uart_puts(const char *s)
     }
 }
 
+/* Printf-style UART output for wolfMQTT broker logging (WBLOG macros).
+ * Uses vsnprintf from newlib-nano + uart_puts. */
+void wolfmqtt_log(const char *fmt, ...)
+{
+    char buf[128];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    uart_puts(buf);
+}
+
 static void uart_puthex(uint32_t val)
 {
     const char hex[] = "0123456789ABCDEF";
@@ -593,7 +607,7 @@ int main(void)
         uint32_t dhcp_timeout;
         int dhcp_ret;
 
-        dhcp_timeout = 15000;  /* 15 seconds timeout */
+        dhcp_timeout = 5000;  /* safety-net tick timeout */
 
         uart_puts("Starting DHCP client...\n");
         dhcp_ret = dhcp_client_init(IPStack);
@@ -605,7 +619,7 @@ int main(void)
             uart_puts("  DHCP discover sent, waiting for lease...\n");
             /* Wait for DHCP to complete - poll frequently */
             dhcp_start_tick = tick;
-            while (!dhcp_bound(IPStack)) {
+            while (!dhcp_bound(IPStack) && dhcp_client_is_running(IPStack)) {
                 /* Poll the stack - this processes received packets and sends pending data */
                 (void)wolfIP_poll(IPStack, tick);
                 /* Increment tick counter (approximate 1ms per iteration at 64MHz HSI)

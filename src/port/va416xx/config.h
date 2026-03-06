@@ -65,9 +65,9 @@
 #if WOLFIP_ENABLE_DHCP
 #define DHCP
 #else
-#define WOLFIP_IP               "10.0.4.90"
+#define WOLFIP_IP               "192.168.12.11"
 #define WOLFIP_NETMASK          "255.255.255.0"
-#define WOLFIP_GW               "10.0.4.1"
+#define WOLFIP_GW               "192.168.12.1"
 #define WOLFIP_STATIC_DNS_IP    "8.8.8.8"
 #endif
 

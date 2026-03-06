@@ -1,4 +1,4 @@
-name: STM32H563 m33mu (echo only)
+name: STM32H563 m33mu
 
 on:
   push:
@@ -106,6 +106,211 @@ jobs:
             exit 1
           fi
           echo "Echo test succeeded."
+          if [ -f /tmp/m33mu.pid ]; then
+            sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+          fi
+
+  stm32h563_m33mu_full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/danielinux/m33mu-ci:1.5
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone wolfSSL, wolfSSH, wolfMQTT
+        run: |
+          set -euo pipefail
+          cd ..
+          git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+          git clone --depth 1 https://github.com/wolfSSL/wolfssh.git
+          git clone --depth 1 https://github.com/wolfSSL/wolfMQTT.git wolfmqtt
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y sudo dnsmasq iproute2 netcat-openbsd \
+                             curl mosquitto-clients openssh-client
+
+      - name: Build STM32H563 full firmware
+        run: |
+          set -euo pipefail
+          make -C src/port/stm32h563 \
+            ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_SSH=1 \
+            CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+
+      - name: Run m33mu + DHCP + full test
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            set +e
+            if [ -f /tmp/m33mu.pid ]; then
+              sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            fi
+            sudo pkill -x m33mu 2>/dev/null || true
+            if [ -f /tmp/dnsmasq.pid ]; then
+              sudo kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+            fi
+            sudo ip link del tap0 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          sudo ip tuntap add dev tap0 mode tap
+          sudo ip addr add 192.168.12.1/24 dev tap0
+          sudo ip link set tap0 up
+
+          cat > /tmp/dnsmasq.conf <<'EOF'
+          interface=tap0
+          bind-interfaces
+          dhcp-range=192.168.12.50,192.168.12.100,255.255.255.0,12h
+          dhcp-leasefile=/tmp/dnsmasq.leases
+          log-dhcp
+          EOF
+          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+
+          sudo m33mu src/port/stm32h563/app.bin \
+            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 240 \
+            2>&1 | tee /tmp/m33mu.log &
+          sleep 1
+          m33mu_pid="$(pgrep -n -x m33mu || true)"
+          if [ -n "${m33mu_pid}" ]; then
+            echo "${m33mu_pid}" > /tmp/m33mu.pid
+          fi
+
+          # Wait for DHCP lease
+          ip=""
+          for _ in $(seq 1 60); do
+            if [ -s /tmp/dnsmasq.leases ]; then
+              ip="$(tail -n1 /tmp/dnsmasq.leases | cut -d' ' -f3)"
+            fi
+            if [ -n "${ip}" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "${ip}" ]; then
+            echo "No DHCP lease acquired."
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "Leased IP: ${ip}"
+
+          # Helper: check m33mu is still running
+          check_alive() {
+            if ! pgrep -x m33mu >/dev/null 2>&1; then
+              echo "FAIL: m33mu exited unexpectedly."
+              tail -n 200 /tmp/m33mu.log || true
+              exit 1
+            fi
+          }
+
+          # Test 1: TCP Echo (port 7)
+          echo "=== Test 1: TCP Echo ==="
+          ok=0
+          for _ in $(seq 1 20); do
+            check_alive
+            if printf "ping" | nc -w 2 "${ip}" 7 | grep -q "ping"; then
+              ok=1; break
+            fi
+            sleep 0.5
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "FAIL: Echo test."
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "PASS: Echo test."
+
+          # Test 2: HTTPS Web Server (port 443)
+          echo "=== Test 2: HTTPS Server ==="
+          ok=0
+          for _ in $(seq 1 10); do
+            check_alive
+            resp="$(curl -k -s --max-time 10 "https://${ip}/" 2>/dev/null || true)"
+            if echo "${resp}" | grep -q "wolfIP Status"; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "FAIL: HTTPS test."
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "PASS: HTTPS test."
+
+          # Test 3: TLS Echo (port 8443)
+          echo "=== Test 3: TLS Echo ==="
+          sleep 5  # allow recovery from HTTPS TLS session
+          ok=0
+          for _ in $(seq 1 5); do
+            check_alive
+            resp="$(echo "TLS-ping" | timeout 10 openssl s_client \
+              -connect "${ip}:8443" -quiet 2>/dev/null || true)"
+            if echo "${resp}" | grep -q "TLS-ping"; then
+              ok=1; break
+            fi
+            sleep 3
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "FAIL: TLS echo test."
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "PASS: TLS echo test."
+
+          # Test 4: MQTT Broker (port 8883)
+          echo "=== Test 4: MQTT Broker ==="
+          sleep 5  # allow recovery from TLS echo session
+          # Extract cert from certs.h for mosquitto
+          sed -n '/server_cert_pem\[\]/,/^";$/p' src/port/certs.h \
+            | sed 's/^"//; s/"$//; s/\\n$//' \
+            | grep -v '^static\|^;' > /tmp/wolfip_cert.pem
+          ok=0
+          for _ in $(seq 1 5); do
+            check_alive
+            out="$(mosquitto_pub -h "${ip}" -p 8883 \
+              --cafile /tmp/wolfip_cert.pem --insecure \
+              -t "ci/test" -m "hello" -d 2>&1 || true)"
+            if echo "${out}" | grep -q "CONNACK"; then
+              ok=1; break
+            fi
+            sleep 5
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "FAIL: MQTT broker test."
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "PASS: MQTT broker test."
+
+          # Test 5: SSH Server (port 22)
+          echo "=== Test 5: SSH Server ==="
+          sleep 5  # allow recovery from MQTT TLS session
+          ok=0
+          for _ in $(seq 1 5); do
+            check_alive
+            # Test SSH banner (connection-level check, no auth)
+            resp="$(timeout 10 bash -c "echo '' | nc -w 5 ${ip} 22" 2>/dev/null || true)"
+            if echo "${resp}" | grep -qi "ssh"; then
+              ok=1; break
+            fi
+            sleep 3
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "FAIL: SSH banner test."
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "PASS: SSH banner test."
+
+          echo ""
+          echo "=== All tests passed ==="
           if [ -f /tmp/m33mu.pid ]; then
             sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
           fi

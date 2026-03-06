@@ -230,11 +230,21 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* Use wolfIP network backend */
 #define WOLFMQTT_WOLFIP
 
+/* wolfIP provides its own TLS context via broker_tls_init(), so skip
+ * BrokerTls_Init() which requires file-based cert/key paths */
+#define WOLFMQTT_BROKER_CUSTOM_NET
+
 /* Non-blocking mode for integration with wolfIP event loop */
 #define WOLFMQTT_NONBLOCK
 
 /* No standard I/O available on bare-metal */
 #define WOLFMQTT_NO_STDIO
+
+/* Custom printf for broker logging: route WBLOG through UART.
+ * wolfmqtt_log() is implemented in main.c using vsnprintf + uart_puts. */
+#define WOLFMQTT_CUSTOM_PRINTF
+extern void wolfmqtt_log(const char *fmt, ...);
+#define PRINTF(_f_, ...) wolfmqtt_log(_f_ "\n", ##__VA_ARGS__)
 
 /* Disable error strings to save space */
 #define WOLFMQTT_NO_ERROR_STRINGS
@@ -254,8 +264,8 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 #define BROKER_MAX_RETAINED        4
 #define BROKER_MAX_PAYLOAD_LEN  1024
 
-/* Minimal logging (errors only) */
-#define BROKER_LOG_LEVEL_DEFAULT   1 /* BROKER_LOG_ERROR */
+/* Broker logging: errors and info (connections, subscriptions) */
+#define BROKER_LOG_LEVEL_DEFAULT   2 /* BROKER_LOG_INFO */
 
 /* Disable optional features to save space */
 #define WOLFMQTT_BROKER_NO_WILDCARDS
