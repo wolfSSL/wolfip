@@ -4989,6 +4989,10 @@ static int dhcp_send_request(struct wolfIP *s)
     sin.sin_family = AF_INET;
     wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
+    /* Reset local_ip so DHCP ACK matches via DHCP_IS_RUNNING path in
+     * udp_try_recv(). wolfIP_sock_sendto() sets local_ip from conf->ip
+     * (the offered IP), but we haven't confirmed the lease yet. */
+    s->udpsockets[SOCKET_UNMARK(s->dhcp_udp_sd)].local_ip = 0;
     tmr.expires = s->last_tick + DHCP_REQUEST_TIMEOUT + (wolfIP_getrandom() % 200);
     tmr.arg = s;
     tmr.cb = dhcp_timer_cb;
