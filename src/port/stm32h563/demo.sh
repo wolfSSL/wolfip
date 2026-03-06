@@ -5,11 +5,23 @@
 # Demonstrates HTTPS server, SSH server, and MQTT broker running on
 # a bare-metal Cortex-M33 with wolfIP + wolfSSL + wolfSSH + wolfMQTT.
 #
-# Usage: ./demo.sh [board-ip]
+# Usage: ./demo.sh [--auto] [board-ip]
+#   --auto    Skip pauses and interactive prompts (for automated testing)
 #   board-ip defaults to 192.168.12.11
 #
 
-BOARD_IP="${1:-1192.168.12.11}"
+AUTO=0
+if [[ "$1" == "--auto" ]]; then
+    AUTO=1
+    shift
+fi
+BOARD_IP="${1:-192.168.12.11}"
+
+# Validate BOARD_IP to block shell metacharacter injection via eval
+if ! [[ "$BOARD_IP" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "Error: Invalid board IP/hostname: $BOARD_IP" >&2
+    exit 1
+fi
 
 # Colors
 BLD='\033[1m'
@@ -37,7 +49,7 @@ BAMCA0gAMEUCIEUB8ArsbYI58PGtcy9KIdR6A3z5KCQblTXZWnIE7EDUAiEA8Oyi
 LwVAHQ4M2+TcVwe4LQ+xG9F6uSmu4t/psG0IT+s=
 -----END CERTIFICATE-----
 CERTEOF
-trap "rm -f $CERT_FILE" EXIT
+trap "rm -f $CERT_FILE /tmp/wolfip_sub.*" EXIT
 
 banner() {
     echo ""
@@ -56,6 +68,10 @@ cmd_show() {
 }
 
 pause() {
+    if [[ $AUTO -eq 1 ]]; then
+        sleep 1
+        return
+    fi
     echo ""
     echo -ne "  ${DIM}[Press Enter to continue]${RST}"
     read -r
@@ -106,7 +122,7 @@ pause
 banner "2. TCP Echo Server (Port 7)"
 
 step "Send a message to the plaintext echo server"
-run_cmd "echo 'Hello wolfIP!' | nc -q 1 ${BOARD_IP} 7"
+run_cmd "echo 'Hello wolfIP!' | nc -w 2 ${BOARD_IP} 7"
 
 pause
 
@@ -115,16 +131,22 @@ pause
 # ---------------------------------------------------------------------------
 banner "3. HTTPS Web Server (Port 443) - TLS 1.3"
 
-step "Fetch the status page with curl"
-run_cmd "curl -s -k https://${BOARD_IP}/ | sed 's/<[^>]*>//g; s/^[[:space:]]*//; /^$/d'"
-
+step "Fetch the status page and inspect TLS 1.3 handshake"
+cmd_show "curl -vsk --max-time 10 https://${BOARD_IP}/"
 echo ""
-step "Inspect the TLS 1.3 handshake"
-cmd_show "echo | openssl s_client -connect ${BOARD_IP}:443 -tls1_3 -brief 2>&1"
-echo ""
-echo | openssl s_client -connect "${BOARD_IP}":443 -tls1_3 -brief 2>&1 | \
-    grep -E '(Protocol|Ciphersuite|Peer certificate|Server certificate|subject|issuer|Verification)' | \
-    sed 's/^/    /'
+CURL_OUT=$(curl -vsk --max-time 10 "https://${BOARD_IP}/" 2>&1)
+RC=$?
+if [[ $RC -ne 0 && -z "$CURL_OUT" ]]; then
+    echo -e "    ${RED}Connection failed (curl exit $RC)${RST}"
+else
+    # Show TLS handshake details (lines starting with "* ")
+    echo "$CURL_OUT" | grep -E '^\* +(SSL|Server cert|subject|issuer|start date|expire)' | sed 's/^/    /'
+    echo ""
+    # Show page content (lines not starting with *, >, <space, or <header)
+    echo "$CURL_OUT" | grep -v '^[*><{} ]' | \
+        sed 's/<\/\(tr\|h1\|title\)>/\n/g; s/<[^>]*>//g; s/^[[:space:]]*//; /^$/d' | \
+        sed 's/^/    /'
+fi
 echo ""
 
 pause
@@ -138,8 +160,12 @@ step "Connect and run commands (admin/wolfip)"
 echo -e "  ${DIM}NOTE: This opens an interactive SSH session.${RST}"
 echo -e "  ${DIM}Try: help, info, uptime, then exit${RST}"
 echo ""
-echo -ne "  ${YLW}>>>${RST} Open SSH session? ${DIM}[Enter=yes, s=skip]${RST} "
-read -r ssh_choice
+if [[ $AUTO -eq 1 ]]; then
+    ssh_choice="s"
+else
+    echo -ne "  ${YLW}>>>${RST} Open SSH session? ${DIM}[Enter=yes, s=skip]${RST} "
+    read -r ssh_choice
+fi
 if [[ "$ssh_choice" != "s" ]]; then
     cmd_show "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null admin@${BOARD_IP}"
     echo ""
@@ -160,9 +186,10 @@ step "Start a subscriber in the background"
 cmd_show "mosquitto_sub -h ${BOARD_IP} -p 8883 --cafile cert.pem --insecure -t 'demo/#' -v"
 echo ""
 
+SUB_OUT=$(mktemp /tmp/wolfip_sub.XXXXXX)
 mosquitto_sub -h "${BOARD_IP}" -p 8883 \
     --cafile "$CERT_FILE" --insecure \
-    -t "demo/#" -v 2>/dev/null &
+    -t "demo/#" -v > "$SUB_OUT" 2>/dev/null &
 SUB_PID=$!
 
 echo -e "    ${DIM}Subscriber listening on demo/# (pid ${SUB_PID})${RST}"
@@ -183,11 +210,17 @@ done
 echo ""
 step "Subscriber received:"
 sleep 2
+if [[ -s "$SUB_OUT" ]]; then
+    sed 's/^/    /' "$SUB_OUT"
+else
+    echo -e "    ${DIM}(no messages received)${RST}"
+fi
 echo ""
 
 # Cleanup subscriber
 kill $SUB_PID 2>/dev/null
 wait $SUB_PID 2>/dev/null
+rm -f "$SUB_OUT"
 
 pause
 

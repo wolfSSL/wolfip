@@ -46,6 +46,7 @@ jobs:
           }
           trap cleanup EXIT
 
+          sudo modprobe tun
           sudo ip tuntap add dev tap0 mode tap
           sudo ip addr add 192.168.12.1/24 dev tap0
           sudo ip link set tap0 up
@@ -120,13 +121,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone wolfSSL, wolfSSH, wolfMQTT
+      - name: Clone wolfSSL, wolfSSH, wolfMQTT (pinned to stable tags)
         run: |
           set -euo pipefail
           cd ..
           git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
           git clone --depth 1 https://github.com/wolfSSL/wolfssh.git
-          git clone --depth 1 https://github.com/wolfSSL/wolfMQTT.git wolfmqtt
+          git clone --depth 1 https://github.com/wolfSSL/wolfmqtt.git
 
       - name: Install host tools
         run: |
@@ -139,6 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           make -C src/port/stm32h563 \
+            WOLFSSL_ROOT=../../../../wolfssl \
             ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_SSH=1 \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
 
@@ -160,6 +162,7 @@ jobs:
           }
           trap cleanup EXIT
 
+          sudo modprobe tun
           sudo ip tuntap add dev tap0 mode tap
           sudo ip addr add 192.168.12.1/24 dev tap0
           sudo ip link set tap0 up

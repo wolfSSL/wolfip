@@ -60,6 +60,9 @@
 
 #if WOLFIP_ENABLE_DHCP
 #define DHCP
+/* Reduce DHCP retries for faster fallback to static IP on demo boards */
+#define DHCP_DISCOVER_RETRIES 1
+#define DHCP_REQUEST_RETRIES  1
 #endif
 
 #endif /* WOLF_CONFIG_H */

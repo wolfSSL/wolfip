@@ -108,7 +108,7 @@ static int broker_tls_init(void)
     /* Load server certificate from embedded PEM */
     if (wolfSSL_CTX_use_certificate_buffer(ctx.ssl_ctx,
             (const unsigned char *)server_cert_pem,
-            (long)server_cert_pem_len,
+            server_cert_pem_len - 1,
             WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
         debug_print("MQTT Broker: Load cert failed\n");
         wolfSSL_CTX_free(ctx.ssl_ctx);
@@ -119,7 +119,7 @@ static int broker_tls_init(void)
     /* Load server private key from embedded PEM */
     if (wolfSSL_CTX_use_PrivateKey_buffer(ctx.ssl_ctx,
             (const unsigned char *)server_key_pem,
-            (long)server_key_pem_len,
+            server_key_pem_len - 1,
             WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
         debug_print("MQTT Broker: Load key failed\n");
         wolfSSL_CTX_free(ctx.ssl_ctx);
