@@ -163,10 +163,12 @@ static void client_cb(int fd, uint16_t event, void *arg)
         exit_ok = 1;
         for (i = 0; i < sizeof(buf); i += sizeof(test_pattern)) {
             if (memcmp(buf + i, test_pattern, sizeof(test_pattern))) {
+                char slice[sizeof(test_pattern) + 1];
                 printf("test client: pattern mismatch\n");
                 printf("at position %u\n", i);
-                buf[i + 16] = 0;
-                printf("%s\n", &buf[i]);
+                memcpy(slice, buf + i, sizeof(test_pattern));
+                slice[sizeof(test_pattern)] = '\0';
+                printf("%s\n", slice);
                 return;
             }
         }
@@ -219,7 +221,7 @@ void *pt_echoclient(void *arg)
     int err;
     struct sockaddr_in remote_sock = {
         .sin_family = AF_INET,
-        .sin_port = ntohs(8), /* Echo */
+        .sin_port = htons(8), /* Echo */
     };
     remote_sock.sin_addr.s_addr = *srv_addr;
     fd = socket(AF_INET, IPSTACK_SOCK_STREAM, 0);
@@ -322,10 +324,12 @@ void *pt_echoclient(void *arg)
     }
     for (i = 0; i < sizeof(local_buf); i += sizeof(test_pattern)) {
         if (memcmp(local_buf + i, test_pattern, sizeof(test_pattern))) {
+            char slice[sizeof(test_pattern) + 1];
             printf("test client: pattern mismatch\n");
             printf("at position %u\n", i);
-            local_buf[i + 16] = 0;
-            printf("%s\n", &local_buf[i]);
+            memcpy(slice, local_buf + i, sizeof(test_pattern));
+            slice[sizeof(test_pattern)] = '\0';
+            printf("%s\n", slice);
             return (void *)-1;
         }
     }
@@ -344,7 +348,7 @@ static void *pt_echoserver(void *arg)
     uint8_t local_buf[BUFFER_SIZE];
     struct sockaddr_in local_sock = {
         .sin_family = AF_INET,
-        .sin_port = ntohs(8), /* Echo */
+        .sin_port = htons(8), /* Echo */
         .sin_addr.s_addr = 0
     };
     wolfIP_closing = (uintptr_t)arg;
