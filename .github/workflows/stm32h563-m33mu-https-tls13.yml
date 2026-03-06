@@ -1,4 +1,4 @@
-name: STM32H563 m33mu (echo only)
+name: STM32H563 m33mu (HTTPS TLS 1.3)
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
     branches: [ '*' ]
 
 jobs:
-  stm32h563_m33mu_echo:
+  stm32h563_m33mu_https_tls13:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     container:
       image: ghcr.io/danielinux/m33mu-ci:1.6
       options: --privileged
@@ -21,15 +21,24 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y sudo dnsmasq iproute2 netcat-openbsd
+          apt-get install -y sudo dnsmasq iproute2 curl git tcpdump
 
-      - name: Build STM32H563 echo firmware
+      - name: Fetch wolfSSL
         run: |
           set -euo pipefail
-          make -C src/port/stm32h563 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+          if [ ! -d ../wolfssl ]; then
+            git clone --depth 1 --branch master https://github.com/wolfSSL/wolfssl.git ../wolfssl
+          fi
 
-      - name: Run m33mu + DHCP + echo test
-        timeout-minutes: 10
+      - name: Build STM32H563 HTTPS (TZEN off)
+        run: |
+          set -euo pipefail
+          make -C src/port/stm32h563 clean TZEN=0 ENABLE_HTTPS=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+          make -C src/port/stm32h563 TZEN=0 ENABLE_HTTPS=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+          strings src/port/stm32h563/app.bin | grep -q "Initializing HTTPS server"
+
+      - name: Run m33mu + DHCP + HTTPS test
+        timeout-minutes: 15
         run: |
           set -euo pipefail
 
@@ -37,6 +46,9 @@ jobs:
             set +e
             if [ -f /tmp/m33mu.pid ]; then
               sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            fi
+            if [ -f /tmp/tcpdump.pid ]; then
+              sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
             fi
             sudo pkill -x m33mu 2>/dev/null || true
             if [ -f /tmp/dnsmasq.pid ]; then
@@ -50,17 +62,20 @@ jobs:
           sudo ip addr add 192.168.12.1/24 dev tap0
           sudo ip link set tap0 up
 
-          cat > /tmp/dnsmasq.conf <<'EOF'
+          cat > /tmp/dnsmasq.conf <<'CONF'
           interface=tap0
           bind-interfaces
           dhcp-range=192.168.12.50,192.168.12.100,255.255.255.0,12h
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
-          EOF
+          CONF
           sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
+          sudo tcpdump -i tap0 -nn -U -w /tmp/https-test.pcap > /tmp/tcpdump.log 2>&1 &
+          echo $! > /tmp/tcpdump.pid
+
           sudo m33mu src/port/stm32h563/app.bin \
-            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 120 \
+            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 180 --quit-on-faults \
             2>&1 | tee /tmp/m33mu.log &
           sleep 1
           m33mu_pid="$(pgrep -n -x m33mu || true)"
@@ -69,7 +84,7 @@ jobs:
           fi
 
           ip=""
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 90); do
             if [ -s /tmp/dnsmasq.leases ]; then
               ip="$(tail -n1 /tmp/dnsmasq.leases | cut -d' ' -f3)"
             fi
@@ -87,25 +102,34 @@ jobs:
           echo "Leased IP: ${ip}"
 
           ok=0
-          for _ in $(seq 1 20); do
+          for _ in $(seq 1 60); do
             if ! pgrep -x m33mu >/dev/null 2>&1; then
-              echo "m33mu exited before echo check."
+              echo "m33mu exited before HTTPS check."
               tail -n 200 /tmp/m33mu.log || true
               exit 1
             fi
-            if printf "ping" | nc -w 2 "${ip}" 7 | grep -q "ping"; then
+            if curl --silent --show-error --fail --insecure --tlsv1.3 \
+                --connect-timeout 10 --max-time 20 \
+                "https://${ip}/" | tee /tmp/curl.log | grep -q "wolfIP"; then
               ok=1
               break
             fi
-            sleep 0.2
+            sleep 0.5
           done
           if [ "${ok}" -ne 1 ]; then
-            echo "Echo test failed."
+            echo "HTTPS test failed."
             echo "m33mu log:"
             tail -n 200 /tmp/m33mu.log || true
+            echo "curl log:"
+            tail -n 200 /tmp/curl.log || true
+            echo "tcpdump log:"
+            tail -n 50 /tmp/tcpdump.log || true
             exit 1
           fi
-          echo "Echo test succeeded."
+          echo "HTTPS test succeeded."
           if [ -f /tmp/m33mu.pid ]; then
             sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+          fi
+          if [ -f /tmp/tcpdump.pid ]; then
+            sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
           fi
