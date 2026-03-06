@@ -1,0 +1,111 @@
+name: STM32H563 m33mu (echo only)
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  stm32h563_m33mu_echo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/danielinux/m33mu-ci:1.5
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y sudo dnsmasq iproute2 netcat-openbsd
+
+      - name: Build STM32H563 echo firmware
+        run: |
+          set -euo pipefail
+          make -C src/port/stm32h563 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+
+      - name: Run m33mu + DHCP + echo test
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            set +e
+            if [ -f /tmp/m33mu.pid ]; then
+              sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            fi
+            sudo pkill -x m33mu 2>/dev/null || true
+            if [ -f /tmp/dnsmasq.pid ]; then
+              sudo kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+            fi
+            sudo ip link del tap0 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          sudo ip tuntap add dev tap0 mode tap
+          sudo ip addr add 192.168.12.1/24 dev tap0
+          sudo ip link set tap0 up
+
+          cat > /tmp/dnsmasq.conf <<'EOF'
+          interface=tap0
+          bind-interfaces
+          dhcp-range=192.168.12.50,192.168.12.100,255.255.255.0,12h
+          dhcp-leasefile=/tmp/dnsmasq.leases
+          log-dhcp
+          EOF
+          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+
+          sudo m33mu src/port/stm32h563/app.bin \
+            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 120 \
+            2>&1 | tee /tmp/m33mu.log &
+          sleep 1
+          m33mu_pid="$(pgrep -n -x m33mu || true)"
+          if [ -n "${m33mu_pid}" ]; then
+            echo "${m33mu_pid}" > /tmp/m33mu.pid
+          fi
+
+          ip=""
+          for _ in $(seq 1 60); do
+            if [ -s /tmp/dnsmasq.leases ]; then
+              ip="$(tail -n1 /tmp/dnsmasq.leases | cut -d' ' -f3)"
+            fi
+            if [ -n "${ip}" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "${ip}" ]; then
+            echo "No DHCP lease acquired."
+            echo "m33mu log:"
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "Leased IP: ${ip}"
+
+          ok=0
+          for _ in $(seq 1 20); do
+            if ! pgrep -x m33mu >/dev/null 2>&1; then
+              echo "m33mu exited before echo check."
+              tail -n 200 /tmp/m33mu.log || true
+              exit 1
+            fi
+            if printf "ping" | nc -w 2 "${ip}" 7 | grep -q "ping"; then
+              ok=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "Echo test failed."
+            echo "m33mu log:"
+            tail -n 200 /tmp/m33mu.log || true
+            exit 1
+          fi
+          echo "Echo test succeeded."
+          if [ -f /tmp/m33mu.pid ]; then
+            sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+          fi
