@@ -8673,8 +8673,9 @@ END_TEST
 START_TEST(test_forward_packet_invalid_if)
 {
     struct wolfIP s;
-    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN];
-    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
+    struct wolfIP_ip_packet *ip = &tcp->ip;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -8682,6 +8683,7 @@ START_TEST(test_forward_packet_invalid_if)
 
     memset(ip, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_TCP;
+    ip->len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
 
     wolfIP_forward_packet(&s, s.if_count + 1, ip, (uint32_t)sizeof(buf), NULL, 1);
     ck_assert_uint_eq(last_frame_sent_size, 0);
@@ -10240,8 +10242,9 @@ END_TEST
 START_TEST(test_forward_packet_no_send)
 {
     struct wolfIP s;
-    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN];
-    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
+    struct wolfIP_ip_packet *ip = &tcp->ip;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -10249,6 +10252,7 @@ START_TEST(test_forward_packet_no_send)
 
     memset(ip, 0, sizeof(buf));
     ip->proto = WI_IPPROTO_TCP;
+    ip->len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
     last_frame_sent_size = 0;
     wolfIP_forward_packet(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(buf), NULL, 1);
     ck_assert_uint_eq(last_frame_sent_size, 0);
