@@ -180,6 +180,7 @@ int tun_init(struct wolfIP_ll_dev *ll, const char *ifname,
 
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+    ifr.ifr_name[IFNAMSIZ - 1] = '\0';
     if (ioctl(sock_fd, SIOCGIFFLAGS, &ifr) < 0) {
         perror("ioctl SIOCGIFFLAGS");
         close(sock_fd);

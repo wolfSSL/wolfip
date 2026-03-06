@@ -10346,6 +10346,79 @@ START_TEST(test_ll_send_frame_non_ethernet_short_len)
 }
 END_TEST
 
+START_TEST(test_ll_helpers_invalid_inputs)
+{
+    struct wolfIP s;
+    uint8_t buf[4] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    last_frame_sent_size = 0;
+
+    ck_assert_int_eq(wolfIP_ll_is_non_ethernet(NULL, 0), 0);
+    ck_assert_int_eq(wolfIP_ll_is_non_ethernet(&s, s.if_count), 0);
+
+    wolfIP_ll_send_frame(NULL, 0, buf, (uint32_t)sizeof(buf));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    wolfIP_ll_send_frame(&s, s.if_count, buf, (uint32_t)sizeof(buf));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+START_TEST(test_non_ethernet_recv_oversize_dropped)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet tmp;
+    uint8_t *ip_hdr;
+    uint8_t buf[LINK_MTU];
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t src_ip = 0x0A0000A1U;
+    uint32_t dst_ip = local_ip;
+    struct {
+        uint16_t src_port;
+        uint16_t dst_port;
+        uint16_t len;
+        uint16_t csum;
+    } PACKED udp_hdr;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ll->non_ethernet = 1;
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = local_ip;
+
+    memset(buf, 0, sizeof(buf));
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.ver_ihl = 0x45;
+    tmp.ttl = 64;
+    tmp.proto = WI_IPPROTO_UDP;
+    tmp.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    tmp.src = ee32(src_ip);
+    tmp.dst = ee32(dst_ip);
+    iphdr_set_checksum(&tmp);
+    ip_hdr = ((uint8_t *)&tmp) + ETH_HEADER_LEN;
+    memcpy(buf, ip_hdr, IP_HEADER_LEN);
+    udp_hdr.src_port = ee16(1111);
+    udp_hdr.dst_port = ee16(1234);
+    udp_hdr.len = ee16(UDP_HEADER_LEN);
+    udp_hdr.csum = 0;
+    memcpy(buf + IP_HEADER_LEN, &udp_hdr, sizeof(udp_hdr));
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, buf, (uint32_t)(LINK_MTU - ETH_HEADER_LEN + 1));
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+}
+END_TEST
+
 START_TEST(test_forward_packet_filter_drop_udp_icmp)
 {
     struct wolfIP s;
@@ -18589,6 +18662,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_forward_packet_filter_drop_udp_icmp);
     tcase_add_test(tc_utils, test_ll_send_frame_non_ethernet_strips);
     tcase_add_test(tc_utils, test_ll_send_frame_non_ethernet_short_len);
+    tcase_add_test(tc_utils, test_ll_helpers_invalid_inputs);
+    tcase_add_test(tc_utils, test_non_ethernet_recv_oversize_dropped);
 #endif
     tcase_add_test(tc_utils, test_dns_format_ptr_name);
     tcase_add_test(tc_utils, test_dns_skip_and_copy_name);

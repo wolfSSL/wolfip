@@ -5650,7 +5650,7 @@ void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len)
     if (wolfIP_ll_is_non_ethernet(s, WOLFIP_PRIMARY_IF_IDX)) {
         uint8_t frame[LINK_MTU];
         if (len > LINK_MTU - ETH_HEADER_LEN)
-            len = LINK_MTU - ETH_HEADER_LEN;
+            return;
 #if ETH_HEADER_LEN > 0
         memset(frame, 0, ETH_HEADER_LEN);
 #endif
@@ -5666,7 +5666,7 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
     if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
         uint8_t frame[LINK_MTU];
         if (len > LINK_MTU - ETH_HEADER_LEN)
-            len = LINK_MTU - ETH_HEADER_LEN;
+            return;
 #if ETH_HEADER_LEN > 0
         memset(frame, 0, ETH_HEADER_LEN);
 #endif
