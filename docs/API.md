@@ -26,11 +26,14 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
 struct wolfIP_ll_dev {
     uint8_t mac[6];          // Device MAC address
     char ifname[16];         // Interface name
+    uint8_t non_ethernet;    // L3-only link (no Ethernet header/ARP when set)
     int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Receive function
     int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Transmit function
 };
 ```
 wolfIP maintains an array of these descriptors sized by `WOLFIP_MAX_INTERFACES` (default `1`). Call `wolfIP_getdev_ex()` to access a specific slot; the legacy `wolfIP_getdev()` helper targets the first hardware slot (index `0` normally, or `1` when the optional loopback interface is enabled).
+
+When `non_ethernet` is set, the interface is treated as L3-only point-to-point: the stack skips ARP/neighbor resolution, omits Ethernet headers on transmit, and expects receive buffers to begin at the IP header.
 
 ### IP Configuration
 ```c

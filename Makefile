@@ -156,6 +156,9 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
 	build/ipfilter-logger build/test-esp build/esp-server
+ifeq ($(UNAME_S),Linux)
+  EXE+= build/test-evloop-tun
+endif
 LIB=libwolfip.so
 
 PREFIX=/usr/local
@@ -214,6 +217,10 @@ endif
 
 unit:LDFLAGS+=$(UNIT_LIBS)
 build/test-evloop: $(OBJ) build/test/test_eventloop.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+build/test-evloop-tun: $(OBJ) build/test/test_eventloop_tun.o build/port/posix/linux_tun.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 

@@ -93,6 +93,15 @@ add_executable(test-evloop ${EXCLUDE_TEST_BINARY}
     )
 add_test(NAME evloop COMMAND test-evloop)
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test-evloop-tun ${EXCLUDE_TEST_BINARY}
+        src/test/test_eventloop_tun.c
+        src/port/posix/linux_tun.c
+        ${WOLFIP_SRCS}
+        )
+    add_test(NAME evloop-tun COMMAND test-evloop-tun)
+endif()
+
 add_executable(test-dns ${EXCLUDE_TEST_BINARY}
     src/test/test_dhcp_dns.c
     ${WOLFIP_SRCS}
