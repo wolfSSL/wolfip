@@ -1072,6 +1072,54 @@ struct tsocket {
     void *callback_arg;
 };
 static void close_socket(struct tsocket *ts);
+
+#if WOLFIP_RAWSOCKETS
+struct rawsocket {
+    struct fifo rxbuf;
+    struct fifo txbuf;
+    ip4 local_ip, remote_ip;
+    ip4 bound_local_ip;
+    struct wolfIP *S;
+#ifdef ETHERNET
+    uint8_t nexthop_mac[6];
+#endif
+    uint16_t protocol;
+    uint8_t if_idx;
+    uint8_t dontroute;
+    uint8_t ipheader_include;
+    uint8_t recv_ttl;
+    uint8_t last_pkt_ttl;
+    uint8_t rxmem[RXBUF_SIZE];
+    uint8_t txmem[TXBUF_SIZE];
+    uint8_t used;
+    uint16_t events;
+    tsocket_cb callback;
+    void *callback_arg;
+};
+
+#if WOLFIP_PACKET_SOCKETS
+struct sock_ll {
+    uint8_t src_mac[6];
+    uint8_t dst_mac[6];
+};
+
+struct packetsocket {
+    struct fifo rxbuf;
+    struct fifo txbuf;
+    uint8_t rxmem[RXBUF_SIZE];
+    uint8_t txmem[TXBUF_SIZE];
+    struct sock_ll macs;
+    struct wolfIP_sockaddr_ll bind_addr;
+    uint16_t protocol;
+    uint8_t if_idx;
+    uint8_t used;
+    uint16_t events;
+    struct wolfIP *S;
+    tsocket_cb callback;
+    void *callback_arg;
+};
+#endif
+#endif
 static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n);
 static inline int tcp_seq_leq(uint32_t a, uint32_t b);
 static inline int tcp_seq_lt(uint32_t a, uint32_t b);
@@ -1180,6 +1228,12 @@ struct wolfIP {
     struct tsocket tcpsockets[MAX_TCPSOCKETS];
     struct tsocket udpsockets[MAX_UDPSOCKETS];
     struct tsocket icmpsockets[MAX_ICMPSOCKETS];
+#if WOLFIP_RAWSOCKETS
+    struct rawsocket rawsockets[WOLFIP_MAX_RAWSOCKETS];
+#if WOLFIP_PACKET_SOCKETS
+    struct packetsocket packetsockets[WOLFIP_MAX_PACKETSOCKETS];
+#endif
+#endif
     uint16_t ipcounter;
     uint64_t last_tick;
 #ifdef ETHERNET
@@ -1368,6 +1422,33 @@ static inline unsigned int wolfIP_socket_if_idx(const struct tsocket *t)
     return t->if_idx;
 }
 
+#if WOLFIP_RAWSOCKETS
+static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *found);
+static unsigned int raw_route_for_ip(struct wolfIP *s, struct rawsocket *rs, ip4 dest, int dontroute)
+{
+    unsigned int if_idx = 0;
+    int match = 0;
+    if (!s)
+        return 0;
+    if (rs && rs->bound_local_ip != IPADDR_ANY) {
+        if_idx = wolfIP_if_for_local_ip(s, rs->bound_local_ip, &match);
+        if (match)
+            return if_idx;
+    }
+    if (dontroute) {
+        unsigned int i;
+        for (i = 0; i < s->if_count; i++) {
+            struct ipconf *conf = wolfIP_ipconf_at(s, i);
+            if (!conf || conf->ip == IPADDR_ANY)
+                continue;
+            if (ip_is_local_conf(conf, dest))
+                return i;
+        }
+    }
+    return wolfIP_route_for_ip(s, dest);
+}
+#endif
+
 #if CONFIG_IPFILTER
 static int wolfIP_filter_notify_socket_event(
         enum wolfIP_filter_reason reason,
@@ -1515,6 +1596,22 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
         t->callback = cb;
         t->callback_arg = arg;
     }
+#if WOLFIP_RAWSOCKETS
+    else if (IS_SOCKET_RAW(sock_fd)) {
+        if (SOCKET_UNMARK(sock_fd) >= WOLFIP_MAX_RAWSOCKETS)
+            return;
+        s->rawsockets[SOCKET_UNMARK(sock_fd)].callback = cb;
+        s->rawsockets[SOCKET_UNMARK(sock_fd)].callback_arg = arg;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    else if (IS_SOCKET_PACKET(sock_fd)) {
+        if (SOCKET_UNMARK(sock_fd) >= WOLFIP_MAX_PACKETSOCKETS)
+            return;
+        s->packetsockets[SOCKET_UNMARK(sock_fd)].callback = cb;
+        s->packetsockets[SOCKET_UNMARK(sock_fd)].callback_arg = arg;
+    }
+#endif
 }
 
 /* Timers */
@@ -1694,6 +1791,55 @@ static struct tsocket *icmp_new_socket(struct wolfIP *s)
     return NULL;
 }
 
+#if WOLFIP_RAWSOCKETS
+static struct rawsocket *raw_new_socket(struct wolfIP *s, int protocol, int ipheader_include)
+{
+    int i;
+
+    for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
+        struct rawsocket *r = &s->rawsockets[i];
+        if (!r->used) {
+            memset(r, 0, sizeof(struct rawsocket));
+            r->used = 1;
+            r->S = s;
+            r->protocol = (uint16_t)protocol;
+            r->ipheader_include = ipheader_include ? 1 : 0;
+            fifo_init(&r->rxbuf, r->rxmem, RXBUF_SIZE);
+            fifo_init(&r->txbuf, r->txmem, TXBUF_SIZE);
+            r->events |= CB_EVENT_WRITABLE;
+            return r;
+        }
+    }
+    return NULL;
+}
+#endif
+
+#if WOLFIP_PACKET_SOCKETS
+static struct packetsocket *packet_new_socket(struct wolfIP *s, int protocol)
+{
+    int i;
+
+    for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
+        struct packetsocket *p = &s->packetsockets[i];
+        if (!p->used) {
+            memset(p, 0, sizeof(struct packetsocket));
+            p->used = 1;
+            p->protocol = (uint16_t)protocol;
+            p->if_idx = 0;
+            p->bind_addr.sll_family = AF_PACKET;
+            p->bind_addr.sll_protocol = (uint16_t)protocol;
+            p->bind_addr.sll_halen = 6;
+            fifo_init(&p->rxbuf, p->rxmem, RXBUF_SIZE);
+            fifo_init(&p->txbuf, p->txmem, TXBUF_SIZE);
+            p->events |= CB_EVENT_WRITABLE;
+            p->S = s;
+            return p;
+        }
+    }
+    return NULL;
+}
+#endif
+
 static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
                           struct wolfIP_icmp_packet *icmp, uint32_t frame_len)
 {
@@ -1720,6 +1866,74 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
         t->events |= CB_EVENT_READABLE;
     }
 }
+
+#if WOLFIP_RAWSOCKETS
+static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_packet *ip, uint32_t frame_len)
+{
+    uint32_t payload_len = frame_len;
+    const uint8_t *packet = (const uint8_t *)ip;
+    uint32_t ip_len;
+#ifdef ETHERNET
+    if (frame_len <= ETH_HEADER_LEN)
+        return;
+    payload_len -= ETH_HEADER_LEN;
+    packet += ETH_HEADER_LEN;
+#endif
+    if (payload_len < IP_HEADER_LEN)
+        return;
+    ip_len = (uint32_t)ee16(ip->len);
+    if (ip_len < IP_HEADER_LEN)
+        return;
+    if (ip_len > payload_len)
+        return;
+    payload_len = ip_len;
+    (void)if_idx;
+    for (int i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
+        struct rawsocket *r = &s->rawsockets[i];
+        if (!r->used)
+            continue;
+        if (r->protocol != 0 && r->protocol != ip->proto)
+            continue;
+        if (fifo_space(&r->rxbuf) < payload_len + sizeof(struct pkt_desc))
+            continue;
+        fifo_push(&r->rxbuf, (void *)packet, payload_len);
+        r->last_pkt_ttl = ip->ttl;
+        r->events |= CB_EVENT_READABLE;
+    }
+}
+#endif
+
+#if WOLFIP_PACKET_SOCKETS
+static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_eth_frame *eth, uint32_t frame_len)
+{
+    uint16_t proto = eth->type;
+    uint32_t record_len;
+    uint8_t record[1 + LINK_MTU];
+    int i;
+
+    if (frame_len > LINK_MTU || frame_len == 0)
+        return;
+    record_len = frame_len + 1;
+    record[0] = (uint8_t)if_idx;
+    memcpy(record + 1, eth, frame_len);
+
+    for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
+        struct packetsocket *p = &s->packetsockets[i];
+        if (!p->used)
+            continue;
+        if (p->protocol && p->protocol != proto)
+            continue;
+        if ((p->bind_addr.sll_ifindex >= 0) &&
+                (unsigned int)p->bind_addr.sll_ifindex != if_idx &&
+                p->bind_addr.sll_ifindex != 0)
+            continue;
+        if (fifo_space(&p->rxbuf) < record_len + sizeof(struct pkt_desc))
+            continue;
+        fifo_push(&p->rxbuf, record, record_len);
+        p->events |= CB_EVENT_READABLE;
+    }
+}
+#endif
 
 /* TCP */
 static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd)
@@ -3648,6 +3862,24 @@ static void close_socket(struct tsocket *ts)
     memset(ts, 0, sizeof(struct tsocket));
 }
 
+#if WOLFIP_RAWSOCKETS
+static void close_rawsocket(struct rawsocket *rs)
+{
+    if (!rs)
+        return;
+    memset(rs, 0, sizeof(struct rawsocket));
+}
+#endif
+
+#if WOLFIP_PACKET_SOCKETS
+static void close_packetsocket(struct packetsocket *ps)
+{
+    if (!ps)
+        return;
+    memset(ps, 0, sizeof(struct packetsocket));
+}
+#endif
+
 static struct tsocket *wolfIP_socket_from_fd(struct wolfIP *s, int sockfd)
 {
     if (!s || sockfd < 0)
@@ -3668,12 +3900,41 @@ static struct tsocket *wolfIP_socket_from_fd(struct wolfIP *s, int sockfd)
     return NULL;
 }
 
+#if WOLFIP_RAWSOCKETS
+static struct rawsocket *wolfIP_rawsocket_from_fd(struct wolfIP *s, int sockfd)
+{
+    if (!s || sockfd < 0 || !IS_SOCKET_RAW(sockfd))
+        return NULL;
+    if (SOCKET_UNMARK(sockfd) >= WOLFIP_MAX_RAWSOCKETS)
+        return NULL;
+    if (!s->rawsockets[SOCKET_UNMARK(sockfd)].used)
+        return NULL;
+    return &s->rawsockets[SOCKET_UNMARK(sockfd)];
+}
+#endif
+
+#if WOLFIP_PACKET_SOCKETS
+static struct packetsocket *wolfIP_packetsocket_from_fd(struct wolfIP *s, int sockfd)
+{
+    if (!s || sockfd < 0 || !IS_SOCKET_PACKET(sockfd))
+        return NULL;
+    if (SOCKET_UNMARK(sockfd) >= WOLFIP_MAX_PACKETSOCKETS)
+        return NULL;
+    if (!s->packetsockets[SOCKET_UNMARK(sockfd)].used)
+        return NULL;
+    return &s->packetsockets[SOCKET_UNMARK(sockfd)];
+}
+#endif
+
 
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 {
     struct tsocket *ts;
+#if WOLFIP_RAWSOCKETS || WOLFIP_PACKET_SOCKETS
+    int base_type = type;
+#endif
     if (domain != AF_INET)
-        return -1;
+        goto packet_try;
     if (type == IPSTACK_SOCK_STREAM) {
         ts = tcp_new_socket(s);
         if (!ts)
@@ -3694,6 +3955,32 @@ int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
             return -1;
         }
     }
+#if WOLFIP_RAWSOCKETS
+    else if (base_type == IPSTACK_SOCK_RAW) {
+        struct rawsocket *rs;
+        int hdrincl = 0;
+#ifdef IPPROTO_RAW
+        if (protocol == IPPROTO_RAW)
+            hdrincl = 1;
+#endif
+        rs = raw_new_socket(s, protocol, hdrincl);
+        if (!rs)
+            return -1;
+        return (int)((rs - s->rawsockets) | MARK_RAW_SOCKET);
+    }
+#endif
+    return -1;
+
+packet_try:
+#if WOLFIP_PACKET_SOCKETS
+    if (domain == AF_PACKET && base_type == IPSTACK_SOCK_RAW) {
+        struct packetsocket *ps;
+        ps = packet_new_socket(s, protocol);
+        if (!ps)
+            return -1;
+        return (int)((ps - s->packetsockets) | MARK_PACKET_SOCKET);
+    }
+#endif
     return -1;
 }
 
@@ -3758,6 +4045,33 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         }
         return 0;
     }
+#if WOLFIP_RAWSOCKETS
+    else if (IS_SOCKET_RAW(sockfd)) {
+        unsigned int if_idx;
+        struct ipconf *conf;
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
+            return -WOLFIP_EINVAL;
+        rs->remote_ip = ee32(sin->sin_addr.s_addr);
+        if_idx = raw_route_for_ip(s, rs, rs->remote_ip, rs->dontroute);
+        rs->if_idx = (uint8_t)if_idx;
+        if (!rs->ipheader_include) {
+            conf = wolfIP_ipconf_at(s, if_idx);
+            if (rs->bound_local_ip != IPADDR_ANY)
+                rs->local_ip = rs->bound_local_ip;
+            else if (conf && conf->ip != IPADDR_ANY)
+                rs->local_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    rs->local_ip = primary->ip;
+            }
+        }
+        return 0;
+    }
+#endif
 
     if (!IS_SOCKET_TCP(sockfd))
         return -WOLFIP_EINVAL;
@@ -3915,9 +4229,15 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
     struct wolfIP_tcp_seg *tcp;
     struct wolfIP_udp_datagram *udp;
     struct wolfIP_icmp_packet *icmp;
+#if WOLFIP_RAWSOCKETS
+    struct wolfIP_ip_packet *rip;
+#endif
     tcp = (struct wolfIP_tcp_seg *)frame;
     udp = (struct wolfIP_udp_datagram *)frame;
     icmp = (struct wolfIP_icmp_packet *)frame;
+#if WOLFIP_RAWSOCKETS
+    rip = (struct wolfIP_ip_packet *)frame;
+#endif
     (void)flags;
 
     if (sockfd < 0)
@@ -4094,7 +4414,146 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (fifo_push(&ts->sock.udp.txbuf, icmp, sizeof(struct wolfIP_ip_packet) + payload_len) < 0)
             return -WOLFIP_EAGAIN;
         return (int)payload_len;
-    } else return -1;
+    }
+#if WOLFIP_RAWSOCKETS
+    else if (IS_SOCKET_RAW(sockfd)) {
+        const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)dest_addr;
+        struct rawsocket *rs;
+        unsigned int if_idx;
+        struct ipconf *conf;
+        ip4 dst_ip = 0;
+        int use_dontroute = 0;
+        uint32_t total_len;
+
+        rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if (len == 0 || len > (LINK_MTU - ETH_HEADER_LEN))
+            return -WOLFIP_EINVAL;
+        if (sin) {
+            if (addrlen < sizeof(struct wolfIP_sockaddr_in))
+                return -WOLFIP_EINVAL;
+            dst_ip = ee32(sin->sin_addr.s_addr);
+            rs->remote_ip = dst_ip;
+        } else {
+            dst_ip = rs->remote_ip;
+        }
+        use_dontroute = rs->dontroute;
+#ifdef MSG_DONTROUTE
+        if (flags & MSG_DONTROUTE)
+            use_dontroute = 1;
+#else
+        (void)flags;
+#endif
+
+        if (rs->ipheader_include) {
+            if (len < IP_HEADER_LEN)
+                return -WOLFIP_EINVAL;
+#ifdef ETHERNET
+            memset(rip, 0, ETH_HEADER_LEN);
+#endif
+            memcpy(((uint8_t *)rip) + ETH_HEADER_LEN, buf, len);
+            rip->ttl = ((const uint8_t *)buf)[8];
+            total_len = (uint32_t)len + ETH_HEADER_LEN;
+            if (dst_ip == 0)
+                dst_ip = ee32(rip->dst);
+            else
+                rip->dst = ee32(dst_ip);
+            if (rs->remote_ip == 0 && dst_ip != 0)
+                rs->remote_ip = dst_ip;
+            rs->local_ip = ee32(rip->src);
+        } else {
+            ip4 src_ip = rs->local_ip;
+            total_len = (uint32_t)len + IP_HEADER_LEN + ETH_HEADER_LEN;
+            if (dst_ip == 0)
+                return -WOLFIP_EINVAL;
+            if_idx = raw_route_for_ip(s, rs, dst_ip, use_dontroute);
+            conf = wolfIP_ipconf_at(s, if_idx);
+            rs->if_idx = (uint8_t)if_idx;
+            if (rs->bound_local_ip != IPADDR_ANY)
+                src_ip = rs->bound_local_ip;
+            else if (conf && conf->ip != IPADDR_ANY)
+                src_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    src_ip = primary->ip;
+            }
+            rs->local_ip = src_ip;
+            memset(rip, 0, sizeof(struct wolfIP_ip_packet));
+            rip->ver_ihl = 0x45;
+            rip->tos = 0;
+            rip->len = ee16((uint16_t)(len + IP_HEADER_LEN));
+            rip->id = ee16(ipcounter_next(s));
+            rip->flags_fo = 0;
+            rip->ttl = 64;
+            rip->proto = (uint8_t)rs->protocol;
+            rip->src = ee32(src_ip);
+            rip->dst = ee32(dst_ip);
+            rip->csum = 0;
+            iphdr_set_checksum(rip);
+            memcpy(rip->data, buf, len);
+        }
+        if (dst_ip == 0)
+            return -WOLFIP_EINVAL;
+        if_idx = raw_route_for_ip(s, rs, dst_ip, use_dontroute);
+        rs->if_idx = (uint8_t)if_idx;
+        if (total_len > LINK_MTU)
+            return -WOLFIP_EINVAL;
+        if (fifo_space(&rs->txbuf) < total_len)
+            return -WOLFIP_EAGAIN;
+        if (fifo_push(&rs->txbuf, rip, total_len) < 0)
+            return -WOLFIP_EAGAIN;
+        return (int)len;
+    }
+#endif
+
+#if WOLFIP_PACKET_SOCKETS
+    else if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        const struct wolfIP_sockaddr_ll *sll = (const struct wolfIP_sockaddr_ll *)dest_addr;
+        struct wolfIP_eth_frame *ethf;
+        uint8_t pkt_frame[LINK_MTU];
+        unsigned int tx_if = 0;
+        uint16_t proto = 0;
+
+        if (!ps)
+            return -WOLFIP_EINVAL;
+        if (len < ETH_HEADER_LEN || len > LINK_MTU)
+            return -WOLFIP_EINVAL;
+        if (dest_addr && addrlen < sizeof(struct wolfIP_sockaddr_ll))
+            return -WOLFIP_EINVAL;
+        memcpy(pkt_frame, buf, len);
+        ethf = (struct wolfIP_eth_frame *)pkt_frame;
+        tx_if = ps->if_idx;
+        proto = ps->protocol;
+        if (sll) {
+            if (sll->sll_ifindex >= 0 && (unsigned int)sll->sll_ifindex < s->if_count)
+                tx_if = (unsigned int)sll->sll_ifindex;
+            if (sll->sll_halen >= 6)
+                memcpy(ethf->dst, sll->sll_addr, 6);
+            if (sll->sll_protocol)
+                proto = sll->sll_protocol;
+        }
+        if (tx_if >= s->if_count)
+            tx_if = 0;
+        {
+            struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
+            if (ll)
+                memcpy(ethf->src, ll->mac, 6);
+        }
+        if (proto)
+            ethf->type = proto;
+        ps->if_idx = (uint8_t)tx_if;
+        if (fifo_space(&ps->txbuf) < len)
+            return -WOLFIP_EAGAIN;
+        if (fifo_push(&ps->txbuf, pkt_frame, (uint32_t)len) < 0)
+            return -WOLFIP_EAGAIN;
+        return (int)len;
+    }
+#endif
+
+    return -1;
 }
 
 int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags)
@@ -4219,8 +4678,86 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (fifo_peek(&ts->sock.udp.rxbuf) == NULL)
             ts->events &= ~CB_EVENT_READABLE;
         return (int)seg_len;
-    } else
-        return -WOLFIP_EINVAL;
+    }
+#if WOLFIP_RAWSOCKETS
+    else if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs;
+        struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)src_addr;
+        const uint8_t *pkt;
+        ip4 src_ip;
+        rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if (sin && addrlen && *addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -WOLFIP_EINVAL;
+        desc = fifo_peek(&rs->rxbuf);
+        if (!desc)
+            return -WOLFIP_EAGAIN;
+        if (desc->len < IP_HEADER_LEN) {
+            fifo_pop(&rs->rxbuf);
+            return -WOLFIP_EINVAL;
+        }
+        if (desc->len > len)
+            return -1;
+        pkt = rs->rxmem + desc->pos + sizeof(*desc);
+        memcpy(&src_ip, pkt + 12, sizeof(src_ip));
+        if (sin) {
+            sin->sin_family = AF_INET;
+            sin->sin_port = 0;
+            sin->sin_addr.s_addr = src_ip;
+            if (addrlen)
+                *addrlen = sizeof(struct wolfIP_sockaddr_in);
+        }
+        memcpy(buf, pkt, desc->len);
+        fifo_pop(&rs->rxbuf);
+        if (fifo_peek(&rs->rxbuf) == NULL)
+            rs->events &= ~CB_EVENT_READABLE;
+        return (int)desc->len;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    else if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        struct wolfIP_sockaddr_ll *sll = (struct wolfIP_sockaddr_ll *)src_addr;
+        struct wolfIP_eth_frame *ethf;
+        uint8_t if_idx_byte;
+        uint32_t frame_len;
+        uint8_t *pkt;
+        if (!ps)
+            return -WOLFIP_EINVAL;
+        if (sll && addrlen && *addrlen < sizeof(struct wolfIP_sockaddr_ll))
+            return -WOLFIP_EINVAL;
+        desc = fifo_peek(&ps->rxbuf);
+        if (!desc)
+            return -WOLFIP_EAGAIN;
+        if (desc->len == 0)
+            return -WOLFIP_EAGAIN;
+        if (desc->len - 1 > len)
+            return -1;
+        pkt = ps->rxmem + desc->pos + sizeof(*desc);
+        if_idx_byte = pkt[0];
+        ethf = (struct wolfIP_eth_frame *)(pkt + 1);
+        frame_len = desc->len - 1;
+        if (sll) {
+            memset(sll, 0, sizeof(*sll));
+            sll->sll_family = AF_PACKET;
+            sll->sll_protocol = ethf->type;
+            sll->sll_ifindex = if_idx_byte;
+            sll->sll_hatype = 1;
+            sll->sll_pkttype = 0;
+            sll->sll_halen = 6;
+            memcpy(sll->sll_addr, ethf->src, 6);
+            if (addrlen)
+                *addrlen = sizeof(struct wolfIP_sockaddr_ll);
+        }
+        memcpy(buf, ethf, frame_len);
+        fifo_pop(&ps->rxbuf);
+        if (fifo_peek(&ps->rxbuf) == NULL)
+            ps->events &= ~CB_EVENT_READABLE;
+        return (int)frame_len;
+    }
+#endif
+    return -WOLFIP_EINVAL;
 }
 
 int wolfIP_sock_recv(struct wolfIP *s, int sockfd, void *buf, size_t len, int flags)
@@ -4236,7 +4773,40 @@ int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len)
 int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
                            const void *optval, socklen_t optlen)
 {
-    struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
+    struct tsocket *ts;
+#if WOLFIP_RAWSOCKETS
+    if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        int enable;
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if (!optval || optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+        memcpy(&enable, optval, sizeof(int));
+        if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_RECVTTL) {
+            rs->recv_ttl = enable ? 1 : 0;
+            return 0;
+        } else if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_HDRINCL) {
+            rs->ipheader_include = enable ? 1 : 0;
+            return 0;
+        } else if (level == WOLFIP_SOL_SOCKET && optname == WOLFIP_SO_DONTROUTE) {
+            rs->dontroute = enable ? 1 : 0;
+            return 0;
+        }
+        return -WOLFIP_EINVAL;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    if (IS_SOCKET_PACKET(sockfd)) {
+        (void)s;
+        (void)level;
+        (void)optname;
+        (void)optval;
+        (void)optlen;
+        return 0;
+    }
+#endif
+    ts = wolfIP_socket_from_fd(s, sockfd);
     if (!ts)
         return -WOLFIP_EINVAL;
     if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_RECVTTL) {
@@ -4252,7 +4822,20 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
 
 int wolfIP_sock_get_recv_ttl(struct wolfIP *s, int sockfd, int *ttl)
 {
-    struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
+    struct tsocket *ts;
+#if WOLFIP_RAWSOCKETS
+    if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if (!rs->recv_ttl)
+            return 0;
+        if (ttl)
+            *ttl = rs->last_pkt_ttl;
+        return 1;
+    }
+#endif
+    ts = wolfIP_socket_from_fd(s, sockfd);
     if (!ts)
         return -WOLFIP_EINVAL;
     if (!ts->recv_ttl)
@@ -4265,19 +4848,57 @@ int wolfIP_sock_get_recv_ttl(struct wolfIP *s, int sockfd, int *ttl)
 int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
                            void *optval, socklen_t *optlen)
 {
-    struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
-    if (!ts)
+    struct tsocket *ts = NULL;
+#if WOLFIP_RAWSOCKETS
+    struct rawsocket *rs = NULL;
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    struct packetsocket *ps = NULL;
+#endif
+
+    if (sockfd < 0)
         return -WOLFIP_EINVAL;
+#if WOLFIP_RAWSOCKETS
+    if (IS_SOCKET_RAW(sockfd)) {
+        rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+    } else
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    if (IS_SOCKET_PACKET(sockfd)) {
+        ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        if (!ps)
+            return -WOLFIP_EINVAL;
+    } else
+#endif
+    {
+        ts = wolfIP_socket_from_fd(s, sockfd);
+        if (!ts)
+            return -WOLFIP_EINVAL;
+    }
+
     if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_RECVTTL) {
         int value;
         if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
             return -WOLFIP_EINVAL;
-        value = ts->recv_ttl ? ts->last_pkt_ttl : 0;
-        memcpy(optval, &value, sizeof(int));
-        *optlen = sizeof(int);
-        return 0;
+#if WOLFIP_RAWSOCKETS
+        if (rs) {
+            value = rs->recv_ttl ? rs->last_pkt_ttl : 0;
+            memcpy(optval, &value, sizeof(int));
+            *optlen = sizeof(int);
+            return 0;
+        }
+#endif
+        if (ts) {
+            value = ts->recv_ttl ? ts->last_pkt_ttl : 0;
+            memcpy(optval, &value, sizeof(int));
+            *optlen = sizeof(int);
+            return 0;
+        }
+        return -WOLFIP_EINVAL;
     }
-    return 0;
+    return -WOLFIP_EINVAL;
 }
 int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 {
@@ -4344,7 +4965,26 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             ts->local_ip, ts->src_port, ts->remote_ip, 0);
         close_socket(ts);
         return 0;
-    } else return -1;
+    }
+#if WOLFIP_RAWSOCKETS
+    else if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        close_rawsocket(rs);
+        return 0;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    else if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        if (!ps)
+            return -WOLFIP_EINVAL;
+        close_packetsocket(ps);
+        return 0;
+    }
+#endif
+    else return -1;
     return 0;
 }
 
@@ -4386,6 +5026,27 @@ int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
         sin->sin_addr.s_addr = ee32(ts->local_ip);
         return 0;
     }
+#if WOLFIP_RAWSOCKETS
+    else if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        sin->sin_family = AF_INET;
+        sin->sin_port = 0;
+        sin->sin_addr.s_addr = ee32(rs->local_ip);
+        return 0;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    else if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        struct wolfIP_sockaddr_ll *sll = (struct wolfIP_sockaddr_ll *)addr;
+        if (!ps || !sll || (addrlen && *addrlen < sizeof(struct wolfIP_sockaddr_ll)))
+            return -WOLFIP_EINVAL;
+        memcpy(sll, &ps->bind_addr, sizeof(*sll));
+        return 0;
+    }
+#endif
     return -1;
 }
 
@@ -4393,17 +5054,36 @@ int wolfIP_sock_can_read(struct wolfIP *s, int sockfd)
 {
     struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
 
-    if (!ts)
-        return -WOLFIP_EINVAL;
     if (IS_SOCKET_TCP(sockfd)) {
+        if (!ts)
+            return -WOLFIP_EINVAL;
         if (queue_len(&ts->sock.tcp.rxbuf) > 0)
             return 1;
         if (ts->sock.tcp.state == TCP_CLOSE_WAIT || ts->sock.tcp.state == TCP_CLOSED)
             return 1;
         return 0;
     }
-    if (IS_SOCKET_UDP(sockfd) || IS_SOCKET_ICMP(sockfd))
+    if (IS_SOCKET_UDP(sockfd) || IS_SOCKET_ICMP(sockfd)) {
+        if (!ts)
+            return -WOLFIP_EINVAL;
         return fifo_len(&ts->sock.udp.rxbuf) > 0 ? 1 : 0;
+    }
+#if WOLFIP_RAWSOCKETS
+    if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        return fifo_len(&rs->rxbuf) > 0 ? 1 : 0;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        if (!ps)
+            return -WOLFIP_EINVAL;
+        return fifo_len(&ps->rxbuf) > 0 ? 1 : 0;
+    }
+#endif
     return -WOLFIP_EINVAL;
 }
 
@@ -4411,17 +5091,36 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd)
 {
     struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
 
-    if (!ts)
-        return -WOLFIP_EINVAL;
     if (IS_SOCKET_TCP(sockfd)) {
+        if (!ts)
+            return -WOLFIP_EINVAL;
         if (ts->sock.tcp.state == TCP_SYN_SENT)
             return 0;
         if (ts->sock.tcp.state != TCP_ESTABLISHED)
             return 1;
         return tx_has_writable_space(ts) ? 1 : 0;
     }
-    if (IS_SOCKET_UDP(sockfd) || IS_SOCKET_ICMP(sockfd))
+    if (IS_SOCKET_UDP(sockfd) || IS_SOCKET_ICMP(sockfd)) {
+        if (!ts)
+            return -WOLFIP_EINVAL;
         return tx_has_writable_space(ts) ? 1 : 0;
+    }
+#if WOLFIP_RAWSOCKETS
+    if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        return fifo_space(&rs->txbuf) > 0 ? 1 : 0;
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        if (!ps)
+            return -WOLFIP_EINVAL;
+        return fifo_space(&ps->txbuf) > 0 ? 1 : 0;
+    }
+#endif
     return -WOLFIP_EINVAL;
 }
 
@@ -4434,11 +5133,42 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
     const struct wolfIP_sockaddr_in *sin = (const struct wolfIP_sockaddr_in *)addr;
     int match = 0;
     unsigned int if_idx;
+#if WOLFIP_PACKET_SOCKETS
+    uint16_t sa_family;
 
+    if (!addr || addrlen < sizeof(uint16_t))
+        return -WOLFIP_EINVAL;
+    sa_family = addr->sa_family;
+#else
     if (!sin || addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -WOLFIP_EINVAL;
+#endif
 
     if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+
+#if WOLFIP_PACKET_SOCKETS
+    if (IS_SOCKET_PACKET(sockfd)) {
+        struct packetsocket *ps = wolfIP_packetsocket_from_fd(s, sockfd);
+        const struct wolfIP_sockaddr_ll *sll = (const struct wolfIP_sockaddr_ll *)addr;
+        struct wolfIP_ll_dev *ll;
+        if (!ps || sa_family != AF_PACKET || addrlen < sizeof(struct wolfIP_sockaddr_ll))
+            return -WOLFIP_EINVAL;
+        if (sll->sll_ifindex < 0 || (unsigned int)sll->sll_ifindex >= s->if_count)
+            return -WOLFIP_EINVAL;
+        ps->if_idx = (uint8_t)sll->sll_ifindex;
+        ps->protocol = sll->sll_protocol;
+        memcpy(&ps->bind_addr, sll, sizeof(ps->bind_addr));
+        ll = wolfIP_ll_at(s, ps->if_idx);
+        if (ll)
+            memcpy(ps->macs.src_mac, ll->mac, 6);
+        if (ps->bind_addr.sll_halen == 0)
+            ps->bind_addr.sll_halen = 6;
+        return 0;
+    }
+#endif
+
+    if (!sin || addrlen < sizeof(struct wolfIP_sockaddr_in))
         return -WOLFIP_EINVAL;
 
     bind_ip = ee32(sin->sin_addr.s_addr);
@@ -4549,6 +5279,26 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             }
         }
         return 0;
+#if WOLFIP_RAWSOCKETS
+    } else if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if (sin->sin_family != AF_INET)
+            return -WOLFIP_EINVAL;
+        rs->if_idx = (uint8_t)if_idx;
+        rs->bound_local_ip = bind_ip;
+        if (bind_ip != IPADDR_ANY)
+            rs->local_ip = bind_ip;
+        else if (conf && conf->ip != IPADDR_ANY)
+            rs->local_ip = conf->ip;
+        else {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            if (primary && primary->ip != IPADDR_ANY)
+                rs->local_ip = primary->ip;
+        }
+        return 0;
+#endif
     } else return -1;
 
 }
@@ -4585,19 +5335,33 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
-    if (!IS_SOCKET_TCP(sockfd)) {
-        return -1;
+    if (IS_SOCKET_TCP(sockfd)) {
+        if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
+            return -WOLFIP_EINVAL;
+        ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -1;
+        sin->sin_family = AF_INET;
+        sin->sin_port = ee16(ts->dst_port);
+        sin->sin_addr.s_addr = ee32(ts->remote_ip);
+        return 0;
     }
-    if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
-        return -WOLFIP_EINVAL;
-
-    ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-    if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
-        return -1;
-    sin->sin_family = AF_INET;
-    sin->sin_port = ee16(ts->dst_port);
-    sin->sin_addr.s_addr = ee32(ts->remote_ip);
-    return 0;
+#if WOLFIP_RAWSOCKETS
+    if (IS_SOCKET_RAW(sockfd)) {
+        struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        if (!rs)
+            return -WOLFIP_EINVAL;
+        if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -1;
+        if (rs->remote_ip == 0)
+            return -1;
+        sin->sin_family = AF_INET;
+        sin->sin_port = 0;
+        sin->sin_addr.s_addr = ee32(rs->remote_ip);
+        return 0;
+    }
+#endif
+    return -1;
 }
 
 
@@ -5391,6 +6155,13 @@ static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *ma
     return -1;
 }
 
+int wolfIP_arp_lookup_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac)
+{
+    if (!s || !mac)
+        return -WOLFIP_EINVAL;
+    return arp_lookup(s, if_idx, ip, mac);
+}
+
 #endif
 
 /* Initialize the IP stack */
@@ -5484,6 +6255,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 #endif
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_RECEIVING, s, if_idx, ip, len) != 0)
         return;
+#if WOLFIP_RAWSOCKETS
+    raw_try_recv(s, if_idx, ip, len);
+#endif
     #if WOLFIP_ENABLE_FORWARDING
     if (ip->ver_ihl == 0x45) {
         ip4 dest = ee32(ip->dst);
@@ -5550,6 +6324,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     }
     else if (ip->ver_ihl == 0x45 && ip->proto == 0x11) {
         struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
+        if (len < sizeof(struct wolfIP_udp_datagram))
+            return;
+        if (ee16(udp->len) < UDP_HEADER_LEN)
+            return;
+        if (ee16(udp->len) > len - ETH_HEADER_LEN - IP_HEADER_LEN)
+            return;
         #ifdef DEBUG_UDP
         wolfIP_print_udp(udp);
         #endif /* DEBUG_UDP */
@@ -5586,6 +6366,9 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     #endif /* DEBUG_ETH */
     if (wolfIP_filter_notify_eth(WOLFIP_FILT_RECEIVING, s, if_idx, eth, len) != 0)
         return;
+#if WOLFIP_PACKET_SOCKETS
+    packet_try_recv(s, if_idx, eth, len);
+#endif
     if (eth->type == ee16(ETH_TYPE_IP)) {
         struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)eth;
         if ((memcmp(eth->dst, ll->mac, 6) != 0) && (memcmp(eth->dst, "\xff\xff\xff\xff\xff\xff", 6) != 0)) {
@@ -5989,6 +6772,24 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             ts->events = 0;
         }
     }
+#if WOLFIP_RAWSOCKETS
+    for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
+        struct rawsocket *r = &s->rawsockets[i];
+        if (r->used && (r->callback) && (r->events)) {
+            r->callback(i | MARK_RAW_SOCKET, r->events, r->callback_arg);
+            r->events = 0;
+        }
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
+        struct packetsocket *p = &s->packetsockets[i];
+        if (p->used && (p->callback) && (p->events)) {
+            p->callback(i | MARK_PACKET_SOCKET, p->events, p->callback_arg);
+            p->events = 0;
+        }
+    }
+#endif
 
     /* Step 4: attempt to write any pending data */
     /**
@@ -6223,6 +7024,95 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
     }
+#if WOLFIP_RAWSOCKETS
+    for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
+        struct rawsocket *r = &s->rawsockets[i];
+        struct pkt_desc *desc;
+        if (!r->used)
+            continue;
+        desc = fifo_peek(&r->txbuf);
+        while (desc) {
+            struct wolfIP_ip_packet *ip =
+                (struct wolfIP_ip_packet *)(r->txmem + desc->pos + sizeof(*desc));
+            ip4 dst_ip = ee32(ip->dst);
+            unsigned int tx_if = r->if_idx;
+            ip4 nexthop;
+#ifdef ETHERNET
+            struct ipconf *conf;
+#endif
+            if (dst_ip == 0) {
+                fifo_pop(&r->txbuf);
+                desc = fifo_peek(&r->txbuf);
+                continue;
+            }
+            if (tx_if >= s->if_count)
+                tx_if = raw_route_for_ip(s, r, dst_ip, r->dontroute);
+            r->if_idx = (uint8_t)tx_if;
+#ifdef ETHERNET
+            conf = wolfIP_ipconf_at(s, tx_if);
+            nexthop = r->dontroute ? dst_ip : wolfIP_select_nexthop(conf, dst_ip);
+            if (wolfIP_is_loopback_if(tx_if)) {
+                struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
+                if (loop)
+                    memcpy(r->nexthop_mac, loop->mac, 6);
+            } else if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, tx_if, nexthop, r->nexthop_mac) < 0))) {
+                arp_request(s, tx_if, nexthop);
+                break;
+            } else if (IS_IP_BCAST(nexthop)) {
+                memset(r->nexthop_mac, 0xFF, 6);
+            }
+#else
+            nexthop = dst_ip;
+#endif
+            if (!r->ipheader_include) {
+                ip->csum = 0;
+                iphdr_set_checksum(ip);
+            }
+            if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, tx_if, ip, desc->len) != 0)
+                break;
+#ifdef ETHERNET
+            if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, tx_if, &ip->eth, desc->len) != 0)
+                break;
+            eth_output_add_header(s, tx_if, r->nexthop_mac, &ip->eth, ETH_TYPE_IP);
+#endif
+            {
+                struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
+                if (ll && ll->send)
+                    ll->send(ll, ip, desc->len);
+            }
+            fifo_pop(&r->txbuf);
+            desc = fifo_peek(&r->txbuf);
+            (void)nexthop;
+        }
+    }
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
+        struct packetsocket *p = &s->packetsockets[i];
+        struct pkt_desc *desc;
+        if (!p->used)
+            continue;
+        desc = fifo_peek(&p->txbuf);
+        while (desc) {
+            uint8_t *frame = p->txmem + desc->pos + sizeof(*desc);
+            unsigned int tx_if = p->if_idx;
+            if (tx_if >= s->if_count)
+                tx_if = 0;
+            if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, tx_if,
+                                         (struct wolfIP_eth_frame *)frame, desc->len) != 0) {
+                desc = fifo_next(&p->txbuf, desc);
+                continue;
+            }
+            {
+                struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
+                if (ll && ll->send)
+                    ll->send(ll, frame, desc->len);
+            }
+            fifo_pop(&p->txbuf);
+            desc = fifo_peek(&p->txbuf);
+        }
+    }
+#endif
     return 0;
 }
 
