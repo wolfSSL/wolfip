@@ -82,7 +82,16 @@ int main() {
             ssize_t bytes_read = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (bytes_read > 0 && new_socket != -1) {
                 // Write stdin data to the socket
-                send(new_socket, buffer, bytes_read, 0);
+                ssize_t off = 0;
+                while (off < bytes_read) {
+                    ssize_t n = send(new_socket, buffer + off,
+                                     bytes_read - off, 0);
+                    if (n < 0) {
+                        perror("send");
+                        break;
+                    }
+                    off += n;
+                }
             }
         }
 
@@ -113,7 +122,5 @@ int main() {
             }
         }
     }
-
-    close(server_fd);
-    return 0;
+    /* NOTREACHED */
 }
