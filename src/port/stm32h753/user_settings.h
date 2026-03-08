@@ -29,8 +29,8 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------------- */
-/* Platform / OS
- * ------------------------------------------------------------------------- */
+/* Platform / OS */
+/* ------------------------------------------------------------------------- */
 #define WOLFSSL_GENERAL_ALIGNMENT 4
 #define SINGLE_THREADED
 #define WOLFSSL_SMALL_STACK
@@ -75,8 +75,8 @@ extern "C" {
 #define TFM_NO_ASM
 
 /* ------------------------------------------------------------------------- */
-/* TLS Configuration
- * ------------------------------------------------------------------------- */
+/* TLS Configuration */
+/* ------------------------------------------------------------------------- */
 #define WOLFSSL_TLS13
 #define HAVE_TLS_EXTENSIONS
 #define HAVE_SUPPORTED_CURVES
@@ -87,8 +87,8 @@ extern "C" {
 #define NO_SESSION_CACHE
 
 /* ------------------------------------------------------------------------- */
-/* Cipher Suites
- * ------------------------------------------------------------------------- */
+/* Cipher Suites */
+/* ------------------------------------------------------------------------- */
 
 /* AES-GCM (primary) */
 #define HAVE_AESGCM
@@ -108,10 +108,10 @@ extern "C" {
 #define HAVE_HKDF
 
 /* ------------------------------------------------------------------------- */
-/* Key Exchange / Certificates
- * ------------------------------------------------------------------------- */
+/* Key Exchange / Certificates */
+/* ------------------------------------------------------------------------- */
 
-/* ECC - primary key exchange */
+/* ECC */
 #define HAVE_ECC
 #define ECC_USER_CURVES           /* Only enable curves we specify */
 #define HAVE_ECC256               /* P-256 (secp256r1) - most common */
@@ -132,48 +132,56 @@ extern "C" {
 #define WOLFSSL_CERT_EXT
 
 /* ------------------------------------------------------------------------- */
-/* Disable Unused Features
- * ------------------------------------------------------------------------- */
+/* Disable Unused Features */
+/* ------------------------------------------------------------------------- */
 #define NO_DSA
 #define NO_RC4
 #define NO_MD4
-#define NO_MD5                    /* MD5 deprecated */
+#define NO_MD5                    /* MD5 deprecated, not needed */
 #define NO_DES3
 #define NO_RABBIT
 #define NO_HC128
 #define NO_PSK
 #define NO_PWDBASED
 #define NO_OLD_TLS                /* Disable TLS 1.0/1.1 */
-#define NO_CHECK_PRIVATE_KEY      /* Save code - trust our own keys */
+#define NO_CHECK_PRIVATE_KEY      /* Save code - we trust our own keys */
 
 /* DH not needed if using ECC */
 #define NO_DH
 
 /* ------------------------------------------------------------------------- */
-/* Memory Optimization
- * ------------------------------------------------------------------------- */
-#define ALT_ECC_SIZE              /* Smaller ECC structs */
+/* Memory */
+/* ------------------------------------------------------------------------- */
+
+/* Use wolfSSL static memory if desired (optional)
+ * For now, rely on newlib malloc from syscalls.c
+ * #define WOLFSSL_STATIC_MEMORY
+ * #define WOLFSSL_NO_MALLOC
+ */
+
+/* Reduce memory usage */
+ #define ALT_ECC_SIZE              /* Smaller ECC structs */
 #define WOLFSSL_SMALL_CERT_VERIFY
 #define BENCH_EMBEDDED            /* Use smaller benchmark/test buffers */
 
 /* ------------------------------------------------------------------------- */
-/* RNG Configuration
- * ------------------------------------------------------------------------- */
-
-/* Custom RNG block generator (implemented in main.c using STM32H7 RNG peripheral) */
+/* RNG */
+/* ------------------------------------------------------------------------- */
+/* wc_GenerateSeed is implemented in tls_server.c
+ * (wolfSSL will call it for entropy) */
 #define CUSTOM_RAND_GENERATE_BLOCK custom_rand_gen_block
 int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 
 /* ------------------------------------------------------------------------- */
-/* Debug (uncomment for troubleshooting)
- * ------------------------------------------------------------------------- */
+/* Debug (uncomment for troubleshooting) */
+/* ------------------------------------------------------------------------- */
 /* #define DEBUG_WOLFSSL */
 /* #define WOLFSSL_DEBUG_TLS */
 /* #define DEBUG_STM32_HASH */
 
 /* ------------------------------------------------------------------------- */
-/* wolfMQTT Broker Settings (when ENABLE_MQTT_BROKER=1)
- * ------------------------------------------------------------------------- */
+/* wolfMQTT Broker Settings (when ENABLE_MQTT_BROKER=1) */
+/* ------------------------------------------------------------------------- */
 #ifdef ENABLE_MQTT_BROKER
 /* Enable the broker module */
 #define WOLFMQTT_BROKER
@@ -181,7 +189,8 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* Use wolfIP network backend */
 #define WOLFMQTT_WOLFIP
 
-/* Custom network backend - TLS context managed by application */
+/* wolfIP provides its own TLS context via broker_tls_init(), so skip
+ * BrokerTls_Init() which requires file-based cert/key paths */
 #define WOLFMQTT_BROKER_CUSTOM_NET
 
 /* Non-blocking mode for integration with wolfIP event loop */
@@ -190,10 +199,11 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* No standard I/O available on bare-metal */
 #define WOLFMQTT_NO_STDIO
 
-/* Override PRINTF to suppress warnings - use empty do-while for bare-metal */
-#ifndef PRINTF
-    #define PRINTF(...) do { (void)0; } while(0)
-#endif
+/* Custom printf for broker logging.
+ * STM32H753 bare-metal: suppress WBLOG output to avoid requiring
+ * a wolfmqtt_log() implementation. Add one to main.c if logging is needed. */
+#define WOLFMQTT_CUSTOM_PRINTF
+#define PRINTF(_f_, ...) do { } while (0)
 
 /* Disable error strings to save space */
 #define WOLFMQTT_NO_ERROR_STRINGS
@@ -204,8 +214,8 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* Use TLS for secure MQTT connections */
 #define ENABLE_MQTT_TLS
 
-/* Embedded-sized broker limits - reduced for H753's 512KB RAM */
-#define BROKER_MAX_CLIENTS         3      /* Reduced from 4 on H563 */
+/* Embedded-sized broker limits */
+#define BROKER_MAX_CLIENTS         3
 #define BROKER_MAX_SUBS           16
 #define BROKER_RX_BUF_SZ        1024
 #define BROKER_TX_BUF_SZ        1024
@@ -213,11 +223,10 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 #define BROKER_MAX_RETAINED        4
 #define BROKER_MAX_PAYLOAD_LEN  1024
 
-/* Minimal logging (errors only) */
-#define BROKER_LOG_LEVEL_DEFAULT   1 /* BROKER_LOG_ERROR */
+/* Broker logging: errors and info (connections, subscriptions) */
+#define BROKER_LOG_LEVEL_DEFAULT   2 /* BROKER_LOG_INFO */
 
 /* Disable optional features to save space */
-#define WOLFMQTT_BROKER_NO_WILDCARDS
 #define WOLFMQTT_BROKER_NO_AUTH
 
 /* Time abstraction: use tick counter from main loop */

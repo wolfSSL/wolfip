@@ -83,9 +83,9 @@ Ready! Test with:
 Entering main loop...
 [46] rx=0 tx=1/0 hw_tx=0 cfg=0x8C8C dbg=0x01100000 dma=0x00260400 TS=2
 DHCP bound:
-  IP:   10.0.4.184
+  IP:   192.168.12.11
   Mask: 255.255.255.0
-  GW:   10.0.4.1
+  GW:   192.168.12.1
 [56] rx=12 tx=4/0 hw_tx=4 cfg=0x8C8C dbg=0x00000000 dma=0x00660445 TS=6
 Echo: client connected (fd=257)
 [196] rx=208 tx=14/0 hw_tx=14 cfg=0x8C8C dbg=0x00000000 dma=0x00660445 TS=6
@@ -149,19 +149,6 @@ Speed: 170096 ms, RX 0 bytes (~0 B/s), TX 23195968 bytes (~136369 B/s)
 > receive window fills, then waits for ACKs to reopen it before sending more.
 
 ## Known Limitations
-
-### DHCP Subnet Mask Display
-
-wolfIP's internal DHCP client stores the subnet mask correctly in the stack, but `wolfIP_ipconfig_get()` returns the gateway address in the netmask slot on some DHCP server responses. Connectivity is unaffected (ARP, ping, TCP echo, and the throughput test all work correctly). Only the UART diagnostic print is wrong:
-
-```
-DHCP bound:
-  IP:   10.0.4.184
-  Mask: 10.0.4.1     ← displayed incorrectly; actual mask is 255.255.255.0
-  GW:   10.0.4.1
-```
-
-This is a wolfIP core issue, not a driver bug.
 
 ### PHY Link Down at Startup
 

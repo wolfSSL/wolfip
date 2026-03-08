@@ -27,6 +27,9 @@ ENABLE_SSH ?= 0
 # Automatically enables TLS if needed
 ENABLE_MQTT ?= 0
 
+# MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
+ENABLE_MQTT_BROKER ?= 0
+
 # Auto-enable TLS when any feature that requires it is enabled
 ifeq ($(ENABLE_TLS_CLIENT),1)
   ENABLE_TLS = 1
@@ -41,11 +44,8 @@ ifeq ($(ENABLE_MQTT),1)
   ENABLE_TLS = 1
 endif
 
-# MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
-ENABLE_MQTT_BROKER ?= 0
-
 # Library paths - default to sibling directories (clone alongside pattern)
-WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
+WOLFSSL_ROOT ?= $(ROOT)/../wolfssl-alt
 WOLFSSH_ROOT ?= $(ROOT)/../wolfssh
 WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
 
@@ -91,12 +91,14 @@ CFLAGS += -I$(WOLFSSL_ROOT)
 
 # TLS server, client and wolfIP-wolfSSL glue
 SRCS += tls_server.c
+SRCS += $(ROOT)/src/port/wolfssl_io.c
+
 # TLS client (Google test)
 ifeq ($(ENABLE_TLS_CLIENT),1)
 CFLAGS += -DENABLE_TLS_CLIENT
 SRCS += tls_client.c
 endif
-SRCS += $(ROOT)/src/port/wolfssl_io.c
+
 
 # HTTPS web server - uses existing wolfIP httpd
 ifeq ($(ENABLE_HTTPS),1)
@@ -122,6 +124,8 @@ WOLFSSL_SRCS := \
     $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
+	$(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c \
+    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c \
     $(WOLFSSL_ROOT)/src/ssl.c \
     $(WOLFSSL_ROOT)/src/tls.c \
     $(WOLFSSL_ROOT)/src/tls13.c \
@@ -129,7 +133,7 @@ WOLFSSL_SRCS := \
     $(WOLFSSL_ROOT)/src/keys.c \
     $(WOLFSSL_ROOT)/src/wolfio.c
 
-# ChaCha20-Poly1305 (optional, comment out to save space)
+# ChaCha20-Poly1305 (optional)
 WOLFSSL_SRCS += \
     $(WOLFSSL_ROOT)/wolfcrypt/src/chacha.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/chacha20_poly1305.c \
@@ -137,13 +141,9 @@ WOLFSSL_SRCS += \
 
 # RSA for certificate verification (most servers use RSA certs)
 WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c
+    $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c \
+	$(WOLFSSL_ROOT)/wolfcrypt/src/signature.c
 
-# Signature verification (required for wolfSSH)
-ifeq ($(ENABLE_SSH),1)
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/signature.c
-endif
 
 SRCS += $(WOLFSSL_SRCS)
 

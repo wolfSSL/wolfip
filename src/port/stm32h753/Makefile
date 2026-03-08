@@ -58,7 +58,7 @@ ifeq ($(ENABLE_TLS),1)
 
 # Validate wolfSSL exists
 ifeq ($(wildcard $(WOLFSSL_ROOT)/wolfssl/ssl.h),)
-  $(error wolfSSL not found at $(WOLFSSL_ROOT). Clone it or set WOLFSSL_ROOT)
+  $(error wolfSSL not found at $(WOLFSSL_ROOT). Clone it: git clone https://github.com/wolfSSL/wolfssl.git)
 endif
 
 CFLAGS += -DENABLE_TLS

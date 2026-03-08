@@ -50,9 +50,15 @@ extern "C" {
 #define WOLFSSL_SP_SMALL          /* Smaller code size */
 #define SP_WORD_SIZE 32           /* 32-bit platform */
 
-/* Use portable C code (no platform-specific assembly) */
+/* Use Cortex-M assembly optimizations for SP math */
+#define WOLFSSL_SP_ARM_CORTEX_M_ASM
+
+/* SP ECC and RSA acceleration (uses sp_c32.c) */
+#define WOLFSSL_HAVE_SP_ECC       /* SP-optimized ECC operations */
+#define WOLFSSL_HAVE_SP_RSA       /* SP-optimized RSA operations */
+
+/* Disable TFM ASM (we use SP math instead) */
 #define TFM_NO_ASM
-#define WOLFSSL_NO_ASM
 
 /* ------------------------------------------------------------------------- */
 /* TLS Configuration */
@@ -65,7 +71,6 @@ extern "C" {
 
 /* Session */
 #define NO_SESSION_CACHE          /* Save RAM - no session resumption */
-#define SMALL_SESSION_CACHE
 
 /* ------------------------------------------------------------------------- */
 /* Cipher Suites */
@@ -73,11 +78,10 @@ extern "C" {
 
 /* AES-GCM (primary) */
 #define HAVE_AESGCM
-#define GCM_SMALL                 /* Smaller GCM tables */
-#define WOLFSSL_AES_SMALL_TABLES
+#define GCM_TABLE_4BIT
 #define WOLFSSL_AES_DIRECT
 
-/* ChaCha20-Poly1305 (alternative, good for no-AES-HW platforms) */
+/* ChaCha20-Poly1305 (fallback for non-AES scenarios) */
 #define HAVE_CHACHA
 #define HAVE_POLY1305
 
@@ -85,7 +89,7 @@ extern "C" {
 #define WOLFSSL_SHA384
 #define WOLFSSL_SHA512
 
-/* HKDF for TLS 1.3 */
+/* HKDF for TLS 1.3 key derivation */
 #define HAVE_HKDF
 
 /* ------------------------------------------------------------------------- */
@@ -95,7 +99,7 @@ extern "C" {
 /* ECC */
 #define HAVE_ECC
 #define ECC_USER_CURVES           /* Only enable curves we specify */
-#define HAVE_ECC256               /* P-256 (secp256r1) */
+#define HAVE_ECC256               /* P-256 (secp256r1) - most common */
 #define ECC_SHAMIR
 #define ECC_TIMING_RESISTANT
 
@@ -143,6 +147,7 @@ extern "C" {
 /* Reduce memory usage */
 #define ALT_ECC_SIZE              /* Smaller ECC structs */
 #define WOLFSSL_SMALL_CERT_VERIFY
+#define BENCH_EMBEDDED            /* Use smaller benchmark/test buffers */
 
 /* ------------------------------------------------------------------------- */
 /* RNG */
@@ -153,7 +158,7 @@ extern "C" {
 int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 
 /* ------------------------------------------------------------------------- */
-/* Debug (comment out for production) */
+/* Debug (uncomment for troubleshooting) */
 /* ------------------------------------------------------------------------- */
 /* #define DEBUG_WOLFSSL */
 /* #define WOLFSSL_DEBUG_TLS */
@@ -230,11 +235,21 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* Use wolfIP network backend */
 #define WOLFMQTT_WOLFIP
 
+/* wolfIP provides its own TLS context via broker_tls_init(), so skip
+ * BrokerTls_Init() which requires file-based cert/key paths */
+#define WOLFMQTT_BROKER_CUSTOM_NET
+
 /* Non-blocking mode for integration with wolfIP event loop */
 #define WOLFMQTT_NONBLOCK
 
 /* No standard I/O available on bare-metal */
 #define WOLFMQTT_NO_STDIO
+
+/* Custom printf for broker logging: route WBLOG through UART.
+ * wolfmqtt_log() is implemented in main.c using vsnprintf + uart_puts. */
+#define WOLFMQTT_CUSTOM_PRINTF
+extern void wolfmqtt_log(const char *fmt, ...);
+#define PRINTF(_f_, ...) wolfmqtt_log(_f_ "\n", ##__VA_ARGS__)
 
 /* Disable error strings to save space */
 #define WOLFMQTT_NO_ERROR_STRINGS
@@ -246,7 +261,7 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 #define ENABLE_MQTT_TLS
 
 /* Embedded-sized broker limits */
-#define BROKER_MAX_CLIENTS         4
+#define BROKER_MAX_CLIENTS         3
 #define BROKER_MAX_SUBS           16
 #define BROKER_RX_BUF_SZ        1024
 #define BROKER_TX_BUF_SZ        1024
@@ -254,11 +269,10 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 #define BROKER_MAX_RETAINED        4
 #define BROKER_MAX_PAYLOAD_LEN  1024
 
-/* Minimal logging (errors only) */
-#define BROKER_LOG_LEVEL_DEFAULT   1 /* BROKER_LOG_ERROR */
+/* Broker logging: errors and info (connections, subscriptions) */
+#define BROKER_LOG_LEVEL_DEFAULT   2 /* BROKER_LOG_INFO */
 
 /* Disable optional features to save space */
-#define WOLFMQTT_BROKER_NO_WILDCARDS
 #define WOLFMQTT_BROKER_NO_AUTH
 
 /* Time abstraction: use tick counter from main loop */
