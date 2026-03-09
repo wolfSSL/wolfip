@@ -50,15 +50,20 @@ build_full() {
     WOLFSSL_ROOT=../../../../wolfssl \
     ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_SSH=1 \
     WOLFSSL_SP_NO_ASM=1 \
+    EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
 }
 
 build_https_tls13() {
   ensure_repo wolfssl https://github.com/wolfSSL/wolfssl.git
   make -C src/port/stm32h563 clean TZEN=0 ENABLE_HTTPS=1 \
-    WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+    WOLFSSL_SP_NO_ASM=1 \
+    EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   make -C src/port/stm32h563 TZEN=0 ENABLE_HTTPS=1 \
-    WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+    WOLFSSL_SP_NO_ASM=1 \
+    EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   strings src/port/stm32h563/app.bin | grep -q "Initializing HTTPS server"
 }
 
@@ -67,6 +72,7 @@ build_ssh_tzen() {
   ensure_repo wolfssh https://github.com/wolfSSL/wolfssh.git
   make -C src/port/stm32h563 clean
   make -C src/port/stm32h563 TZEN=0 ENABLE_SSH=1 \
+    EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   strings src/port/stm32h563/app.bin | grep -q "Initializing SSH server"
 }

@@ -58,11 +58,15 @@ CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ff
 CFLAGS += -g -ggdb -Wall -Wextra -Werror
 CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port -I$(ROOT)/src/port/stm32
 CFLAGS += -DSTM32H5
+EXTRA_CFLAGS ?=
+EXTRA_CFLAGS_WOLFSSL ?=
+CFLAGS += $(EXTRA_CFLAGS)
 
 # Relaxed warnings for external libraries (wolfSSL has many unused var warnings)
 CFLAGS_WOLFSSL := $(CFLAGS)
 CFLAGS_WOLFSSL := $(filter-out -Werror,$(CFLAGS_WOLFSSL))
 CFLAGS_WOLFSSL += -Wno-unused-variable -Wno-unused-function
+CFLAGS_WOLFSSL += $(EXTRA_CFLAGS_WOLFSSL)
 
 # Select linker script based on TZEN setting
 ifeq ($(TZEN),1)
