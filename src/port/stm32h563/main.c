@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include "config.h"
 #include "wolfip.h"
@@ -62,6 +64,76 @@ static int tls_client_test_started = 0;
 static int tls_client_test_done = 0;
 #endif
 
+/* Forward declarations */
+static void uart_puts(const char *s);
+
+/* =========================================================================
+ * HardFault Handler - prints crash info via UART
+ * ========================================================================= */
+#define SCB_HFSR   (*(volatile uint32_t *)0xE000ED2CUL)
+#define SCB_CFSR   (*(volatile uint32_t *)0xE000ED28UL)
+#define SCB_BFAR   (*(volatile uint32_t *)0xE000ED38UL)
+#define SCB_MMFAR  (*(volatile uint32_t *)0xE000ED34UL)
+
+#define FAULT_USART3_ISR (*(volatile uint32_t *)(0x40004800u + 0x1Cu))
+#define FAULT_USART3_TDR (*(volatile uint32_t *)(0x40004800u + 0x28u))
+
+static void fault_uart_putc(char c)
+{
+    while ((FAULT_USART3_ISR & (1u << 7)) == 0) { }
+    FAULT_USART3_TDR = (uint32_t)c;
+}
+static void fault_uart_puts(const char *s)
+{
+    while (*s) {
+        if (*s == '\n') fault_uart_putc('\r');
+        fault_uart_putc(*s++);
+    }
+}
+static void fault_uart_puthex(uint32_t val)
+{
+    const char hex[] = "0123456789ABCDEF";
+    fault_uart_puts("0x");
+    for (int i = 28; i >= 0; i -= 4)
+        fault_uart_putc(hex[(val >> i) & 0xF]);
+}
+
+void hard_fault_handler_c(uint32_t *frame)
+{
+    fault_uart_puts("\n\n*** HARD FAULT ***\n");
+    fault_uart_puts("  PC:   "); fault_uart_puthex(frame[6]); fault_uart_puts("\n");
+    fault_uart_puts("  LR:   "); fault_uart_puthex(frame[5]); fault_uart_puts("\n");
+    fault_uart_puts("  R0:   "); fault_uart_puthex(frame[0]); fault_uart_puts("\n");
+    fault_uart_puts("  R1:   "); fault_uart_puthex(frame[1]); fault_uart_puts("\n");
+    fault_uart_puts("  R2:   "); fault_uart_puthex(frame[2]); fault_uart_puts("\n");
+    fault_uart_puts("  R3:   "); fault_uart_puthex(frame[3]); fault_uart_puts("\n");
+    fault_uart_puts("  R12:  "); fault_uart_puthex(frame[4]); fault_uart_puts("\n");
+    fault_uart_puts("  xPSR: "); fault_uart_puthex(frame[7]); fault_uart_puts("\n");
+    fault_uart_puts("  HFSR: "); fault_uart_puthex(SCB_HFSR); fault_uart_puts("\n");
+    fault_uart_puts("  CFSR: "); fault_uart_puthex(SCB_CFSR); fault_uart_puts("\n");
+    if (SCB_CFSR & 0x00008200u) {
+        fault_uart_puts("  BFAR: "); fault_uart_puthex(SCB_BFAR); fault_uart_puts("\n");
+    }
+    if (SCB_CFSR & 0x00000082u) {
+        fault_uart_puts("  MMFAR:"); fault_uart_puthex(SCB_MMFAR); fault_uart_puts("\n");
+    }
+    /* Turn off LED2 (PF4) as fault indicator */
+    (*(volatile uint32_t *)(0x42021400u + 0x18u)) = (1u << (4u + 16u));
+    while (1) { }
+}
+
+void HardFault_Handler(void) __attribute__((naked));
+void HardFault_Handler(void)
+{
+    __asm volatile(
+        "tst lr, #4       \n"
+        "ite eq            \n"
+        "mrseq r0, msp     \n"
+        "mrsne r0, psp     \n"
+        "b hard_fault_handler_c \n"
+    );
+}
+
 #ifdef ENABLE_HTTPS
 /* HTTPS server using wolfIP httpd */
 static struct httpd https_server;
@@ -79,7 +151,12 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
     int len;
 
     (void)httpd;
-    (void)req;
+
+    uart_puts("HTTPS: ");
+    uart_puts(req->method);
+    uart_puts(" ");
+    uart_puts(req->path);
+    uart_puts("\n");
 
     /* Format IP address (stored in network byte order) */
     {
@@ -323,6 +400,25 @@ static void uart_puts(const char *s)
         if (*s == '\n') uart_putc('\r');
         uart_putc(*s++);
     }
+}
+
+/* Printf-style UART output for wolfMQTT broker logging (WBLOG macros).
+ * Uses vsnprintf from newlib-nano + uart_puts. */
+void wolfmqtt_log(const char *fmt, ...)
+{
+    char buf[256];
+    va_list ap;
+    int n;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        uart_puts("<wolfmqtt_log: encoding error>\n");
+        return;
+    }
+    uart_puts(buf);
+    if (n >= (int)sizeof(buf))
+        uart_puts("...[truncated]\n");
 }
 
 static void uart_puthex(uint32_t val)
@@ -593,7 +689,7 @@ int main(void)
         uint32_t dhcp_timeout;
         int dhcp_ret;
 
-        dhcp_timeout = 15000;  /* 15 seconds timeout */
+        dhcp_timeout = 5000;  /* safety-net tick timeout */
 
         uart_puts("Starting DHCP client...\n");
         dhcp_ret = dhcp_client_init(IPStack);
@@ -605,7 +701,7 @@ int main(void)
             uart_puts("  DHCP discover sent, waiting for lease...\n");
             /* Wait for DHCP to complete - poll frequently */
             dhcp_start_tick = tick;
-            while (!dhcp_bound(IPStack)) {
+            while (!dhcp_bound(IPStack) && dhcp_client_is_running(IPStack)) {
                 /* Poll the stack - this processes received packets and sends pending data */
                 (void)wolfIP_poll(IPStack, tick);
                 /* Increment tick counter (approximate 1ms per iteration at 64MHz HSI)
@@ -628,20 +724,18 @@ int main(void)
                 uart_putip4(gw);
                 uart_puts("\n");
             } else {
-                uint32_t polls = 0, pkts = 0;
-                stm32_eth_get_stats(&polls, &pkts);
-                uart_puts("  DHCP timeout - no lease obtained\n");
-                uart_puts("  ETH stats: polls=");
-                uart_puthex(polls);
-                uart_puts(" pkts=");
-                uart_puthex(pkts);
-                uart_puts("\n  DMACSR=");
-                uart_puthex(stm32_eth_get_dmacsr());
-                uart_puts(" RX_DES3=");
-                uart_puthex(stm32_eth_get_rx_des3());
-                uart_puts("\n  ticks=");
-                uart_puthex((uint32_t)(tick - dhcp_start_tick));
+                ip4 ip = atoip4(WOLFIP_IP);
+                ip4 nm = atoip4(WOLFIP_NETMASK);
+                ip4 gw = atoip4(WOLFIP_GW);
+                uart_puts("  DHCP timeout - falling back to static IP\n");
+                uart_puts("  IP: ");
+                uart_putip4(ip);
+                uart_puts("\n  Mask: ");
+                uart_putip4(nm);
+                uart_puts("\n  GW: ");
+                uart_putip4(gw);
                 uart_puts("\n");
+                wolfIP_ipconfig_set(IPStack, ip, nm, gw);
             }
         }
     }

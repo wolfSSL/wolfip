@@ -971,9 +971,13 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_OPTION_OFFER_IP 50
 #define DHCP_OPTION_END 0xFF
 #define DHCP_DISCOVER_TIMEOUT 2000
+#ifndef DHCP_DISCOVER_RETRIES
 #define DHCP_DISCOVER_RETRIES 3
+#endif
 #define DHCP_REQUEST_TIMEOUT 2000
+#ifndef DHCP_REQUEST_RETRIES
 #define DHCP_REQUEST_RETRIES 3
+#endif
 
 enum dhcp_state {
     DHCP_OFF = 0,
@@ -2770,6 +2774,8 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     struct tcp_parsed_opts po;
     uint32_t sample;
 
+    if (!t->S)
+        return -1;
     tcp_parse_options(tcp, frame_len, &po);
     if (!po.ts_found)
         return -1;
@@ -3399,7 +3405,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
-                    tcp_process_ts(t, tcp, frame_len);
+                    /* tcp_ack may have closed the socket via close_socket();
+                     * skip timestamp processing if socket was destroyed. */
+                    if (t->sock.tcp.state != TCP_CLOSED)
+                        tcp_process_ts(t, tcp, frame_len);
                 }
             }
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
@@ -3408,6 +3417,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
 
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
+                    if (t->sock.tcp.state == TCP_CLOSED)
+                        continue;
                     tcp_process_ts(t, tcp, frame_len);
                 }
                 if (tcplen > 0) {
@@ -5104,6 +5115,11 @@ static int dhcp_send_discover(struct wolfIP *s)
 int dhcp_bound(struct wolfIP *s)
 {
     return (s->dhcp_state == DHCP_BOUND);
+}
+
+int dhcp_client_is_running(struct wolfIP *s)
+{
+    return DHCP_IS_RUNNING(s);
 }
 
 int dhcp_client_init(struct wolfIP *s)

@@ -8,13 +8,13 @@ This directory contains a bare-metal port of wolfIP for the STM32H563 microcontr
    ```bash
    cd src/port/stm32h563
    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy \
-   make ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1
+   make ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT_BROKER=1
    ```
 
 2. **Flash to board:**
    ```bash
    openocd -f interface/stlink-dap.cfg -f target/stm32h5x.cfg \
-       -c "program app.bin 0x08000000 verify reset exit"
+       -c "program app.elf verify reset exit"
    ```
 
 3. **Monitor UART output** (115200 baud on /dev/ttyACM0):
@@ -33,6 +33,10 @@ This directory contains a bare-metal port of wolfIP for the STM32H563 microcontr
 
    # SSH (password: wolfip)
    ssh admin@<device-ip>
+
+   # MQTT Broker (TLS on port 8883) — using wolfMQTT mqttclient
+   mqttclient -h <device-ip> -p 8883 -t -A /tmp/wolfip_cert.pem \
+       -n "test/hello" -m "Hello MQTT!" -x
    ```
 
 ## Hardware Requirements
@@ -349,11 +353,11 @@ make ENABLE_SSH=1 WOLFSSH_ROOT=/path/to/wolfssh
 
 ### Full Featured Build
 
-Build with all features (TLS echo, HTTPS web server, and SSH shell).
+Build with all features (TLS echo, HTTPS web server, SSH shell, and MQTT broker).
 TLS is automatically enabled when any feature that requires it is set:
 
 ```bash
-make ENABLE_HTTPS=1 ENABLE_SSH=1
+make ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT_BROKER=1
 ```
 
 This provides:
@@ -361,6 +365,7 @@ This provides:
 - TLS echo server on port 8443
 - HTTPS web server on port 443
 - SSH shell on port 22
+- MQTT broker on port 8883 (TLS)
 
 ### TLS Example Output
 
@@ -544,7 +549,7 @@ h1{color:#333;}table{border-collapse:collapse;}
 td{padding:8px 16px;border:1px solid #ddd;}</style></head>
 <body><h1>wolfIP Status</h1><table>
 <tr><td>Device</td><td>STM32H563</td></tr>
-<tr><td>IP Address</td><td>10.0.4.117</td></tr>
+<tr><td>IP Address</td><td>192.168.12.11</td></tr>
 <tr><td>Uptime</td><td>1234 sec</td></tr>
 <tr><td>TLS</td><td>TLS 1.3</td></tr>
 </table></body></html>
@@ -784,6 +789,110 @@ This provides:
 | `../wolfmqtt_io.c` | wolfMQTT I/O glue layer for wolfIP sockets |
 | `user_settings.h` | wolfMQTT compile-time configuration |
 
+## MQTT Broker
+
+When built with `ENABLE_MQTT_BROKER=1`, the device runs a TLS-secured MQTT broker on port 8883.
+
+### Building MQTT Broker Mode
+
+```bash
+# Clone wolfMQTT alongside wolfip (broker support required)
+cd /path/to/parent
+git clone https://github.com/wolfSSL/wolfMQTT.git wolfmqtt
+
+# Build with broker (and optionally HTTPS + SSH)
+cd wolfip/src/port/stm32h563
+make ENABLE_MQTT_BROKER=1 ENABLE_HTTPS=1 ENABLE_SSH=1
+```
+
+### Expected Serial Output (MQTT Broker)
+
+```
+Initializing MQTT broker...
+MQTT Broker: Initializing
+Entering main loop. Ready for connections!
+MQTT Broker: TLS initialized (TLS 1.3, ECC P-256)
+broker: plain port == TLS port (8883), TLS-only mode
+broker: listening on port 8883 (TLS)
+MQTT Broker: Running on port 8883 (TLS)
+```
+
+When a client connects, the broker logs the full lifecycle:
+```
+broker: accept sock=261 (TLS)
+broker: TLS handshake done sock=261 TLSv1.3
+broker: CONNECT recv sock=261 len=14
+broker: CONNECT proto=4 clean=1 will=0 client_id=(null)
+broker: CONNACK send sock=261 code=0
+broker: disconnect sock=261
+```
+
+### Extracting the Server Certificate
+
+The broker uses a self-signed ECC P-256 certificate embedded in `../certs.h`. To test with TLS clients, extract it to a PEM file:
+
+```bash
+# Manual: copy the PEM block from src/port/certs.h to a file
+cat > /tmp/wolfip_cert.pem << 'EOF'
+-----BEGIN CERTIFICATE-----
+MIIByTCCAW+gAwIBAgIUW3k96+M3BtW7CJRDEO/u5BaaGjgwCgYIKoZIzj0EAwIw
+...
+-----END CERTIFICATE-----
+EOF
+```
+
+### Testing the MQTT Broker
+
+Use the wolfMQTT `mqttclient` example binary (built from wolfMQTT source):
+
+```bash
+# Build mqttclient if needed
+cd /path/to/wolfmqtt && ./autogen.sh && ./configure && make
+```
+
+#### Test 1: Publish (verify broker accepts connections)
+
+```bash
+mqttclient -h <device-ip> -p 8883 -t -A /tmp/wolfip_cert.pem \
+    -n "test/hello" -m "Hello wolfIP!" -x
+```
+
+The `-x` flag skips subscribe and publishes then exits. A successful run prints `CONNACK` and exits cleanly.
+
+#### Test 2: Subscribe and Publish (round-trip)
+
+```bash
+# Terminal 1: Start subscriber (allow time for TLS handshake ~10s)
+mqttclient -h <device-ip> -p 8883 -t -A /tmp/wolfip_cert.pem \
+    -n "test/#"
+
+# Terminal 2: Publish (wait for subscriber TLS handshake first)
+mqttclient -h <device-ip> -p 8883 -t -A /tmp/wolfip_cert.pem \
+    -n "test/hello" -m "Round-trip works!" -x
+```
+
+**Important:** The embedded Cortex-M33 needs several seconds per TLS handshake. Allow 8-10 seconds between connecting the subscriber and publisher to avoid overwhelming the device with concurrent TLS negotiations.
+
+### MQTT Broker Configuration
+
+| Setting | Default | File |
+|---------|---------|------|
+| Port (TLS) | 8883 | `mqtt_broker.c` |
+| Max Clients | 3 | `user_settings.h` (`BROKER_MAX_CLIENTS`) |
+| Max Subscriptions | 16 | `user_settings.h` (`BROKER_MAX_SUBS`) |
+| RX/TX Buffer | 1024 bytes | `user_settings.h` |
+| Max Payload | 1024 bytes | `user_settings.h` |
+| Log Level | INFO (2) | `user_settings.h` (`BROKER_LOG_LEVEL_DEFAULT`) |
+| TLS Version | TLS 1.3 | `mqtt_broker.c` |
+
+### MQTT Broker Files
+
+| File | Description |
+|------|-------------|
+| `mqtt_broker.c/h` | Broker state machine wrapper for wolfIP |
+| `../certs.h` | Embedded ECC P-256 cert/key (shared with TLS/HTTPS) |
+| `user_settings.h` | wolfMQTT broker compile-time config |
+
 ## Files
 
 | File | Description |
@@ -853,20 +962,6 @@ strings app.bin | grep "Initializing MQTT"
 - Confirm PHY link is up (check serial output for "PHY link: UP")
 - If using DHCP, ensure a DHCP server is available on the network
 - Try pinging the device: `ping <device-ip>`
-
-### DHCP Netmask Display Issue
-
-**Known Issue:** The DHCP netmask may display incorrectly in UART output (showing gateway IP instead).
-
-**Workaround:** The device still functions correctly - the netmask is stored properly internally. This is a display-only issue in the UART output. You can verify correct operation by testing network connectivity.
-
-**Example UART output:**
-```
-DHCP configuration received:
-  IP: 10.0.4.117
-  Mask: 10.0.4.1      <- Shows gateway instead of 255.255.255.0
-  GW: 10.0.4.1
-```
 
 ### HTTPS Content-Length Error
 

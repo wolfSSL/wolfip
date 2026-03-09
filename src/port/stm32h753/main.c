@@ -1151,13 +1151,13 @@ int main(void)
 #ifdef DHCP
     {
         uint32_t dhcp_start_tick;
-        uint32_t dhcp_timeout = 30000;
+        uint32_t dhcp_timeout = 5000;
 
         ret = dhcp_client_init(IPStack);
         if (ret >= 0) {
             uart_puts("Waiting for DHCP...\n");
             dhcp_start_tick = tick;
-            while (!dhcp_bound(IPStack)) {
+            while (!dhcp_bound(IPStack) && dhcp_client_is_running(IPStack)) {
                 uint32_t elapsed = (uint32_t)(tick - dhcp_start_tick);
                 (void)wolfIP_poll(IPStack, tick);
                 tick++;
@@ -1195,7 +1195,18 @@ int main(void)
                 uart_putip4(gw);
                 uart_puts("\n");
             } else {
-                uart_puts("DHCP timeout!\n");
+                ip4 ip = atoip4(WOLFIP_IP);
+                ip4 nm = atoip4(WOLFIP_NETMASK);
+                ip4 gw = atoip4(WOLFIP_GW);
+                uart_puts("  DHCP timeout - falling back to static IP\n");
+                uart_puts("  IP: ");
+                uart_putip4(ip);
+                uart_puts("\n  Mask: ");
+                uart_putip4(nm);
+                uart_puts("\n  GW: ");
+                uart_putip4(gw);
+                uart_puts("\n");
+                wolfIP_ipconfig_set(IPStack, ip, nm, gw);
             }
         }
     }

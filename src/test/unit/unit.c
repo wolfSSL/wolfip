@@ -7174,6 +7174,7 @@ START_TEST(test_dhcp_client_init_and_bound)
     ret = dhcp_client_init(&s);
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(dhcp_bound(&s), 0);
+    ck_assert_int_eq(dhcp_client_is_running(&s), 1);
 }
 END_TEST
 START_TEST(test_sock_close_udp_icmp)

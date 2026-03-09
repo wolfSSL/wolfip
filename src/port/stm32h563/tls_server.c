@@ -73,6 +73,7 @@ static void tls_listen_cb(int fd, uint16_t event, void *arg);
 static void tls_client_cb(int fd, uint16_t event, void *arg);
 static tls_client_t *tls_client_alloc(void);
 static void tls_client_free(tls_client_t *client);
+static void tls_client_handle_data(tls_client_t *client, uint16_t event);
 
 /* External functions from wolfssl_io.c */
 extern int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
@@ -139,7 +140,7 @@ int tls_server_init(struct wolfIP *stack, uint16_t port,
     debug_print("TLS: Loading certificate\n");
     ret = wolfSSL_CTX_use_certificate_buffer(server.ctx,
             (const unsigned char *)server_cert_pem,
-            server_cert_pem_len - 1, /* exclude null terminator */
+            server_cert_pem_len - 1,
             WOLFSSL_FILETYPE_PEM);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS: Failed to load certificate\n");
@@ -152,7 +153,7 @@ int tls_server_init(struct wolfIP *stack, uint16_t port,
     debug_print("TLS: Loading private key\n");
     ret = wolfSSL_CTX_use_PrivateKey_buffer(server.ctx,
             (const unsigned char *)server_key_pem,
-            server_key_pem_len - 1, /* exclude null terminator */
+            server_key_pem_len - 1,
             WOLFSSL_FILETYPE_PEM);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS: Failed to load private key\n");
@@ -259,6 +260,38 @@ static void tls_client_free(tls_client_t *client)
     client->state = TLS_CLIENT_STATE_FREE;
 }
 
+static void tls_client_handle_data(tls_client_t *client, uint16_t event)
+{
+    int ret;
+    int err;
+
+    if (!(event & CB_EVENT_READABLE) && wolfSSL_pending(client->ssl) == 0) {
+        return;
+    }
+
+    /* Read encrypted data or any decrypted data already buffered by wolfSSL. */
+    ret = wolfSSL_read(client->ssl, server.rx_buf, sizeof(server.rx_buf) - 1);
+    if (ret > 0) {
+        ret = wolfSSL_write(client->ssl, server.rx_buf, ret);
+        if (ret <= 0) {
+            err = wolfSSL_get_error(client->ssl, ret);
+            if (err != WOLFSSL_ERROR_WANT_WRITE) {
+                debug_print("TLS: Write error\n");
+                tls_client_free(client);
+            }
+        }
+    } else {
+        err = wolfSSL_get_error(client->ssl, ret);
+        if (err == WOLFSSL_ERROR_ZERO_RETURN) {
+            debug_print("TLS: Client closed connection\n");
+            tls_client_free(client);
+        } else if (err != WOLFSSL_ERROR_WANT_READ) {
+            debug_print("TLS: Read error\n");
+            tls_client_free(client);
+        }
+    }
+}
+
 static void tls_listen_cb(int fd, uint16_t event, void *arg)
 {
     tls_client_t *client;
@@ -337,6 +370,8 @@ static void tls_client_cb(int fd, uint16_t event, void *arg)
             if (ret == WOLFSSL_SUCCESS) {
                 debug_print("TLS: Handshake complete\n");
                 client->state = TLS_CLIENT_STATE_CONNECTED;
+                /* Process any app data that arrived in the same event batch. */
+                tls_client_handle_data(client, event);
             } else {
                 err = wolfSSL_get_error(client->ssl, ret);
                 if (err != WOLFSSL_ERROR_WANT_READ &&
@@ -349,34 +384,7 @@ static void tls_client_cb(int fd, uint16_t event, void *arg)
             break;
 
         case TLS_CLIENT_STATE_CONNECTED:
-            if (!(event & CB_EVENT_READABLE)) {
-                break;
-            }
-
-            /* Read encrypted data */
-            ret = wolfSSL_read(client->ssl, server.rx_buf,
-                               sizeof(server.rx_buf) - 1);
-            if (ret > 0) {
-                /* Echo data back */
-                ret = wolfSSL_write(client->ssl, server.rx_buf, ret);
-                if (ret <= 0) {
-                    err = wolfSSL_get_error(client->ssl, ret);
-                    if (err != WOLFSSL_ERROR_WANT_WRITE) {
-                        debug_print("TLS: Write error\n");
-                        tls_client_free(client);
-                    }
-                }
-            } else {
-                err = wolfSSL_get_error(client->ssl, ret);
-                if (err == WOLFSSL_ERROR_ZERO_RETURN) {
-                    /* Clean shutdown */
-                    debug_print("TLS: Client closed connection\n");
-                    tls_client_free(client);
-                } else if (err != WOLFSSL_ERROR_WANT_READ) {
-                    debug_print("TLS: Read error\n");
-                    tls_client_free(client);
-                }
-            }
+            tls_client_handle_data(client, event);
             break;
 
         default:
