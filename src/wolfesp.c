@@ -1664,6 +1664,9 @@ esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
     uint16_t                  ip_final_len = len;
     int                       esp_rc = 0;
 
+    if (!ll_dev || ll_dev->non_ethernet)
+        return 1;
+
     esp = (struct wolfIP_ip_packet *) frame;
     memcpy(esp, ip, ETH_HEADER_LEN + len);
 

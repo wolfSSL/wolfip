@@ -34,6 +34,13 @@ jobs:
           timeout --preserve-status 5m sudo ./build/test-evloop
           sudo killall tcpdump || true
 
+      - name: Run standalone "event loop" TUN test
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 5m sudo ./build/test-evloop-tun
+          sudo killall tcpdump || true
+
       - name: Run standalone "IPsec esp" test
         timeout-minutes: 7
         run: |
