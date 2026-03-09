@@ -139,7 +139,7 @@ int tls_server_init(struct wolfIP *stack, uint16_t port,
     debug_print("TLS: Loading certificate\n");
     ret = wolfSSL_CTX_use_certificate_buffer(server.ctx,
             (const unsigned char *)server_cert_pem,
-            server_cert_pem_len - 1, /* exclude null terminator */
+            server_cert_pem_len - 1,
             WOLFSSL_FILETYPE_PEM);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS: Failed to load certificate\n");
@@ -152,7 +152,7 @@ int tls_server_init(struct wolfIP *stack, uint16_t port,
     debug_print("TLS: Loading private key\n");
     ret = wolfSSL_CTX_use_PrivateKey_buffer(server.ctx,
             (const unsigned char *)server_key_pem,
-            server_key_pem_len - 1, /* exclude null terminator */
+            server_key_pem_len - 1,
             WOLFSSL_FILETYPE_PEM);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS: Failed to load private key\n");

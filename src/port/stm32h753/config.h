@@ -54,14 +54,17 @@
 #define WOLFIP_ENABLE_DHCP      1
 #endif
 
-#if WOLFIP_ENABLE_DHCP
-#define DHCP
-#else
-/* Static IP configuration (when DHCP disabled) */
+/* Static IP fallback (used when DHCP is disabled or times out) */
 #define WOLFIP_IP               "192.168.1.100"
 #define WOLFIP_NETMASK          "255.255.255.0"
 #define WOLFIP_GW               "192.168.1.1"
 #define WOLFIP_STATIC_DNS_IP    "8.8.8.8"
+
+#if WOLFIP_ENABLE_DHCP
+#define DHCP
+/* Reduce DHCP retries for faster fallback to static IP on demo boards */
+#define DHCP_DISCOVER_RETRIES 1
+#define DHCP_REQUEST_RETRIES  1
 #endif
 
 /* Hardware debug: uncomment to enable verbose GPIO/ETH/MDIO/DHCP logging */
