@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.7
+      image: ghcr.io/danielinux/m33mu-ci:1.8
       options: --privileged
 
     steps:
@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.7
+      image: ghcr.io/danielinux/m33mu-ci:1.8
       options: --privileged
 
     steps:
@@ -142,7 +142,6 @@ jobs:
             WOLFSSL_ROOT=../../../../wolfssl \
             ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_SSH=1 \
             WOLFSSL_SP_NO_ASM=1 \
-            EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
 
       - name: Run m33mu + DHCP + full test
@@ -324,7 +323,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.7
+      image: ghcr.io/danielinux/m33mu-ci:1.8
       options: --privileged
 
     steps:
@@ -348,11 +347,9 @@ jobs:
           set -euo pipefail
           make -C src/port/stm32h563 clean TZEN=0 ENABLE_HTTPS=1 \
             WOLFSSL_SP_NO_ASM=1 \
-            EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
           make -C src/port/stm32h563 TZEN=0 ENABLE_HTTPS=1 \
             WOLFSSL_SP_NO_ASM=1 \
-            EXTRA_CFLAGS_WOLFSSL='-fno-jump-tables -fno-tree-switch-conversion' \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
           strings src/port/stm32h563/app.bin | grep "Initializing HTTPS server" > /dev/null
 
