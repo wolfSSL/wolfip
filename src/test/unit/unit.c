@@ -7766,6 +7766,60 @@ START_TEST(test_dns_callback_short_header_ignored)
 }
 END_TEST
 
+START_TEST(test_dns_callback_wrong_id_ignored)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    const uint8_t ip_bytes[4] = {0x0A, 0x00, 0x00, 0x42};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    s.dns_query_type = DNS_QUERY_TYPE_A;
+    s.dns_id = 0x1234;
+    s.dns_lookup_cb = test_dns_lookup_cb;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(0x4321);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = sizeof(struct dns_header);
+    response[pos++] = 7; memcpy(&response[pos], "example", 7); pos += 7;
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(1);
+    pos += sizeof(struct dns_question);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type = ee16(DNS_A);
+    rr->class = ee16(1);
+    rr->ttl = ee32(60);
+    rr->rdlength = ee16(4);
+    pos += sizeof(struct dns_rr);
+    memcpy(&response[pos], ip_bytes, sizeof(ip_bytes));
+    pos += sizeof(ip_bytes);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+    ck_assert_int_eq(dns_lookup_calls, 0);
+    ck_assert_uint_eq(dns_lookup_ip, 0U);
+    ck_assert_uint_eq(s.dns_id, 0x1234);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+}
+END_TEST
+
 START_TEST(test_tcp_input_ttl_zero_sends_icmp)
 {
     struct wolfIP s;
@@ -18693,6 +18747,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
+    tcase_add_test(tc_utils, test_dns_callback_wrong_id_ignored);
     tcase_add_test(tc_utils, test_tcp_input_ttl_zero_sends_icmp);
     tcase_add_test(tc_utils, test_dns_callback_bad_rr_rdlen);
     tcase_add_test(tc_utils, test_dhcp_parse_offer_no_match);
