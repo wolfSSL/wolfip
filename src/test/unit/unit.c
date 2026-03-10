@@ -15293,6 +15293,68 @@ START_TEST(test_tcp_input_established_ack_only_returns)
 }
 END_TEST
 
+START_TEST(test_tcp_input_close_wait_processes_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *queued;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    queued = &segbuf.seg;
+    queued->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    queued->hlen = TCP_HEADER_LEN << 2;
+    queued->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ip.ver_ihl = 0x45;
+    ackseg.ip.ttl = 64;
+    ackseg.ip.proto = WI_IPPROTO_TCP;
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ackseg.ip.src = ee32(ts->remote_ip);
+    ackseg.ip.dst = ee32(ts->local_ip);
+    ackseg.src_port = ee16(ts->dst_port);
+    ackseg.dst_port = ee16(ts->src_port);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(101);
+    ackseg.win = ee16(32);
+    fix_tcp_checksums(&ackseg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &ackseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSE_WAIT);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 101U);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0U);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
+}
+END_TEST
+
 START_TEST(test_tcp_sock_close_state_transitions)
 {
     struct wolfIP s;
@@ -18717,6 +18779,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_port_mismatch_skips_socket);
     tcase_add_test(tc_utils, test_tcp_input_syn_bound_ip_mismatch);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_wrong_flags);
+    tcase_add_test(tc_utils, test_tcp_input_close_wait_processes_ack);
     tcase_add_test(tc_utils, test_tcp_input_established_ack_only_returns);
     tcase_add_test(tc_utils, test_tcp_input_syn_dst_not_local);
     tcase_add_test(tc_utils, test_tcp_input_syn_dst_outside_subnet);
