@@ -2092,6 +2092,7 @@ START_TEST(test_sock_bind_icmp_success)
 
     ck_assert_int_eq(wolfIP_sock_bind(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
     ck_assert_uint_eq(ts->src_port, 7U);
+    ck_assert_uint_eq(ts->bound_local_ip, 0x0A000001U);
 }
 END_TEST
 

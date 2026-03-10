@@ -4598,6 +4598,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 return -1;
             }
         }
+        ts->bound_local_ip = bind_ip;
         return 0;
     } else return -1;
 
