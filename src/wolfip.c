@@ -3110,7 +3110,10 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                     ack_frame_len = ETH_HEADER_LEN + ack_ip_len;
                 /* Prefer timestamp-based RTT sample from the incoming ACK. */
                 if (ack_frame_len == 0 || tcp_process_ts(t, tcp, ack_frame_len) < 0) {
-                    /* No usable TS echo; use coarse RTT sample from send timestamp. */
+                    /* No usable TS echo; use coarse RTT sample from send timestamp.
+                     * time_sent is stored modulo 2^32, so this subtraction remains
+                     * correct across a single tick wrap as long as the RTT sample
+                     * itself fits in 32 bits. */
                     if (t->S->last_tick >= fresh_desc->time_sent) {
                         uint32_t rtt = (uint32_t)(t->S->last_tick - fresh_desc->time_sent);
                         tcp_rto_update_from_sample(t, rtt);
