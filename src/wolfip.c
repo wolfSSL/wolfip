@@ -5912,7 +5912,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                             ((buf[pos + 1] & 0xFF) << 16) |
                             ((buf[pos + 0] & 0xFF) << 24);
                     if (s->dns_lookup_cb)
-                        s->dns_lookup_cb(ee32(ip));
+                        s->dns_lookup_cb(ip);
                     s->dns_id = 0;
                     s->dns_query_type = DNS_QUERY_TYPE_NONE;
                     return;

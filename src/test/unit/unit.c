@@ -2255,7 +2255,7 @@ START_TEST(test_dns_query_and_callback_a)
 
     dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
     ck_assert_int_eq(dns_lookup_calls, 1);
-    ck_assert_uint_eq(dns_lookup_ip, ee32(0x0A000042U));
+    ck_assert_uint_eq(dns_lookup_ip, 0x0A000042U);
     ck_assert_int_eq(s.dns_id, 0);
     ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
 }
