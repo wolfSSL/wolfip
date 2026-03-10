@@ -3110,7 +3110,10 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                     ack_frame_len = ETH_HEADER_LEN + ack_ip_len;
                 /* Prefer timestamp-based RTT sample from the incoming ACK. */
                 if (ack_frame_len == 0 || tcp_process_ts(t, tcp, ack_frame_len) < 0) {
-                    /* No usable TS echo; use coarse RTT sample from send timestamp. */
+                    /* No usable TS echo; use coarse RTT sample from send timestamp.
+                     * time_sent is stored modulo 2^32, so this subtraction remains
+                     * correct across a single tick wrap as long as the RTT sample
+                     * itself fits in 32 bits. */
                     if (t->S->last_tick >= fresh_desc->time_sent) {
                         uint32_t rtt = (uint32_t)(t->S->last_tick - fresh_desc->time_sent);
                         tcp_rto_update_from_sample(t, rtt);
@@ -3412,6 +3415,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
             }
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
+                    (t->sock.tcp.state == TCP_CLOSE_WAIT) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_2)) {
 
@@ -3792,15 +3796,24 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
             return -WOLFIP_EINVAL;
         ts->remote_ip = ee32(sin->sin_addr.s_addr);
-        if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
-        conf = wolfIP_ipconf_at(s, if_idx);
-        ts->if_idx = (uint8_t)if_idx;
-        if (ts->local_ip == 0 && conf && conf->ip != IPADDR_ANY)
-            ts->local_ip = conf->ip;
-        else if (ts->local_ip == 0) {
-            struct ipconf *primary = wolfIP_primary_ipconf(s);
-            if (primary && primary->ip != IPADDR_ANY)
-                ts->local_ip = primary->ip;
+        if (ts->bound_local_ip != IPADDR_ANY) {
+            int bound_match = 0;
+            unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
+            if (!bound_match)
+                return -WOLFIP_EINVAL;
+            ts->if_idx = (uint8_t)bound_if;
+            ts->local_ip = ts->bound_local_ip;
+        } else {
+            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            conf = wolfIP_ipconf_at(s, if_idx);
+            ts->if_idx = (uint8_t)if_idx;
+            if (ts->local_ip == 0 && conf && conf->ip != IPADDR_ANY)
+                ts->local_ip = conf->ip;
+            else if (ts->local_ip == 0) {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    ts->local_ip = primary->ip;
+            }
         }
         return 0;
     }
@@ -4120,16 +4133,25 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             if (ts->src_port == 0)
                 ts->src_port = 1;
         }
-        if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
-        conf = wolfIP_ipconf_at(s, if_idx);
-        ts->if_idx = (uint8_t)if_idx;
-        if (ts->local_ip == 0) {
-            if (conf && conf->ip != IPADDR_ANY)
-                ts->local_ip = conf->ip;
-            else {
-                struct ipconf *primary = wolfIP_primary_ipconf(s);
-                if (primary && primary->ip != IPADDR_ANY)
-                    ts->local_ip = primary->ip;
+        if (ts->bound_local_ip != IPADDR_ANY) {
+            int bound_match = 0;
+            unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
+            if (!bound_match)
+                return -WOLFIP_EINVAL;
+            ts->if_idx = (uint8_t)bound_if;
+            ts->local_ip = ts->bound_local_ip;
+        } else {
+            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            conf = wolfIP_ipconf_at(s, if_idx);
+            ts->if_idx = (uint8_t)if_idx;
+            if (ts->local_ip == 0) {
+                if (conf && conf->ip != IPADDR_ANY)
+                    ts->local_ip = conf->ip;
+                else {
+                    struct ipconf *primary = wolfIP_primary_ipconf(s);
+                    if (primary && primary->ip != IPADDR_ANY)
+                        ts->local_ip = primary->ip;
+                }
             }
         }
         if (sizeof(struct wolfIP_ip_packet) + payload_len > sizeof(frame))
@@ -4598,6 +4620,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 return -1;
             }
         }
+        ts->bound_local_ip = bind_ip;
         return 0;
     } else return -1;
 
@@ -5855,6 +5878,16 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
     return -1;
 }
 
+static void dns_abort_query(struct wolfIP *s)
+{
+    if (!s)
+        return;
+    s->dns_id = 0;
+    s->dns_query_type = DNS_QUERY_TYPE_NONE;
+    s->dns_lookup_cb = NULL;
+    s->dns_ptr_cb = NULL;
+}
+
 void dns_callback(int dns_sd, uint16_t ev, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
@@ -5868,10 +5901,12 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
         if (dns_len < 0) {
             wolfIP_sock_close(s, dns_sd);
             s->dns_udp_sd = -1;
-            s->dns_id = 0;
+            dns_abort_query(s);
             return;
         }
         if (dns_len < (int)sizeof(struct dns_header))
+            return;
+        if (ee16(hdr->id) != s->dns_id)
             return;
         /* Parse DNS response */
         if ((ee16(hdr->flags) & 0x8100) == 0x8100) {
@@ -5881,7 +5916,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
             while (qcount-- > 0) {
                 pos = dns_skip_name((const uint8_t *)buf, dns_len, pos);
                 if (pos < 0 || pos + (int)sizeof(struct dns_question) > dns_len) {
-                    s->dns_id = 0;
+                    dns_abort_query(s);
                     return;
                 }
                 pos += sizeof(struct dns_question);
@@ -5891,20 +5926,20 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 uint16_t rdlen;
                 pos = dns_skip_name((const uint8_t *)buf, dns_len, pos);
                 if (pos < 0 || pos + (int)sizeof(struct dns_rr) > dns_len) {
-                    s->dns_id = 0;
+                    dns_abort_query(s);
                     return;
                 }
                 rr = (struct dns_rr *)(buf + pos);
                 pos += sizeof(struct dns_rr);
                 rdlen = ee16(rr->rdlength);
                 if (pos + rdlen > dns_len) {
-                    s->dns_id = 0;
+                    dns_abort_query(s);
                     return;
                 }
                 if (s->dns_query_type == DNS_QUERY_TYPE_A && ee16(rr->type) == DNS_A && rdlen >= 4) {
                     uint32_t ip;
                     if (pos + 4 > dns_len) {
-                        s->dns_id = 0;
+                        dns_abort_query(s);
                         return;
                     }
                     ip = (buf[pos + 3] & 0xFF) |
@@ -5912,17 +5947,15 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                             ((buf[pos + 1] & 0xFF) << 16) |
                             ((buf[pos + 0] & 0xFF) << 24);
                     if (s->dns_lookup_cb)
-                        s->dns_lookup_cb(ee32(ip));
-                    s->dns_id = 0;
-                    s->dns_query_type = DNS_QUERY_TYPE_NONE;
+                        s->dns_lookup_cb(ip);
+                    dns_abort_query(s);
                     return;
                 } else if (s->dns_query_type == DNS_QUERY_TYPE_PTR && ee16(rr->type) == DNS_PTR) {
                     if (dns_copy_name((const uint8_t *)buf, dns_len, pos,
                             s->dns_ptr_name, sizeof(s->dns_ptr_name)) == 0) {
                         if (s->dns_ptr_cb)
                             s->dns_ptr_cb(s->dns_ptr_name);
-                        s->dns_id = 0;
-                        s->dns_query_type = DNS_QUERY_TYPE_NONE;
+                        dns_abort_query(s);
                         return;
                     }
                 }
