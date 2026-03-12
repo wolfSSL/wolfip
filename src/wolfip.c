@@ -117,7 +117,10 @@ struct wolfIP_icmp_packet;
 #define IP_MTU_MAX 1500U
 #define WI_IP_STD_MTU IP_MTU_MAX
 #define WI_IP_MTU WI_IP_STD_MTU
-#define TCP_MSS (WI_IP_STD_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
+/* Maximum MSS based on standard MTU; prefer per-socket MSS where possible. */
+#define TCP_MSS_MAX (WI_IP_STD_MTU - (IP_HEADER_LEN + TCP_HEADER_LEN))
+/* Compatibility alias for legacy fixed-size uses. */
+#define TCP_MSS TCP_MSS_MAX
 #define TCP_DEFAULT_MSS 536U
 #define TCP_CTRL_RTO_MAXRTX 6U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
@@ -683,7 +686,7 @@ struct tcp_sack_block {
 struct tcp_ooo_seg {
     uint32_t seq, len;
     uint8_t used;
-    uint8_t data[TCP_MSS];
+    uint8_t data[TCP_MSS_MAX];
 };
 
 /* UDP datagram */
@@ -1272,6 +1275,15 @@ static inline uint32_t wolfIP_socket_tcp_mss(const struct tsocket *t)
     return ip_mtu - (IP_HEADER_LEN + TCP_HEADER_LEN);
 }
 
+static inline uint32_t tcp_cc_mss(const struct tsocket *t)
+{
+    uint32_t mss = t ? wolfIP_socket_tcp_mss(t) : TCP_MSS_MAX;
+
+    if (mss == 0)
+        mss = TCP_MSS_MAX;
+    return mss;
+}
+
 static inline uint32_t tcp_tx_payload_cap(const struct tsocket *t)
 {
     uint32_t cap = wolfIP_socket_tcp_mss(t);
@@ -1816,11 +1828,11 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
 }
 
 /* TCP */
-static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd)
+static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd, uint32_t smss)
 {
     uint32_t cwnd = peer_rwnd / 2U;
     uint32_t tx_half = TXBUF_SIZE / 2U;
-    uint32_t min_cwnd = 2U * TCP_MSS;
+    uint32_t min_cwnd = 2U * smss;
 
     if (cwnd > tx_half)
         cwnd = tx_half;
@@ -1862,7 +1874,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.ctrl_rto_active = 0;
             t->sock.tcp.last_early_rexmit_ack = 0;
             t->sock.tcp.peer_rwnd = 0xFFFF;
-            t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+            t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
             t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
             t->sock.tcp.peer_mss = TCP_DEFAULT_MSS;
             t->sock.tcp.snd_wscale = 0;
@@ -2074,7 +2086,7 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
      * - cache full: reject (caller still ACKs; peer will retransmit)
      *
      * SACK block generation is rebuilt from cache state after each update. */
-    if (len == 0 || len > TCP_MSS)
+    if (len == 0 || len > TCP_MSS_MAX)
         return -1;
     for (i = 0; i < TCP_OOO_MAX_SEGS; i++) {
         if (!t->sock.tcp.ooo[i].used) {
@@ -3199,16 +3211,19 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             }
             /* Grow cwnd only on forward ACK progress (never on duplicate ACKs),
              * and only if we were cwnd-limited. */
-            if (ack_advanced &&
-                    ((t->sock.tcp.cwnd <= inflight_pre + TCP_MSS) ||
-                     (t->sock.tcp.cwnd <= 2 * TCP_MSS))) {
-                if (t->sock.tcp.cwnd < t->sock.tcp.ssthresh) {
-                    t->sock.tcp.cwnd += TCP_MSS;
-                } else {
-                    t->sock.tcp.cwnd_count += TCP_MSS;
-                    if (t->sock.tcp.cwnd_count >= t->sock.tcp.cwnd) {
-                        t->sock.tcp.cwnd_count -= t->sock.tcp.cwnd;
-                        t->sock.tcp.cwnd += TCP_MSS;
+            {
+                uint32_t smss = tcp_cc_mss(t);
+                if (ack_advanced &&
+                        ((t->sock.tcp.cwnd <= inflight_pre + smss) ||
+                         (t->sock.tcp.cwnd <= 2 * smss))) {
+                    if (t->sock.tcp.cwnd < t->sock.tcp.ssthresh) {
+                        t->sock.tcp.cwnd += smss;
+                    } else {
+                        t->sock.tcp.cwnd_count += smss;
+                        if (t->sock.tcp.cwnd_count >= t->sock.tcp.cwnd) {
+                            t->sock.tcp.cwnd_count -= t->sock.tcp.cwnd;
+                            t->sock.tcp.cwnd += smss;
+                        }
                     }
                 }
             }
@@ -3236,11 +3251,14 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         }
         if (t->sock.tcp.dup_acks < 3)
             return;
-        t->sock.tcp.ssthresh = t->sock.tcp.cwnd / 2;
-        if (t->sock.tcp.ssthresh < 2 * TCP_MSS) {
-            t->sock.tcp.ssthresh = 2 * TCP_MSS;
+        {
+            uint32_t smss = tcp_cc_mss(t);
+            t->sock.tcp.ssthresh = t->sock.tcp.cwnd / 2;
+            if (t->sock.tcp.ssthresh < 2 * smss) {
+                t->sock.tcp.ssthresh = 2 * smss;
+            }
+            t->sock.tcp.cwnd = t->sock.tcp.ssthresh + smss;
         }
-        t->sock.tcp.cwnd = t->sock.tcp.ssthresh + TCP_MSS;
         t->sock.tcp.cwnd_count = 0;
         (void)tcp_mark_unsacked_for_retransmit(t, ack);
     }
@@ -3450,7 +3468,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
-                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
                         t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                         if (tx_has_writable_space(t))
                             t->events |= CB_EVENT_WRITABLE;
@@ -3474,7 +3492,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->sock.tcp.ack = ee32(tcp->seq);
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
-                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd);
+                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
                         t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                         if (tx_has_writable_space(t))
                             t->events |= CB_EVENT_WRITABLE;
@@ -3675,10 +3693,13 @@ static void tcp_rto_cb(void *arg)
             return;
         }
         ts->sock.tcp.rto_backoff++;
-        ts->sock.tcp.cwnd = TCP_MSS;
-        ts->sock.tcp.ssthresh = prev_in_flight / 2;
-        if (ts->sock.tcp.ssthresh < (2 * TCP_MSS))
-            ts->sock.tcp.ssthresh = 2 * TCP_MSS;
+        {
+            uint32_t smss = tcp_cc_mss(ts);
+            ts->sock.tcp.cwnd = smss;
+            ts->sock.tcp.ssthresh = prev_in_flight / 2;
+            if (ts->sock.tcp.ssthresh < (2 * smss))
+                ts->sock.tcp.ssthresh = 2 * smss;
+        }
 
         ptmr = &tmr;
         ptmr->expires = ts->S->last_tick + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
@@ -3994,7 +4015,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.snd_una = newts->sock.tcp.seq;
             newts->sock.tcp.last_ts = ts->sock.tcp.last_ts;
             newts->sock.tcp.peer_rwnd = ts->sock.tcp.peer_rwnd;
-            newts->sock.tcp.cwnd = tcp_initial_cwnd(newts->sock.tcp.peer_rwnd);
+            newts->sock.tcp.cwnd = tcp_initial_cwnd(newts->sock.tcp.peer_rwnd, tcp_cc_mss(newts));
             newts->sock.tcp.ssthresh = tcp_initial_ssthresh(newts->sock.tcp.peer_rwnd);
             newts->sock.tcp.peer_mss = ts->sock.tcp.peer_mss;
             newts->sock.tcp.snd_wscale = ts->sock.tcp.snd_wscale;

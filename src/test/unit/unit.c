@@ -14569,6 +14569,62 @@ START_TEST(test_tcp_ack_updates_rtt_and_cwnd)
 }
 END_TEST
 
+START_TEST(test_tcp_ack_uses_interface_mss_for_cwnd_growth)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTION_TS_LEN + 1];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *tsopt;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+    uint32_t smss;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ck_assert_int_eq(wolfIP_mtu_set(&s, TEST_PRIMARY_IF, 320U), 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    smss = tcp_cc_mss(ts);
+    ts->sock.tcp.cwnd = smss;
+    ts->sock.tcp.ssthresh = smss * 4;
+    ts->sock.tcp.peer_rwnd = smss * 8;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    s.last_tick = 1000;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.len = ee16(IP_HEADER_LEN + (TCP_HEADER_LEN + TCP_OPTION_TS_LEN) + 1);
+    seg->hlen = (TCP_HEADER_LEN + TCP_OPTION_TS_LEN) << 2;
+    seg->seq = ee32(100);
+    tsopt = (struct tcp_opt_ts *)seg->data;
+    tsopt->opt = TCP_OPTION_TS;
+    tsopt->len = TCP_OPTION_TS_LEN;
+    tsopt->val = ee32(123);
+    tsopt->ecr = ee32(990);
+
+    fifo_push(&ts->sock.tcp.txbuf, seg, sizeof(buf));
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    ts->sock.tcp.bytes_in_flight = ts->sock.tcp.cwnd;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100 + smss;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(101);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+
+    tcp_ack(ts, &ackseg);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, smss * 2);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_last_seq_not_last_ack_state)
 {
     struct wolfIP s;
@@ -19361,6 +19417,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_discards_zero_len_segment);
     tcase_add_test(tc_utils, test_tcp_ack_cwnd_count_wrap);
     tcase_add_test(tc_utils, test_tcp_ack_updates_rtt_and_cwnd);
+    tcase_add_test(tc_utils, test_tcp_ack_uses_interface_mss_for_cwnd_growth);
     tcase_add_test(tc_utils, test_tcp_ack_last_seq_not_last_ack_state);
     tcase_add_test(tc_utils, test_tcp_ack_no_progress_when_ack_far_ahead);
     tcase_add_test(tc_utils, test_tcp_ack_coarse_rtt_sets_writable);
