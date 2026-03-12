@@ -204,8 +204,11 @@ Per-interface versions of the IP configuration helpers. The legacy functions tar
 ```c
 struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s);
 struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+int wolfIP_mtu_set(struct wolfIP *s, unsigned int if_idx, uint32_t mtu);
+int wolfIP_mtu_get(struct wolfIP *s, unsigned int if_idx, uint32_t *mtu);
 ```
 Access the link-layer descriptor(s) that should be wired to hardware drivers. `_ex` returns `NULL` if `if_idx` exceeds `WOLFIP_MAX_INTERFACES`.
+`wolfIP_mtu_set()` updates the effective per-interface MTU, treating `0` as the default `LINK_MTU` and clamping to `[LINK_MTU_MIN, LINK_MTU]`. `wolfIP_mtu_get()` returns the effective MTU currently used by the stack.
 
 ## DHCP Client Functions
 

@@ -254,6 +254,8 @@ void wolfIP_ipconfig_get(struct wolfIP *s, ip4 *ip, ip4 *mask, ip4 *gw);
 
 struct wolfIP_ll_dev *wolfIP_getdev(struct wolfIP *s);
 struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx);
+int wolfIP_mtu_set(struct wolfIP *s, unsigned int if_idx, uint32_t mtu);
+int wolfIP_mtu_get(struct wolfIP *s, unsigned int if_idx, uint32_t *mtu);
 void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
 

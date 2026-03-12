@@ -5584,6 +5584,33 @@ struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx)
     return wolfIP_ll_at(s, if_idx);
 }
 
+int wolfIP_mtu_set(struct wolfIP *s, unsigned int if_idx, uint32_t mtu)
+{
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+
+    if (!ll)
+        return -WOLFIP_EINVAL;
+    if (mtu == 0)
+        ll->mtu = LINK_MTU;
+    else if (mtu < LINK_MTU_MIN)
+        ll->mtu = LINK_MTU_MIN;
+    else if (mtu > LINK_MTU)
+        ll->mtu = LINK_MTU;
+    else
+        ll->mtu = mtu;
+    return 0;
+}
+
+int wolfIP_mtu_get(struct wolfIP *s, unsigned int if_idx, uint32_t *mtu)
+{
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+
+    if (!ll || !mtu)
+        return -WOLFIP_EINVAL;
+    *mtu = wolfIP_ll_frame_mtu(ll);
+    return 0;
+}
+
 #ifndef WOLFIP_NOSTATIC
 static struct wolfIP wolfIP_static;
 void wolfIP_init_static(struct wolfIP **s)
