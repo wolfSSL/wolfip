@@ -97,6 +97,7 @@ struct wolfIP_ll_dev {
     uint8_t mac[6];
     char ifname[16];
     uint8_t non_ethernet;
+    uint32_t mtu;
     /* poll function */
     int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
     /* send function */

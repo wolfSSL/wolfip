@@ -27,6 +27,7 @@ struct wolfIP_ll_dev {
     uint8_t mac[6];          // Device MAC address
     char ifname[16];         // Interface name
     uint8_t non_ethernet;    // L3-only link (no Ethernet header/ARP when set)
+    uint32_t mtu;            // Optional max frame size, defaults to LINK_MTU
     int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Receive function
     int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);  // Transmit function
 };

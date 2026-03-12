@@ -7,6 +7,12 @@
 
 #define ETHERNET
 #define LINK_MTU 1536
+#ifndef LINK_MTU_MIN
+#define LINK_MTU_MIN 64
+#endif
+#if LINK_MTU < LINK_MTU_MIN
+#error "LINK_MTU must be greater than or equal to LINK_MTU_MIN"
+#endif
 
 #define MAX_TCPSOCKETS 4
 #define MAX_UDPSOCKETS 2
