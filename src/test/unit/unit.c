@@ -7712,6 +7712,57 @@ START_TEST(test_udp_try_recv_short_expected_len)
 }
 END_TEST
 
+START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
+{
+    struct wolfIP s;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    struct wolfIP_icmp_ttl_exceeded_packet *icmp;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t remote_ip = 0x0A000002U;
+    uint8_t src_mac[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    memset(udp_buf, 0, sizeof(udp_buf));
+    memcpy(udp->ip.eth.src, src_mac, sizeof(src_mac));
+    memcpy(udp->ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    udp->ip.eth.type = ee16(ETH_TYPE_IP);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->ip.src = ee32(remote_ip);
+    udp->ip.dst = ee32(local_ip);
+    udp->src_port = ee16(4321);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    memcpy(udp->data, "test", 4);
+    fix_udp_checksums(udp);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+
+    ck_assert_uint_eq(last_frame_sent_size,
+            sizeof(struct wolfIP_icmp_ttl_exceeded_packet));
+    icmp = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
+    ck_assert_uint_eq(icmp->type, 3U);
+    ck_assert_uint_eq(icmp->code, 3U);
+    ck_assert_mem_eq(icmp->unused, "\x00\x00\x00\x00", sizeof(icmp->unused));
+    ck_assert_mem_eq(icmp->ip.eth.dst, src_mac, 6);
+    ck_assert_mem_eq(icmp->ip.eth.src, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    ck_assert_uint_eq(ee32(icmp->ip.src), local_ip);
+    ck_assert_uint_eq(ee32(icmp->ip.dst), remote_ip);
+    ck_assert_mem_eq(icmp->orig_packet, ((uint8_t *)udp) + ETH_HEADER_LEN,
+            TTL_EXCEEDED_ORIG_PACKET_SIZE);
+}
+END_TEST
+
 START_TEST(test_dns_callback_bad_flags)
 {
     struct wolfIP s;
@@ -19071,6 +19122,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_short_expected_len);
     tcase_add_test(tc_utils, test_udp_try_recv_conf_null);
     tcase_add_test(tc_utils, test_udp_try_recv_remote_ip_matches_local_ip);
+    tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
