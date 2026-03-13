@@ -4939,6 +4939,8 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
         return -1;
     if (ee32(msg->magic) != DHCP_MAGIC)
         return -1;
+    if (ee32(msg->xid) != s->dhcp_xid)
+        return -1;
     if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
         opt_end = (uint8_t *)msg->options + sizeof(msg->options);
     else
@@ -5033,6 +5035,8 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
     if (ee32(msg->magic) != DHCP_MAGIC)
+        return -1;
+    if (ee32(msg->xid) != s->dhcp_xid)
         return -1;
     if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
         opt_end = (uint8_t *)msg->options + sizeof(msg->options);

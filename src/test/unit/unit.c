@@ -8789,6 +8789,69 @@ START_TEST(test_dhcp_parse_ack_missing_end_rejected)
 }
 END_TEST
 
+START_TEST(test_dhcp_parse_offer_rejects_mismatched_xid)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_xid = 0x12345678U;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(0x87654321U);
+    msg.yiaddr = ee32(0x0A000064U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), -1);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+}
+END_TEST
+
+START_TEST(test_dhcp_parse_ack_rejects_mismatched_xid)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_ip = 0x0A000064U;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(0x87654321U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(primary->ip, 0U);
+}
+END_TEST
+
 START_TEST(test_dhcp_parse_offer_bad_magic_rejected)
 {
     struct wolfIP s;
@@ -19620,6 +19683,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_and_ack);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_defaults_mask_when_missing);
+    tcase_add_test(tc_proto, test_dhcp_parse_offer_rejects_mismatched_xid);
+    tcase_add_test(tc_proto, test_dhcp_parse_ack_rejects_mismatched_xid);
     tcase_add_test(tc_proto, test_tcp_handshake_and_fin_close_wait);
 
     tcase_add_test(tc_proto, test_regression_snd_una_initialized_on_syn_rcvd);
