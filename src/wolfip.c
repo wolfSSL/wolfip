@@ -3313,6 +3313,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                       struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
 {
     int i;
+    int matched = 0;
 
     /* validate minimum TCP segment length */
     if (frame_len < sizeof(struct wolfIP_tcp_seg))
@@ -3363,11 +3364,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
             }
-            /* Check IP ttl */
-            if (tcp->ip.ttl == 0) {
-                wolfIP_send_ttl_exceeded(S, if_idx, &tcp->ip);
-                return;
-            }
+            matched = 1;
             /* Validate minimum TCP header length (data offset). */
             if ((tcp->hlen >> 2) < TCP_HEADER_LEN) {
                 return; /* malformed: TCP header below minimum length */
@@ -3605,7 +3602,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
         }
     }
-    tcp_send_reset_reply(S, if_idx, tcp);
+    if (!matched)
+        tcp_send_reset_reply(S, if_idx, tcp);
 }
 
 static void tcp_rto_cb(void *arg)
