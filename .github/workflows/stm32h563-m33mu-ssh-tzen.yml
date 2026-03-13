@@ -34,11 +34,11 @@ jobs:
             git clone --depth 1 --branch master https://github.com/wolfSSL/wolfssh.git ../wolfssh
           fi
 
-      - name: Build STM32H563 SSH (TZEN off)
+      - name: Build STM32H563 SSH (TZEN on)
         run: |
           set -euo pipefail
-          make -C src/port/stm32h563 clean
-          make -C src/port/stm32h563 TZEN=0 ENABLE_SSH=1 \
+          make -C src/port/stm32h563 clean TZEN=1 ENABLE_SSH=1
+          make -C src/port/stm32h563 TZEN=1 ENABLE_SSH=1 \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
           strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
           grep -Fq "Initializing SSH server" /tmp/wolfip-app.strings

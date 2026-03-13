@@ -181,12 +181,12 @@ WOLFSSL_SRCS := \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wc_port.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c
+    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c
 
 ifeq ($(WOLFSSL_SP_NO_ASM),1)
 CFLAGS += -DWOLFSSL_SP_NO_ASM
 CFLAGS_WOLFSSL += -DWOLFSSL_SP_NO_ASM
+WOLFSSL_SRCS += $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c
 else
 WOLFSSL_SRCS += $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c
 endif
@@ -359,7 +359,7 @@ app.bin: app.elf
 
 # wolfSSL objects use relaxed warnings + user_settings.h + include paths
 $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFSSL_ROOT) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH -DWOLFSSL_WOLFSSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFSSL_ROOT) -c $< -o $@
 
 clean:
 	rm -f *.o app.elf app.bin

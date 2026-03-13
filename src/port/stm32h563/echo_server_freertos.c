@@ -30,6 +30,14 @@ static void echo_debug(const char *msg)
     }
 }
 
+static void echo_debug_port(const char *prefix, uint16_t port)
+{
+    char msg[96];
+
+    (void)snprintf(msg, sizeof(msg), "%s %u\n", prefix, (unsigned)port);
+    echo_debug(msg);
+}
+
 static void echo_debug_diag(const char *phase)
 {
     char msg[128];
@@ -95,7 +103,7 @@ static void echo_server_task(void *arg)
         return;
     }
 
-    echo_debug("Echo/FreeRTOS: Server ready on port 7\n");
+    echo_debug_port("Echo/FreeRTOS: Server ready on port", task_ctx->port);
     echo_debug_diag("server ready");
 
     for (;;) {

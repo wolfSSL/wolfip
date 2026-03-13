@@ -92,7 +92,7 @@ build_https_freertos() {
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
   grep -Fq "FreeRTOS BSD socket layer" /tmp/wolfip-app.strings
-  grep -Fq "HTTPS/FreeRTOS: Server ready on port 443" /tmp/wolfip-app.strings
+  grep -Fq "HTTPS/FreeRTOS: Server ready on port" /tmp/wolfip-app.strings
 }
 
 build_echo_freertos() {
@@ -103,14 +103,14 @@ build_echo_freertos() {
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
   grep -Fq "FreeRTOS BSD socket layer" /tmp/wolfip-app.strings
-  grep -Fq "Echo/FreeRTOS: Server ready on port 7" /tmp/wolfip-app.strings
+  grep -Fq "Echo/FreeRTOS: Server ready on port" /tmp/wolfip-app.strings
 }
 
 build_ssh_tzen() {
   ensure_repo wolfssl https://github.com/wolfSSL/wolfssl.git
   ensure_repo wolfssh https://github.com/wolfSSL/wolfssh.git
-  make -C src/port/stm32h563 clean
-  make -C src/port/stm32h563 TZEN=0 ENABLE_SSH=1 \
+  make -C src/port/stm32h563 clean TZEN=1 ENABLE_SSH=1
+  make -C src/port/stm32h563 TZEN=1 ENABLE_SSH=1 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   sleep 2
   strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings

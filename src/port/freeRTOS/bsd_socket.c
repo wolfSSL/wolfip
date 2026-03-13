@@ -314,7 +314,7 @@ int accept(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
             }
             return public_fd;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;
@@ -346,7 +346,7 @@ int connect(int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen)
             xSemaphoreGive(g_lock);
             return 0;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;
@@ -378,7 +378,7 @@ int send(int sockfd, const void *buf, size_t len, int flags)
             xSemaphoreGive(g_lock);
             return ret;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;
@@ -411,7 +411,7 @@ int sendto(int sockfd, const void *buf, size_t len, int flags,
             xSemaphoreGive(g_lock);
             return ret;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;
@@ -443,7 +443,7 @@ int recv(int sockfd, void *buf, size_t len, int flags)
             xSemaphoreGive(g_lock);
             return ret;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;
@@ -476,7 +476,7 @@ int recvfrom(int sockfd, void *buf, size_t len, int flags,
             xSemaphoreGive(g_lock);
             return ret;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;
@@ -578,7 +578,7 @@ int close(int sockfd)
             xSemaphoreGive(g_lock);
             return ret;
         }
-        if (ret != -WOLFIP_EAGAIN && ret != -1) {
+        if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
             return -1;

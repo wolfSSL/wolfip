@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/danielinux/m33mu-ci:1.8
+      options: --privileged
     steps:
       - name: Checkout
         uses: actions/checkout@v4

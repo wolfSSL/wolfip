@@ -712,8 +712,12 @@ int main(void)
     {
         uint32_t i;
 
-        /* Enable SAU with ALLNS mode (all undefined regions are non-secure) */
-        SAU_CTRL = 0x03u;  /* ENABLE + ALLNS */
+        /* Expose only the Ethernet DMA window as non-secure. Leaving ALLNS
+         * clear keeps the rest of secure flash/SRAM/peripherals secure. */
+        SAU_RNR = 0u;
+        SAU_RBAR = 0x20098000u & 0xFFFFFFE0u;
+        SAU_RLAR = (0x2009FFFFu & 0xFFFFFFE0u) | 1u;
+        SAU_CTRL = 0x01u;  /* ENABLE */
         __asm volatile ("dsb sy" ::: "memory");
         __asm volatile ("isb sy" ::: "memory");
 

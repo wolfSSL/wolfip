@@ -12,9 +12,7 @@
 #include "config.h"
 #include "wolfip.h"
 
-#include <wolfssl/internal.h>
 #include <wolfssl/wolfcrypt/settings.h>
-#include <wolfssl/wolfcrypt/ecc.h>
 #include <wolfssl/ssl.h>
 
 #define FREERTOS_HTTPS_TASK_NAME        "https"
@@ -31,7 +29,6 @@ typedef struct {
 static freertos_https_task_ctx g_https_task_ctx;
 static char g_https_request[512];
 static char g_https_response[768];
-static int g_https_ecc_dumped;
 
 int custom_rand_gen_block(unsigned char *output, unsigned int sz)
 {
@@ -59,6 +56,14 @@ static void https_debug_error(const char *prefix, int wolfssl_err, int sock_err)
     https_debug(msg);
 }
 
+static void https_debug_port(const char *prefix, uint16_t port)
+{
+    char msg[96];
+
+    (void)snprintf(msg, sizeof(msg), "%s %u\n", prefix, (unsigned)port);
+    https_debug(msg);
+}
+
 static void https_debug_diag(const char *phase)
 {
     char msg[128];
@@ -77,88 +82,6 @@ static void https_debug_diag(const char *phase)
         (unsigned long)free_heap,
         (unsigned long)min_heap);
     https_debug(msg);
-}
-
-static void https_debug_hex(const char *prefix, const byte *buf, word32 len)
-{
-    static const char hex[] = "0123456789abcdef";
-    char msg[96];
-    word32 i;
-    word32 pos;
-
-    if (buf == NULL) {
-        https_debug(prefix);
-        https_debug(" <null>\n");
-        return;
-    }
-
-    for (i = 0; i < len; ) {
-        pos = 0;
-        pos += (word32)snprintf(msg, sizeof(msg), "%s", prefix);
-        while (i < len && pos + 3 < sizeof(msg)) {
-            msg[pos++] = hex[(buf[i] >> 4) & 0x0Fu];
-            msg[pos++] = hex[buf[i] & 0x0Fu];
-            i++;
-        }
-        msg[pos++] = '\n';
-        msg[pos] = '\0';
-        https_debug(msg);
-    }
-}
-
-static void https_debug_tls13_ecc_state(WOLFSSL *ssl)
-{
-    ecc_key *key;
-    byte priv[80];
-    byte pub[160];
-    word32 priv_len;
-    word32 pub_len;
-    int ret;
-    char msg[128];
-
-    if (ssl == NULL || g_https_ecc_dumped) {
-        return;
-    }
-
-    (void)snprintf(msg, sizeof(msg),
-        "HTTPS/FreeRTOS: TLS13 state namedGroup=0x%04x serverState=%u eccTempKeyPresent=%u\n",
-        (unsigned)ssl->namedGroup, (unsigned)ssl->options.serverState,
-        (unsigned)ssl->eccTempKeyPresent);
-    https_debug(msg);
-
-    key = ssl->eccTempKey;
-    if (key == NULL) {
-        https_debug("HTTPS/FreeRTOS: eccTempKey is null\n");
-        return;
-    }
-
-    ret = wc_ecc_check_key(key);
-    (void)snprintf(msg, sizeof(msg),
-        "HTTPS/FreeRTOS: eccTempKey curve_id=%d key_size=%d check=%d\n",
-        key->dp != NULL ? key->dp->id : -1, wc_ecc_size(key), ret);
-    https_debug(msg);
-
-    priv_len = (word32)sizeof(priv);
-    ret = wc_ecc_export_private_only(key, priv, &priv_len);
-    (void)snprintf(msg, sizeof(msg),
-        "HTTPS/FreeRTOS: eccTempKey private_export=%d len=%lu\n",
-        ret, (unsigned long)priv_len);
-    https_debug(msg);
-    if (ret == 0) {
-        https_debug_hex("HTTPS/FreeRTOS: eccTempKey d=", priv, priv_len);
-    }
-
-    pub_len = (word32)sizeof(pub);
-    ret = wc_ecc_export_x963(key, pub, &pub_len);
-    (void)snprintf(msg, sizeof(msg),
-        "HTTPS/FreeRTOS: eccTempKey public_export=%d len=%lu\n",
-        ret, (unsigned long)pub_len);
-    https_debug(msg);
-    if (ret == 0) {
-        https_debug_hex("HTTPS/FreeRTOS: eccTempKey x963=", pub, pub_len);
-    }
-
-    g_https_ecc_dumped = 1;
 }
 
 static int https_tls_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx)
@@ -198,8 +121,6 @@ static int https_tls_send(WOLFSSL *ssl, char *buf, int sz, void *ctx)
     if (ctx == NULL) {
         return WOLFSSL_CBIO_ERR_GENERAL;
     }
-
-    https_debug_tls13_ecc_state(ssl);
 
     fd = *(const int *)ctx;
     ret = send(fd, buf, (size_t)sz, 0);
@@ -252,7 +173,6 @@ static void https_serve_client(WOLFSSL_CTX *ctx, struct wolfIP *stack, int clien
     if (ret != WOLFSSL_SUCCESS) {
         err = wolfSSL_get_error(ssl, ret);
         https_debug_diag("accept failed");
-        https_debug_tls13_ecc_state(ssl);
         https_debug_error("HTTPS/FreeRTOS: TLS handshake failed",
             err, socket_last_error());
         wolfSSL_free(ssl);
@@ -383,7 +303,7 @@ static void https_server_task(void *arg)
         return;
     }
 
-    https_debug("HTTPS/FreeRTOS: Server ready on port 443\n");
+    https_debug_port("HTTPS/FreeRTOS: Server ready on port", task_ctx->port);
     https_debug_diag("server ready");
 
     for (;;) {

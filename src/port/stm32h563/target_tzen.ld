@@ -20,6 +20,11 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _sidata = LOADADDR(.data);
 
+/* Heap and stack sizes */
+_Min_Heap_Size = 0x10000;   /* 64KB heap */
+_Min_Stack_Size = 0x8000;   /* 32KB stack (SP math needs headroom) */
+_heap_limit = _estack - _Min_Stack_Size;
+
 SECTIONS
 {
     .isr_vector :
@@ -68,9 +73,11 @@ SECTIONS
 
     .bss (NOLOAD) :
     {
+        . = ALIGN(4);
         _sbss = .;
         *(.bss*)
         *(COMMON)
+        . = ALIGN(4);
         _ebss = .;
     } > RAM
 
@@ -82,4 +89,18 @@ SECTIONS
         . = ALIGN(32);
         _eth_end = .;
     } > ETHMEM
+
+    /* Reserve minimum heap + stack space so the linker errors if RAM is full.
+     * Heap starts just after BSS at 'end'/'_end'. Stack grows down from
+     * _estack (top of RAM); _heap_limit = _estack - _Min_Stack_Size is the
+     * enforced upper bound used by _sbrk(). */
+    ._user_heap_stack (NOLOAD) :
+    {
+        . = ALIGN(8);
+        PROVIDE ( end = . );
+        PROVIDE ( _end = . );
+        . = . + _Min_Heap_Size;
+        . = . + _Min_Stack_Size;
+        . = ALIGN(8);
+    } > RAM
 }
