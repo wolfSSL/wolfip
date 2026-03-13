@@ -1228,6 +1228,7 @@ static inline int tx_has_writable_space(const struct tsocket *t)
     return 0;
 }
 
+/* Effective link-layer frame budget after applying default/min/max clamping. */
 static inline uint32_t wolfIP_ll_frame_mtu(const struct wolfIP_ll_dev *ll)
 {
     uint32_t mtu;
@@ -1242,11 +1243,13 @@ static inline uint32_t wolfIP_ll_frame_mtu(const struct wolfIP_ll_dev *ll)
     return mtu;
 }
 
+/* Per-interface wrapper around the clamped link-layer frame MTU helper. */
 static inline uint32_t wolfIP_frame_mtu(struct wolfIP *s, unsigned int if_idx)
 {
     return wolfIP_ll_frame_mtu(wolfIP_ll_at(s, if_idx));
 }
 
+/* IP payload MTU derived from the frame budget after removing link overhead. */
 static inline uint32_t wolfIP_ip_mtu(struct wolfIP *s, unsigned int if_idx)
 {
     uint32_t mtu = wolfIP_frame_mtu(s, if_idx);
@@ -1254,6 +1257,8 @@ static inline uint32_t wolfIP_ip_mtu(struct wolfIP *s, unsigned int if_idx)
     if (mtu <= ETH_HEADER_LEN)
         return 0;
     mtu -= ETH_HEADER_LEN;
+    /* Frame MTU may exceed the IPv4 payload maximum (e.g. 1536-byte link
+     * frames), but IP payload MTU remains capped at the standard 1500 bytes. */
     if (mtu > IP_MTU_MAX)
         mtu = IP_MTU_MAX;
     return mtu;
@@ -5289,8 +5294,6 @@ static void arp_queue_packet(struct wolfIP *s, unsigned int if_idx, ip4 dest,
     int i;
 
     if (!s || len == 0)
-        return;
-    if (len > LINK_MTU)
         return;
     if (len > wolfIP_frame_mtu(s, if_idx))
         return;

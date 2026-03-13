@@ -211,6 +211,7 @@ int wolfIP_mtu_get(struct wolfIP *s, unsigned int if_idx, uint32_t *mtu);
 Access the link-layer descriptor(s) that should be wired to hardware drivers. `_ex` returns `NULL` if `if_idx` exceeds `WOLFIP_MAX_INTERFACES`.
 `wolfIP_mtu_set()` updates the effective per-interface MTU, treating `0` as the default `LINK_MTU` and clamping to `[LINK_MTU_MIN, LINK_MTU]`. `wolfIP_mtu_get()` returns the effective MTU currently used by the stack.
 For `non_ethernet` devices this value remains the internal frame budget; the maximum IP bytes handed to the driver are reduced by `ETH_HEADER_LEN` when Ethernet support is compiled in.
+- Returns: `wolfIP_getdev()`/`wolfIP_getdev_ex()` return a pointer to the link-layer descriptor or `NULL` on invalid interface index; `wolfIP_mtu_set()` returns `0` on success or a negative error code on failure; `wolfIP_mtu_get()` returns `0` on success or a negative error code on failure and stores the effective MTU in `*mtu`.
 
 ## DHCP Client Functions
 

@@ -8,7 +8,7 @@
 #define ETHERNET
 #define LINK_MTU 1536
 #ifndef LINK_MTU_MIN
-#define LINK_MTU_MIN 64
+#define LINK_MTU_MIN 64U
 #endif
 #if LINK_MTU < LINK_MTU_MIN
 #error "LINK_MTU must be greater than or equal to LINK_MTU_MIN"
