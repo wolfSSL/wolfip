@@ -2712,8 +2712,13 @@ static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
 {
     uint32_t sum = 0;
     uint32_t i = 0;
+    uint32_t ip_hlen = (uint32_t)(ip->ver_ihl & 0x0fU) << 2;
     const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
-    for (i = 0; i < IP_HEADER_LEN; i += 2) {
+
+    if (ip_hlen < IP_HEADER_LEN)
+        ip_hlen = IP_HEADER_LEN;
+
+    for (i = 0; i < ip_hlen; i += 2) {
         uint16_t word;
         memcpy(&word, ptr + i, sizeof(word));
         sum += ee16(word);
@@ -2728,8 +2733,16 @@ static int iphdr_verify_checksum(struct wolfIP_ip_packet *ip)
 {
     uint32_t sum = 0;
     uint32_t i;
+    uint32_t ip_hlen;
     const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
-    for (i = 0; i < IP_HEADER_LEN; i += 2) {
+
+    if ((ip->ver_ihl >> 4) != 4)
+        return -1;
+    ip_hlen = (uint32_t)(ip->ver_ihl & 0x0fU) << 2;
+    if (ip_hlen < IP_HEADER_LEN)
+        return -1;
+
+    for (i = 0; i < ip_hlen; i += 2) {
         uint16_t word;
         memcpy(&word, ptr + i, sizeof(word));
         sum += ee16(word);
@@ -5669,12 +5682,22 @@ size_t wolfIP_instance_size(void)
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                            struct wolfIP_ip_packet *ip, uint32_t len)
 {
+    uint8_t version;
+    uint32_t ip_hlen;
 #if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
 #endif
     /* validate minimum packet length
      * (ethernet header + ip header, with no options) */
     if (len < sizeof(struct wolfIP_ip_packet))
+        return;
+    version = ip->ver_ihl >> 4;
+    ip_hlen = (uint32_t)(ip->ver_ihl & 0x0fU) << 2;
+    if (version != 4 || ip_hlen < IP_HEADER_LEN)
+        return;
+    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen))
+        return;
+    if (ee16(ip->len) < ip_hlen)
         return;
     /* validate IP header checksum per RFC 1122 */
     if (iphdr_verify_checksum(ip) != 0)
@@ -5690,7 +5713,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_RECEIVING, s, if_idx, ip, len) != 0)
         return;
     #if WOLFIP_ENABLE_FORWARDING
-    if (ip->ver_ihl == 0x45) {
+    if (version == 4 && ip_hlen >= IP_HEADER_LEN) {
         ip4 dest = ee32(ip->dst);
         int is_local = 0;
         if (dest == IPADDR_ANY || IS_IP_BCAST(dest)) {
@@ -5753,25 +5776,49 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     }
     #endif /* WOLFIP_ESP */
 
-    if (ip->ver_ihl == 0x45 && ip->proto == 0x06) {
-        struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)ip;
-        tcp_input(s, if_idx, tcp, len);
-    }
-    else if (ip->ver_ihl == 0x45 && ip->proto == 0x11) {
-        struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
+    {
+        struct wolfIP_ip_packet *dispatch_ip = ip;
+        uint32_t dispatch_len = len;
+        uint8_t frame[LINK_MTU];
+
+        if (ip_hlen > IP_HEADER_LEN) {
+            uint32_t opt_len = ip_hlen - IP_HEADER_LEN;
+            uint16_t total_ip_len = ee16(ip->len);
+
+            if (len > LINK_MTU)
+                return;
+            memcpy(frame, ip, len);
+            dispatch_ip = (struct wolfIP_ip_packet *)frame;
+            memmove(((uint8_t *)dispatch_ip) + ETH_HEADER_LEN + IP_HEADER_LEN,
+                    ((uint8_t *)dispatch_ip) + ETH_HEADER_LEN + ip_hlen,
+                    len - (ETH_HEADER_LEN + ip_hlen));
+            dispatch_len -= opt_len;
+            dispatch_ip->ver_ihl = (uint8_t)((dispatch_ip->ver_ihl & 0xf0U) | 0x05U);
+            dispatch_ip->len = ee16(total_ip_len - (uint16_t)opt_len);
+            dispatch_ip->csum = 0;
+            iphdr_set_checksum(dispatch_ip);
+        }
+
+        if (dispatch_ip->proto == 0x06) {
+            struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)dispatch_ip;
+            tcp_input(s, if_idx, tcp, dispatch_len);
+        }
+        else if (dispatch_ip->proto == 0x11) {
+            struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)dispatch_ip;
         #ifdef DEBUG_UDP
-        wolfIP_print_udp(udp);
+            wolfIP_print_udp(udp);
         #endif /* DEBUG_UDP */
-        udp_try_recv(s, if_idx, udp, len);
-    }
-    else if (ip->ver_ihl == 0x45 && ip->proto == 0x01) {
-        icmp_input(s, if_idx, ip, len);
-    }
+            udp_try_recv(s, if_idx, udp, dispatch_len);
+        }
+        else if (dispatch_ip->proto == 0x01) {
+            icmp_input(s, if_idx, dispatch_ip, dispatch_len);
+        }
     #ifdef DEBUG_IP
-    else {
-        LOG("info: dropping ip packet: 0x%02x\n", ip->proto);
-    }
+        else {
+            LOG("info: dropping ip packet: 0x%02x\n", dispatch_ip->proto);
+        }
     #endif
+    }
 }
 
 static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len)

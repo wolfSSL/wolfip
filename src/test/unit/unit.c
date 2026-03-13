@@ -474,6 +474,37 @@ static void fix_udp_checksums(struct wolfIP_udp_datagram *udp)
     fix_udp_checksum(udp, udp_len);
 }
 
+static void fix_ip_checksum_with_hlen(struct wolfIP_ip_packet *ip, uint16_t ip_hlen)
+{
+    uint32_t sum = 0;
+    uint32_t i;
+    const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
+
+    ip->csum = 0;
+    for (i = 0; i < ip_hlen; i += 2) {
+        uint16_t word;
+        memcpy(&word, ptr + i, sizeof(word));
+        sum += ee16(word);
+    }
+    while (sum >> 16)
+        sum = (sum & 0xffff) + (sum >> 16);
+    ip->csum = ee16((uint16_t)~sum);
+}
+
+static void fix_udp_checksum_raw(struct wolfIP_ip_packet *ip, void *udp_hdr, uint16_t udp_len)
+{
+    union transport_pseudo_header ph;
+    uint16_t *udp_csum = (uint16_t *)((uint8_t *)udp_hdr + 6);
+
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = ip->src;
+    ph.ph.dst = ip->dst;
+    ph.ph.proto = WI_IPPROTO_UDP;
+    ph.ph.len = ee16(udp_len);
+    *udp_csum = 0;
+    *udp_csum = ee16(transport_checksum(&ph, udp_hdr));
+}
+
 static void inject_udp_datagram(struct wolfIP *s, unsigned int if_idx, ip4 src_ip, ip4 dst_ip,
         uint16_t src_port, uint16_t dst_port, const uint8_t *payload, uint16_t payload_len)
 {
@@ -9088,6 +9119,56 @@ START_TEST(test_ip_recv_forward_ttl_exceeded)
 
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8));
     ck_assert_uint_gt(last_frame_sent_size, 0);
+}
+END_TEST
+
+START_TEST(test_ip_recv_udp_with_ip_options_delivers_payload)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 4 + UDP_HEADER_LEN + 4];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *udp_hdr = frame + ETH_HEADER_LEN + IP_HEADER_LEN + 4;
+    uint16_t udp_len = UDP_HEADER_LEN + 4;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t remote_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = local_ip;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x46;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_UDP;
+    ip->len = ee16(IP_HEADER_LEN + 4 + udp_len);
+    ip->src = ee32(remote_ip);
+    ip->dst = ee32(local_ip);
+    ip->data[0] = 1;
+    ip->data[1] = 1;
+    ip->data[2] = 1;
+    ip->data[3] = 0;
+
+    ((uint16_t *)udp_hdr)[0] = ee16(4321);
+    ((uint16_t *)udp_hdr)[1] = ee16(1234);
+    ((uint16_t *)udp_hdr)[2] = ee16(udp_len);
+    memcpy(udp_hdr + UDP_HEADER_LEN, "opt!", 4);
+
+    fix_udp_checksum_raw(ip, udp_hdr, udp_len);
+    fix_ip_checksum_with_hlen(ip, (uint16_t)(IP_HEADER_LEN + 4));
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+    ck_assert_int_ne((ts->events & CB_EVENT_READABLE), 0);
 }
 END_TEST
 
@@ -19415,6 +19496,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_forward_interface_dest_is_local_ip);
     tcase_add_test(tc_proto, test_forward_interface_short_circuit_cases);
     tcase_add_test(tc_proto, test_ip_recv_forward_ttl_exceeded);
+    tcase_add_test(tc_proto, test_ip_recv_udp_with_ip_options_delivers_payload);
     tcase_add_test(tc_proto, test_ip_recv_forward_arp_queue_and_flush);
     tcase_add_test(tc_proto, test_arp_flush_pending_ttl_expired);
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
