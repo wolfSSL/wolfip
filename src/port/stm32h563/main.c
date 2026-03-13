@@ -26,6 +26,14 @@
 #include "wolfip.h"
 #include "stm32_eth.h"
 
+#ifdef WOLFIP_USE_FREERTOS
+#include "FreeRTOS.h"
+#include "portable.h"
+#include "task.h"
+#include "bsd_socket.h"
+#include "echo_server_freertos.h"
+#endif
+
 #ifdef ENABLE_TLS
 #include "tls_server.h"
 #include "tls_client.h"
@@ -33,8 +41,12 @@
 #endif
 
 #ifdef ENABLE_HTTPS
+#ifdef WOLFIP_USE_FREERTOS
+#include "https_server_freertos.h"
+#else
 #include "http/httpd.h"
 #include "certs.h"
+#endif
 #define HTTPS_WEB_PORT 443
 #endif
 
@@ -134,7 +146,7 @@ void HardFault_Handler(void)
     );
 }
 
-#ifdef ENABLE_HTTPS
+#if defined(ENABLE_HTTPS) && !defined(WOLFIP_USE_FREERTOS)
 /* HTTPS server using wolfIP httpd */
 static struct httpd https_server;
 static WOLFSSL_CTX *https_ssl_ctx;
@@ -292,9 +304,11 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define LED2_PIN 4u
 
 static struct wolfIP *IPStack;
+#ifndef WOLFIP_USE_FREERTOS
 static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
+#endif
 
 uint32_t wolfIP_getrandom(void)
 {
@@ -337,10 +351,12 @@ static void led_off(void)
     GPIO_BSRR(GPIOF_BASE) = (1u << (LED2_PIN + 16u));
 }
 
+#ifndef WOLFIP_USE_FREERTOS
 static void led_toggle(void)
 {
     GPIO_ODR(GPIOF_BASE) ^= (1u << LED2_PIN);
 }
+#endif
 
 /* USART3 additional registers */
 #define USART3_CR2 (*(volatile uint32_t *)(USART3_BASE + 0x04u))
@@ -401,6 +417,69 @@ static void uart_puts(const char *s)
         uart_putc(*s++);
     }
 }
+
+void wolfssl_tls13_dbg_hex(const char *tag, const unsigned char *buf,
+    unsigned len)
+{
+    static const char hex[] = "0123456789abcdef";
+    char line[96];
+    unsigned i = 0;
+    unsigned pos;
+
+    if (tag != NULL) {
+        uart_puts(tag);
+    }
+    if (buf == NULL) {
+        uart_puts("<null>\n");
+        return;
+    }
+
+    while (i < len) {
+        pos = 0;
+        while (i < len && pos + 2 < sizeof(line) - 2) {
+            line[pos++] = hex[(buf[i] >> 4) & 0x0Fu];
+            line[pos++] = hex[buf[i] & 0x0Fu];
+            i++;
+        }
+        line[pos++] = '\n';
+        line[pos] = '\0';
+        uart_puts(line);
+    }
+}
+
+#ifdef WOLFIP_USE_FREERTOS
+static void freertos_diag_print_u32(const char *prefix, uint32_t value)
+{
+    char buf[32];
+
+    (void)snprintf(buf, sizeof(buf), "%lu", (unsigned long)value);
+    uart_puts(prefix);
+    uart_puts(buf);
+    uart_puts("\n");
+}
+
+void vApplicationMallocFailedHook(void)
+{
+    uart_puts("FreeRTOS: malloc failed\n");
+    freertos_diag_print_u32("  free heap: ",
+        (uint32_t)xPortGetFreeHeapSize());
+    freertos_diag_print_u32("  min ever free heap: ",
+        (uint32_t)xPortGetMinimumEverFreeHeapSize());
+    for (;;) { }
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    uart_puts("FreeRTOS: stack overflow\n");
+    if (pcTaskName != NULL) {
+        uart_puts("  task: ");
+        uart_puts(pcTaskName);
+        uart_puts("\n");
+    }
+    for (;;) { }
+}
+#endif
 
 /* Printf-style UART output for wolfMQTT broker logging (WBLOG macros).
  * Uses vsnprintf from newlib-nano + uart_puts. */
@@ -561,6 +640,7 @@ static void tls_response_cb(const char *data, int len, void *ctx)
 }
 #endif
 
+#ifndef WOLFIP_USE_FREERTOS
 static void echo_cb(int fd, uint16_t event, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
@@ -589,11 +669,14 @@ static void echo_cb(int fd, uint16_t event, void *arg)
         client_fd = -1;
     }
 }
+#endif
 
 int main(void)
 {
     struct wolfIP_ll_dev *ll;
+#ifndef WOLFIP_USE_FREERTOS
     struct wolfIP_sockaddr_in addr;
+#endif
     uint64_t tick = 0;
     int ret;
 
@@ -613,7 +696,15 @@ int main(void)
     delay(200000);
     led_on();
 
+#ifdef WOLFIP_USE_FREERTOS
+#ifdef ENABLE_HTTPS
+    uart_puts("\n\n=== wolfIP STM32H563 FreeRTOS HTTPS Server ===\n");
+#else
+    uart_puts("\n\n=== wolfIP STM32H563 FreeRTOS Echo Server ===\n");
+#endif
+#else
     uart_puts("\n\n=== wolfIP STM32H563 Echo Server ===\n");
+#endif
 
 #if TZEN_ENABLED
     /* Configure TrustZone for Ethernet DMA access */
@@ -756,6 +847,40 @@ int main(void)
     }
 #endif
 
+#ifdef WOLFIP_USE_FREERTOS
+    uart_puts("Starting FreeRTOS BSD socket layer...\n");
+    ret = wolfip_freertos_socket_init(IPStack, 4, 1024);
+    if (ret < 0) {
+        uart_puts("ERROR: FreeRTOS socket init failed\n");
+        return 1;
+    }
+
+#ifdef ENABLE_HTTPS
+    uart_puts("Creating FreeRTOS HTTPS task on port 443...\n");
+    ret = https_server_freertos_start(IPStack, HTTPS_WEB_PORT, uart_puts);
+    if (ret < 0) {
+        uart_puts("ERROR: FreeRTOS HTTPS task init failed\n");
+        return 1;
+    }
+#else
+    uart_puts("Creating FreeRTOS TCP echo task on port 7...\n");
+    ret = echo_server_freertos_start(IPStack, ECHO_PORT, uart_puts);
+    if (ret < 0) {
+        uart_puts("ERROR: FreeRTOS echo task init failed\n");
+        return 1;
+    }
+#endif
+
+    uart_puts("Starting FreeRTOS scheduler...\n");
+#ifdef ENABLE_HTTPS
+    uart_puts("  HTTPS Server: port 443\n");
+#else
+    uart_puts("  TCP Echo: port 7\n");
+#endif
+    vTaskStartScheduler();
+    uart_puts("ERROR: vTaskStartScheduler returned\n");
+    return 1;
+#else
     uart_puts("Creating TCP socket on port 7...\n");
     listen_fd = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
     wolfIP_register_callback(IPStack, listen_fd, echo_cb, IPStack);
@@ -968,4 +1093,5 @@ int main(void)
         }
     }
     return 0;
+#endif
 }
