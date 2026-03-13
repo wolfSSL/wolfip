@@ -83,7 +83,7 @@ build_https_tls13() {
 
 build_https_freertos() {
   ensure_repo wolfssl https://github.com/wolfSSL/wolfssl.git
-  ensure_repo_at FreeRTOS_Kernel https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+  ensure_repo FreeRTOS_Kernel https://github.com/FreeRTOS/FreeRTOS-Kernel.git
   make -C src/port/stm32h563 clean TZEN=0 FREERTOS=1 ENABLE_HTTPS=1 \
     WOLFSSL_SP_NO_ASM=1 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
@@ -96,7 +96,7 @@ build_https_freertos() {
 }
 
 build_echo_freertos() {
-  ensure_repo_at FreeRTOS_Kernel https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+  ensure_repo FreeRTOS_Kernel https://github.com/FreeRTOS/FreeRTOS-Kernel.git
   make -C src/port/stm32h563 clean TZEN=0 FREERTOS=1 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   make -C src/port/stm32h563 TZEN=0 FREERTOS=1 \
