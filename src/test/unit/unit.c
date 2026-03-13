@@ -7779,6 +7779,36 @@ START_TEST(test_udp_try_recv_short_expected_len)
 }
 END_TEST
 
+START_TEST(test_udp_try_recv_len_below_header_rejected)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_udp_datagram udp;
+    uint32_t local_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = local_ip;
+
+    memset(&udp, 0, sizeof(udp));
+    udp.ip.dst = ee32(local_ip);
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    udp.dst_port = ee16(1234);
+    udp.len = ee16(UDP_HEADER_LEN - 1);
+
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN));
+
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
 {
     struct wolfIP s;
@@ -19263,6 +19293,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_filter_drop);
     tcase_add_test(tc_utils, test_udp_try_recv_dhcp_running_local_zero);
     tcase_add_test(tc_utils, test_udp_try_recv_short_expected_len);
+    tcase_add_test(tc_utils, test_udp_try_recv_len_below_header_rejected);
     tcase_add_test(tc_utils, test_udp_try_recv_conf_null);
     tcase_add_test(tc_utils, test_udp_try_recv_remote_ip_matches_local_ip);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
