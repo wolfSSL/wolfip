@@ -187,6 +187,27 @@ static int wolfip_bsd_wait_unlocked(wolfip_bsd_fd_entry *entry)
     return 0;
 }
 
+/* Some TCP core calls surface a temporary "not established yet" as -1 on a
+ * freshly accepted stream socket before the final ACK promotes it to
+ * ESTABLISHED. Allow a single wait/retry for that case without turning all
+ * bare -1 returns into infinite retry loops. */
+static int wolfip_bsd_tcp_stream_retryable_once(int internal_fd, int ret, int *used)
+{
+    if (ret != -1 || used == NULL || *used || !IS_SOCKET_TCP(internal_fd)) {
+        return 0;
+    }
+    *used = 1;
+    return 1;
+}
+
+static int wolfip_bsd_tcp_recv_should_wait_locked(int internal_fd, int ret)
+{
+    if (ret != -1 || !IS_SOCKET_TCP(internal_fd)) {
+        return 0;
+    }
+    return wolfIP_sock_can_read(g_ipstack, internal_fd) == 0;
+}
+
 int wolfip_freertos_socket_init(struct wolfIP *ipstack,
     UBaseType_t poll_task_priority,
     uint16_t poll_task_stack_words)
@@ -292,6 +313,7 @@ int accept(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     int ret;
     int public_fd;
+    int retried_minus_one = 0;
     wolfip_bsd_fd_entry *entry;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
@@ -313,6 +335,17 @@ int accept(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
                 return -1;
             }
             return public_fd;
+        }
+        if (wolfip_bsd_tcp_stream_retryable_once(entry->internal_fd, ret,
+                &retried_minus_one)) {
+            wolfip_bsd_prepare_wait_locked(entry,
+                (uint16_t)(CB_EVENT_READABLE | CB_EVENT_CLOSED));
+            xSemaphoreGive(g_lock);
+            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+                wolfip_bsd_set_error(WOLFIP_EAGAIN);
+                return -1;
+            }
+            continue;
         }
         if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
@@ -364,6 +397,7 @@ int connect(int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen)
 int send(int sockfd, const void *buf, size_t len, int flags)
 {
     int ret;
+    int retried_minus_one = 0;
     wolfip_bsd_fd_entry *entry;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
@@ -377,6 +411,17 @@ int send(int sockfd, const void *buf, size_t len, int flags)
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
             return ret;
+        }
+        if (wolfip_bsd_tcp_stream_retryable_once(entry->internal_fd, ret,
+                &retried_minus_one)) {
+            wolfip_bsd_prepare_wait_locked(entry,
+                (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_READABLE | CB_EVENT_CLOSED));
+            xSemaphoreGive(g_lock);
+            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+                wolfip_bsd_set_error(WOLFIP_EAGAIN);
+                return -1;
+            }
+            continue;
         }
         if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
@@ -397,6 +442,7 @@ int sendto(int sockfd, const void *buf, size_t len, int flags,
     const struct wolfIP_sockaddr *dest_addr, socklen_t addrlen)
 {
     int ret;
+    int retried_minus_one = 0;
     wolfip_bsd_fd_entry *entry;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
@@ -410,6 +456,17 @@ int sendto(int sockfd, const void *buf, size_t len, int flags,
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
             return ret;
+        }
+        if (wolfip_bsd_tcp_stream_retryable_once(entry->internal_fd, ret,
+                &retried_minus_one)) {
+            wolfip_bsd_prepare_wait_locked(entry,
+                (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_READABLE | CB_EVENT_CLOSED));
+            xSemaphoreGive(g_lock);
+            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+                wolfip_bsd_set_error(WOLFIP_EAGAIN);
+                return -1;
+            }
+            continue;
         }
         if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
@@ -443,6 +500,16 @@ int recv(int sockfd, void *buf, size_t len, int flags)
             xSemaphoreGive(g_lock);
             return ret;
         }
+        if (wolfip_bsd_tcp_recv_should_wait_locked(entry->internal_fd, ret)) {
+            wolfip_bsd_prepare_wait_locked(entry,
+                (uint16_t)(CB_EVENT_READABLE | CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
+            xSemaphoreGive(g_lock);
+            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+                wolfip_bsd_set_error(WOLFIP_EAGAIN);
+                return -1;
+            }
+            continue;
+        }
         if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);
             wolfip_bsd_set_error(ret);
@@ -475,6 +542,16 @@ int recvfrom(int sockfd, void *buf, size_t len, int flags,
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
             return ret;
+        }
+        if (wolfip_bsd_tcp_recv_should_wait_locked(entry->internal_fd, ret)) {
+            wolfip_bsd_prepare_wait_locked(entry,
+                (uint16_t)(CB_EVENT_READABLE | CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
+            xSemaphoreGive(g_lock);
+            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+                wolfip_bsd_set_error(WOLFIP_EAGAIN);
+                return -1;
+            }
+            continue;
         }
         if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);

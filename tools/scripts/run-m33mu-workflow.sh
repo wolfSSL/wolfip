@@ -12,14 +12,19 @@ Accepted workflows:
   stm32h563-m33mu
   stm32h563-m33mu.yml
   .github/workflows/stm32h563-m33mu.yml
+  stm32h563-m33mu-freertos
+  stm32h563-m33mu-freertos.yml
+  .github/workflows/stm32h563-m33mu-freertos.yml
   stm32h563-m33mu-ssh-tzen
   stm32h563-m33mu-ssh-tzen.yml
   .github/workflows/stm32h563-m33mu-ssh-tzen.yml
 
 Optional job names:
   stm32h563_m33mu_echo
+  stm32h563_m33mu_echo_freertos
   stm32h563_m33mu_full
   stm32h563_m33mu_https_tls13
+  stm32h563_m33mu_https_freertos
   stm32h563_m33mu_ssh_tzen
 
 Environment:
@@ -31,6 +36,9 @@ normalize_workflow() {
   case "$1" in
     stm32h563-m33mu|stm32h563-m33mu.yml|.github/workflows/stm32h563-m33mu.yml)
       printf '%s\n' stm32h563-m33mu
+      ;;
+    stm32h563-m33mu-freertos|stm32h563-m33mu-freertos.yml|.github/workflows/stm32h563-m33mu-freertos.yml)
+      printf '%s\n' stm32h563-m33mu-freertos
       ;;
     stm32h563-m33mu-ssh-tzen|stm32h563-m33mu-ssh-tzen.yml|.github/workflows/stm32h563-m33mu-ssh-tzen.yml)
       printf '%s\n' stm32h563-m33mu-ssh-tzen

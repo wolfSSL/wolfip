@@ -26,6 +26,14 @@
 #include "wolfip.h"
 #include "stm32_eth.h"
 
+#ifdef WOLFIP_USE_FREERTOS
+#include "FreeRTOS.h"
+#include "portable.h"
+#include "task.h"
+#include "bsd_socket.h"
+#include "echo_server_freertos.h"
+#endif
+
 #ifdef ENABLE_TLS
 #include "tls_server.h"
 #include "tls_client.h"
@@ -33,8 +41,12 @@
 #endif
 
 #ifdef ENABLE_HTTPS
+#ifdef WOLFIP_USE_FREERTOS
+#include "https_server_freertos.h"
+#else
 #include "http/httpd.h"
 #include "certs.h"
+#endif
 #define HTTPS_WEB_PORT 443
 #endif
 
@@ -66,6 +78,7 @@ static int tls_client_test_done = 0;
 
 /* Forward declarations */
 static void uart_puts(const char *s);
+static void delay(uint32_t count);
 
 /* =========================================================================
  * HardFault Handler - prints crash info via UART
@@ -134,7 +147,7 @@ void HardFault_Handler(void)
     );
 }
 
-#ifdef ENABLE_HTTPS
+#if defined(ENABLE_HTTPS) && !defined(WOLFIP_USE_FREERTOS)
 /* HTTPS server using wolfIP httpd */
 static struct httpd https_server;
 static WOLFSSL_CTX *https_ssl_ctx;
@@ -218,8 +231,14 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define RCC_AHB1ENR  (*(volatile uint32_t *)(RCC_BASE + 0x88u))
 #define RCC_AHB2ENR  (*(volatile uint32_t *)(RCC_BASE + 0x8Cu))
 #define RCC_APB3ENR  (*(volatile uint32_t *)(RCC_BASE + 0xA8u))
+#define RCC_CR       (*(volatile uint32_t *)(RCC_BASE + 0x00u))
+#define RCC_CCIPR5   (*(volatile uint32_t *)(RCC_BASE + 0xE8u))
 #define RCC_AHB1RSTR (*(volatile uint32_t *)(RCC_BASE + 0x60u))
 #define RCC_AHB1RSTR_ETHRST (1u << 19)
+#define RCC_AHB2ENR_RNGEN   (1u << 18)
+#define RCC_CR_HSI48ON      (1u << 12)
+#define RCC_CR_HSI48RDY     (1u << 13)
+#define RCC_CCIPR5_RNGSEL_Msk (3u << 4)
 
 /* SAU (Security Attribution Unit) - mark memory regions as non-secure */
 #define SAU_CTRL   (*(volatile uint32_t *)0xE000EDD0u)
@@ -291,18 +310,116 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define GPIO_BSRR(base)    (*(volatile uint32_t *)((base) + 0x18u))
 #define LED2_PIN 4u
 
+#if TZEN_ENABLED
+#define RNG_BASE 0x520C0800u
+#else
+#define RNG_BASE 0x420C0800u
+#endif
+#define RNG_CR   (*(volatile uint32_t *)(RNG_BASE + 0x00u))
+#define RNG_SR   (*(volatile uint32_t *)(RNG_BASE + 0x04u))
+#define RNG_DR   (*(volatile uint32_t *)(RNG_BASE + 0x08u))
+#define RNG_CR_RNGEN          (1u << 2)
+#define RNG_CR_CONDRST        (1u << 30)
+#define RNG_CR_CONFIG3_SHIFT  8u
+#define RNG_CR_CONFIG2_SHIFT  13u
+#define RNG_CR_CLKDIV_SHIFT   16u
+#define RNG_CR_CONFIG1_SHIFT  20u
+#define RNG_SR_DRDY           (1u << 0)
+#define RNG_SR_CECS           (1u << 1)
+#define RNG_SR_SECS           (1u << 2)
+#define RNG_SR_CEIS           (1u << 5)
+#define RNG_SR_SEIS           (1u << 6)
+
 static struct wolfIP *IPStack;
+#ifndef WOLFIP_USE_FREERTOS
 static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
+#endif
+
+static void rng_init(void)
+{
+    uint32_t rng_cr;
+
+    RCC_CR |= RCC_CR_HSI48ON;
+    while ((RCC_CR & RCC_CR_HSI48RDY) == 0u) {
+    }
+
+    /* Select HSI48 as the RNG kernel clock. */
+    RCC_CCIPR5 &= ~RCC_CCIPR5_RNGSEL_Msk;
+    RCC_AHB2ENR |= RCC_AHB2ENR_RNGEN;
+    delay(100);
+
+    rng_cr = RNG_CR;
+    rng_cr &= ~(0x1Fu << RNG_CR_CONFIG1_SHIFT);
+    rng_cr &= ~(0x7u << RNG_CR_CLKDIV_SHIFT);
+    rng_cr &= ~(0x3u << RNG_CR_CONFIG2_SHIFT);
+    rng_cr &= ~(0x7u << RNG_CR_CONFIG3_SHIFT);
+    rng_cr |= 0x0Fu << RNG_CR_CONFIG1_SHIFT;
+    rng_cr |= 0x0Du << RNG_CR_CONFIG3_SHIFT;
+
+    RNG_CR = RNG_CR_CONDRST | rng_cr;
+    while ((RNG_CR & RNG_CR_CONDRST) == 0u) {
+    }
+    RNG_CR = rng_cr | RNG_CR_RNGEN;
+    while ((RNG_SR & RNG_SR_DRDY) == 0u) {
+    }
+}
+
+static int rng_get_word(uint32_t *out)
+{
+    uint32_t timeout = 100000u;
+
+    while ((RNG_SR & RNG_SR_DRDY) == 0u) {
+        if ((RNG_SR & (RNG_SR_CECS | RNG_SR_SECS | RNG_SR_CEIS | RNG_SR_SEIS)) != 0u) {
+            rng_init();
+            timeout = 100000u;
+            continue;
+        }
+        if (--timeout == 0u) {
+            return -1;
+        }
+    }
+
+    *out = RNG_DR;
+    return 0;
+}
+
+int custom_rand_gen_block(unsigned char *output, unsigned int sz)
+{
+    uint32_t word;
+
+    while (sz >= 4u) {
+        if (rng_get_word(&word) != 0) {
+            return -1;
+        }
+        output[0] = (unsigned char)word;
+        output[1] = (unsigned char)(word >> 8);
+        output[2] = (unsigned char)(word >> 16);
+        output[3] = (unsigned char)(word >> 24);
+        output += 4;
+        sz -= 4;
+    }
+
+    if (sz > 0u) {
+        if (rng_get_word(&word) != 0) {
+            return -1;
+        }
+        while (sz-- > 0u) {
+            *output++ = (unsigned char)word;
+            word >>= 8;
+        }
+    }
+
+    return 0;
+}
 
 uint32_t wolfIP_getrandom(void)
 {
-    static uint32_t lfsr = 0x1A2B3C4DU;
-    lfsr ^= lfsr << 13;
-    lfsr ^= lfsr >> 17;
-    lfsr ^= lfsr << 5;
-    return lfsr;
+    uint32_t word = 0u;
+
+    (void)rng_get_word(&word);
+    return word;
 }
 
 /* Simple delay */
@@ -337,10 +454,12 @@ static void led_off(void)
     GPIO_BSRR(GPIOF_BASE) = (1u << (LED2_PIN + 16u));
 }
 
+#ifndef WOLFIP_USE_FREERTOS
 static void led_toggle(void)
 {
     GPIO_ODR(GPIOF_BASE) ^= (1u << LED2_PIN);
 }
+#endif
 
 /* USART3 additional registers */
 #define USART3_CR2 (*(volatile uint32_t *)(USART3_BASE + 0x04u))
@@ -401,6 +520,69 @@ static void uart_puts(const char *s)
         uart_putc(*s++);
     }
 }
+
+void wolfssl_tls13_dbg_hex(const char *tag, const unsigned char *buf,
+    unsigned len)
+{
+    static const char hex[] = "0123456789abcdef";
+    char line[96];
+    unsigned i = 0;
+    unsigned pos;
+
+    if (tag != NULL) {
+        uart_puts(tag);
+    }
+    if (buf == NULL) {
+        uart_puts("<null>\n");
+        return;
+    }
+
+    while (i < len) {
+        pos = 0;
+        while (i < len && pos + 2 < sizeof(line) - 2) {
+            line[pos++] = hex[(buf[i] >> 4) & 0x0Fu];
+            line[pos++] = hex[buf[i] & 0x0Fu];
+            i++;
+        }
+        line[pos++] = '\n';
+        line[pos] = '\0';
+        uart_puts(line);
+    }
+}
+
+#ifdef WOLFIP_USE_FREERTOS
+static void freertos_diag_print_u32(const char *prefix, uint32_t value)
+{
+    char buf[32];
+
+    (void)snprintf(buf, sizeof(buf), "%lu", (unsigned long)value);
+    uart_puts(prefix);
+    uart_puts(buf);
+    uart_puts("\n");
+}
+
+void vApplicationMallocFailedHook(void)
+{
+    uart_puts("FreeRTOS: malloc failed\n");
+    freertos_diag_print_u32("  free heap: ",
+        (uint32_t)xPortGetFreeHeapSize());
+    freertos_diag_print_u32("  min ever free heap: ",
+        (uint32_t)xPortGetMinimumEverFreeHeapSize());
+    for (;;) { }
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    uart_puts("FreeRTOS: stack overflow\n");
+    if (pcTaskName != NULL) {
+        uart_puts("  task: ");
+        uart_puts(pcTaskName);
+        uart_puts("\n");
+    }
+    for (;;) { }
+}
+#endif
 
 /* Printf-style UART output for wolfMQTT broker logging (WBLOG macros).
  * Uses vsnprintf from newlib-nano + uart_puts. */
@@ -561,6 +743,7 @@ static void tls_response_cb(const char *data, int len, void *ctx)
 }
 #endif
 
+#ifndef WOLFIP_USE_FREERTOS
 static void echo_cb(int fd, uint16_t event, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
@@ -589,11 +772,14 @@ static void echo_cb(int fd, uint16_t event, void *arg)
         client_fd = -1;
     }
 }
+#endif
 
 int main(void)
 {
     struct wolfIP_ll_dev *ll;
+#ifndef WOLFIP_USE_FREERTOS
     struct wolfIP_sockaddr_in addr;
+#endif
     uint64_t tick = 0;
     int ret;
 
@@ -603,6 +789,7 @@ int main(void)
 
     /* Initialize UART for debug output */
     uart_init();
+    rng_init();
 
     /* Blink to show UART init done */
     led_off();
@@ -613,7 +800,15 @@ int main(void)
     delay(200000);
     led_on();
 
+#ifdef WOLFIP_USE_FREERTOS
+#ifdef ENABLE_HTTPS
+    uart_puts("\n\n=== wolfIP STM32H563 FreeRTOS HTTPS Server ===\n");
+#else
+    uart_puts("\n\n=== wolfIP STM32H563 FreeRTOS Echo Server ===\n");
+#endif
+#else
     uart_puts("\n\n=== wolfIP STM32H563 Echo Server ===\n");
+#endif
 
 #if TZEN_ENABLED
     /* Configure TrustZone for Ethernet DMA access */
@@ -621,8 +816,12 @@ int main(void)
     {
         uint32_t i;
 
-        /* Enable SAU with ALLNS mode (all undefined regions are non-secure) */
-        SAU_CTRL = 0x03u;  /* ENABLE + ALLNS */
+        /* Expose only the Ethernet DMA window as non-secure. Leaving ALLNS
+         * clear keeps the rest of secure flash/SRAM/peripherals secure. */
+        SAU_RNR = 0u;
+        SAU_RBAR = 0x20098000u & 0xFFFFFFE0u;
+        SAU_RLAR = (0x2009FFFFu & 0xFFFFFFE0u) | 1u;
+        SAU_CTRL = 0x01u;  /* ENABLE */
         __asm volatile ("dsb sy" ::: "memory");
         __asm volatile ("isb sy" ::: "memory");
 
@@ -756,6 +955,40 @@ int main(void)
     }
 #endif
 
+#ifdef WOLFIP_USE_FREERTOS
+    uart_puts("Starting FreeRTOS BSD socket layer...\n");
+    ret = wolfip_freertos_socket_init(IPStack, 4, 1024);
+    if (ret < 0) {
+        uart_puts("ERROR: FreeRTOS socket init failed\n");
+        return 1;
+    }
+
+#ifdef ENABLE_HTTPS
+    uart_puts("Creating FreeRTOS HTTPS task on port 443...\n");
+    ret = https_server_freertos_start(IPStack, HTTPS_WEB_PORT, uart_puts);
+    if (ret < 0) {
+        uart_puts("ERROR: FreeRTOS HTTPS task init failed\n");
+        return 1;
+    }
+#else
+    uart_puts("Creating FreeRTOS TCP echo task on port 7...\n");
+    ret = echo_server_freertos_start(IPStack, ECHO_PORT, uart_puts);
+    if (ret < 0) {
+        uart_puts("ERROR: FreeRTOS echo task init failed\n");
+        return 1;
+    }
+#endif
+
+    uart_puts("Starting FreeRTOS scheduler...\n");
+#ifdef ENABLE_HTTPS
+    uart_puts("  HTTPS Server: port 443\n");
+#else
+    uart_puts("  TCP Echo: port 7\n");
+#endif
+    vTaskStartScheduler();
+    uart_puts("ERROR: vTaskStartScheduler returned\n");
+    return 1;
+#else
     uart_puts("Creating TCP socket on port 7...\n");
     listen_fd = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
     wolfIP_register_callback(IPStack, listen_fd, echo_cb, IPStack);
@@ -968,4 +1201,5 @@ int main(void)
         }
     }
     return 0;
+#endif
 }

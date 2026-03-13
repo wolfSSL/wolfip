@@ -30,6 +30,11 @@ ENABLE_MQTT ?= 0
 # MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
 ENABLE_MQTT_BROKER ?= 0
 
+# FreeRTOS integration: set FREERTOS=1 to run the HTTPS server from a
+# FreeRTOS task using the blocking BSD socket wrapper layer.
+FREERTOS ?= 0
+FREERTOS_PATH ?= $(ROOT)/../FreeRTOS_Kernel
+
 # Auto-enable TLS when any feature that requires it is enabled
 ifeq ($(ENABLE_TLS_CLIENT),1)
   ENABLE_TLS = 1
@@ -52,6 +57,7 @@ WOLFSSL_SP_NO_ASM ?= 0
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
 WOLFSSH_ROOT ?= $(ROOT)/../wolfssh
 WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
+FREERTOS_PORT_DIR := $(FREERTOS_PATH)/portable/GCC/ARM_CM33_NTZ/non_secure
 
 # Base compiler flags
 CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ffunction-sections
@@ -80,7 +86,47 @@ endif
 LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
 
 # Base source files
-SRCS := startup.c ivt.c syscalls.c main.c $(ROOT)/src/port/stm32/stm32_eth.c $(ROOT)/src/wolfip.c
+SRCS := startup.c ivt.c syscalls.c
+SRCS += main.c $(ROOT)/src/port/stm32/stm32_eth.c $(ROOT)/src/wolfip.c
+
+ifeq ($(FREERTOS),1)
+ifeq ($(wildcard $(FREERTOS_PATH)/include/FreeRTOS.h),)
+  $(error FreeRTOS kernel not found at $(FREERTOS_PATH). Populate it or override FREERTOS_PATH)
+endif
+
+ifeq ($(wildcard $(FREERTOS_PORT_DIR)/port.c),)
+  $(error FreeRTOS ARM_CM33_NTZ port not found at $(FREERTOS_PORT_DIR))
+endif
+ifneq ($(ENABLE_TLS_CLIENT),0)
+  $(error FREERTOS=1 does not support ENABLE_TLS_CLIENT yet)
+endif
+ifneq ($(ENABLE_SSH),0)
+  $(error FREERTOS=1 does not support ENABLE_SSH yet)
+endif
+ifneq ($(ENABLE_MQTT),0)
+  $(error FREERTOS=1 does not support ENABLE_MQTT yet)
+endif
+ifneq ($(ENABLE_MQTT_BROKER),0)
+  $(error FREERTOS=1 does not support ENABLE_MQTT_BROKER yet)
+endif
+
+CFLAGS += -DWOLFIP_USE_FREERTOS
+CFLAGS += -I$(FREERTOS_PATH)/include -I$(FREERTOS_PORT_DIR) -I$(ROOT)/src/port/freeRTOS
+SRCS += echo_server_freertos.c
+ifeq ($(ENABLE_HTTPS),1)
+SRCS += https_server_freertos.c
+endif
+SRCS += $(ROOT)/src/port/freeRTOS/bsd_socket.c
+SRCS += $(FREERTOS_PATH)/tasks.c
+SRCS += $(FREERTOS_PATH)/list.c
+SRCS += $(FREERTOS_PATH)/queue.c
+SRCS += $(FREERTOS_PATH)/timers.c
+SRCS += $(FREERTOS_PATH)/portable/MemMang/heap_4.c
+SRCS += $(FREERTOS_PORT_DIR)/port.c
+SRCS += $(wildcard $(FREERTOS_PORT_DIR)/portasm.c)
+SRCS += $(wildcard $(FREERTOS_PORT_DIR)/portasm.s)
+SRCS += $(wildcard $(FREERTOS_PORT_DIR)/portasm.S)
+endif
 
 # -----------------------------------------------------------------------------
 # TLS Support (wolfSSL)
@@ -98,8 +144,10 @@ CFLAGS += -DWOLFSSL_WOLFIP
 CFLAGS += -I$(WOLFSSL_ROOT)
 
 # TLS server, client and wolfIP-wolfSSL glue
+ifeq ($(FREERTOS),0)
 SRCS += tls_server.c
 SRCS += $(ROOT)/src/port/wolfssl_io.c
+endif
 
 # TLS client (Google test)
 ifeq ($(ENABLE_TLS_CLIENT),1)
@@ -108,11 +156,13 @@ SRCS += tls_client.c
 endif
 
 
-# HTTPS web server - uses existing wolfIP httpd
+# HTTPS web server - bare-metal mode uses the raw wolfIP httpd path.
 ifeq ($(ENABLE_HTTPS),1)
 CFLAGS += -DENABLE_HTTPS
+ifeq ($(FREERTOS),0)
 CFLAGS += -DWOLFIP_ENABLE_HTTP
 SRCS += $(ROOT)/src/http/httpd.c
+endif
 endif
 
 # wolfSSL source files (minimal set for TLS 1.3 server with ECC)
@@ -131,12 +181,12 @@ WOLFSSL_SRCS := \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wc_port.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
     $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c
+    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c
 
 ifeq ($(WOLFSSL_SP_NO_ASM),1)
 CFLAGS += -DWOLFSSL_SP_NO_ASM
 CFLAGS_WOLFSSL += -DWOLFSSL_SP_NO_ASM
+WOLFSSL_SRCS += $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c
 else
 WOLFSSL_SRCS += $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c
 endif
@@ -284,7 +334,7 @@ endif # ENABLE_MQTT_BROKER
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
+	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER) FREERTOS=$(FREERTOS)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
 endif
@@ -309,13 +359,19 @@ app.bin: app.elf
 
 # wolfSSL objects use relaxed warnings + user_settings.h + include paths
 $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFSSL_ROOT) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH -DWOLFSSL_WOLFSSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFSSL_ROOT) -c $< -o $@
 
 clean:
 	rm -f *.o app.elf app.bin
 	rm -f $(ROOT)/src/*.o
 	rm -f $(ROOT)/src/port/*.o
 	rm -f $(ROOT)/src/port/stm32/*.o
+	rm -f $(ROOT)/src/port/freeRTOS/*.o
+ifeq ($(FREERTOS),1)
+	rm -f $(FREERTOS_PATH)/*.o
+	rm -f $(FREERTOS_PATH)/portable/MemMang/*.o
+	rm -f $(FREERTOS_PORT_DIR)/*.o
+endif
 ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o
@@ -341,7 +397,7 @@ verify: app.bin
 	@strings app.bin | grep -q "MQTT Broker: Initializing" && echo "  ✓ MQTT broker enabled" || echo "  ✗ MQTT broker disabled"
 	@echo ""
 	@echo "Binary size: $$(ls -lh app.bin | awk '{print $$5}')"
-	@echo "Build flags: TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER)"
+	@echo "Build flags: TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER) FREERTOS=$(FREERTOS)"
 
 # Show memory usage
 size: app.elf
@@ -376,6 +432,8 @@ help:
 	@echo "  ENABLE_SSH=1    Enable SSH server (requires TLS + wolfSSH)"
 	@echo "  ENABLE_MQTT=1   Enable MQTT client (requires TLS + wolfMQTT)"
 	@echo "  ENABLE_MQTT_BROKER=1 Enable MQTT broker (requires TLS + wolfMQTT)"
+	@echo "  FREERTOS=1      Run HTTPS in a FreeRTOS task via BSD socket wrappers"
+	@echo "  FREERTOS_PATH=  Path to FreeRTOS-Kernel (default: $(ROOT)/../FreeRTOS_Kernel)"
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
 	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
 	@echo "  WOLFMQTT_ROOT=  Path to wolfMQTT (default: ../wolfmqtt)"
@@ -390,6 +448,7 @@ help:
 	@echo "  make ENABLE_TLS=1 ENABLE_TLS_CLIENT=1                       # TLS client (Google test)"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT=1                             # TLS + MQTT client"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT_BROKER=1                      # TLS + MQTT broker"
+	@echo "  make FREERTOS=1 ENABLE_HTTPS=1                              # FreeRTOS HTTPS via BSD sockets"
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 ENABLE_MQTT_BROKER=1 # Full featured"
 	@echo ""
 	@echo "Full Build Command (recommended):"

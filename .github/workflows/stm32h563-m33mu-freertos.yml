@@ -1,0 +1,19 @@
+name: STM32H563 m33mu FreeRTOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  stm32h563_m33mu_echo_freertos:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/danielinux/m33mu-ci:1.8
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run m33mu + DHCP + TCP echo FreeRTOS test
+        run: /bin/bash tools/scripts/run-m33mu-ci-in-container.sh stm32h563-m33mu-freertos stm32h563_m33mu_echo_freertos

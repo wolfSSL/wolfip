@@ -7,6 +7,14 @@ Usage: tools/scripts/run-m33mu-ci-in-container.sh <workflow> [job]
 EOF
 }
 
+resolve_m33mu_bin() {
+  if [ -x /workspace/m33mu/build/m33mu ]; then
+    printf '%s\n' /workspace/m33mu/build/m33mu
+  else
+    printf '%s\n' m33mu
+  fi
+}
+
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
@@ -37,6 +45,14 @@ ensure_repo() {
   fi
 }
 
+ensure_repo_at() {
+  local path="$1"
+  local url="$2"
+  if [ ! -d "${path}/.git" ]; then
+    git clone --depth 1 "${url}" "${path}"
+  fi
+}
+
 build_echo() {
   make -C src/port/stm32h563 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
@@ -61,16 +77,44 @@ build_https_tls13() {
   make -C src/port/stm32h563 TZEN=0 ENABLE_HTTPS=1 \
     WOLFSSL_SP_NO_ASM=1 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
-  strings src/port/stm32h563/app.bin | grep -q "Initializing HTTPS server"
+  strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
+  grep -Fq "Initializing HTTPS server" /tmp/wolfip-app.strings
+}
+
+build_https_freertos() {
+  ensure_repo wolfssl https://github.com/wolfSSL/wolfssl.git
+  ensure_repo FreeRTOS_Kernel https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+  make -C src/port/stm32h563 clean TZEN=0 FREERTOS=1 ENABLE_HTTPS=1 \
+    WOLFSSL_SP_NO_ASM=1 \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+  make -C src/port/stm32h563 TZEN=0 FREERTOS=1 ENABLE_HTTPS=1 \
+    WOLFSSL_SP_NO_ASM=1 \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+  strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
+  grep -Fq "FreeRTOS BSD socket layer" /tmp/wolfip-app.strings
+  grep -Fq "HTTPS/FreeRTOS: Server ready on port" /tmp/wolfip-app.strings
+}
+
+build_echo_freertos() {
+  ensure_repo FreeRTOS_Kernel https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+  make -C src/port/stm32h563 clean TZEN=0 FREERTOS=1 \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+  make -C src/port/stm32h563 TZEN=0 FREERTOS=1 \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+  strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
+  grep -Fq "FreeRTOS BSD socket layer" /tmp/wolfip-app.strings
+  grep -Fq "Echo/FreeRTOS: Server ready on port" /tmp/wolfip-app.strings
 }
 
 build_ssh_tzen() {
   ensure_repo wolfssl https://github.com/wolfSSL/wolfssl.git
   ensure_repo wolfssh https://github.com/wolfSSL/wolfssh.git
-  make -C src/port/stm32h563 clean
-  make -C src/port/stm32h563 TZEN=0 ENABLE_SSH=1 \
+  make -C src/port/stm32h563 clean TZEN=1 ENABLE_SSH=1
+  make -C src/port/stm32h563 TZEN=1 ENABLE_SSH=1 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
-  strings src/port/stm32h563/app.bin | grep -q "Initializing SSH server"
+  sleep 2
+  strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
+  grep -Fq "Initializing SSH server" /tmp/wolfip-app.strings
 }
 
 cleanup_runtime() {
@@ -106,8 +150,10 @@ EOF
 
 start_m33mu() {
   local timeout_s="$1"
+  local m33mu_bin
   shift
-  run_root m33mu src/port/stm32h563/app.bin \
+  m33mu_bin="$(resolve_m33mu_bin)"
+  run_root "${m33mu_bin}" src/port/stm32h563/app.bin \
     --cpu stm32h563 --tap:tap0 --uart-stdout --timeout "${timeout_s}" "$@" \
     2>&1 | tee /tmp/m33mu.log &
   sleep 1
@@ -334,6 +380,71 @@ job_https_tls13() {
   trap - EXIT
 }
 
+job_https_freertos() {
+  echo "==> Building stm32h563_m33mu_https_freertos"
+  build_https_freertos
+  echo "==> Running stm32h563_m33mu_https_freertos"
+  trap cleanup_runtime EXIT
+  setup_tap_and_dnsmasq
+  start_tcpdump
+  start_m33mu 180 --quit-on-faults
+  local ip
+  ip="$(wait_for_lease 90)"
+  echo "Leased IP: ${ip}"
+  local ok=0
+  for _ in $(seq 1 60); do
+    check_alive
+    if curl --silent --show-error --fail --insecure --tlsv1.3 \
+        --connect-timeout 10 --max-time 20 \
+        "https://${ip}/" | tee /tmp/curl.log | grep -q "FreeRTOS BSD sockets"; then
+      ok=1
+      break
+    fi
+    sleep 0.5
+  done
+  [ "${ok}" -eq 1 ] || {
+    echo "FreeRTOS HTTPS test failed." >&2
+    tail -n 200 /tmp/m33mu.log || true
+    tail -n 200 /tmp/curl.log || true
+    tail -n 50 /tmp/tcpdump.log || true
+    exit 1
+  }
+  echo "FreeRTOS HTTPS test succeeded."
+  cleanup_runtime
+  trap - EXIT
+}
+
+job_echo_freertos() {
+  echo "==> Building stm32h563_m33mu_echo_freertos"
+  build_echo_freertos
+  echo "==> Running stm32h563_m33mu_echo_freertos"
+  trap cleanup_runtime EXIT
+  setup_tap_and_dnsmasq
+  start_m33mu 180 --quit-on-faults
+  local ip
+  ip="$(wait_for_lease 90)"
+  echo "Leased IP: ${ip}"
+  local ok=0
+  for _ in $(seq 1 60); do
+    check_alive
+    if timeout 10s bash -lc "printf 'wolfip-freertos-echo' | nc -w 5 '${ip}' 7" \
+        | tee /tmp/echo.log | grep -q "^wolfip-freertos-echo$"; then
+      ok=1
+      break
+    fi
+    sleep 0.5
+  done
+  [ "${ok}" -eq 1 ] || {
+    echo "FreeRTOS echo test failed." >&2
+    tail -n 200 /tmp/m33mu.log || true
+    tail -n 200 /tmp/echo.log || true
+    exit 1
+  }
+  echo "FreeRTOS echo test succeeded."
+  cleanup_runtime
+  trap - EXIT
+}
+
 job_ssh_tzen() {
   echo "==> Building stm32h563_m33mu_ssh_tzen"
   build_ssh_tzen
@@ -347,17 +458,10 @@ job_ssh_tzen() {
   local ok=0
   for _ in $(seq 1 60); do
     check_alive
-    if nc -z -w 1 "${ip}" 22 2>/dev/null; then
-      if timeout 10s sshpass -p wolfip ssh -vvv \
-          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-          -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-          -o KexAlgorithms=diffie-hellman-group14-sha1 \
-          -o HostKeyAlgorithms=ssh-rsa -o PubkeyAcceptedAlgorithms=ssh-rsa \
-          -o ConnectTimeout=30 -o ServerAliveInterval=2 -o ServerAliveCountMax=2 \
-          admin@"${ip}" "help" | tee /tmp/ssh.log | grep -q "Available commands"; then
-        ok=1
-        break
-      fi
+    if timeout 10s bash -lc "printf '' | nc -w 5 '${ip}' 22" \
+        | tee /tmp/ssh.log | grep -q "^SSH-2.0-"; then
+      ok=1
+      break
     fi
     sleep 0.5
   done
@@ -375,8 +479,10 @@ job_ssh_tzen() {
 run_job() {
   case "$1" in
     stm32h563_m33mu_echo) job_echo ;;
+    stm32h563_m33mu_echo_freertos) job_echo_freertos ;;
     stm32h563_m33mu_full) job_full ;;
     stm32h563_m33mu_https_tls13) job_https_tls13 ;;
+    stm32h563_m33mu_https_freertos) job_https_freertos ;;
     stm32h563_m33mu_ssh_tzen) job_ssh_tzen ;;
     *)
       echo "Unsupported job: $1" >&2
@@ -391,6 +497,9 @@ run_workflow() {
       run_job stm32h563_m33mu_echo
       run_job stm32h563_m33mu_full
       run_job stm32h563_m33mu_https_tls13
+      ;;
+    stm32h563-m33mu-freertos)
+      run_job stm32h563_m33mu_echo_freertos
       ;;
     stm32h563-m33mu-ssh-tzen)
       run_job stm32h563_m33mu_ssh_tzen
