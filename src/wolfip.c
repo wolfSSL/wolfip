@@ -3417,7 +3417,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
                     (t->sock.tcp.state == TCP_CLOSE_WAIT) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
-                    (t->sock.tcp.state == TCP_FIN_WAIT_2)) {
+                    (t->sock.tcp.state == TCP_FIN_WAIT_2) ||
+                    (t->sock.tcp.state == TCP_CLOSING)) {
 
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
