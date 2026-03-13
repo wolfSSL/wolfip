@@ -87,19 +87,6 @@ static void debug_print(const char *msg)
     }
 }
 
-/* Custom random block generator for wolfSSL RNG
- * Note: For production, use a hardware RNG like STM32 RNG peripheral.
- * This uses wolfIP's LFSR PRNG which is NOT cryptographically secure.
- */
-int custom_rand_gen_block(unsigned char *output, unsigned int sz)
-{
-    unsigned int i;
-    for (i = 0; i < sz; i++) {
-        output[i] = (unsigned char)(wolfIP_getrandom() & 0xFF);
-    }
-    return 0;
-}
-
 int tls_server_init(struct wolfIP *stack, uint16_t port,
                     tls_server_debug_cb debug)
 {

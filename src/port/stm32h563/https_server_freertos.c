@@ -30,16 +30,6 @@ static freertos_https_task_ctx g_https_task_ctx;
 static char g_https_request[512];
 static char g_https_response[768];
 
-int custom_rand_gen_block(unsigned char *output, unsigned int sz)
-{
-    unsigned int i;
-
-    for (i = 0; i < sz; i++) {
-        output[i] = (unsigned char)(wolfIP_getrandom() & 0xFFu);
-    }
-    return 0;
-}
-
 static void https_debug(const char *msg)
 {
     if (g_https_task_ctx.debug_cb != NULL) {

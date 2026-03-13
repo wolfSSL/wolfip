@@ -156,8 +156,7 @@ extern "C" {
 /* ------------------------------------------------------------------------- */
 /* RNG */
 /* ------------------------------------------------------------------------- */
-/* wc_GenerateSeed is implemented in tls_server.c
- * (wolfSSL will call it for entropy) */
+/* wc_GenerateSeed is implemented in main.c using the STM32 RNG peripheral. */
 #define CUSTOM_RAND_GENERATE_BLOCK custom_rand_gen_block
 int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 

@@ -78,6 +78,7 @@ static int tls_client_test_done = 0;
 
 /* Forward declarations */
 static void uart_puts(const char *s);
+static void delay(uint32_t count);
 
 /* =========================================================================
  * HardFault Handler - prints crash info via UART
@@ -230,8 +231,14 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define RCC_AHB1ENR  (*(volatile uint32_t *)(RCC_BASE + 0x88u))
 #define RCC_AHB2ENR  (*(volatile uint32_t *)(RCC_BASE + 0x8Cu))
 #define RCC_APB3ENR  (*(volatile uint32_t *)(RCC_BASE + 0xA8u))
+#define RCC_CR       (*(volatile uint32_t *)(RCC_BASE + 0x00u))
+#define RCC_CCIPR5   (*(volatile uint32_t *)(RCC_BASE + 0xE8u))
 #define RCC_AHB1RSTR (*(volatile uint32_t *)(RCC_BASE + 0x60u))
 #define RCC_AHB1RSTR_ETHRST (1u << 19)
+#define RCC_AHB2ENR_RNGEN   (1u << 18)
+#define RCC_CR_HSI48ON      (1u << 12)
+#define RCC_CR_HSI48RDY     (1u << 13)
+#define RCC_CCIPR5_RNGSEL_Msk (3u << 4)
 
 /* SAU (Security Attribution Unit) - mark memory regions as non-secure */
 #define SAU_CTRL   (*(volatile uint32_t *)0xE000EDD0u)
@@ -303,6 +310,26 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define GPIO_BSRR(base)    (*(volatile uint32_t *)((base) + 0x18u))
 #define LED2_PIN 4u
 
+#if TZEN_ENABLED
+#define RNG_BASE 0x520C0800u
+#else
+#define RNG_BASE 0x420C0800u
+#endif
+#define RNG_CR   (*(volatile uint32_t *)(RNG_BASE + 0x00u))
+#define RNG_SR   (*(volatile uint32_t *)(RNG_BASE + 0x04u))
+#define RNG_DR   (*(volatile uint32_t *)(RNG_BASE + 0x08u))
+#define RNG_CR_RNGEN          (1u << 2)
+#define RNG_CR_CONDRST        (1u << 30)
+#define RNG_CR_CONFIG3_SHIFT  8u
+#define RNG_CR_CONFIG2_SHIFT  13u
+#define RNG_CR_CLKDIV_SHIFT   16u
+#define RNG_CR_CONFIG1_SHIFT  20u
+#define RNG_SR_DRDY           (1u << 0)
+#define RNG_SR_CECS           (1u << 1)
+#define RNG_SR_SECS           (1u << 2)
+#define RNG_SR_CEIS           (1u << 5)
+#define RNG_SR_SEIS           (1u << 6)
+
 static struct wolfIP *IPStack;
 #ifndef WOLFIP_USE_FREERTOS
 static int listen_fd = -1;
@@ -310,13 +337,89 @@ static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
 #endif
 
+static void rng_init(void)
+{
+    uint32_t rng_cr;
+
+    RCC_CR |= RCC_CR_HSI48ON;
+    while ((RCC_CR & RCC_CR_HSI48RDY) == 0u) {
+    }
+
+    /* Select HSI48 as the RNG kernel clock. */
+    RCC_CCIPR5 &= ~RCC_CCIPR5_RNGSEL_Msk;
+    RCC_AHB2ENR |= RCC_AHB2ENR_RNGEN;
+    delay(100);
+
+    rng_cr = RNG_CR;
+    rng_cr &= ~(0x1Fu << RNG_CR_CONFIG1_SHIFT);
+    rng_cr &= ~(0x7u << RNG_CR_CLKDIV_SHIFT);
+    rng_cr &= ~(0x3u << RNG_CR_CONFIG2_SHIFT);
+    rng_cr &= ~(0x7u << RNG_CR_CONFIG3_SHIFT);
+    rng_cr |= 0x0Fu << RNG_CR_CONFIG1_SHIFT;
+    rng_cr |= 0x0Du << RNG_CR_CONFIG3_SHIFT;
+
+    RNG_CR = RNG_CR_CONDRST | rng_cr;
+    while ((RNG_CR & RNG_CR_CONDRST) == 0u) {
+    }
+    RNG_CR = rng_cr | RNG_CR_RNGEN;
+    while ((RNG_SR & RNG_SR_DRDY) == 0u) {
+    }
+}
+
+static int rng_get_word(uint32_t *out)
+{
+    uint32_t timeout = 100000u;
+
+    while ((RNG_SR & RNG_SR_DRDY) == 0u) {
+        if ((RNG_SR & (RNG_SR_CECS | RNG_SR_SECS | RNG_SR_CEIS | RNG_SR_SEIS)) != 0u) {
+            rng_init();
+            timeout = 100000u;
+            continue;
+        }
+        if (--timeout == 0u) {
+            return -1;
+        }
+    }
+
+    *out = RNG_DR;
+    return 0;
+}
+
+int custom_rand_gen_block(unsigned char *output, unsigned int sz)
+{
+    uint32_t word;
+
+    while (sz >= 4u) {
+        if (rng_get_word(&word) != 0) {
+            return -1;
+        }
+        output[0] = (unsigned char)word;
+        output[1] = (unsigned char)(word >> 8);
+        output[2] = (unsigned char)(word >> 16);
+        output[3] = (unsigned char)(word >> 24);
+        output += 4;
+        sz -= 4;
+    }
+
+    if (sz > 0u) {
+        if (rng_get_word(&word) != 0) {
+            return -1;
+        }
+        while (sz-- > 0u) {
+            *output++ = (unsigned char)word;
+            word >>= 8;
+        }
+    }
+
+    return 0;
+}
+
 uint32_t wolfIP_getrandom(void)
 {
-    static uint32_t lfsr = 0x1A2B3C4DU;
-    lfsr ^= lfsr << 13;
-    lfsr ^= lfsr >> 17;
-    lfsr ^= lfsr << 5;
-    return lfsr;
+    uint32_t word = 0u;
+
+    (void)rng_get_word(&word);
+    return word;
 }
 
 /* Simple delay */
@@ -686,6 +789,7 @@ int main(void)
 
     /* Initialize UART for debug output */
     uart_init();
+    rng_init();
 
     /* Blink to show UART init done */
     led_off();

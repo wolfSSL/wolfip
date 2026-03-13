@@ -47,6 +47,22 @@ static void echo_debug_error(const char *prefix, int ret, int sock_err)
     echo_debug(msg);
 }
 
+static int echo_send_all(int client_fd, const char *buf, int len)
+{
+    int sent = 0;
+
+    while (sent < len) {
+        int ret = send(client_fd, buf + sent, (size_t)(len - sent), 0);
+        if (ret <= 0) {
+            echo_debug_error("Echo/FreeRTOS: send failed", ret, socket_last_error());
+            return -1;
+        }
+        sent += ret;
+    }
+
+    return 0;
+}
+
 static void echo_serve_client(int client_fd)
 {
     int ret;
@@ -57,8 +73,7 @@ static void echo_serve_client(int client_fd)
             echo_debug_error("Echo/FreeRTOS: recv failed", ret, socket_last_error());
             break;
         }
-        if (send(client_fd, g_echo_rxbuf, (size_t)ret, 0) != ret) {
-            echo_debug_error("Echo/FreeRTOS: send failed", ret, socket_last_error());
+        if (echo_send_all(client_fd, g_echo_rxbuf, ret) < 0) {
             break;
         }
     }
