@@ -1467,6 +1467,8 @@ static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *
 
 static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_data);
 static int transport_verify_checksum(union transport_pseudo_header *ph, void *data);
+static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
+                                         struct wolfIP_ip_packet *orig);
 #ifdef ETHERNET
 static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len);
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip);
@@ -1479,7 +1481,7 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip);
 static int arp_lookup(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac);
 #endif
 
-#ifdef ETHERNET
+#if WOLFIP_ENABLE_FORWARDING && defined(ETHERNET)
 static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
                                      struct wolfIP_ip_packet *orig)
 {
@@ -1518,7 +1520,17 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
     }
     wolfIP_ll_send_frame(s, if_idx, &icmp, sizeof(icmp));
 }
+#elif WOLFIP_ENABLE_FORWARDING
+static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
+                                     struct wolfIP_ip_packet *orig)
+{
+    (void)s;
+    (void)if_idx;
+    (void)orig;
+}
+#endif
 
+#ifdef ETHERNET
 static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
                                          struct wolfIP_ip_packet *orig)
 {
@@ -1559,14 +1571,6 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
     wolfIP_ll_send_frame(s, if_idx, &icmp, sizeof(icmp));
 }
 #else
-static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
-                                     struct wolfIP_ip_packet *orig)
-{
-    (void)s;
-    (void)if_idx;
-    (void)orig;
-}
-
 static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
                                          struct wolfIP_ip_packet *orig)
 {
@@ -2294,11 +2298,22 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
     out.csum = ee16(transport_checksum(&ph, &out.src_port));
 
 #ifdef ETHERNET
-    if (!wolfIP_ll_is_non_ethernet(s, if_idx))
-        wolfIP_forward_packet(s, if_idx, &out.ip, sizeof(out), in->ip.eth.src, 0);
-    else
+    if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+        if (eth_output_add_header(s, if_idx, in->ip.eth.src, &out.ip.eth, ETH_TYPE_IP) != 0)
+            return;
+    }
 #endif
-        wolfIP_forward_packet(s, if_idx, &out.ip, sizeof(out), NULL, 0);
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, if_idx, &out, sizeof(out)) != 0)
+        return;
+    if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &out.ip, sizeof(out)) != 0)
+        return;
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &out.ip.eth, sizeof(out)) != 0)
+            return;
+    }
+#endif
+    wolfIP_ll_send_frame(s, if_idx, &out.ip, sizeof(out));
 }
 
 static void tcp_send_finack(struct tsocket *t)
