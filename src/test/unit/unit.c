@@ -7814,7 +7814,7 @@ START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
     struct wolfIP s;
     uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
     struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
-    struct wolfIP_icmp_ttl_exceeded_packet *icmp;
+    struct wolfIP_icmp_dest_unreachable_packet *icmp;
     uint32_t local_ip = 0x0A000001U;
     uint32_t remote_ip = 0x0A000002U;
     uint8_t src_mac[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
@@ -7846,8 +7846,8 @@ START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
 
     ck_assert_uint_eq(last_frame_sent_size,
-            sizeof(struct wolfIP_icmp_ttl_exceeded_packet));
-    icmp = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
+            sizeof(struct wolfIP_icmp_dest_unreachable_packet));
+    icmp = (struct wolfIP_icmp_dest_unreachable_packet *)last_frame_sent;
     ck_assert_uint_eq(icmp->type, 3U);
     ck_assert_uint_eq(icmp->code, 3U);
     ck_assert_mem_eq(icmp->unused, "\x00\x00\x00\x00", sizeof(icmp->unused));
@@ -7857,6 +7857,41 @@ START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
     ck_assert_uint_eq(ee32(icmp->ip.dst), remote_ip);
     ck_assert_mem_eq(icmp->orig_packet, ((uint8_t *)udp) + ETH_HEADER_LEN,
             TTL_EXCEEDED_ORIG_PACKET_SIZE);
+}
+END_TEST
+
+START_TEST(test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp)
+{
+    struct wolfIP s;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t remote_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->ip.src = ee32(remote_ip);
+    udp->ip.dst = ee32(0x0A0000FEU);
+    udp->src_port = ee16(4321);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    memcpy(udp->data, "test", 4);
+    fix_udp_checksums(udp);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
 }
 END_TEST
 
@@ -15034,6 +15069,24 @@ START_TEST(test_tcp_input_unmatched_ack_sends_rst)
 }
 END_TEST
 
+START_TEST(test_tcp_input_unmatched_ack_nonlocal_dst_does_not_send_rst)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A0000FEU,
+            4321, 1234, 77, 101, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_tcp_input_unmatched_syn_sends_rst_ack)
 {
     struct wolfIP s;
@@ -19360,6 +19413,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_conf_null);
     tcase_add_test(tc_utils, test_udp_try_recv_remote_ip_matches_local_ip);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
+    tcase_add_test(tc_utils, test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp);
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
@@ -19451,6 +19505,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_filter_drop);
     tcase_add_test(tc_utils, test_tcp_input_port_mismatch_skips_socket);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_sends_rst);
+    tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_nonlocal_dst_does_not_send_rst);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_syn_sends_rst_ack);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_rst_is_discarded);
     tcase_add_test(tc_utils, test_tcp_input_syn_bound_ip_mismatch);

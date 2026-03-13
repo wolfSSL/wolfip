@@ -127,6 +127,7 @@ struct wolfIP_icmp_packet;
 
 /* Macros */
 #define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
+#define IS_IP_MCAST(ip) (((ip) & 0xF0000000U) == 0xE0000000U)
 
 #define PKT_FLAG_SENT    0x01U
 #define PKT_FLAG_ACKED   0x02U
@@ -703,6 +704,7 @@ union transport_pseudo_header {
 
 #define TTL_EXCEEDED_ORIG_PACKET_SIZE (28)
 #define ICMP_TTL_EXCEEDED_SIZE (36)
+#define ICMP_DEST_UNREACH_SIZE (36)
 
 struct PACKED wolfIP_icmp_packet {
     struct wolfIP_ip_packet ip;
@@ -1497,12 +1499,12 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN,
             TTL_EXCEEDED_ORIG_PACKET_SIZE);
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
-                ICMP_TTL_EXCEEDED_SIZE));
+                ICMP_DEST_UNREACH_SIZE));
     icmp.ip.ver_ihl = 0x45;
     icmp.ip.ttl = 64;
     icmp.ip.proto = WI_IPPROTO_ICMP;
     icmp.ip.id = ipcounter_next(s);
-    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE);
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
     icmp.ip.src = ee32(wolfIP_ipconf_at(s, if_idx)->ip);
     icmp.ip.dst = orig->src;
     icmp.ip.csum = 0;
@@ -1767,8 +1769,17 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             matched = 1;
         }
     }
-    if (!matched)
-        wolfIP_send_port_unreachable(s, if_idx, &udp->ip);
+    if (!matched) {
+        int dst_match = 0;
+
+        if (dst_ip != IPADDR_ANY && src_ip != IPADDR_ANY &&
+                !IS_IP_BCAST(dst_ip) && !IS_IP_BCAST(src_ip) &&
+                !IS_IP_MCAST(dst_ip) && !IS_IP_MCAST(src_ip)) {
+            (void)wolfIP_if_for_local_ip(s, dst_ip, &dst_match);
+            if (dst_match)
+                wolfIP_send_port_unreachable(s, if_idx, &udp->ip);
+        }
+    }
 }
 
 /* ICMP sockets reuse the UDP fifo bookkeeping */
@@ -3621,8 +3632,16 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
         }
     }
-    if (!matched)
-        tcp_send_reset_reply(S, if_idx, tcp);
+    if (!matched) {
+        ip4 dst = ee32(tcp->ip.dst);
+        int dst_match = 0;
+
+        if (dst != IPADDR_ANY && !IS_IP_BCAST(dst) && !IS_IP_MCAST(dst)) {
+            (void)wolfIP_if_for_local_ip(S, dst, &dst_match);
+            if (dst_match)
+                tcp_send_reset_reply(S, if_idx, tcp);
+        }
+    }
 }
 
 static void tcp_rto_cb(void *arg)
