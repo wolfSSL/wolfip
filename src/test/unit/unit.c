@@ -14720,6 +14720,78 @@ START_TEST(test_tcp_input_port_mismatch_skips_socket)
 }
 END_TEST
 
+START_TEST(test_tcp_input_unmatched_ack_sends_rst)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg *rst;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 77, 101, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(last_frame_sent_size, (uint32_t)sizeof(struct wolfIP_tcp_seg));
+    rst = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(rst->ip.src), 0x0A000001U);
+    ck_assert_uint_eq(ee32(rst->ip.dst), 0x0A000002U);
+    ck_assert_uint_eq(ee16(rst->src_port), 1234);
+    ck_assert_uint_eq(ee16(rst->dst_port), 4321);
+    ck_assert_uint_eq(rst->flags, TCP_FLAG_RST);
+    ck_assert_uint_eq(ee32(rst->seq), 101U);
+    ck_assert_uint_eq(ee32(rst->ack), 0U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_unmatched_syn_sends_rst_ack)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg *rst;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 77, 0, TCP_FLAG_SYN);
+
+    ck_assert_uint_eq(last_frame_sent_size, (uint32_t)sizeof(struct wolfIP_tcp_seg));
+    rst = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(rst->ip.src), 0x0A000001U);
+    ck_assert_uint_eq(ee32(rst->ip.dst), 0x0A000002U);
+    ck_assert_uint_eq(ee16(rst->src_port), 1234);
+    ck_assert_uint_eq(ee16(rst->dst_port), 4321);
+    ck_assert_uint_eq(rst->flags, (uint8_t)(TCP_FLAG_RST | TCP_FLAG_ACK));
+    ck_assert_uint_eq(ee32(rst->seq), 0U);
+    ck_assert_uint_eq(ee32(rst->ack), 78U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_unmatched_rst_is_discarded)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 77, 0, TCP_FLAG_RST);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_bound_ip_mismatch)
 {
     struct wolfIP s;
@@ -19089,6 +19161,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_invalid_seq_rejected);
     tcase_add_test(tc_utils, test_tcp_input_filter_drop);
     tcase_add_test(tc_utils, test_tcp_input_port_mismatch_skips_socket);
+    tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_sends_rst);
+    tcase_add_test(tc_utils, test_tcp_input_unmatched_syn_sends_rst_ack);
+    tcase_add_test(tc_utils, test_tcp_input_unmatched_rst_is_discarded);
     tcase_add_test(tc_utils, test_tcp_input_syn_bound_ip_mismatch);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_wrong_flags);
     tcase_add_test(tc_utils, test_tcp_input_close_wait_processes_ack);

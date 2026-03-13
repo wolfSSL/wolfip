@@ -2172,6 +2172,69 @@ static void tcp_send_ack(struct tsocket *t)
     return tcp_send_empty(t, TCP_FLAG_ACK);
 }
 
+static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
+                                 const struct wolfIP_tcp_seg *in)
+{
+    struct wolfIP_tcp_seg out;
+    union transport_pseudo_header ph;
+    uint16_t ip_len;
+    uint32_t tcp_hlen;
+    uint32_t seg_ack;
+
+    if (in->flags & TCP_FLAG_RST)
+        return;
+
+    ip_len = ee16(in->ip.len);
+    tcp_hlen = (uint32_t)(in->hlen >> 2);
+    if (tcp_hlen < TCP_HEADER_LEN)
+        return;
+    if (ip_len < (uint16_t)(IP_HEADER_LEN + tcp_hlen))
+        return;
+
+    memset(&out, 0, sizeof(out));
+    out.src_port = in->dst_port;
+    out.dst_port = in->src_port;
+    out.hlen = TCP_HEADER_LEN << 2;
+
+    if (in->flags & TCP_FLAG_ACK) {
+        out.seq = in->ack;
+        out.flags = TCP_FLAG_RST;
+    } else {
+        seg_ack = ee32(in->seq);
+        seg_ack = tcp_seq_inc(seg_ack, ip_len - (uint16_t)(IP_HEADER_LEN + tcp_hlen));
+        if (in->flags & TCP_FLAG_SYN)
+            seg_ack = tcp_seq_inc(seg_ack, 1);
+        if (in->flags & TCP_FLAG_FIN)
+            seg_ack = tcp_seq_inc(seg_ack, 1);
+        out.ack = ee32(seg_ack);
+        out.flags = TCP_FLAG_RST | TCP_FLAG_ACK;
+    }
+
+    out.ip.src = in->ip.dst;
+    out.ip.dst = in->ip.src;
+    out.ip.ver_ihl = 0x45;
+    out.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    out.ip.ttl = 64;
+    out.ip.proto = WI_IPPROTO_TCP;
+    out.ip.id = ee16(s->ipcounter);
+    s->ipcounter = (uint16_t)(s->ipcounter + 1);
+    iphdr_set_checksum(&out.ip);
+
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = out.ip.src;
+    ph.ph.dst = out.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    out.csum = ee16(transport_checksum(&ph, &out.src_port));
+
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(s, if_idx))
+        wolfIP_forward_packet(s, if_idx, &out.ip, sizeof(out), in->ip.eth.src, 0);
+    else
+#endif
+        wolfIP_forward_packet(s, if_idx, &out.ip, sizeof(out), NULL, 0);
+}
+
 static void tcp_send_finack(struct tsocket *t)
 {
     tcp_send_empty(t, TCP_FLAG_FIN | TCP_FLAG_ACK);
@@ -3467,6 +3530,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
         }
     }
+    tcp_send_reset_reply(S, if_idx, tcp);
 }
 
 static void tcp_rto_cb(void *arg)
