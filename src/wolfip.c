@@ -4830,6 +4830,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     /* validate ip->len doesn't exceed actual received data */
     if (len < (uint32_t)(ETH_HEADER_LEN + ee16(ip->len)))
         return;
+    /* validate ICMP checksum before processing */
+    if (icmp_checksum(icmp, (uint16_t)(ee16(ip->len) - IP_HEADER_LEN)) != 0)
+        return;
 
     if (wolfIP_filter_notify_icmp(WOLFIP_FILT_RECEIVING, s, if_idx, icmp, len) != 0)
         return;

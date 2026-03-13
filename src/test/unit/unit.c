@@ -5774,6 +5774,7 @@ START_TEST(test_icmp_input_echo_reply_queues)
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REPLY;
     icmp_set_echo_id(&icmp, ts->src_port);
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
@@ -5800,11 +5801,40 @@ START_TEST(test_icmp_input_echo_request_reply_sent)
     icmp.ip.ttl = 64;
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(((struct wolfIP_icmp_packet *)last_frame_sent)->type, ICMP_ECHO_REPLY);
+}
+END_TEST
+
+START_TEST(test_icmp_input_echo_request_bad_checksum_dropped)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);
+    icmp.ip.ttl = 64;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    icmp.csum ^= ee16(0x0001);
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
 }
 END_TEST
 
@@ -5842,6 +5872,7 @@ START_TEST(test_icmp_input_echo_request_odd_len_reply_checksum)
     icmp->code  = 0;
     icmp->csum  = 0;
     ((uint8_t *)&icmp->type)[ICMP_HEADER_LEN] = 0xAB;
+    icmp->csum  = ee16(icmp_checksum(icmp, icmp_len));
 
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + icmp_len);
     icmp_input(&s, TEST_PRIMARY_IF, ip, frame_len);
@@ -5883,6 +5914,7 @@ START_TEST(test_icmp_input_echo_request_dhcp_running_no_reply)
     icmp.ip.dst = ee32(0x0A000001U);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
@@ -5909,6 +5941,7 @@ START_TEST(test_icmp_input_echo_request_filter_drop)
     icmp.ip.dst = ee32(0x0A000001U);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
@@ -5938,6 +5971,7 @@ START_TEST(test_icmp_input_echo_request_ip_filter_drop)
     icmp.ip.dst = ee32(0x0A000001U);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
@@ -5967,6 +6001,7 @@ START_TEST(test_icmp_input_echo_request_eth_filter_drop)
     icmp.ip.dst = ee32(0x0A000001U);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
@@ -5995,6 +6030,7 @@ START_TEST(test_icmp_input_filter_drop_receiving)
     icmp.ip.dst = ee32(0x0A000001U);
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
@@ -19511,6 +19547,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_socket_send_recv);
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_queues);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_reply_sent);
+    tcase_add_test(tc_proto, test_icmp_input_echo_request_bad_checksum_dropped);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_odd_len_reply_checksum);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_dhcp_running_no_reply);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_filter_drop);
