@@ -38,16 +38,12 @@ static void echo_debug_port(const char *prefix, uint16_t port)
     echo_debug(msg);
 }
 
-static void echo_debug_diag(const char *phase)
+static void echo_debug_error(const char *prefix, int ret, int sock_err)
 {
-    char msg[128];
+    char msg[96];
 
-    (void)snprintf(msg, sizeof(msg),
-        "Echo/FreeRTOS: %s stack_hw=%lu free_heap=%lu min_heap=%lu\n",
-        phase,
-        (unsigned long)uxTaskGetStackHighWaterMark(NULL),
-        (unsigned long)xPortGetFreeHeapSize(),
-        (unsigned long)xPortGetMinimumEverFreeHeapSize());
+    (void)snprintf(msg, sizeof(msg), "%s ret=%d sock_err=%d\n",
+        prefix, ret, sock_err);
     echo_debug(msg);
 }
 
@@ -55,18 +51,18 @@ static void echo_serve_client(int client_fd)
 {
     int ret;
 
-    echo_debug_diag("client start");
     for (;;) {
         ret = recv(client_fd, g_echo_rxbuf, sizeof(g_echo_rxbuf), 0);
         if (ret <= 0) {
+            echo_debug_error("Echo/FreeRTOS: recv failed", ret, socket_last_error());
             break;
         }
         if (send(client_fd, g_echo_rxbuf, (size_t)ret, 0) != ret) {
+            echo_debug_error("Echo/FreeRTOS: send failed", ret, socket_last_error());
             break;
         }
     }
     (void)close(client_fd);
-    echo_debug_diag("client done");
 }
 
 static void echo_server_task(void *arg)
@@ -82,7 +78,6 @@ static void echo_server_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    echo_debug_diag("after socket");
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -104,7 +99,6 @@ static void echo_server_task(void *arg)
     }
 
     echo_debug_port("Echo/FreeRTOS: Server ready on port", task_ctx->port);
-    echo_debug_diag("server ready");
 
     for (;;) {
         int client_fd = accept(listen_fd, NULL, NULL);
