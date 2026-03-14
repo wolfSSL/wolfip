@@ -69,7 +69,7 @@ typedef struct replay_t replay_t;
     do {                             \
         (r).bitmap = 0U;             \
         (r).hi_seq = ESP_REPLAY_WIN; \
-        (r).oseq = 1U;               \
+        (r).oseq = 0U;               \
     } while (0)
 
 /* Minimal ESP Security Association structure.

@@ -1489,10 +1489,14 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     memcpy(payload, esp_sa->spi, sizeof(esp_sa->spi));
     payload += ESP_SPI_LEN;
 
+    esp_sa->replay.oseq++;
+    if (esp_sa->replay.oseq == 0) {
+        ESP_LOG("error: oseq overflow\n");
+        return -1;
+    }
     seq_n = ee32(esp_sa->replay.oseq);
     memcpy(payload, &seq_n, sizeof(seq_n));
     payload += ESP_SEQ_LEN;
-    esp_sa->replay.oseq++;
 
     if (iv_len) {
         /* skip iv field, will generate later. */
