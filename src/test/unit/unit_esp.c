@@ -540,13 +540,15 @@ START_TEST(test_replay_overflow)
         ck_assert_int_eq(ret, 0);
     }
 
-    /* oseq overflow is detected, and is rejected. */
-    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
-                                ref, sizeof(ref));
-    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+    /* all of these should be rejected, oseq overflow is detected. */
+    for (i = 0; i < 10; ++i) {
+        frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                    ref, sizeof(ref));
+        ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
 
-    ret = esp_transport_wrap(ip, &ip_len);
-    ck_assert_int_eq(ret, -1);
+        ret = esp_transport_wrap(ip, &ip_len);
+        ck_assert_int_eq(ret, -1);
+    }
 }
 END_TEST
 

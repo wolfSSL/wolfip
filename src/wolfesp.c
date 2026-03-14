@@ -1491,6 +1491,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
 
     esp_sa->replay.oseq++;
     if (esp_sa->replay.oseq == 0) {
+        esp_sa->replay.oseq--;
         ESP_LOG("error: oseq overflow\n");
         return -1;
     }
