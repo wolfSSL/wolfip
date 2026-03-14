@@ -503,6 +503,53 @@ START_TEST(test_replay_old_seqs_after_jump)
 }
 END_TEST
 
+/* The transmitted sequence number must never be allowed to overflow. */
+START_TEST(test_replay_overflow)
+{
+    static uint8_t  buf[LINK_MTU + 256];
+    uint8_t         ref[64];
+    uint32_t        frame_len, i;
+    uint16_t        ip_len;
+    int             ret;
+    wolfIP_esp_sa * esp_sa = NULL;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+
+    for (i = 0U; i < sizeof(ref); i++) ref[i] = (uint8_t)(i & 0xFFU);
+
+    esp_setup();
+
+    ret = wolfIP_esp_sa_new_gcm(0, (uint8_t *)spi_rt,
+                                atoip4(T_SRC), atoip4(T_DST),
+                                ESP_ENC_GCM_RFC4543,
+                                (uint8_t *)k_aes256_gcm,
+                                sizeof(k_aes256_gcm));
+    ck_assert_int_eq(ret, 0);
+    esp_sa = esp_sa_get(0, (uint8_t *)spi_rt);
+    ck_assert_ptr_nonnull(esp_sa);
+
+    /* Set oseq to 10 before overflow. */
+    esp_sa->replay.oseq = (ESP_MAX_32_SEQ - 10);
+
+    /* all of these should be ok. */
+    for (i = 0; i < 10; ++i) {
+        frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                    ref, sizeof(ref));
+        ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+        ret = esp_transport_wrap(ip, &ip_len);
+        ck_assert_int_eq(ret, 0);
+    }
+
+    /* oseq overflow is detected, and is rejected. */
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                ref, sizeof(ref));
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
 /*
  * esp_transport_unwrap error paths
  */
@@ -1123,6 +1170,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_replay_low_hi_seq_accepts_seq_one);
     tcase_add_test(tc, test_replay_jump_resets_bitmap);
     tcase_add_test(tc, test_replay_old_seqs_after_jump);
+    tcase_add_test(tc, test_replay_overflow);
     suite_add_tcase(s, tc);
 
     /* Unwrap error paths */
