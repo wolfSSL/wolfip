@@ -202,6 +202,12 @@ leaksan:LDFLAGS+=-fsanitize=leak
 ESP_CFLAGS = \
     -DWOLFIP_ESP  -DWOLFSSL_WOLFIP
 
+WOLFGUARD_CFLAGS = -DWOLFIP_WOLFGUARD
+
+WG_OBJ = build/wolfguard/wolfip.o \
+          build/wolfguard/wolfip_wolfguard.o \
+          $(TAP_OBJ)
+
 # Test
 
 ifeq ($(CHECK_PKG_LIBS),)
@@ -261,6 +267,53 @@ build/ipfilter/wolfip.o: src/wolfip.c
 	@$(CC) $(CFLAGS) -DCONFIG_IPFILTER=1 -c $< -o $@
 
 build/test/ipfilter_logger.o: CFLAGS+=-DCONFIG_IPFILTER=1
+
+# wolfguard
+build/wolfguard/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (wolfguard)"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) -c $< -o $@
+
+build/wolfguard/wolfip_wolfguard.o: src/wolfip_wolfguard.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (wolfguard)"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) -c $< -o $@
+
+build/test/wolfguard/test_wolfguard.o: src/test/wolfguard/test_wolfguard.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $@"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) -c $< -o $@
+
+build/test-wolfguard: $(WG_OBJ) build/test/wolfguard/test_wolfguard.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) $(LDFLAGS) -o $@ \
+		$(BEGIN_GROUP) $(^) $(END_GROUP) -lwolfssl
+
+unit-wolfguard: build/test/unit-wolfguard
+
+build/test/unit-wolfguard: src/test/unit/unit_wolfguard.c
+	@mkdir -p build/test/
+	@echo "[CC] unit_wolfguard.c"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) $(UNIT_CFLAGS) \
+		-c src/test/unit/unit_wolfguard.c -o build/test/unit_wolfguard.o
+	@echo "[LD] $@"
+	@$(CC) build/test/unit_wolfguard.o -o $@ \
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS)
+
+clean-unit-wolfguard:
+	@rm -f build/test/unit-wolfguard build/test/unit_wolfguard.o
+
+unit-wolfguard-asan: CFLAGS+=-fsanitize=address
+unit-wolfguard-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-wolfguard-asan: clean-unit-wolfguard build/test/unit-wolfguard
+
+unit-wolfguard-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
+unit-wolfguard-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
+unit-wolfguard-ubsan: clean-unit-wolfguard build/test/unit-wolfguard
+
+unit-wolfguard-leaksan: CFLAGS+=-fsanitize=leak
+unit-wolfguard-leaksan: LDFLAGS+=-fsanitize=leak $(UNIT_LIBS)
+unit-wolfguard-leaksan: clean-unit-wolfguard build/test/unit-wolfguard
 
 # ipsec esp
 build/esp/wolfip.o: src/wolfip.c
@@ -445,7 +498,8 @@ install:
 	ldconfig
 
 .PHONY: clean all static cppcheck cov autocov unit-asan unit-ubsan unit-leaksan clean-unit \
-        unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp
+        unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
+        unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan unit-wolfguard-leaksan clean-unit-wolfguard
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml

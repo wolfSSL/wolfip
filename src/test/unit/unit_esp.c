@@ -723,6 +723,7 @@ START_TEST(test_unwrap_pad_too_big)
 }
 END_TEST
 
+
 /*
  * full enc/dec round-trips
  * */
@@ -820,6 +821,7 @@ START_TEST(test_roundtrip_aes128_cbc_sha1)
 }
 END_TEST
 
+#ifndef HAVE_FIPS
 START_TEST(test_roundtrip_aes128_cbc_md5)
 {
     do_roundtrip_cbc_hmac(k_aes128, sizeof(k_aes128),
@@ -828,6 +830,7 @@ START_TEST(test_roundtrip_aes128_cbc_md5)
                           ESP_ICVLEN_HMAC_96);
 }
 END_TEST
+#endif
 
 START_TEST(test_roundtrip_aes256_cbc_sha256_128)
 {
@@ -1190,7 +1193,10 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_roundtrip_aes128_cbc_sha256_128);
     tcase_add_test(tc, test_roundtrip_aes128_cbc_sha256_96);
     tcase_add_test(tc, test_roundtrip_aes128_cbc_sha1);
+/* run this test only if the build is not in FIPS mode, since md5 is not approved. */
+#ifndef HAVE_FIPS
     tcase_add_test(tc, test_roundtrip_aes128_cbc_md5);
+#endif
     tcase_add_test(tc, test_roundtrip_aes256_cbc_sha256_128);
 #ifndef NO_DES3
     tcase_add_test(tc, test_roundtrip_des3_sha256);

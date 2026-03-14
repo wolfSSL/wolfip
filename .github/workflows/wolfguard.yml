@@ -1,0 +1,96 @@
+name: wolfguard tests (non-FIPS)
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  wolfguard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential autoconf libtool \
+            linux-headers-$(uname -r) \
+            iproute2 check \
+            gawk kmod
+
+      - name: Clone wolfSSL and wolfguard sources
+        run: |
+          mkdir -p wolf-sources
+          # nightly-snapshot is the branch required by wolfguard for its latest
+          # kernel-module API. Pin to a tagged release once wolfguard stabilises.
+          git clone --depth=1 https://github.com/wolfssl/wolfssl \
+            --branch nightly-snapshot wolf-sources/wolfssl
+          git clone --depth=1 https://github.com/wolfssl/wolfguard \
+            wolf-sources/wolfguard
+
+      - name: Build and install wolfssl user library
+        working-directory: wolf-sources/wolfssl
+        run: |
+          ./autogen.sh
+          ./configure --quiet --enable-wolfguard --enable-all-asm
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      - name: Build and install wg-fips user tool
+        run: |
+          make -j$(nproc) -C wolf-sources/wolfguard/user-src
+          sudo make -C wolf-sources/wolfguard/user-src install
+
+      - name: Build and install libwolfssl.ko (non-FIPS)
+        working-directory: wolf-sources/wolfssl
+        run: |
+          make distclean
+          ./configure --quiet --enable-wolfguard --enable-cryptonly \
+            --enable-intelasm --enable-linuxkm \
+            --with-linux-source=/lib/modules/$(uname -r)/build \
+            --prefix=$(pwd)/linuxkm/build
+          make -j$(nproc) module
+          sudo make install
+
+      - name: Build wolfguard.ko
+        working-directory: wolf-sources/wolfguard/kernel-src
+        run: |
+          make -j$(nproc) \
+            KERNELDIR=/lib/modules/$(uname -r)/build \
+            KERNELRELEASE=$(uname -r) \
+            EXTRA_CFLAGS="-I$(realpath ../../wolfssl)"
+
+      - name: Load kernel modules
+        run: |
+          sudo insmod /lib/modules/$(uname -r)/wolfssl/libwolfssl.ko
+          sudo insmod wolf-sources/wolfguard/kernel-src/wolfguard.ko
+
+      - name: Build wolfguard unit tests
+        run: make unit-wolfguard
+
+      - name: Run wolfguard unit tests
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 5m ./build/test/unit-wolfguard
+
+      - name: Build wolfguard functional test
+        run: make build/test-wolfguard
+
+      - name: Run wolfguard functional test
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 5m sudo ./build/test-wolfguard
+
+      - name: Unload kernel modules
+        if: always()
+        run: |
+          sudo rmmod wolfguard || true
+          sudo rmmod libwolfssl || true

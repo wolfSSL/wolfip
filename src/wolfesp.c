@@ -46,6 +46,11 @@ int wolfIP_esp_init(void)
 
     wolfIP_esp_sa_del_all();
 
+/* this callback gets called only if the wolfssl is built in FIPS mode. */
+#ifdef WC_RNG_SEED_CB
+    wc_SetSeed_Cb(wc_GenerateSeed);
+#endif
+
     if (rng_inited == 0) {
         err = wc_InitRng_ex(&wc_rng, NULL, INVALID_DEVID);
         if (err) {
