@@ -848,9 +848,9 @@ des3_enc_out:
  *    N octets are the AES key, and the remaining four octets are used as the
  *    salt value in the nonce.
  * */
-#define esp_rfc4106_salt(esp_sa) (esp_sa)->enc_key \
+#define esp_rfc4106_salt(esp_sa) ((esp_sa)->enc_key \
                                  + (esp_sa)->enc_key_len \
-                                 - ESP_GCM_RFC4106_SALT_LEN
+                                 - ESP_GCM_RFC4106_SALT_LEN)
 
 /* Deterministic iv construction using pre-iv salt and sequence number.
  * NIST SP 800-38D, section 8.2.1 Deterministic Construction, using
