@@ -733,6 +733,67 @@ START_TEST(test_unwrap_pad_too_big)
 }
 END_TEST
 
+START_TEST(test_unwrap_invalid_pad_pattern)
+{
+    uint8_t buf[LINK_MTU + 128];
+    uint32_t frame_len;
+    uint8_t ref[64];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    int ret;
+    uint32_t i = 0;
+    uint16_t ip_len;
+    uint8_t *pad_len = NULL;
+    uint8_t *padding = NULL;
+    wolfIP_esp_sa *esp_sa = NULL;
+    uint8_t *icv = NULL;
+
+    for (i = 0U; i < sizeof(ref); i++) {
+        ref[i] = (uint8_t)(i & 0xFFU);
+    }
+    esp_setup();
+
+    ret = wolfIP_esp_sa_new_hmac(0, (uint8_t *)spi_rt,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868, k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+    esp_sa = esp_sa_get(0, (uint8_t *)spi_rt);
+    ck_assert_ptr_nonnull(esp_sa);
+
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_rt,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868, k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                ref, sizeof(ref));
+    ip_len = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+
+    pad_len = ip->data + ip_len - IP_HEADER_LEN - ESP_ICVLEN_HMAC_128
+            - ESP_NEXT_HEADER_LEN - ESP_PADDING_LEN;
+    ck_assert_uint_eq(*pad_len, 2U);
+    padding = pad_len - *pad_len;
+    padding[0] ^= 0x7FU;
+
+    icv = ip->data + ip_len - IP_HEADER_LEN - ESP_ICVLEN_HMAC_128;
+    ret = esp_calc_icv_hmac(icv, esp_sa, ip->data, ip_len - IP_HEADER_LEN);
+    ck_assert_int_eq(ret, 0);
+
+    frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
+    ip->proto = 0x32U;
+    ip->len = ee16(ip_len);
+    ip->csum = 0U;
+    iphdr_set_checksum(ip);
+
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
 /*
  * full enc/dec round-trips
  * */
@@ -1193,6 +1254,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_unwrap_unknown_spi);
     tcase_add_test(tc, test_unwrap_below_min_len);
     tcase_add_test(tc, test_unwrap_pad_too_big);
+    tcase_add_test(tc, test_unwrap_invalid_pad_pattern);
     suite_add_tcase(s, tc);
 
     /* Crypto round-trips */

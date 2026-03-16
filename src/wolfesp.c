@@ -1400,6 +1400,20 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
             return -1;
         }
     }
+    if (pad_len > 0) {
+        const uint8_t *padding = ip->data + esp_len - esp_sa->icv_len
+                               - ESP_NEXT_HEADER_LEN - ESP_PADDING_LEN
+                               - pad_len;
+        uint8_t i;
+
+        for (i = 0; i < pad_len; i++) {
+            if (padding[i] != (uint8_t)(i + 1U)) {
+                ESP_LOG("error: esp invalid padding at %u: got %u expected %u\n",
+                        i, padding[i], (uint8_t)(i + 1U));
+                return -1;
+            }
+        }
+    }
 
     #ifdef DEBUG_ESP
     wolfIP_print_esp(esp_sa, ip->data, esp_len, pad_len, nxt_hdr);
