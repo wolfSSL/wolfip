@@ -1188,7 +1188,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
      *   seq_low - - - - - - - seq - - - - - - hi_seq
      *   |<----------- ESP_REPLAY_WIN --------------|
      * */
-    if (seq < replay->hi_seq) {
+    if (seq <= replay->hi_seq) {
         /* seq number within window. */
         bitn = 1U << (replay->hi_seq - seq);
 
@@ -1207,7 +1207,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
         diff = seq - replay->hi_seq;
         if (diff < ESP_REPLAY_WIN) {
             /* within a window width, slide up. */
-            replay->bitmap = replay->bitmap << diff;
+            replay->bitmap = (replay->bitmap << diff) | 1U;
         }
         else {
             /* reset window. */

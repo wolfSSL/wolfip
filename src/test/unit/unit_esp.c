@@ -463,6 +463,16 @@ START_TEST(test_replay_advance_hi_seq)
 }
 END_TEST
 
+/* The newly advanced hi_seq must be marked as seen immediately. */
+START_TEST(test_replay_advanced_hi_seq_duplicate_rejected)
+{
+    replay_t r;
+    esp_replay_init(r); /* hi_seq=32 */
+    ck_assert_int_eq(esp_check_replay(&r, 33U), 0);
+    ck_assert_int_ne(esp_check_replay(&r, 33U), 0);
+}
+END_TEST
+
 /* A corrupted low hi_seq should not underflow the window floor. */
 START_TEST(test_replay_low_hi_seq_accepts_seq_one)
 {
@@ -1169,6 +1179,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_replay_multiple_in_window);
     tcase_add_test(tc, test_replay_below_window_rejected);
     tcase_add_test(tc, test_replay_advance_hi_seq);
+    tcase_add_test(tc, test_replay_advanced_hi_seq_duplicate_rejected);
     tcase_add_test(tc, test_replay_low_hi_seq_accepts_seq_one);
     tcase_add_test(tc, test_replay_jump_resets_bitmap);
     tcase_add_test(tc, test_replay_old_seqs_after_jump);
