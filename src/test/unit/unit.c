@@ -3396,6 +3396,49 @@ START_TEST(test_sock_accept_synack_retransmission)
 }
 END_TEST
 
+START_TEST(test_sock_accept_synack_window_not_scaled)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *listener;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    listener->sock.tcp.ws_enabled = 1;
+    listener->sock.tcp.rcv_wscale = 3;
+
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    desc = fifo_peek(&accepted->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(accepted->txmem + desc->pos + sizeof(*desc));
+
+    ck_assert_uint_eq(seg->flags, (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    ck_assert_uint_eq(ee16(seg->win), queue_space((struct queue *)&accepted->sock.tcp.rxbuf));
+}
+END_TEST
+
 START_TEST(test_sock_accept_ack_transitions_to_established)
 {
     struct wolfIP s;
@@ -19736,6 +19779,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_starts_rto_timer);
     tcase_add_test(tc_utils, test_sock_accept_initializes_snd_una);
     tcase_add_test(tc_utils, test_sock_accept_synack_retransmission);
+    tcase_add_test(tc_utils, test_sock_accept_synack_window_not_scaled);
     tcase_add_test(tc_utils, test_sock_accept_ack_transitions_to_established);
     tcase_add_test(tc_utils, test_sock_sendto_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_null_buf_or_len_zero);

@@ -1991,10 +1991,10 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
     return NULL;
 }
 
-static uint16_t tcp_adv_win(const struct tsocket *t)
+static uint16_t tcp_adv_win(const struct tsocket *t, uint8_t apply_wscale)
 {
     uint32_t space = queue_space((struct queue *)&t->sock.tcp.rxbuf);
-    uint8_t shift = t->sock.tcp.ws_enabled ? t->sock.tcp.rcv_wscale : 0;
+    uint8_t shift = (apply_wscale && t->sock.tcp.ws_enabled) ? t->sock.tcp.rcv_wscale : 0;
     uint32_t win = space >> shift;
     if (win > 0xFFFF)
         win = 0xFFFF;
@@ -2323,7 +2323,7 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
     tcp->ack = ee32(t->sock.tcp.ack);
     tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
     tcp->flags = flags;
-    tcp->win = ee16(tcp_adv_win(t));
+    tcp->win = ee16(tcp_adv_win(t, 1));
     tcp->csum = 0;
     tcp->urg = 0;
     fifo_push(&t->sock.tcp.txbuf, tcp,
@@ -2455,7 +2455,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     tcp->seq = ee32(t->sock.tcp.seq);
     tcp->ack = ee32(t->sock.tcp.ack);
     tcp->flags = flags;
-    tcp->win = ee16(tcp_adv_win(t));
+    tcp->win = ee16(tcp_adv_win(t, 0));
     tcp->csum = 0;
     tcp->urg = 0;
     opt = tcp->data;
@@ -2675,7 +2675,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     probe->ack = ee32(t->sock.tcp.ack);
     probe->hlen = TCP_HEADER_LEN << 2;
     probe->flags = TCP_FLAG_ACK;
-    probe->win = ee16(tcp_adv_win(t));
+    probe->win = ee16(tcp_adv_win(t, 1));
     probe->data[0] = probe_byte;
 
     tx_if = wolfIP_socket_if_idx(t);
@@ -4301,7 +4301,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tcp->ack = ee32(ts->sock.tcp.ack);
             tcp->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
             tcp->flags = TCP_FLAG_ACK;
-            tcp->win = ee16(tcp_adv_win(ts));
+            tcp->win = ee16(tcp_adv_win(ts, 1));
             tcp->csum = 0;
             tcp->urg = 0;
             if (ts->sock.tcp.ts_enabled) {
@@ -4489,10 +4489,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             if (queue_len(&ts->sock.tcp.rxbuf) == 0)
                 return 0;
             {
-                uint16_t win_before = tcp_adv_win(ts);
+                uint16_t win_before = tcp_adv_win(ts, 1);
                 int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
                 if (ret > 0) {
-                    uint16_t win_after = tcp_adv_win(ts);
+                    uint16_t win_after = tcp_adv_win(ts, 1);
                     if (queue_len(&ts->sock.tcp.rxbuf) > 0)
                         ts->events |= CB_EVENT_READABLE;
                     if (win_after > win_before)
@@ -4501,10 +4501,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 return ret;
             }
         } else if (ts->sock.tcp.state == TCP_ESTABLISHED) {
-            uint16_t win_before = tcp_adv_win(ts);
+            uint16_t win_before = tcp_adv_win(ts, 1);
             int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
             if (ret > 0) {
-                uint16_t win_after = tcp_adv_win(ts);
+                uint16_t win_after = tcp_adv_win(ts, 1);
                 if (queue_len(&ts->sock.tcp.rxbuf) > 0)
                     ts->events |= CB_EVENT_READABLE;
                 if (win_after > win_before)
@@ -6554,7 +6554,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         /* Refresh ack counter */
                         ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                         tcp->ack = ee32(ts->sock.tcp.ack);
-                        tcp->win = ee16(tcp_adv_win(ts));
+                        tcp->win = ee16(tcp_adv_win(ts, 1));
                         ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
                         if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
                             break;
