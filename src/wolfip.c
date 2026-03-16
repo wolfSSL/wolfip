@@ -2743,7 +2743,10 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
     uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
     uint32_t seq = ee32(seg->seq);
     const uint8_t *payload = (uint8_t *)seg->ip.data + (seg->hlen >> 2);
-    if ((t->sock.tcp.state != TCP_ESTABLISHED) && (t->sock.tcp.state != TCP_CLOSE_WAIT)) {
+    if ((t->sock.tcp.state != TCP_ESTABLISHED) &&
+        (t->sock.tcp.state != TCP_CLOSE_WAIT) &&
+        (t->sock.tcp.state != TCP_FIN_WAIT_1) &&
+        (t->sock.tcp.state != TCP_FIN_WAIT_2)) {
         return;
     }
     if (seg_len == 0)

@@ -8393,6 +8393,7 @@ START_TEST(test_tcp_input_fin_wait_2_ack_with_payload_receives)
     struct tsocket *ts;
     uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 1];
     struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    uint8_t out = 0;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -8424,8 +8425,10 @@ START_TEST(test_tcp_input_fin_wait_2_ack_with_payload_receives)
     fix_tcp_checksums(seg);
 
     tcp_input(&s, TEST_PRIMARY_IF, seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 1));
-    ck_assert_uint_eq(ts->sock.tcp.ack, 50);
-    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 51);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, &out, sizeof(out)), 1);
+    ck_assert_uint_eq(out, TCP_OPTION_EOO);
 }
 END_TEST
 
@@ -14760,6 +14763,56 @@ START_TEST(test_tcp_recv_close_wait_ack_match)
 }
 END_TEST
 
+START_TEST(test_tcp_recv_fin_wait_1_ack_match)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 1];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+
+    wolfIP_init(&s);
+    ts = tcp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->sock.tcp.ack = 100;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    seg->data[0] = 0x5a;
+
+    tcp_recv(ts, seg);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 101);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+}
+END_TEST
+
+START_TEST(test_tcp_recv_fin_wait_2_ack_match)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 1];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+
+    wolfIP_init(&s);
+    ts = tcp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->sock.tcp.state = TCP_FIN_WAIT_2;
+    ts->sock.tcp.ack = 100;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(100);
+    seg->data[0] = 0x5a;
+
+    tcp_recv(ts, seg);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 101);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+}
+END_TEST
+
 START_TEST(test_tcp_recv_queue_full_sends_ack)
 {
     struct wolfIP s;
@@ -15974,6 +16027,7 @@ START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
     uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 4];
     struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
     uint8_t payload[4] = {9, 8, 7, 6};
+    uint8_t out[4] = {0};
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -15986,7 +16040,7 @@ START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
     ts->remote_ip = 0x0A000002U;
-    ts->sock.tcp.ack = 104;
+    ts->sock.tcp.ack = 100;
 
     memset(buf, 0, sizeof(buf));
     seg->ip.ver_ihl = 0x45;
@@ -16005,7 +16059,8 @@ START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
     fix_tcp_checksums(seg);
 
     tcp_input(&s, TEST_PRIMARY_IF, seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + sizeof(payload)));
-    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, NULL, 0), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), (int)sizeof(payload));
+    ck_assert_mem_eq(out, payload, sizeof(payload));
     ck_assert_uint_eq(ts->sock.tcp.ack, 105);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
     ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
@@ -16020,7 +16075,7 @@ START_TEST(test_tcp_input_fin_wait_2_fin_payload_ack_mismatch_no_transition)
     struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
     uint8_t payload[4] = {9, 8, 7, 6};
     uint32_t ack = 100;
-    uint32_t seq = 100;
+    uint32_t seq = 101;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -19937,6 +19992,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_ack_mismatch_does_nothing);
     tcase_add_test(tc_utils, test_tcp_recv_wrap_seq_ahead_not_trimmed);
     tcase_add_test(tc_utils, test_tcp_recv_close_wait_ack_match);
+    tcase_add_test(tc_utils, test_tcp_recv_fin_wait_1_ack_match);
+    tcase_add_test(tc_utils, test_tcp_recv_fin_wait_2_ack_match);
     tcase_add_test(tc_utils, test_tcp_recv_queue_full_sends_ack);
     tcase_add_test(tc_utils, test_tcp_process_ts_uses_ecr);
     tcase_add_test(tc_utils, test_tcp_rto_update_second_sample_rfc6298);
