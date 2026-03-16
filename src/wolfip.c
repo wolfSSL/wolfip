@@ -1916,15 +1916,13 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
 /* TCP */
 static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd, uint32_t smss)
 {
-    uint32_t cwnd = peer_rwnd / 2U;
-    uint32_t tx_half = TXBUF_SIZE / 2U;
-    uint32_t min_cwnd = 2U * smss;
+    uint32_t iw10 = smss * 10U;
+    uint32_t rwnd_cap = peer_rwnd / 2U;
 
-    if (cwnd > tx_half)
-        cwnd = tx_half;
-    if (cwnd < min_cwnd)
-        cwnd = min_cwnd;
-    return cwnd;
+    /* Intentional deviation from pure RFC 6928 IW10: cap the initial cwnd to
+     * min(10*SMSS, peer_rwnd/2) so startup remains bounded by a fraction of the
+     * peer's advertised receive window. */
+    return (rwnd_cap < iw10) ? rwnd_cap : iw10;
 }
 
 static uint32_t tcp_initial_ssthresh(uint32_t peer_rwnd)

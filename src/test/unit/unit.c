@@ -17467,6 +17467,13 @@ START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
 }
 END_TEST
 
+START_TEST(test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd)
+{
+    ck_assert_uint_eq(tcp_initial_cwnd(65535U, 1460U), 14600U);
+    ck_assert_uint_eq(tcp_initial_cwnd(4000U, 1460U), 2000U);
+}
+END_TEST
+
 START_TEST(test_tcp_persist_probe_byte_matches_snd_una_offset)
 {
     struct wolfIP s;
@@ -20012,6 +20019,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_gates_data_segment);
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_allows_exact_fit);
     tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
+    tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);
     tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
     tcase_add_test(tc_utils, test_tcp_persist_probe_byte_matches_snd_una_offset);
     tcase_add_test(tc_utils, test_tcp_input_window_reopen_stops_persist);
