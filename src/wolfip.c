@@ -2001,6 +2001,31 @@ static uint16_t tcp_adv_win(const struct tsocket *t, uint8_t apply_wscale)
     return (uint16_t)win;
 }
 
+static int tcp_segment_acceptable(const struct tsocket *t,
+        const struct wolfIP_tcp_seg *tcp, uint32_t tcplen)
+{
+    uint32_t rcv_nxt = t->sock.tcp.ack;
+    uint32_t rcv_wnd = queue_space((struct queue *)&t->sock.tcp.rxbuf);
+    uint32_t seg_seq = ee32(tcp->seq);
+    uint32_t seg_len = tcplen + ((tcp->flags & TCP_FLAG_FIN) ? 1U : 0U);
+
+    if (seg_len == 0U) {
+        if (rcv_wnd == 0U)
+            return seg_seq == rcv_nxt;
+        return tcp_seq_leq(rcv_nxt, seg_seq) &&
+            tcp_seq_lt(seg_seq, tcp_seq_inc(rcv_nxt, rcv_wnd));
+    }
+
+    if (rcv_wnd == 0U)
+        return 0;
+
+    return ((tcp_seq_leq(rcv_nxt, seg_seq) &&
+             tcp_seq_lt(seg_seq, tcp_seq_inc(rcv_nxt, rcv_wnd))) ||
+            (tcp_seq_leq(rcv_nxt, tcp_seq_inc(seg_seq, seg_len - 1U)) &&
+             tcp_seq_lt(tcp_seq_inc(seg_seq, seg_len - 1U),
+                 tcp_seq_inc(rcv_nxt, rcv_wnd))));
+}
+
 struct tcp_parsed_opts {
     uint8_t mss_found;
     uint16_t mss;
@@ -3687,6 +3712,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_2) ||
                     (t->sock.tcp.state == TCP_CLOSING)) {
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
+                }
 
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
