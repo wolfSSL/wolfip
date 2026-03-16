@@ -1210,6 +1210,32 @@ START_TEST(test_wrap_no_matching_sa)
 }
 END_TEST
 
+START_TEST(test_wrap_rejects_ip_len_below_header)
+{
+    static uint8_t buf[70000];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint16_t ip_len = (uint16_t)(IP_HEADER_LEN - 1U);
+    int ret;
+
+    memset(buf, 0, sizeof(buf));
+    esp_setup();
+
+    ret = wolfIP_esp_sa_new_hmac(0, (uint8_t *)spi_rt,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868, k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    ip->dst = ee32(atoip4(T_DST));
+    ip->src = ee32(atoip4(T_SRC));
+    ip->proto = WI_IPPROTO_UDP;
+    ip->len = ee16(ip_len);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
 static Suite *esp_suite(void)
 {
     Suite *s;
@@ -1283,6 +1309,7 @@ static Suite *esp_suite(void)
     /* No-SA outbound path */
     tc = tcase_create("no_sa");
     tcase_add_test(tc, test_wrap_no_matching_sa);
+    tcase_add_test(tc, test_wrap_rejects_ip_len_below_header);
     suite_add_tcase(s, tc);
 
     return s;

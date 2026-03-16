@@ -1477,6 +1477,11 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     wolfIP_esp_sa * esp_sa = NULL;
     uint8_t   iv_len = 0;
 
+    if (orig_ip_len < IP_HEADER_LEN) {
+        ESP_LOG("error: ip_len below header: %u\n", orig_ip_len);
+        return -1;
+    }
+
     /* todo: priority, proto / port filtering. currently this grabs
      * the first dst match. */
     for (size_t i = 0; i < out_sa_num; ++i) {
