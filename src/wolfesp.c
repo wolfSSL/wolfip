@@ -848,9 +848,9 @@ des3_enc_out:
  *    N octets are the AES key, and the remaining four octets are used as the
  *    salt value in the nonce.
  * */
-#define esp_rfc4106_salt(esp_sa) (esp_sa)->enc_key \
+#define esp_rfc4106_salt(esp_sa) ((esp_sa)->enc_key \
                                  + (esp_sa)->enc_key_len \
-                                 - ESP_GCM_RFC4106_SALT_LEN
+                                 - ESP_GCM_RFC4106_SALT_LEN)
 
 /* Deterministic iv construction using pre-iv salt and sequence number.
  * NIST SP 800-38D, section 8.2.1 Deterministic Construction, using
@@ -1188,7 +1188,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
      *   seq_low - - - - - - - seq - - - - - - hi_seq
      *   |<----------- ESP_REPLAY_WIN --------------|
      * */
-    if (seq < replay->hi_seq) {
+    if (seq <= replay->hi_seq) {
         /* seq number within window. */
         bitn = 1U << (replay->hi_seq - seq);
 
@@ -1207,7 +1207,7 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
         diff = seq - replay->hi_seq;
         if (diff < ESP_REPLAY_WIN) {
             /* within a window width, slide up. */
-            replay->bitmap = replay->bitmap << diff;
+            replay->bitmap = (replay->bitmap << diff) | 1U;
         }
         else {
             /* reset window. */
@@ -1400,6 +1400,20 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
             return -1;
         }
     }
+    if (pad_len > 0) {
+        const uint8_t *padding = ip->data + esp_len - esp_sa->icv_len
+                               - ESP_NEXT_HEADER_LEN - ESP_PADDING_LEN
+                               - pad_len;
+        uint8_t i;
+
+        for (i = 0; i < pad_len; i++) {
+            if (padding[i] != (uint8_t)(i + 1U)) {
+                ESP_LOG("error: esp invalid padding at %u: got %u expected %u\n",
+                        i, padding[i], (uint8_t)(i + 1U));
+                return -1;
+            }
+        }
+    }
 
     #ifdef DEBUG_ESP
     wolfIP_print_esp(esp_sa, ip->data, esp_len, pad_len, nxt_hdr);
@@ -1462,6 +1476,11 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     uint16_t  icv_offset = 0;
     wolfIP_esp_sa * esp_sa = NULL;
     uint8_t   iv_len = 0;
+
+    if (orig_ip_len < IP_HEADER_LEN) {
+        ESP_LOG("error: ip_len below header: %u\n", orig_ip_len);
+        return -1;
+    }
 
     /* todo: priority, proto / port filtering. currently this grabs
      * the first dst match. */

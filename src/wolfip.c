@@ -70,7 +70,7 @@ struct wolfIP_udp_datagram;
 struct wolfIP_icmp_packet;
 
 /* Fixed size binary heap: each element is a timer. */
-#define MAX_TIMERS MAX_TCPSOCKETS * 3
+#define MAX_TIMERS (MAX_TCPSOCKETS * 3)
 
 /* Constants */
 #define ICMP_ECHO_REPLY 0
@@ -135,9 +135,6 @@ struct wolfIP_icmp_packet;
 #define WOLFIP_POLL_BUDGET 128
 
 /* Macros */
-#define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
-#define IS_IP_MCAST(ip) (((ip) & 0xF0000000U) == 0xE0000000U)
-
 #define PKT_FLAG_SENT    0x01U
 #define PKT_FLAG_ACKED   0x02U
 #define PKT_FLAG_FIN     0x04U
@@ -1402,6 +1399,36 @@ static inline int ip_is_local_conf(const struct ipconf *conf, ip4 addr)
     return ((addr & conf->mask) == (conf->ip & conf->mask));
 }
 
+static inline int wolfIP_ip_is_multicast(ip4 addr)
+{
+    return ((addr & 0xF0000000U) == 0xE0000000U);
+}
+
+static int wolfIP_ip_is_broadcast(const struct wolfIP *s, ip4 addr)
+{
+    unsigned int i;
+
+    if (addr == 0xFFFFFFFFU)
+        return 1;
+    if (!s)
+        return 0;
+
+    for (i = 0; i < s->if_count; i++) {
+        const struct ipconf *conf = &s->ipconf[i];
+        ip4 directed_bcast;
+
+        if (conf->ip == IPADDR_ANY)
+            continue;
+        if (conf->mask == 0 || conf->mask == 0xFFFFFFFFU)
+            continue;
+
+        directed_bcast = (conf->ip & conf->mask) | (~conf->mask);
+        if (addr == directed_bcast)
+            return 1;
+    }
+    return 0;
+}
+
 #if WOLFIP_ENABLE_FORWARDING
 static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 dest)
 {
@@ -1426,7 +1453,7 @@ static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 de
 
 static inline ip4 wolfIP_select_nexthop(const struct ipconf *conf, ip4 dest)
 {
-    if (IS_IP_BCAST(dest))
+    if (dest == 0xFFFFFFFFU)
         return dest;
     if (!conf)
         return dest;
@@ -1452,7 +1479,7 @@ static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
     if (WOLFIP_PRIMARY_IF_IDX < s->if_count)
         default_if = WOLFIP_PRIMARY_IF_IDX;
 
-    if (dest == IPADDR_ANY || IS_IP_BCAST(dest))
+    if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest))
         return default_if;
 
     for (i = 0; i < s->if_count; i++) {
@@ -1855,8 +1882,10 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         int dst_match = 0;
 
         if (dst_ip != IPADDR_ANY && src_ip != IPADDR_ANY &&
-                !IS_IP_BCAST(dst_ip) && !IS_IP_BCAST(src_ip) &&
-                !IS_IP_MCAST(dst_ip) && !IS_IP_MCAST(src_ip)) {
+                !wolfIP_ip_is_broadcast(s, dst_ip) &&
+                !wolfIP_ip_is_broadcast(s, src_ip) &&
+                !wolfIP_ip_is_multicast(dst_ip) &&
+                !wolfIP_ip_is_multicast(src_ip)) {
             (void)wolfIP_if_for_local_ip(s, dst_ip, &dst_match);
             if (dst_match)
                 wolfIP_send_port_unreachable(s, if_idx, &udp->ip);
@@ -1916,15 +1945,17 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
 /* TCP */
 static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd, uint32_t smss)
 {
-    uint32_t cwnd = peer_rwnd / 2U;
-    uint32_t tx_half = TXBUF_SIZE / 2U;
-    uint32_t min_cwnd = 2U * smss;
+    uint32_t iw10 = smss * 10U;
+    uint32_t rwnd_cap = peer_rwnd / 2U;
+    uint32_t min_cwnd = smss * 2U;
 
-    if (cwnd > tx_half)
-        cwnd = tx_half;
-    if (cwnd < min_cwnd)
-        cwnd = min_cwnd;
-    return cwnd;
+    /* Intentional deviation from pure RFC 6928 IW10: cap the initial cwnd to
+     * min(10*SMSS, max(2*SMSS, peer_rwnd/2)). This retains an IW10 upper bound
+     * while avoiding a dead cwnd when the peer advertises a zero or tiny
+     * receive window; actual sending remains separately bounded by peer_rwnd. */
+    if (rwnd_cap < min_cwnd)
+        rwnd_cap = min_cwnd;
+    return (rwnd_cap < iw10) ? rwnd_cap : iw10;
 }
 
 static uint32_t tcp_initial_ssthresh(uint32_t peer_rwnd)
@@ -1991,14 +2022,39 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
     return NULL;
 }
 
-static uint16_t tcp_adv_win(const struct tsocket *t)
+static uint16_t tcp_adv_win(const struct tsocket *t, uint8_t apply_wscale)
 {
     uint32_t space = queue_space((struct queue *)&t->sock.tcp.rxbuf);
-    uint8_t shift = t->sock.tcp.ws_enabled ? t->sock.tcp.rcv_wscale : 0;
+    uint8_t shift = (apply_wscale && t->sock.tcp.ws_enabled) ? t->sock.tcp.rcv_wscale : 0;
     uint32_t win = space >> shift;
     if (win > 0xFFFF)
         win = 0xFFFF;
     return (uint16_t)win;
+}
+
+static int tcp_segment_acceptable(const struct tsocket *t,
+        const struct wolfIP_tcp_seg *tcp, uint32_t tcplen)
+{
+    uint32_t rcv_nxt = t->sock.tcp.ack;
+    uint32_t rcv_wnd = queue_space((struct queue *)&t->sock.tcp.rxbuf);
+    uint32_t seg_seq = ee32(tcp->seq);
+    uint32_t seg_len = tcplen + ((tcp->flags & TCP_FLAG_FIN) ? 1U : 0U);
+
+    if (seg_len == 0U) {
+        if (rcv_wnd == 0U)
+            return seg_seq == rcv_nxt;
+        return tcp_seq_leq(rcv_nxt, seg_seq) &&
+            tcp_seq_lt(seg_seq, tcp_seq_inc(rcv_nxt, rcv_wnd));
+    }
+
+    if (rcv_wnd == 0U)
+        return 0;
+
+    return ((tcp_seq_leq(rcv_nxt, seg_seq) &&
+             tcp_seq_lt(seg_seq, tcp_seq_inc(rcv_nxt, rcv_wnd))) ||
+            (tcp_seq_leq(rcv_nxt, tcp_seq_inc(seg_seq, seg_len - 1U)) &&
+             tcp_seq_lt(tcp_seq_inc(seg_seq, seg_len - 1U),
+                 tcp_seq_inc(rcv_nxt, rcv_wnd))));
 }
 
 struct tcp_parsed_opts {
@@ -2323,7 +2379,7 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
     tcp->ack = ee32(t->sock.tcp.ack);
     tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
     tcp->flags = flags;
-    tcp->win = ee16(tcp_adv_win(t));
+    tcp->win = ee16(tcp_adv_win(t, 1));
     tcp->csum = 0;
     tcp->urg = 0;
     fifo_push(&t->sock.tcp.txbuf, tcp,
@@ -2455,7 +2511,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
     tcp->seq = ee32(t->sock.tcp.seq);
     tcp->ack = ee32(t->sock.tcp.ack);
     tcp->flags = flags;
-    tcp->win = ee16(tcp_adv_win(t));
+    tcp->win = ee16(tcp_adv_win(t, 0));
     tcp->csum = 0;
     tcp->urg = 0;
     opt = tcp->data;
@@ -2675,7 +2731,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     probe->ack = ee32(t->sock.tcp.ack);
     probe->hlen = TCP_HEADER_LEN << 2;
     probe->flags = TCP_FLAG_ACK;
-    probe->win = ee16(tcp_adv_win(t));
+    probe->win = ee16(tcp_adv_win(t, 1));
     probe->data[0] = probe_byte;
 
     tx_if = wolfIP_socket_if_idx(t);
@@ -2743,7 +2799,10 @@ static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
     uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
     uint32_t seq = ee32(seg->seq);
     const uint8_t *payload = (uint8_t *)seg->ip.data + (seg->hlen >> 2);
-    if ((t->sock.tcp.state != TCP_ESTABLISHED) && (t->sock.tcp.state != TCP_CLOSE_WAIT)) {
+    if ((t->sock.tcp.state != TCP_ESTABLISHED) &&
+        (t->sock.tcp.state != TCP_CLOSE_WAIT) &&
+        (t->sock.tcp.state != TCP_FIN_WAIT_1) &&
+        (t->sock.tcp.state != TCP_FIN_WAIT_2)) {
         return;
     }
     if (seg_len == 0)
@@ -2919,7 +2978,7 @@ static int wolfIP_forward_prepare(struct wolfIP *s, unsigned int out_if,
         *broadcast = 0;
         return 1;
     }
-    if (IS_IP_BCAST(dest)) {
+    if (wolfIP_ip_is_broadcast(s, dest)) {
         *broadcast = 1;
         return 1;
     }
@@ -2991,7 +3050,7 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
     ip->ver_ihl = 0x45;
     ip->tos = 0;
     ip->len = ee16(len);
-    ip->flags_fo = 0;
+    ip->flags_fo = (proto == WI_IPPROTO_TCP) ? ee16(0x4000U) : 0;
     ip->ttl = 64;
     ip->proto = proto;
     ip->id = ee16(t->S->ipcounter);
@@ -3098,8 +3157,6 @@ static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms)
     t->sock.tcp.rtt = srtt_ms;
     t->sock.tcp.rto = tcp_rto_clamp(rto_ms);
 }
-
-#define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
 
 /* Return true if a <= b
  * Take into account wrapping.
@@ -3684,6 +3741,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_2) ||
                     (t->sock.tcp.state == TCP_CLOSING)) {
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
+                }
 
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
@@ -3736,7 +3797,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         ip4 dst = ee32(tcp->ip.dst);
         int dst_match = 0;
 
-        if (dst != IPADDR_ANY && !IS_IP_BCAST(dst) && !IS_IP_MCAST(dst)) {
+        if (dst != IPADDR_ANY &&
+                !wolfIP_ip_is_broadcast(S, dst) &&
+                !wolfIP_ip_is_multicast(dst)) {
             (void)wolfIP_if_for_local_ip(S, dst, &dst_match);
             if (dst_match)
                 tcp_send_reset_reply(S, if_idx, tcp);
@@ -4298,7 +4361,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             tcp->ack = ee32(ts->sock.tcp.ack);
             tcp->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
             tcp->flags = TCP_FLAG_ACK;
-            tcp->win = ee16(tcp_adv_win(ts));
+            tcp->win = ee16(tcp_adv_win(ts, 1));
             tcp->csum = 0;
             tcp->urg = 0;
             if (ts->sock.tcp.ts_enabled) {
@@ -4486,10 +4549,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             if (queue_len(&ts->sock.tcp.rxbuf) == 0)
                 return 0;
             {
-                uint16_t win_before = tcp_adv_win(ts);
+                uint16_t win_before = tcp_adv_win(ts, 1);
                 int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
                 if (ret > 0) {
-                    uint16_t win_after = tcp_adv_win(ts);
+                    uint16_t win_after = tcp_adv_win(ts, 1);
                     if (queue_len(&ts->sock.tcp.rxbuf) > 0)
                         ts->events |= CB_EVENT_READABLE;
                     if (win_after > win_before)
@@ -4498,10 +4561,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 return ret;
             }
         } else if (ts->sock.tcp.state == TCP_ESTABLISHED) {
-            uint16_t win_before = tcp_adv_win(ts);
+            uint16_t win_before = tcp_adv_win(ts, 1);
             int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
             if (ret > 0) {
-                uint16_t win_after = tcp_adv_win(ts);
+                uint16_t win_after = tcp_adv_win(ts, 1);
                 if (queue_len(&ts->sock.tcp.rxbuf) > 0)
                     ts->events |= CB_EVENT_READABLE;
                 if (win_after > win_before)
@@ -4987,6 +5050,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         return;
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
+        ip4 dst = ee32(ip->dst);
+        if (wolfIP_ip_is_broadcast(s, dst) || wolfIP_ip_is_multicast(dst))
+            return;
         icmp->type = ICMP_ECHO_REPLY;
         /* Recompute full ICMP checksum for portability */
         icmp->csum = 0;
@@ -4994,6 +5060,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
+        ip->ttl = 64;
         ip->id = ipcounter_next(s);
         ip->csum = 0;
         iphdr_set_checksum(ip);
@@ -5886,6 +5953,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     /* validate IP header checksum per RFC 1122 */
     if (iphdr_verify_checksum(ip) != 0)
         return;
+    /* Fragment reassembly is not implemented; drop all fragments. */
+    if ((ee16(ip->flags_fo) & 0x3FFFU) != 0U)
+        return;
 #if WOLFIP_ENABLE_LOOPBACK
     if (!wolfIP_is_loopback_if(if_idx)) {
         ip4 dest = ee32(ip->dst);
@@ -5900,7 +5970,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     if (version == 4 && ip_hlen >= IP_HEADER_LEN) {
         ip4 dest = ee32(ip->dst);
         int is_local = 0;
-        if (dest == IPADDR_ANY || IS_IP_BCAST(dest)) {
+        if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest)) {
             is_local = 1;
         } else {
             for (i = 0; i < s->if_count; i++) {
@@ -6551,7 +6621,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         /* Refresh ack counter */
                         ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                         tcp->ack = ee32(ts->sock.tcp.ack);
-                        tcp->win = ee16(tcp_adv_win(ts));
+                        tcp->win = ee16(tcp_adv_win(ts, 1));
                         ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
                         if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
                             break;
@@ -6646,12 +6716,13 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
+                if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
+                            (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
                     /* Send ARP request */
                     arp_request(s, tx_if, nexthop);
                     break;
                 }
-                if (IS_IP_BCAST(nexthop))
+                if (wolfIP_ip_is_broadcast(s, nexthop))
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif
@@ -6704,11 +6775,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
+                if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
+                            (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
                     arp_request(s, tx_if, nexthop);
                     break;
                 }
-                if (IS_IP_BCAST(nexthop))
+                if (wolfIP_ip_is_broadcast(s, nexthop))
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif
