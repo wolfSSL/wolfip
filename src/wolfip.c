@@ -70,7 +70,7 @@ struct wolfIP_udp_datagram;
 struct wolfIP_icmp_packet;
 
 /* Fixed size binary heap: each element is a timer. */
-#define MAX_TIMERS MAX_TCPSOCKETS * 3
+#define MAX_TIMERS (MAX_TCPSOCKETS * 3)
 
 /* Constants */
 #define ICMP_ECHO_REPLY 0
