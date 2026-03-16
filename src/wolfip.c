@@ -5889,6 +5889,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     /* validate IP header checksum per RFC 1122 */
     if (iphdr_verify_checksum(ip) != 0)
         return;
+    /* Fragment reassembly is not implemented; drop all fragments. */
+    if ((ee16(ip->flags_fo) & 0x3FFFU) != 0U)
+        return;
 #if WOLFIP_ENABLE_LOOPBACK
     if (!wolfIP_is_loopback_if(if_idx)) {
         ip4 dest = ee32(ip->dst);

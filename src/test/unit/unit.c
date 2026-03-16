@@ -9447,6 +9447,53 @@ START_TEST(test_ip_recv_udp_with_ip_options_delivers_payload)
 }
 END_TEST
 
+START_TEST(test_ip_recv_fragmented_udp_dropped)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *udp_hdr = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    uint16_t udp_len = UDP_HEADER_LEN + 4;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t remote_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = local_ip;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_UDP;
+    ip->len = ee16(IP_HEADER_LEN + udp_len);
+    ip->flags_fo = ee16(0x2000U); /* MF=1, offset=0 */
+    ip->src = ee32(remote_ip);
+    ip->dst = ee32(local_ip);
+
+    ((uint16_t *)udp_hdr)[0] = ee16(4321);
+    ((uint16_t *)udp_hdr)[1] = ee16(1234);
+    ((uint16_t *)udp_hdr)[2] = ee16(udp_len);
+    memcpy(udp_hdr + UDP_HEADER_LEN, "frag", 4);
+
+    fix_udp_checksum_raw(ip, udp_hdr, udp_len);
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
 START_TEST(test_ip_recv_forward_arp_queue_and_flush)
 {
     struct wolfIP s;
@@ -20189,6 +20236,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_forward_interface_short_circuit_cases);
     tcase_add_test(tc_proto, test_ip_recv_forward_ttl_exceeded);
     tcase_add_test(tc_proto, test_ip_recv_udp_with_ip_options_delivers_payload);
+    tcase_add_test(tc_proto, test_ip_recv_fragmented_udp_dropped);
     tcase_add_test(tc_proto, test_ip_recv_forward_arp_queue_and_flush);
     tcase_add_test(tc_proto, test_arp_flush_pending_ttl_expired);
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
