@@ -933,7 +933,7 @@ int wolfIP_sock_recvmsg(struct wolfIP *ipstack, int sockfd, struct msghdr *msg, 
             break;
         (void)wolfIP_sock_poll(ipstack, &pfd, 1, -1);
     }
-    if (ret >= 0 && msg->msg_iovlen > 1) {
+    if (ret > 0 && msg->msg_iovlen > 1 && buf) {
         wolfip_scatter_iov(msg, buf, (size_t)ret);
     }
     if (heap_buf)
