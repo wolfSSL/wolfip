@@ -1918,10 +1918,14 @@ static uint32_t tcp_initial_cwnd(uint32_t peer_rwnd, uint32_t smss)
 {
     uint32_t iw10 = smss * 10U;
     uint32_t rwnd_cap = peer_rwnd / 2U;
+    uint32_t min_cwnd = smss * 2U;
 
     /* Intentional deviation from pure RFC 6928 IW10: cap the initial cwnd to
-     * min(10*SMSS, peer_rwnd/2) so startup remains bounded by a fraction of the
-     * peer's advertised receive window. */
+     * min(10*SMSS, max(2*SMSS, peer_rwnd/2)). This retains an IW10 upper bound
+     * while avoiding a dead cwnd when the peer advertises a zero or tiny
+     * receive window; actual sending remains separately bounded by peer_rwnd. */
+    if (rwnd_cap < min_cwnd)
+        rwnd_cap = min_cwnd;
     return (rwnd_cap < iw10) ? rwnd_cap : iw10;
 }
 

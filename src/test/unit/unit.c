@@ -17470,7 +17470,8 @@ END_TEST
 START_TEST(test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd)
 {
     ck_assert_uint_eq(tcp_initial_cwnd(65535U, 1460U), 14600U);
-    ck_assert_uint_eq(tcp_initial_cwnd(4000U, 1460U), 2000U);
+    ck_assert_uint_eq(tcp_initial_cwnd(4000U, 1460U), 2920U);
+    ck_assert_uint_eq(tcp_initial_cwnd(0U, 1460U), 2920U);
 }
 END_TEST
 
