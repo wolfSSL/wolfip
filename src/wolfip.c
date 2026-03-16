@@ -5026,6 +5026,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         tmp = ip->src;
         ip->src = ip->dst;
         ip->dst = tmp;
+        ip->ttl = 64;
         ip->id = ipcounter_next(s);
         ip->csum = 0;
         iphdr_set_checksum(ip);
