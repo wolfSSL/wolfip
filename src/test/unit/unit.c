@@ -6007,6 +6007,30 @@ START_TEST(test_icmp_input_echo_request_dhcp_running_no_reply)
 }
 END_TEST
 
+START_TEST(test_icmp_input_echo_request_broadcast_no_reply)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0xFFFFFFFFU);
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_filter_drop)
 {
     struct wolfIP s;
@@ -20330,6 +20354,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_echo_request_bad_checksum_dropped);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_odd_len_reply_checksum);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_dhcp_running_no_reply);
+    tcase_add_test(tc_proto, test_icmp_input_echo_request_broadcast_no_reply);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_filter_drop);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_ip_filter_drop);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_eth_filter_drop);

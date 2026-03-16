@@ -5019,6 +5019,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         return;
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
+        ip4 dst = ee32(ip->dst);
+        if (IS_IP_BCAST(dst) || IS_IP_MCAST(dst))
+            return;
         icmp->type = ICMP_ECHO_REPLY;
         /* Recompute full ICMP checksum for portability */
         icmp->csum = 0;
