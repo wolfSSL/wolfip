@@ -3127,8 +3127,6 @@ static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms)
     t->sock.tcp.rto = tcp_rto_clamp(rto_ms);
 }
 
-#define SEQ_DIFF(a,b) ((a - b) > 0x7FFFFFFF) ? (b - a) : (a - b)
-
 /* Return true if a <= b
  * Take into account wrapping.
  */
