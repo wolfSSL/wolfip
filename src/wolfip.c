@@ -135,9 +135,6 @@ struct wolfIP_icmp_packet;
 #define WOLFIP_POLL_BUDGET 128
 
 /* Macros */
-#define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
-#define IS_IP_MCAST(ip) (((ip) & 0xF0000000U) == 0xE0000000U)
-
 #define PKT_FLAG_SENT    0x01U
 #define PKT_FLAG_ACKED   0x02U
 #define PKT_FLAG_FIN     0x04U
@@ -1402,6 +1399,36 @@ static inline int ip_is_local_conf(const struct ipconf *conf, ip4 addr)
     return ((addr & conf->mask) == (conf->ip & conf->mask));
 }
 
+static inline int wolfIP_ip_is_multicast(ip4 addr)
+{
+    return ((addr & 0xF0000000U) == 0xE0000000U);
+}
+
+static int wolfIP_ip_is_broadcast(const struct wolfIP *s, ip4 addr)
+{
+    unsigned int i;
+
+    if (addr == 0xFFFFFFFFU)
+        return 1;
+    if (!s)
+        return 0;
+
+    for (i = 0; i < s->if_count; i++) {
+        const struct ipconf *conf = &s->ipconf[i];
+        ip4 directed_bcast;
+
+        if (conf->ip == IPADDR_ANY)
+            continue;
+        if (conf->mask == 0 || conf->mask == 0xFFFFFFFFU)
+            continue;
+
+        directed_bcast = (conf->ip & conf->mask) | (~conf->mask);
+        if (addr == directed_bcast)
+            return 1;
+    }
+    return 0;
+}
+
 #if WOLFIP_ENABLE_FORWARDING
 static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 dest)
 {
@@ -1426,7 +1453,7 @@ static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 de
 
 static inline ip4 wolfIP_select_nexthop(const struct ipconf *conf, ip4 dest)
 {
-    if (IS_IP_BCAST(dest))
+    if (dest == 0xFFFFFFFFU)
         return dest;
     if (!conf)
         return dest;
@@ -1452,7 +1479,7 @@ static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
     if (WOLFIP_PRIMARY_IF_IDX < s->if_count)
         default_if = WOLFIP_PRIMARY_IF_IDX;
 
-    if (dest == IPADDR_ANY || IS_IP_BCAST(dest))
+    if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest))
         return default_if;
 
     for (i = 0; i < s->if_count; i++) {
@@ -1855,8 +1882,10 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         int dst_match = 0;
 
         if (dst_ip != IPADDR_ANY && src_ip != IPADDR_ANY &&
-                !IS_IP_BCAST(dst_ip) && !IS_IP_BCAST(src_ip) &&
-                !IS_IP_MCAST(dst_ip) && !IS_IP_MCAST(src_ip)) {
+                !wolfIP_ip_is_broadcast(s, dst_ip) &&
+                !wolfIP_ip_is_broadcast(s, src_ip) &&
+                !wolfIP_ip_is_multicast(dst_ip) &&
+                !wolfIP_ip_is_multicast(src_ip)) {
             (void)wolfIP_if_for_local_ip(s, dst_ip, &dst_match);
             if (dst_match)
                 wolfIP_send_port_unreachable(s, if_idx, &udp->ip);
@@ -2949,7 +2978,7 @@ static int wolfIP_forward_prepare(struct wolfIP *s, unsigned int out_if,
         *broadcast = 0;
         return 1;
     }
-    if (IS_IP_BCAST(dest)) {
+    if (wolfIP_ip_is_broadcast(s, dest)) {
         *broadcast = 1;
         return 1;
     }
@@ -3768,7 +3797,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         ip4 dst = ee32(tcp->ip.dst);
         int dst_match = 0;
 
-        if (dst != IPADDR_ANY && !IS_IP_BCAST(dst) && !IS_IP_MCAST(dst)) {
+        if (dst != IPADDR_ANY &&
+                !wolfIP_ip_is_broadcast(S, dst) &&
+                !wolfIP_ip_is_multicast(dst)) {
             (void)wolfIP_if_for_local_ip(S, dst, &dst_match);
             if (dst_match)
                 tcp_send_reset_reply(S, if_idx, tcp);
@@ -5020,7 +5051,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         ip4 dst = ee32(ip->dst);
-        if (IS_IP_BCAST(dst) || IS_IP_MCAST(dst))
+        if (wolfIP_ip_is_broadcast(s, dst) || wolfIP_ip_is_multicast(dst))
             return;
         icmp->type = ICMP_ECHO_REPLY;
         /* Recompute full ICMP checksum for portability */
@@ -5939,7 +5970,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     if (version == 4 && ip_hlen >= IP_HEADER_LEN) {
         ip4 dest = ee32(ip->dst);
         int is_local = 0;
-        if (dest == IPADDR_ANY || IS_IP_BCAST(dest)) {
+        if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest)) {
             is_local = 1;
         } else {
             for (i = 0; i < s->if_count; i++) {
@@ -6685,12 +6716,13 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
+                if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
+                            (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
                     /* Send ARP request */
                     arp_request(s, tx_if, nexthop);
                     break;
                 }
-                if (IS_IP_BCAST(nexthop))
+                if (wolfIP_ip_is_broadcast(s, nexthop))
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif
@@ -6743,11 +6775,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                if ((!IS_IP_BCAST(nexthop) && (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
+                if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
+                            (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
                     arp_request(s, tx_if, nexthop);
                     break;
                 }
-                if (IS_IP_BCAST(nexthop))
+                if (wolfIP_ip_is_broadcast(s, nexthop))
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif

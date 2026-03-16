@@ -6031,6 +6031,31 @@ START_TEST(test_icmp_input_echo_request_broadcast_no_reply)
 }
 END_TEST
 
+START_TEST(test_icmp_input_echo_request_directed_broadcast_no_reply)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_state = DHCP_OFF;
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A0000FFU);
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_filter_drop)
 {
     struct wolfIP s;
@@ -9161,6 +9186,11 @@ START_TEST(test_forward_prepare_paths)
     ck_assert_int_eq(broadcast, 0);
 
     ret = wolfIP_forward_prepare(&s, TEST_PRIMARY_IF, 0xFFFFFFFFU, mac, &broadcast);
+    ck_assert_int_eq(ret, 1);
+    ck_assert_int_eq(broadcast, 1);
+
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    ret = wolfIP_forward_prepare(&s, TEST_PRIMARY_IF, 0x0A0000FFU, mac, &broadcast);
     ck_assert_int_eq(ret, 1);
     ck_assert_int_eq(broadcast, 1);
 
@@ -18318,6 +18348,42 @@ START_TEST(test_ip_is_local_conf_variants)
 }
 END_TEST
 
+START_TEST(test_wolfip_ip_is_multicast_variants)
+{
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xE0000001U), 1);
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0x0A000001U), 0);
+}
+END_TEST
+
+START_TEST(test_wolfip_ip_is_broadcast_variants)
+{
+    struct wolfIP s;
+
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(NULL, 0xFFFFFFFFU), 1);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(NULL, 0x0A000001U), 0);
+
+    setup_stack_with_two_ifaces(&s, 0x0A000001U, 0xC0A80101U);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A0000FFU), 1);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0xC0A801FFU), 1);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A000001U), 0);
+}
+END_TEST
+
+START_TEST(test_wolfip_ip_is_broadcast_skips_unsuitable_configs)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.if_count = 2;
+    s.ipconf[0].ip = 0x0A000001U;
+    s.ipconf[0].mask = 0xFFFFFFFFU;
+    s.ipconf[1].ip = IPADDR_ANY;
+    s.ipconf[1].mask = 0xFFFFFF00U;
+
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A0000FFU), 0);
+}
+END_TEST
+
 #if WOLFIP_ENABLE_LOOPBACK
 START_TEST(test_wolfip_loopback_defaults)
 {
@@ -20092,6 +20158,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_send_query_invalid_name);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
+    tcase_add_test(tc_utils, test_wolfip_ip_is_multicast_variants);
+    tcase_add_test(tc_utils, test_wolfip_ip_is_broadcast_variants);
+    tcase_add_test(tc_utils, test_wolfip_ip_is_broadcast_skips_unsuitable_configs);
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_no_pending_resets_backoff);
     tcase_add_test(tc_utils, test_tcp_rto_cb_skips_unsent_desc);
@@ -20364,6 +20433,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_echo_request_odd_len_reply_checksum);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_dhcp_running_no_reply);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_broadcast_no_reply);
+    tcase_add_test(tc_proto, test_icmp_input_echo_request_directed_broadcast_no_reply);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_filter_drop);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_ip_filter_drop);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_eth_filter_drop);
