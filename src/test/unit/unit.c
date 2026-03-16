@@ -19093,6 +19093,7 @@ START_TEST(test_ip_output_add_header) {
     ck_assert_uint_eq(ip->proto, WI_IPPROTO_TCP);
     ck_assert_uint_eq(ip->src, ee32(t.local_ip));
     ck_assert_uint_eq(ip->dst, ee32(t.remote_ip));
+    ck_assert_uint_eq(ip->flags_fo, ee16(0x4000));
     ck_assert_msg(ip->csum != 0, "IP header checksum should not be zero");
 
     // Check the pseudo-header checksum calculation for TCP segment

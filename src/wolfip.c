@@ -2994,7 +2994,7 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
     ip->ver_ihl = 0x45;
     ip->tos = 0;
     ip->len = ee16(len);
-    ip->flags_fo = 0;
+    ip->flags_fo = (proto == WI_IPPROTO_TCP) ? ee16(0x4000U) : 0;
     ip->ttl = 64;
     ip->proto = proto;
     ip->id = ee16(t->S->ipcounter);
