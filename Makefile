@@ -343,7 +343,7 @@ build/certs/server_key.o: build/certs/server_key.c
 
 unit: build/test/unit
 
-build/test/unit:
+build/test/unit: $(UNIT_TEST_SRCS)
 	@mkdir -p build/test/
 	@echo "[CC] unit.c"
 	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) -c src/test/unit/unit.c -o build/test/unit.o
@@ -410,8 +410,16 @@ unit-leaksan: clean-unit build/test/unit
 COV_DIR:=build/coverage
 COV_UNIT:=$(COV_DIR)/unit
 COV_UNIT_O:=$(COV_DIR)/unit.o
+UNIT_TEST_SRCS:=src/test/unit/unit.c \
+	src/test/unit/unit_shared.c \
+	src/test/unit/unit_tests_fifo.c \
+	src/test/unit/unit_tests_api.c \
+	src/test/unit/unit_tests_dns_dhcp.c \
+	src/test/unit/unit_tests_tcp_ack.c \
+	src/test/unit/unit_tests_tcp_flow.c \
+	src/test/unit/unit_tests_proto.c
 
-$(COV_UNIT_O): src/test/unit/unit.c
+$(COV_UNIT_O): $(UNIT_TEST_SRCS)
 	@mkdir -p $(COV_DIR)
 	@echo "[CC] unit.c (coverage)"
 	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) --coverage -c src/test/unit/unit.c -o $(COV_UNIT_O)
@@ -427,7 +435,7 @@ cov: unit $(COV_UNIT)
 	@$(COV_UNIT)
 	@echo "[COV] gcovr html"
 	@mkdir -p build/coverage
-	@gcovr -r . --exclude "src/test/unit/unit.c" --html-details -o build/coverage/index.html
+	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/index.html
 	@$(OPEN_CMD) build/coverage/index.html
 
 autocov: unit $(COV_UNIT)
@@ -436,7 +444,7 @@ autocov: unit $(COV_UNIT)
 	@$(COV_UNIT)
 	@echo "[COV] gcovr html"
 	@mkdir -p build/coverage
-	@gcovr -r . --exclude "src/test/unit/unit.c" --html-details -o build/coverage/index.html
+	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/index.html
 
 # Install dynamic library to re-link linux applications
 #
