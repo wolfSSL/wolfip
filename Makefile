@@ -341,6 +341,15 @@ build/certs/server_key.o: build/certs/server_key.c
 	@echo "[CC] $<"
 	@$(CC) $(CFLAGS) -c $< -o $@
 
+UNIT_TEST_SRCS:=src/test/unit/unit.c \
+	src/test/unit/unit_shared.c \
+	src/test/unit/unit_tests_fifo.c \
+	src/test/unit/unit_tests_api.c \
+	src/test/unit/unit_tests_dns_dhcp.c \
+	src/test/unit/unit_tests_tcp_ack.c \
+	src/test/unit/unit_tests_tcp_flow.c \
+	src/test/unit/unit_tests_proto.c
+
 unit: build/test/unit
 
 build/test/unit: $(UNIT_TEST_SRCS)
@@ -410,14 +419,6 @@ unit-leaksan: clean-unit build/test/unit
 COV_DIR:=build/coverage
 COV_UNIT:=$(COV_DIR)/unit
 COV_UNIT_O:=$(COV_DIR)/unit.o
-UNIT_TEST_SRCS:=src/test/unit/unit.c \
-	src/test/unit/unit_shared.c \
-	src/test/unit/unit_tests_fifo.c \
-	src/test/unit/unit_tests_api.c \
-	src/test/unit/unit_tests_dns_dhcp.c \
-	src/test/unit/unit_tests_tcp_ack.c \
-	src/test/unit/unit_tests_tcp_flow.c \
-	src/test/unit/unit_tests_proto.c
 
 $(COV_UNIT_O): $(UNIT_TEST_SRCS)
 	@mkdir -p $(COV_DIR)

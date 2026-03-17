@@ -1,6 +1,6 @@
-/* unit.c
+/* unit_shared.c
  *
- * Copyright (C) 2024 wolfSSL Inc.
+ * Copyright (C) 2026 wolfSSL Inc.
  *
  * This file is part of wolfIP TCP/IP stack.
  *
@@ -600,5 +600,3 @@ static void enqueue_udp_rx(struct tsocket *ts, const void *payload, uint16_t pay
     memcpy(udp->data, payload, payload_len);
     (void)fifo_push(&ts->sock.udp.rxbuf, udp, sizeof(struct wolfIP_udp_datagram) + payload_len);
 }
-
-
