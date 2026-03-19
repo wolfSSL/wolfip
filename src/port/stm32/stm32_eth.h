@@ -1,6 +1,6 @@
 /* stm32_eth.h
  *
- * Common STM32H5/STM32H7 Ethernet driver interface.
+ * Common STM32H5/STM32H7/STM32N6 Ethernet driver interface.
  *
  * Copyright (C) 2024-2026 wolfSSL Inc.
  *

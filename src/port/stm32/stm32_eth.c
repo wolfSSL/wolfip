@@ -1,6 +1,6 @@
 /* stm32_eth.c
  *
- * Common Ethernet MAC/PHY driver for STM32H5 and STM32H7.
+ * Common Ethernet MAC/PHY driver for STM32H5, STM32H7 and STM32N6.
  *
  * Copyright (C) 2024-2026 wolfSSL Inc.
  *
@@ -11,8 +11,8 @@
 #include "config.h"
 #include "stm32_eth.h"
 
-#if !defined(STM32H5) && !defined(STM32H7)
-#error "Define STM32H5 or STM32H7 for stm32_eth.c"
+#if !defined(STM32H5) && !defined(STM32H7) && !defined(STM32N6)
+#error "Define STM32H5, STM32H7 or STM32N6 for stm32_eth.c"
 #endif
 
 #if defined(STM32H5)
@@ -25,6 +25,21 @@
 #elif defined(STM32H7)
 #define ETH_BASE            0x40028000UL
 #define STM32_ETH_NEEDS_MDIO_DELAY 1
+#elif defined(STM32N6)
+#define ETH_BASE            0x58036000UL  /* ETH1 on AHB5, secure alias */
+#define STM32_ETH_NEEDS_MDIO_DELAY 1     /* M55 at 600MHz needs stabilization */
+#endif
+
+/* MDIO clock divider: CR field in ETH_MACMDIOAR.
+ * CR=0: 20-35MHz, CR=1: 35-60MHz, CR=2: 60-100MHz,
+ * CR=3: 100-150MHz, CR=4: 150-250MHz, CR=5: 250-300MHz
+ * STM32N6 at HSI: HCLK ~32MHz → CR=0
+ * STM32N6 at PLL: HCLK 250-300MHz → CR=5
+ * STM32H5/H7: HCLK 150-250MHz → CR=4 */
+#if defined(STM32N6)
+#define MDIO_CR_VALUE 4U  /* PLL: AHB5 ~200MHz → CR=4 (150-250MHz range) */
+#else
+#define MDIO_CR_VALUE 4U
 #endif
 
 #define ETH_REG(offset)     (*(volatile uint32_t *)(ETH_BASE + (offset)))
@@ -33,9 +48,10 @@
 /* MAC registers */
 #define ETH_MACCR           ETH_REG(0x0000U)
 #define ETH_MACPFR          ETH_REG(0x0004U)
+#define ETH_MAC1USTCR       ETH_REG(0x00DCU)
 #define ETH_MACA0HR         ETH_REG(0x0300U)
 #define ETH_MACA0LR         ETH_REG(0x0304U)
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32N6)
 #define ETH_MACRXQC0R       ETH_REG(0x00A0U)
 #endif
 
@@ -64,6 +80,7 @@
 #define ETH_MACCR_TE        (1U << 1)
 #define ETH_MACCR_DM        (1U << 13)
 #define ETH_MACCR_FES       (1U << 14)
+#define ETH_MACCR_PS        (1U << 15)  /* Port Select: 1=MII/RMII, 0=GMII */
 
 /* DMA bits */
 #define ETH_DMAMR_SWR       (1U << 0)
@@ -154,7 +171,7 @@ struct eth_desc {
 #define DMA_TPBL       32U
 #define DMA_RPBL       32U
 
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32N6)
 #define ETH_SECTION __attribute__((section(".eth_buffers")))
 #elif defined(STM32H5)
 #if TZEN_ENABLED
@@ -163,6 +180,11 @@ struct eth_desc {
 #define ETH_SECTION
 #endif
 #endif
+
+/* On STM32N6, the ETH DMA (RIMC master 6) is configured as non-secure.
+ * On STM32N6, the ETH DMA is configured as a secure master (CID=1, SEC+PRIV).
+ * Use secure addresses (0x34xxxxxx) — matches CubeN6 HAL example. */
+#define ETH_DMA_ADDR(ptr) ((uint32_t)(ptr))
 
 static struct eth_desc rx_ring[RX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
 static struct eth_desc tx_ring[TX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
@@ -195,14 +217,23 @@ static int eth_hw_reset(void)
     while ((ETH_DMAMR & ETH_DMAMR_SWR) && (timeout > 0U)) {
         timeout--;
     }
+#if defined(STM32N6)
+    /* On STM32N6, the DMA SWR may not self-clear without the PHY REF_CLK.
+     * After RCC reset, the MAC is already in reset state. Continue anyway
+     * and clear SWR manually — the MAC/DMA registers are writable. */
+    if (timeout == 0U) {
+        ETH_DMAMR &= ~ETH_DMAMR_SWR;
+    }
+#else
     if (timeout == 0U) return -1;
+#endif
 
 #if STM32_ETH_NEEDS_MDIO_DELAY
     /* Wait for MAC internal state to stabilize after reset. */
     eth_delay(400000); /* ~1ms at 400MHz SYSCLK */
 
     /* Pre-configure MDIO clock divider before PHY access. */
-    ETH_MACMDIOAR = (4U << ETH_MACMDIOAR_CR_SHIFT);
+    ETH_MACMDIOAR = (MDIO_CR_VALUE << ETH_MACMDIOAR_CR_SHIFT);
 #endif
 
     return 0;
@@ -217,11 +248,18 @@ static void eth_trigger_tx(void)
 static void eth_config_mac(const uint8_t mac[6])
 {
     uint32_t maccr = ETH_MACCR;
-    maccr &= ~(ETH_MACCR_DM | ETH_MACCR_FES);
+    maccr &= ~(ETH_MACCR_DM | ETH_MACCR_FES | ETH_MACCR_PS);
     maccr |= ETH_MACCR_DM | ETH_MACCR_FES;
+#if defined(STM32N6)
+    /* PS=1 selects MII/RMII port (vs GMII). */
+    maccr |= ETH_MACCR_PS;
+    /* Configure 1µs tick counter — required for MAC internal timing.
+     * Value = (HCLK_Hz / 1000000) - 1. With PLL: ~300MHz → 299. */
+    ETH_MAC1USTCR = 299U;
+#endif
     ETH_MACCR = maccr;
 
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32N6)
     /* Enable RX Queue 0 for DCB/Generic traffic. */
     ETH_MACRXQC0R = (2U << 0);
 #endif
@@ -291,22 +329,22 @@ static void eth_init_desc(void)
     rx_idx = 0;
     tx_idx = 0;
 
-    /* Step 2: Configure DMA registers. */
+    /* Step 2: Configure DMA registers (use DMA-visible addresses). */
     __asm volatile ("dsb sy" ::: "memory");
-    ETH_DMACTXDLAR = (uint32_t)&tx_ring[0];
-    ETH_DMACRXDLAR = (uint32_t)&rx_ring[0];
+    ETH_DMACTXDLAR = ETH_DMA_ADDR(&tx_ring[0]);
+    ETH_DMACRXDLAR = ETH_DMA_ADDR(&rx_ring[0]);
     ETH_DMACTXRLR = TX_DESC_COUNT - 1U;
     ETH_DMACRXRLR = RX_DESC_COUNT - 1U;
-    ETH_DMACTXDTPR = (uint32_t)&tx_ring[0];
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    ETH_DMACTXDTPR = ETH_DMA_ADDR(&tx_ring[0]);
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
     __asm volatile ("dsb sy" ::: "memory");
 
     /* Step 3: Now set buffer addresses and OWN bit. */
     for (i = 0; i < TX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&tx_ring[i].des0 = (uint32_t)tx_buffers[i];
+        *(volatile uint32_t *)&tx_ring[i].des0 = ETH_DMA_ADDR(tx_buffers[i]);
     }
     for (i = 0; i < RX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
+        *(volatile uint32_t *)&rx_ring[i].des0 = ETH_DMA_ADDR(rx_buffers[i]);
         *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     }
 
@@ -314,7 +352,7 @@ static void eth_init_desc(void)
     __asm volatile ("dsb sy" ::: "memory");
     __asm volatile ("isb sy" ::: "memory");
     /* Step 4: Update tail pointer to signal DMA that descriptors are ready. */
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
     /* Final barrier. */
     __asm volatile ("dsb sy" ::: "memory");
 }
@@ -370,8 +408,7 @@ static uint16_t eth_mdio_read(uint32_t phy, uint32_t reg)
 {
     uint32_t cfg;
     eth_mdio_wait_ready();
-    /* CR = 4 for HCLK 150-250MHz range. */
-    cfg = (4U << ETH_MACMDIOAR_CR_SHIFT) |
+    cfg = (MDIO_CR_VALUE << ETH_MACMDIOAR_CR_SHIFT) |
           (reg << ETH_MACMDIOAR_RDA_SHIFT) |
           (phy << ETH_MACMDIOAR_PA_SHIFT) |
           (ETH_MACMDIOAR_GOC_READ << ETH_MACMDIOAR_GOC_SHIFT);
@@ -385,8 +422,7 @@ static void eth_mdio_write(uint32_t phy, uint32_t reg, uint16_t value)
     uint32_t cfg;
     eth_mdio_wait_ready();
     ETH_MACMDIODR = (uint32_t)value;
-    /* CR = 4 for HCLK 150-250MHz range. */
-    cfg = (4U << ETH_MACMDIOAR_CR_SHIFT) |
+    cfg = (MDIO_CR_VALUE << ETH_MACMDIOAR_CR_SHIFT) |
           (reg << ETH_MACMDIOAR_RDA_SHIFT) |
           (phy << ETH_MACMDIOAR_PA_SHIFT) |
           (ETH_MACMDIOAR_GOC_WRITE << ETH_MACMDIOAR_GOC_SHIFT);
@@ -414,7 +450,10 @@ static void eth_phy_init(void)
 
     if (phy_addr < 0) {
         phy_addr = eth_detect_phy();
-        if (phy_addr < 0) phy_addr = 0;
+        if (phy_addr < 0) {
+            phy_addr = 0;
+            return; /* No PHY found — skip init to avoid long timeouts */
+        }
     }
 
     /* Reset PHY. */
@@ -471,7 +510,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     desc->des1 = 0;
     desc->des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     __asm volatile ("dsb sy" ::: "memory");
-    ETH_DMACRXDTPR = (uint32_t)desc;
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(desc);
     rx_idx = (rx_idx + 1U) % RX_DESC_COUNT;
 
     return (int)frame_len;
@@ -497,7 +536,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     if (dma_len > len) memset(tx_buffers[tx_idx] + len, 0, dma_len - len);
 
     /* Setup descriptor. */
-    desc->des0 = (uint32_t)tx_buffers[tx_idx];
+    desc->des0 = ETH_DMA_ADDR(tx_buffers[tx_idx]);
     desc->des1 = 0;
     desc->des2 = (dma_len & ETH_TDES2_B1L_MASK);
     __asm volatile ("dsb sy" ::: "memory");
@@ -511,7 +550,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     if (tx_idx == 0U) eth_trigger_tx();
 
     next_idx = (tx_idx + 1U) % TX_DESC_COUNT;
-    ETH_DMACTXDTPR = (uint32_t)&tx_ring[next_idx];
+    ETH_DMACTXDTPR = ETH_DMA_ADDR(&tx_ring[next_idx]);
     tx_idx = next_idx;
 
     return (int)len;
@@ -527,6 +566,11 @@ static void stm32_eth_generate_mac(uint8_t mac[6])
     mac[3] = 0x33;
     mac[4] = 0x44;
     mac[5] = 0x55;
+#elif defined(STM32N6)
+    mac[2] = 0xCC;
+    mac[3] = 0xDD;
+    mac[4] = 0x55;
+    mac[5] = 0x66;
 #else
     mac[2] = 0xAA;
     mac[3] = 0xBB;
@@ -576,14 +620,14 @@ void stm32_eth_kick_rx(void)
     uint32_t i;
     /* Reinitialize all RX descriptors and kick DMA. */
     for (i = 0; i < RX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
+        *(volatile uint32_t *)&rx_ring[i].des0 = ETH_DMA_ADDR(rx_buffers[i]);
         *(volatile uint32_t *)&rx_ring[i].des1 = 0;
         *(volatile uint32_t *)&rx_ring[i].des2 = 0;
         *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     }
     __asm volatile ("dsb sy" ::: "memory");
     __asm volatile ("isb sy" ::: "memory");
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
 }
 
 int stm32_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
