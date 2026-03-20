@@ -288,7 +288,7 @@ static void *pt_echoclient(void *arg)
     }
     wolfSSL_set_fd(client_ssl, fd);
     sleep(1);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
     printf("Connecting to echo server\n");
     ret = connect(fd, (struct sockaddr *)&remote_sock, sizeof(remote_sock));
     if (ret < 0) {
