@@ -3304,5 +3304,3 @@ START_TEST(test_dns_wrapper_apis)
     ck_assert_uint_eq(s.dns_query_type, DNS_QUERY_TYPE_PTR);
 }
 END_TEST
-
-

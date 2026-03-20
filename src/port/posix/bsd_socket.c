@@ -45,7 +45,7 @@
 
 static __thread int in_the_stack = 1;
 static struct wolfIP *IPSTACK = NULL;
-pthread_mutex_t wolfIP_mutex;
+pthread_mutex_t wolfIP_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct wolfip_fd_entry;
 int wolfIP_sock_poll(struct wolfIP *ipstack, struct pollfd *fds, nfds_t nfds, int timeout);
@@ -1451,6 +1451,8 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct 
         }
         if (ret == -EAGAIN) {
             if (nonblock) {
+                if (sent > 0)
+                    break;
                 errno = EAGAIN;
                 pthread_mutex_unlock(&wolfIP_mutex);
                 return -1;
@@ -1470,7 +1472,7 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct 
                 if (internal_fd < 0) {
                     pthread_mutex_unlock(&wolfIP_mutex);
                     errno = EBADF;
-                    return -1;
+                    return (sent > 0) ? (ssize_t)sent : -1;
                 }
             }
             continue;
@@ -1519,6 +1521,8 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
         }
         if (ret == -EAGAIN) {
             if (nonblock) {
+                if (sent > 0)
+                    break;
                 errno = EAGAIN;
                 pthread_mutex_unlock(&wolfIP_mutex);
                 return -1;
@@ -1575,6 +1579,8 @@ ssize_t write(int sockfd, const void *buf, size_t len) {
         }
         if (ret == -EAGAIN) {
             if (nonblock) {
+                if (sent > 0)
+                    break;
                 errno = EAGAIN;
                 pthread_mutex_unlock(&wolfIP_mutex);
                 return -1;
@@ -1679,13 +1685,6 @@ void __attribute__((constructor)) init_wolfip_posix() {
 #if WOLFIP_POSIX_TCPDUMP
     static int tcpdump_atexit_registered;
 #endif
-    {
-        static int mutex_initialized = 0;
-        if (!mutex_initialized) {
-            pthread_mutex_init(&wolfIP_mutex, NULL);
-            mutex_initialized = 1;
-        }
-    }
     pthread_mutex_lock(&wolfIP_mutex);
     if (IPSTACK) {
         pthread_mutex_unlock(&wolfIP_mutex);
