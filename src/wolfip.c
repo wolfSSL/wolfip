@@ -2003,11 +2003,15 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.peer_sack_count = 0;
             memset(t->sock.tcp.ooo, 0, sizeof(t->sock.tcp.ooo));
             {
+#if RXBUF_SIZE > 0xFFFF
                 uint32_t space = RXBUF_SIZE;
                 uint8_t shift = 0;
                 while (shift < 14 && (space >> shift) > 0xFFFF)
                     shift++;
                 t->sock.tcp.rcv_wscale = shift;
+#else
+                t->sock.tcp.rcv_wscale = 0;
+#endif
             }
             /* We always include WS in the initial SYN (shift may be 0), so
              * mark that we offered it to accept the peer's WS in SYN-ACK. */
@@ -4505,7 +4509,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         }
         if (sizeof(struct wolfIP_ip_packet) + payload_len > sizeof(frame))
             return -WOLFIP_EINVAL;
-        memcpy(&icmp->type, buf, payload_len);
+        memcpy(frame + sizeof(struct wolfIP_ip_packet), buf, payload_len);
         if (icmp->type == ICMP_ECHO_REQUEST)
             icmp_set_echo_id(icmp, ts->src_port);
         icmp->csum = 0;
