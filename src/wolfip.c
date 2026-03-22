@@ -5142,12 +5142,22 @@ static void dhcp_schedule_lease_timer(struct wolfIP *s,
     if (!s || lease_s == 0)
         return;
 
-    if (renew_s == 0 || renew_s > lease_s)
+    if (renew_s == 0 || renew_s > lease_s) {
         renew_s = lease_s / 2U;
-    if (rebind_s == 0 || rebind_s > lease_s)
+        if (renew_s == 0)
+            renew_s = 1U;
+    }
+    if (rebind_s == 0 || rebind_s > lease_s) {
         rebind_s = (uint32_t)(((uint64_t)lease_s * 7U) / 8U);
+        if (rebind_s == 0)
+            rebind_s = 1U;
+    }
     if (rebind_s < renew_s)
         rebind_s = renew_s;
+    if (renew_s > lease_s)
+        renew_s = lease_s;
+    if (rebind_s > lease_s)
+        rebind_s = lease_s;
 
     lease_ms = (uint64_t)lease_s * 1000U;
     renew_ms = (uint64_t)renew_s * 1000U;

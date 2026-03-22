@@ -103,7 +103,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     opt->data[2] = (router_ip >> 8) & 0xFF;
     opt->data[3] = (router_ip >> 0) & 0xFF;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
-    opt->code = 51;
+    opt->code = DHCP_OPTION_LEASE_TIME;
     opt->len = 4;
     opt->data[0] = (lease_s >> 24) & 0xFF;
     opt->data[1] = (lease_s >> 16) & 0xFF;
@@ -144,6 +144,23 @@ START_TEST(test_dhcp_schedule_lease_timer_defaults_t1_t2)
     ck_assert_uint_eq(s.dhcp_renew_at, 61000U);
     ck_assert_uint_eq(s.dhcp_rebind_at, 106000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 121000U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
+}
+END_TEST
+
+START_TEST(test_dhcp_schedule_lease_timer_small_lease_clamps_t1_t2)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+
+    dhcp_schedule_lease_timer(&s, 1U, 0, 0);
+
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(s.dhcp_renew_at, 2000U);
+    ck_assert_uint_eq(s.dhcp_rebind_at, 2000U);
+    ck_assert_uint_eq(s.dhcp_lease_expires, 2000U);
     ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
 }
 END_TEST

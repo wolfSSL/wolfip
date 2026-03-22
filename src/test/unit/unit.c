@@ -654,6 +654,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_and_ack);
     tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_defaults_t1_t2);
+    tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_small_lease_clamps_t1_t2);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_defaults_mask_when_missing);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_rejects_mismatched_xid);
     tcase_add_test(tc_proto, test_dhcp_parse_ack_rejects_mismatched_xid);
