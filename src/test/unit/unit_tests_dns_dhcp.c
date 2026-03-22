@@ -1902,6 +1902,20 @@ START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
 }
 END_TEST
 
+START_TEST(test_dns_schedule_timer_caps_large_retry_shift)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.last_tick = 100U;
+    s.dns_retry_count = 64U;
+
+    dns_schedule_timer(&s);
+    ck_assert_int_ne(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), UINT64_MAX);
+}
+END_TEST
+
 START_TEST(test_dns_send_query_schedules_timeout)
 {
     struct wolfIP s;

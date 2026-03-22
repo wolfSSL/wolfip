@@ -353,6 +353,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_opts_and_names);
     tcase_add_test(tc_utils, test_dns_send_query_errors);
     tcase_add_test(tc_utils, test_dns_schedule_timer_initial_jitter_and_cancel);
+    tcase_add_test(tc_utils, test_dns_schedule_timer_caps_large_retry_shift);
     tcase_add_test(tc_utils, test_dns_send_query_schedules_timeout);
     tcase_add_test(tc_utils, test_dns_resend_query_uses_stored_query_buffer);
     tcase_add_test(tc_utils, test_dns_abort_query_clears_timer_and_query_state);
