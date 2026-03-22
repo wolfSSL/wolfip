@@ -3594,7 +3594,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             if (!(tcp->flags & TCP_FLAG_RST)) {
                 uint32_t prev_peer_rwnd = t->sock.tcp.peer_rwnd;
                 uint16_t raw_win = ee16(tcp->win);
-                uint8_t ws_shift = t->sock.tcp.ws_enabled ? t->sock.tcp.snd_wscale : 0;
+                uint8_t ws_shift =
+                    (t->sock.tcp.ws_enabled && !(tcp->flags & TCP_FLAG_SYN)) ?
+                    t->sock.tcp.snd_wscale : 0;
                 t->sock.tcp.peer_rwnd = (uint32_t)raw_win << ws_shift;
                 if (t->sock.tcp.peer_rwnd > prev_peer_rwnd) {
                     if (t->sock.tcp.persist_active)

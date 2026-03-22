@@ -383,6 +383,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_unexpected_flags);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_transitions);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_invalid_ack_rejected);
+    tcase_add_test(tc_utils, test_tcp_input_syn_listen_does_not_scale_syn_window);
+    tcase_add_test(tc_utils, test_tcp_input_syn_sent_does_not_scale_synack_window);
     tcase_add_test(tc_utils, test_tcp_parse_sack_wraparound_block_accepted);
     tcase_add_test(tc_utils, test_tcp_input_rst_bad_seq_ignored);
     tcase_add_test(tc_utils, test_tcp_input_rst_seq_in_window_sends_ack);
