@@ -581,6 +581,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_recv_request_other_ip_no_reply);
     tcase_add_test(tc_proto, test_arp_recv_null_stack);
     tcase_add_test(tc_proto, test_arp_recv_request_sends_reply);
+    tcase_add_test(tc_proto, test_arp_recv_request_does_not_store_self_neighbor);
     tcase_add_test(tc_proto, test_arp_recv_request_no_send_fn);
     tcase_add_test(tc_proto, test_wolfip_if_for_local_ip_paths);
     tcase_add_test(tc_proto, test_wolfip_if_for_local_ip_null_found);

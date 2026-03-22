@@ -5811,7 +5811,7 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
             ll->send(ll, buf, len);
         }
     }
-    if (arp->opcode == ee16(ARP_REPLY)) {
+    else if (arp->opcode == ee16(ARP_REPLY)) {
         ip4 sip = ee32(arp->sip);
         int idx = arp_neighbor_index(s, if_idx, sip);
         int pending = arp_pending_match_and_clear(s, if_idx, sip);
