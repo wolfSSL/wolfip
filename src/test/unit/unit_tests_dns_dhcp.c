@@ -1,3 +1,14 @@
+static uint64_t find_timer_expiry(const struct wolfIP *s, uint32_t timer_id)
+{
+    uint32_t i;
+
+    for (i = 0; i < s->timers.size; i++) {
+        if (s->timers.timers[i].id == timer_id)
+            return s->timers.timers[i].expires;
+    }
+    return 0;
+}
+
 START_TEST(test_wolfip_static_instance_apis)
 {
     struct wolfIP *s = NULL;
@@ -19,6 +30,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     uint32_t router_ip = 0x0A000002U;
     uint32_t dns_ip = 0x08080808U;
     uint32_t mask = 0xFFFFFF00U;
+    uint32_t lease_s = 120U;
 
     wolfIP_init(&s);
     primary = wolfIP_primary_ipconf(&s);
@@ -54,6 +66,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    s.last_tick = 1000U;
 
     memset(&msg, 0, sizeof(msg));
     msg.magic = ee32(DHCP_MAGIC);
@@ -90,6 +103,13 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     opt->data[2] = (router_ip >> 8) & 0xFF;
     opt->data[3] = (router_ip >> 0) & 0xFF;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = 51;
+    opt->len = 4;
+    opt->data[0] = (lease_s >> 24) & 0xFF;
+    opt->data[1] = (lease_s >> 16) & 0xFF;
+    opt->data[2] = (lease_s >> 8) & 0xFF;
+    opt->data[3] = (lease_s >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_OFFER_IP;
     opt->len = 4;
     opt->data[0] = (offer_ip >> 24) & 0xFF;
@@ -106,6 +126,25 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(primary->gw, router_ip);
     ck_assert_uint_eq(s.dns_server, dns_ip);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), 61000U);
+}
+END_TEST
+
+START_TEST(test_dhcp_schedule_lease_timer_defaults_t1_t2)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+
+    dhcp_schedule_lease_timer(&s, 120U, 0, 0);
+
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(s.dhcp_renew_at, 61000U);
+    ck_assert_uint_eq(s.dhcp_rebind_at, 106000U);
+    ck_assert_uint_eq(s.dhcp_lease_expires, 121000U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
 }
 END_TEST
 
@@ -726,6 +765,80 @@ START_TEST(test_sock_connect_tcp_filter_drop)
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_mask(0);
+}
+END_TEST
+
+START_TEST(test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    struct pkt_desc *desc;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *req;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip = 0x0A000064U;
+    primary->mask = 0xFFFFFF00U;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_ip = primary->ip;
+    s.dhcp_state = DHCP_RENEWING;
+    s.dhcp_rebind_at = 1500U;
+    s.last_tick = 1000U;
+
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    ck_assert_uint_eq(ts->remote_ip, s.dhcp_server_ip);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_rebind_at);
+
+    desc = fifo_peek(&ts->sock.udp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    udp = (struct wolfIP_udp_datagram *)(ts->txmem + desc->pos + sizeof(*desc));
+    req = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(req->ciaddr, ee32(primary->ip));
+}
+END_TEST
+
+START_TEST(test_dhcp_send_request_rebinding_broadcasts_to_lease_expiry)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    struct pkt_desc *desc;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *req;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip = 0x0A000064U;
+    primary->mask = 0xFFFFFF00U;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_ip = primary->ip;
+    s.dhcp_state = DHCP_REBINDING;
+    s.dhcp_lease_expires = 1300U;
+    s.last_tick = 1000U;
+
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    ck_assert_uint_eq(ts->remote_ip, 0xFFFFFFFFU);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_lease_expires);
+
+    desc = fifo_peek(&ts->sock.udp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    udp = (struct wolfIP_udp_datagram *)(ts->txmem + desc->pos + sizeof(*desc));
+    req = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(req->ciaddr, ee32(primary->ip));
 }
 END_TEST
 
@@ -2930,10 +3043,13 @@ END_TEST
 START_TEST(test_dhcp_timer_cb_paths)
 {
     struct wolfIP s;
+    struct ipconf *primary;
     int ret;
 
     wolfIP_init(&s);
     mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
     s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(s.dhcp_udp_sd, 0);
     s.dhcp_xid = 1;
@@ -2955,6 +3071,18 @@ START_TEST(test_dhcp_timer_cb_paths)
     ck_assert_int_eq(ret, 0);
     dhcp_timer_cb(&s);
     ck_assert_int_eq(s.dhcp_timeout_count, 1);
+
+    primary->ip = 0x0A000064U;
+    primary->mask = 0xFFFFFF00U;
+    s.dhcp_ip = primary->ip;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_BOUND;
+    last_frame_sent_size = 0;
+    dhcp_timer_cb(&s);
+    (void)wolfIP_poll(&s, s.last_tick);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_RENEWING);
 }
 END_TEST
 

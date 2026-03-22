@@ -984,8 +984,11 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_OPTION_SUBNET_MASK 1
 #define DHCP_OPTION_ROUTER 3
 #define DHCP_OPTION_DNS 6
+#define DHCP_OPTION_LEASE_TIME 51
 #define DHCP_OPTION_SERVER_ID 54
 #define DHCP_OPTION_PARAM_REQ 55
+#define DHCP_OPTION_RENEWAL_TIME 58
+#define DHCP_OPTION_REBIND_TIME 59
 #define DHCP_OPTION_OFFER_IP 50
 #define DHCP_OPTION_END 0xFF
 #define DHCP_DISCOVER_TIMEOUT 2000
@@ -1002,6 +1005,8 @@ enum dhcp_state {
     DHCP_DISCOVER_SENT,
     DHCP_REQUEST_SENT,
     DHCP_BOUND,
+    DHCP_RENEWING,
+    DHCP_REBINDING,
 };
 
 #define DHCP_IS_RUNNING(s) \
@@ -1193,6 +1198,9 @@ struct wolfIP {
     uint32_t dhcp_timeout_count; /* DHCP timeout counter */
     ip4 dhcp_server_ip; /* DHCP server IP */
     ip4 dhcp_ip; /* IP address assigned by DHCP */
+    uint64_t dhcp_renew_at; /* Renewal time (T1) */
+    uint64_t dhcp_rebind_at; /* Rebind time (T2) */
+    uint64_t dhcp_lease_expires; /* Lease expiration time */
     ip4 dns_server;
     uint16_t dns_id;
     int dns_udp_sd;
@@ -5090,12 +5098,68 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
 
 static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
+static void dhcp_timer_cb(void *arg);
+
+static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
+{
+    struct wolfIP_timer tmr = { };
+
+    if (!s)
+        return;
+    tmr.expires = (when > s->last_tick) ? when : (s->last_tick + 1U);
+    tmr.arg = s;
+    tmr.cb = dhcp_timer_cb;
+    s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
+}
+
+static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
+{
+    uint64_t next;
+
+    if (!s)
+        return;
+    next = s->last_tick + DHCP_REQUEST_TIMEOUT + (wolfIP_getrandom() % 200U);
+    if (deadline != 0 && next > deadline)
+        next = deadline;
+    dhcp_schedule_timer_at(s, next);
+}
+
+static void dhcp_schedule_lease_timer(struct wolfIP *s,
+                                      uint32_t lease_s,
+                                      uint32_t renew_s,
+                                      uint32_t rebind_s)
+{
+    uint64_t lease_ms;
+    uint64_t renew_ms;
+    uint64_t rebind_ms;
+
+    if (!s || lease_s == 0)
+        return;
+
+    if (renew_s == 0 || renew_s > lease_s)
+        renew_s = lease_s / 2U;
+    if (rebind_s == 0 || rebind_s > lease_s)
+        rebind_s = (uint32_t)(((uint64_t)lease_s * 7U) / 8U);
+    if (rebind_s < renew_s)
+        rebind_s = renew_s;
+
+    lease_ms = (uint64_t)lease_s * 1000U;
+    renew_ms = (uint64_t)renew_s * 1000U;
+    rebind_ms = (uint64_t)rebind_s * 1000U;
+
+    s->dhcp_renew_at = s->last_tick + renew_ms;
+    s->dhcp_rebind_at = s->last_tick + rebind_ms;
+    s->dhcp_lease_expires = s->last_tick + lease_ms;
+    dhcp_schedule_timer_at(s, s->dhcp_renew_at);
+}
+
 static void dhcp_timer_cb(void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
     LOG("dhcp timeout\n");
     if (!s)
         return;
+    s->dhcp_timer = NO_TIMER;
     switch(s->dhcp_state) {
         case DHCP_DISCOVER_SENT:
             if (s->dhcp_timeout_count < DHCP_DISCOVER_RETRIES) {
@@ -5111,6 +5175,32 @@ static void dhcp_timer_cb(void *arg)
             } else
                 s->dhcp_state = DHCP_OFF;
             break;
+        case DHCP_BOUND:
+            if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
+                s->dhcp_state = DHCP_OFF;
+                break;
+            }
+            s->dhcp_state = DHCP_RENEWING;
+            s->dhcp_timeout_count = 0;
+            dhcp_send_request(s);
+            s->dhcp_timeout_count++;
+            break;
+        case DHCP_RENEWING:
+            if (s->dhcp_rebind_at != 0 && s->last_tick >= s->dhcp_rebind_at) {
+                s->dhcp_state = DHCP_REBINDING;
+                s->dhcp_timeout_count = 0;
+            }
+            dhcp_send_request(s);
+            s->dhcp_timeout_count++;
+            break;
+        case DHCP_REBINDING:
+            if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
+                s->dhcp_state = DHCP_OFF;
+                break;
+            }
+            dhcp_send_request(s);
+            s->dhcp_timeout_count++;
+            break;
         default:
             break;
     }
@@ -5123,6 +5213,9 @@ static void dhcp_cancel_timer(struct wolfIP *s)
         s->dhcp_timer = NO_TIMER;
         s->dhcp_timeout_count = 0;
     }
+    s->dhcp_renew_at = 0;
+    s->dhcp_rebind_at = 0;
+    s->dhcp_lease_expires = 0;
 }
 
 #define DHCP_OPT_data_to_u32(opt)                    \
@@ -5248,6 +5341,9 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     uint8_t *opt_end;
     int saw_end = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
+    uint32_t lease_s = 0;
+    uint32_t renew_s = 0;
+    uint32_t rebind_s = 0;
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
     if (ee32(msg->magic) != DHCP_MAGIC)
@@ -5328,6 +5424,18 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
                         s->dns_server = ee32(data);
+                    } else if (code == DHCP_OPTION_LEASE_TIME) {
+                        if (len < 4)
+                            return -1;
+                        lease_s = ee32(DHCP_OPT_data_to_u32(inner));
+                    } else if (code == DHCP_OPTION_RENEWAL_TIME) {
+                        if (len < 4)
+                            return -1;
+                        renew_s = ee32(DHCP_OPT_data_to_u32(inner));
+                    } else if (code == DHCP_OPTION_REBIND_TIME) {
+                        if (len < 4)
+                            return -1;
+                        rebind_s = ee32(DHCP_OPT_data_to_u32(inner));
                     }
                     opt += 2 + len;
                 }
@@ -5336,6 +5444,7 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 if (primary && (primary->ip != 0) && (primary->mask != 0)) {
                     dhcp_cancel_timer(s);
                     s->dhcp_state = DHCP_BOUND;
+                    dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
                     return 0;
                 }
             }
@@ -5359,7 +5468,10 @@ static int dhcp_poll(struct wolfIP *s)
         return -1;
     if ((s->dhcp_state == DHCP_DISCOVER_SENT) && (dhcp_parse_offer(s, &msg, (uint32_t)len) == 0))
         dhcp_send_request(s);
-    else if ((s->dhcp_state == DHCP_REQUEST_SENT) && (dhcp_parse_ack(s, &msg, (uint32_t)len) == 0)) {
+    else if ((s->dhcp_state == DHCP_REQUEST_SENT ||
+              s->dhcp_state == DHCP_RENEWING ||
+              s->dhcp_state == DHCP_REBINDING) &&
+            (dhcp_parse_ack(s, &msg, (uint32_t)len) == 0)) {
         struct ipconf *primary = wolfIP_primary_ipconf(s);
         LOG("DHCP configuration received.\n");
         if (primary) {
@@ -5377,17 +5489,22 @@ static int dhcp_send_request(struct wolfIP *s)
 {
     struct dhcp_msg req;
     struct dhcp_option *opt = (struct dhcp_option *)(req.options);
-    struct wolfIP_timer tmr = { };
     struct wolfIP_sockaddr_in sin;
+    struct ipconf *primary = wolfIP_primary_ipconf(s);
+    int renewing = (s->dhcp_state == DHCP_RENEWING);
+    int rebinding = (s->dhcp_state == DHCP_REBINDING);
     uint32_t opt_sz = 0;
     /* Prepare DHCP request */
     memset(&req, 0, sizeof(struct dhcp_msg));
     req.op = BOOT_REQUEST;
-    s->dhcp_state = DHCP_REQUEST_SENT;
+    if (!renewing && !rebinding)
+        s->dhcp_state = DHCP_REQUEST_SENT;
     req.htype = 1; /* Ethernet */
     req.hlen = 6; /* MAC */
     req.xid = ee32(s->dhcp_xid);
     req.magic = ee32(DHCP_MAGIC);
+    if ((renewing || rebinding) && primary)
+        req.ciaddr = ee32(primary->ip);
     {
         struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
         if (ll)
@@ -5410,31 +5527,39 @@ static int dhcp_send_request(struct wolfIP *s)
     opt->data[2] = 6; /* DNS */
     opt_sz += 5;
     opt = (struct dhcp_option *)((uint8_t *)opt + 5);
-    opt->code = DHCP_OPTION_SERVER_ID; /* Server ID */
-    opt->len = 4;
-    DHCP_OPT_u32_to_data(opt, s->dhcp_server_ip);
-    opt_sz += 6;
-    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
-    opt->code = DHCP_OPTION_OFFER_IP; /* Requested IP */
-    opt->len = 4;
-    DHCP_OPT_u32_to_data(opt, s->dhcp_ip);
-    opt_sz += 6;
+    if (!renewing && !rebinding) {
+        opt->code = DHCP_OPTION_SERVER_ID; /* Server ID */
+        opt->len = 4;
+        DHCP_OPT_u32_to_data(opt, s->dhcp_server_ip);
+        opt_sz += 6;
+        opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+        opt->code = DHCP_OPTION_OFFER_IP; /* Requested IP */
+        opt->len = 4;
+        DHCP_OPT_u32_to_data(opt, s->dhcp_ip);
+        opt_sz += 6;
+    }
 
     opt_sz++;
     memset(&sin, 0, sizeof(struct wolfIP_sockaddr_in));
     sin.sin_port = ee16(DHCP_SERVER_PORT);
-    sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
+    if (renewing)
+        sin.sin_addr.s_addr = ee32(s->dhcp_server_ip);
+    else
+        sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
     wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
-    /* Reset local_ip so DHCP ACK matches via DHCP_IS_RUNNING path in
-     * udp_try_recv(). wolfIP_sock_sendto() sets local_ip from conf->ip
-     * (the offered IP), but we haven't confirmed the lease yet. */
-    s->udpsockets[SOCKET_UNMARK(s->dhcp_udp_sd)].local_ip = 0;
-    tmr.expires = s->last_tick + DHCP_REQUEST_TIMEOUT + (wolfIP_getrandom() % 200);
-    tmr.arg = s;
-    tmr.cb = dhcp_timer_cb;
-    s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
+    if (!renewing && !rebinding) {
+        /* Reset local_ip so DHCP ACK matches via DHCP_IS_RUNNING path in
+         * udp_try_recv(). wolfIP_sock_sendto() sets local_ip from conf->ip
+         * (the offered IP), but we haven't confirmed the lease yet. */
+        s->udpsockets[SOCKET_UNMARK(s->dhcp_udp_sd)].local_ip = 0;
+        dhcp_schedule_retry_timer(s, 0);
+    } else if (renewing) {
+        dhcp_schedule_retry_timer(s, s->dhcp_rebind_at);
+    } else {
+        dhcp_schedule_retry_timer(s, s->dhcp_lease_expires);
+    }
     return 0;
 }
 
@@ -5502,7 +5627,9 @@ static int dhcp_send_discover(struct wolfIP *s)
 
 int dhcp_bound(struct wolfIP *s)
 {
-    return (s->dhcp_state == DHCP_BOUND);
+    return (s->dhcp_state == DHCP_BOUND ||
+            s->dhcp_state == DHCP_RENEWING ||
+            s->dhcp_state == DHCP_REBINDING);
 }
 
 int dhcp_client_is_running(struct wolfIP *s)

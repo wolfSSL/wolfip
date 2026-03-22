@@ -292,6 +292,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_hit);
     tcase_add_test(tc_utils, test_dhcp_timer_cb_paths);
     tcase_add_test(tc_utils, test_dhcp_client_init_and_bound);
+    tcase_add_test(tc_utils, test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline);
+    tcase_add_test(tc_utils, test_dhcp_send_request_rebinding_broadcasts_to_lease_expiry);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
     tcase_add_test(tc_utils, test_dns_callback_ptr_response);
     tcase_add_test(tc_utils, test_udp_try_recv_short_frame);
@@ -645,6 +647,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_udp_recvfrom_src_equals_local_ip_does_not_persist_remote);
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_and_ack);
+    tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_defaults_t1_t2);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_defaults_mask_when_missing);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_rejects_mismatched_xid);
     tcase_add_test(tc_proto, test_dhcp_parse_ack_rejects_mismatched_xid);
