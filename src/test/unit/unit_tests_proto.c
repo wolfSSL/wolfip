@@ -3745,6 +3745,41 @@ START_TEST(test_regression_udp_payload_exceeds_buffer_discards_and_unblocks)
 }
 END_TEST
 
+START_TEST(test_regression_icmp_payload_exceeds_buffer_discards_and_unblocks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_icmp_packet) + 32];
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)buf;
+    uint8_t rxbuf[8];
+    int sd, ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = icmp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = 0x0A000001U;
+
+    sd = (int)(MARK_ICMP_SOCKET | (uint32_t)(ts - s.icmpsockets));
+
+    memset(buf, 0, sizeof(buf));
+    icmp->ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN + 32);
+    icmp->type = ICMP_ECHO_REPLY;
+    ret = fifo_push(&ts->sock.udp.rxbuf, icmp,
+            sizeof(struct wolfIP_icmp_packet) + 32);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, -1);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
 START_TEST(test_regression_icmp_ip_len_below_header)
 {
     struct wolfIP s;
@@ -3812,4 +3847,3 @@ END_TEST
 
 
 /* ----------------------------------------------------------------------- */
-

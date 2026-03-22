@@ -1288,7 +1288,7 @@ START_TEST(test_sock_recvfrom_icmp_paths)
     ck_assert_int_eq(ret, -1);
 
     ret = wolfIP_sock_recvfrom(&s, icmp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
-    ck_assert_int_eq(ret, ICMP_HEADER_LEN + 2);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
 }
 END_TEST
 

@@ -4641,8 +4641,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             return -WOLFIP_EAGAIN;
         icmp = (struct wolfIP_icmp_packet *)(ts->rxmem + desc->pos + sizeof(*desc));
         seg_len = ee16(icmp->ip.len) - IP_HEADER_LEN;
-        if (seg_len > len)
+        if (seg_len > len) {
+            fifo_pop(&ts->sock.udp.rxbuf);
             return -1;
+        }
         if (sin) {
             sin->sin_family = AF_INET;
             sin->sin_port = 0;
