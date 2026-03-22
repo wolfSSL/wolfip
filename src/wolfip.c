@@ -6541,22 +6541,25 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *ts = &s->tcpsockets[i];
         if ((ts->sock.tcp.state != TCP_CLOSED) && (ts->callback) && (ts->events)) {
-            ts->callback(i | MARK_TCP_SOCKET, ts->events, ts->callback_arg);
+            uint16_t events = ts->events;
             ts->events = 0;
+            ts->callback(i | MARK_TCP_SOCKET, events, ts->callback_arg);
         }
     }
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *ts = &s->udpsockets[i];
         if ((ts->callback) && (ts->events)) {
-            ts->callback(i | MARK_UDP_SOCKET, ts->events, ts->callback_arg);
+            uint16_t events = ts->events;
             ts->events = 0;
+            ts->callback(i | MARK_UDP_SOCKET, events, ts->callback_arg);
         }
     }
     for (i = 0; i < MAX_ICMPSOCKETS; i++) {
         struct tsocket *ts = &s->icmpsockets[i];
         if ((ts->callback) && (ts->events)) {
-            ts->callback(i | MARK_ICMP_SOCKET, ts->events, ts->callback_arg);
+            uint16_t events = ts->events;
             ts->events = 0;
+            ts->callback(i | MARK_ICMP_SOCKET, events, ts->callback_arg);
         }
     }
 

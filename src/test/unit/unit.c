@@ -117,6 +117,7 @@ Suite *wolf_suite(void)
 #endif
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
     tcase_add_test(tc_utils, test_wolfip_poll_executes_timers_and_callbacks);
+    tcase_add_test(tc_utils, test_wolfip_poll_preserves_tcp_events_raised_during_callback);
     tcase_add_test(tc_utils, test_filter_notify_tcp_metadata);
     tcase_add_test(tc_utils, test_filter_dispatch_no_callback);
     tcase_add_test(tc_utils, test_filter_dispatch_mask_not_set);
