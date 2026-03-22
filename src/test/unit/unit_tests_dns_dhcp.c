@@ -741,6 +741,35 @@ START_TEST(test_sock_connect_tcp_src_port_low)
 }
 END_TEST
 
+START_TEST(test_sock_connect_tcp_initial_seq_randomized)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+    ts->src_port = 23456;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5555);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            -WOLFIP_EAGAIN);
+    ck_assert_uint_ne(ts->sock.tcp.seq, 0U);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, ts->sock.tcp.seq);
+}
+END_TEST
+
 START_TEST(test_sock_sendto_more_error_paths)
 {
     struct wolfIP s;

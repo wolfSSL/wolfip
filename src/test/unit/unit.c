@@ -237,6 +237,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_connect_icmp_primary_fallback);
     tcase_add_test(tc_utils, test_sock_connect_tcp_filter_drop);
     tcase_add_test(tc_utils, test_sock_connect_tcp_src_port_low);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_initial_seq_randomized);
     tcase_add_test(tc_utils, test_sock_sendto_more_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_udp_no_dest);
     tcase_add_test(tc_utils, test_sock_sendto_udp_sets_dest_and_assigns);

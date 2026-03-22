@@ -4204,6 +4204,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         if (ts->src_port < 1024)
             ts->src_port += 1024;
         ts->dst_port = ee16(sin->sin_port);
+        ts->sock.tcp.seq = wolfIP_getrandom();
         ts->sock.tcp.snd_una = ts->sock.tcp.seq;
         if (wolfIP_filter_notify_socket_event(
                 WOLFIP_FILT_CONNECTING, s, ts,
