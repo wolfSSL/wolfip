@@ -4645,6 +4645,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         seg_len = ee16(icmp->ip.len) - IP_HEADER_LEN;
         if (seg_len > len) {
             fifo_pop(&ts->sock.udp.rxbuf);
+            if (fifo_peek(&ts->sock.udp.rxbuf) == NULL)
+                ts->events &= ~CB_EVENT_READABLE;
             return -1;
         }
         if (sin) {

@@ -3770,10 +3770,12 @@ START_TEST(test_regression_icmp_payload_exceeds_buffer_discards_and_unblocks)
     ret = fifo_push(&ts->sock.udp.rxbuf, icmp,
             sizeof(struct wolfIP_icmp_packet) + 32);
     ck_assert_int_eq(ret, 0);
+    ts->events |= CB_EVENT_READABLE;
 
     ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     ck_assert_int_eq(ret, -1);
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0U);
 
     ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
