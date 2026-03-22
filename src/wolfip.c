@@ -1204,7 +1204,11 @@ struct wolfIP {
     ip4 dns_server;
     uint16_t dns_id;
     int dns_udp_sd;
+    uint32_t dns_timer;
+    uint8_t dns_retry_count;
     uint8_t dns_query_type;
+    uint16_t dns_query_len;
+    uint8_t dns_query_buf[512];
     void (*dns_lookup_cb)(ip4 ip);
     void (*dns_ptr_cb)(const char *name);
     char dns_ptr_name[256];
@@ -6302,6 +6306,12 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define DNS_QUERY_TYPE_PTR 2
 #define MAX_DNS_NAME_LEN 255
 #define MAX_DNS_LABEL_LEN 63
+#define DNS_QUERY_TIMEOUT 2000U
+#define DNS_QUERY_TIMEOUT_INITIAL 1800U
+#define DNS_QUERY_TIMEOUT_INITIAL_JITTER 391U
+#ifndef DNS_QUERY_RETRIES
+#define DNS_QUERY_RETRIES 3
+#endif
 
 struct PACKED dns_header {
     uint16_t id;
@@ -6442,14 +6452,86 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
     return -1;
 }
 
+static void dns_timeout_cb(void *arg);
+
+static void dns_cancel_timer(struct wolfIP *s)
+{
+    if (!s)
+        return;
+    if (s->dns_timer != NO_TIMER) {
+        timer_binheap_cancel(&s->timers, s->dns_timer);
+        s->dns_timer = NO_TIMER;
+    }
+}
+
+static void dns_schedule_timer(struct wolfIP *s)
+{
+    struct wolfIP_timer tmr = { };
+    uint64_t interval = DNS_QUERY_TIMEOUT;
+
+    if (!s)
+        return;
+    if (s->dns_retry_count == 0) {
+        /* RFC 1035 recommends a 2s initial retransmission interval. On embedded
+         * targets, add a small 0..390 ms random offset to 1800 ms so many
+         * devices do not synchronize their first retry after a shared loss. */
+        interval = DNS_QUERY_TIMEOUT_INITIAL +
+                (wolfIP_getrandom() % DNS_QUERY_TIMEOUT_INITIAL_JITTER);
+    } else {
+        interval <<= s->dns_retry_count;
+    }
+    tmr.expires = s->last_tick + interval;
+    tmr.arg = s;
+    tmr.cb = dns_timeout_cb;
+    s->dns_timer = timers_binheap_insert(&s->timers, tmr);
+}
+
+static int dns_resend_query(struct wolfIP *s)
+{
+    struct wolfIP_sockaddr_in dns_srv;
+
+    if (!s || s->dns_udp_sd <= 0 || s->dns_query_len == 0)
+        return -1;
+    memset(&dns_srv, 0, sizeof(struct wolfIP_sockaddr_in));
+    dns_srv.sin_family = AF_INET;
+    dns_srv.sin_port = ee16(DNS_PORT);
+    dns_srv.sin_addr.s_addr = ee32(s->dns_server);
+    return wolfIP_sock_sendto(s, s->dns_udp_sd, s->dns_query_buf, s->dns_query_len, 0,
+            (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
+}
+
 static void dns_abort_query(struct wolfIP *s)
 {
     if (!s)
         return;
+    dns_cancel_timer(s);
     s->dns_id = 0;
+    s->dns_retry_count = 0;
     s->dns_query_type = DNS_QUERY_TYPE_NONE;
+    s->dns_query_len = 0;
     s->dns_lookup_cb = NULL;
     s->dns_ptr_cb = NULL;
+}
+
+static void dns_timeout_cb(void *arg)
+{
+    struct wolfIP *s = (struct wolfIP *)arg;
+
+    if (!s)
+        return;
+    s->dns_timer = NO_TIMER;
+    if (s->dns_id == 0)
+        return;
+    if (s->dns_retry_count < DNS_QUERY_RETRIES) {
+        if (dns_resend_query(s) < 0) {
+            dns_abort_query(s);
+            return;
+        }
+        s->dns_retry_count++;
+        dns_schedule_timer(s);
+    } else {
+        dns_abort_query(s);
+    }
 }
 
 void dns_callback(int dns_sd, uint16_t ev, void *arg)
@@ -6582,11 +6664,16 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     q = (struct dns_question *)(buf + sizeof(struct dns_header) + tok_len);
     q->qtype = ee16(qtype);
     q->qclass = ee16(1);
+    s->dns_query_len = (uint16_t)(sizeof(struct dns_header) + tok_len + sizeof(struct dns_question));
+    memcpy(s->dns_query_buf, buf, s->dns_query_len);
+    s->dns_retry_count = 0;
     memset(&dns_srv, 0, sizeof(struct wolfIP_sockaddr_in));
     dns_srv.sin_family = AF_INET;
     dns_srv.sin_port = ee16(DNS_PORT);
     dns_srv.sin_addr.s_addr = ee32(s->dns_server);
-    wolfIP_sock_sendto(s, s->dns_udp_sd, buf, sizeof(struct dns_header) + tok_len + sizeof(struct dns_question), 0, (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
+    wolfIP_sock_sendto(s, s->dns_udp_sd, buf, s->dns_query_len, 0,
+            (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
+    dns_schedule_timer(s);
     return 0;
 }
 

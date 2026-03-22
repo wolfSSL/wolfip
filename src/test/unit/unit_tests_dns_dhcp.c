@@ -1872,6 +1872,156 @@ START_TEST(test_dns_send_query_errors)
     ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), -16);
 }
 END_TEST
+
+START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
+{
+    struct wolfIP s;
+    uint32_t timer_id;
+
+    wolfIP_init(&s);
+    s.last_tick = 100U;
+    s.dns_retry_count = 0;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 390U;
+
+    dns_schedule_timer(&s);
+    ck_assert_int_ne(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2290U);
+
+    timer_id = s.dns_timer;
+    dns_cancel_timer(&s);
+    ck_assert_int_eq(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, timer_id), 0U);
+
+    s.dns_retry_count = 1;
+    dns_schedule_timer(&s);
+    ck_assert_int_ne(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 4100U);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+START_TEST(test_dns_send_query_schedules_timeout)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 390U;
+
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+    ck_assert_uint_ne(id, 0U);
+    ck_assert_uint_eq(s.dns_id, id);
+    ck_assert_int_ne(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2290U);
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+START_TEST(test_dns_resend_query_uses_stored_query_buffer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint16_t id = 0;
+    uint32_t tx_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 1U;
+
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)];
+    tx_before = fifo_len(&ts->sock.udp.txbuf);
+    ck_assert_uint_gt(s.dns_query_len, 0U);
+    ck_assert_int_gt(dns_resend_query(&s), 0);
+    ck_assert_uint_gt(fifo_len(&ts->sock.udp.txbuf), tx_before);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+START_TEST(test_dns_abort_query_clears_timer_and_query_state)
+{
+    struct wolfIP s;
+    uint32_t timer_id;
+
+    wolfIP_init(&s);
+    s.last_tick = 100U;
+    s.dns_id = 0x1234U;
+    s.dns_retry_count = 2U;
+    s.dns_query_type = DNS_QUERY_TYPE_A;
+    s.dns_query_len = 32U;
+    s.dns_lookup_cb = test_dns_lookup_cb;
+    s.dns_ptr_cb = test_dns_ptr_cb;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 0U;
+
+    dns_schedule_timer(&s);
+    timer_id = s.dns_timer;
+    ck_assert_int_ne(timer_id, NO_TIMER);
+
+    dns_abort_query(&s);
+    ck_assert_int_eq(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, timer_id), 0U);
+    ck_assert_uint_eq(s.dns_id, 0U);
+    ck_assert_uint_eq(s.dns_retry_count, 0U);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_uint_eq(s.dns_query_len, 0U);
+    ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
+    ck_assert_ptr_eq(s.dns_ptr_cb, NULL);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+START_TEST(test_dns_timeout_retries_then_aborts_and_allows_new_query)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint16_t id1 = 0;
+    uint16_t id2 = 0;
+    uint32_t tx_before;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 1U;
+
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id1, DNS_A), 0);
+    ck_assert_uint_ne(id1, 0U);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)];
+    tx_before = fifo_len(&ts->sock.udp.txbuf);
+
+    ck_assert_int_eq(dns_send_query(&s, "example.net", &id2, DNS_A), -16);
+
+    for (i = 0; i < DNS_QUERY_RETRIES; i++) {
+        dns_timeout_cb(&s);
+        ck_assert_uint_gt(fifo_len(&ts->sock.udp.txbuf), tx_before);
+        tx_before = fifo_len(&ts->sock.udp.txbuf);
+    }
+
+    dns_timeout_cb(&s);
+    ck_assert_uint_eq(s.dns_id, 0U);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
+
+    ck_assert_int_eq(dns_send_query(&s, "example.net", &id2, DNS_A), 0);
+    ck_assert_uint_ne(id2, 0U);
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
 START_TEST(test_dns_send_query_invalid_name)
 {
     struct wolfIP s;

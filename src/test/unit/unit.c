@@ -352,6 +352,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_skip_and_copy_name);
     tcase_add_test(tc_utils, test_sock_opts_and_names);
     tcase_add_test(tc_utils, test_dns_send_query_errors);
+    tcase_add_test(tc_utils, test_dns_schedule_timer_initial_jitter_and_cancel);
+    tcase_add_test(tc_utils, test_dns_send_query_schedules_timeout);
+    tcase_add_test(tc_utils, test_dns_resend_query_uses_stored_query_buffer);
+    tcase_add_test(tc_utils, test_dns_abort_query_clears_timer_and_query_state);
+    tcase_add_test(tc_utils, test_dns_timeout_retries_then_aborts_and_allows_new_query);
     tcase_add_test(tc_utils, test_dns_send_query_invalid_name);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
