@@ -4563,7 +4563,9 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 }
                 return ret;
             }
-        } else if (ts->sock.tcp.state == TCP_ESTABLISHED) {
+        } else if (ts->sock.tcp.state == TCP_ESTABLISHED ||
+                ts->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                ts->sock.tcp.state == TCP_FIN_WAIT_2) {
             uint16_t win_before = tcp_adv_win(ts, 1);
             int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
             if (ret > 0) {

@@ -154,6 +154,7 @@ START_TEST(test_sock_recvfrom_tcp_states)
     struct wolfIP s;
     int tcp_sd;
     struct tsocket *ts;
+    uint8_t payload[4] = {1, 2, 3, 4};
     uint8_t buf[4];
     int ret;
 
@@ -177,6 +178,20 @@ START_TEST(test_sock_recvfrom_tcp_states)
     ts->events = 0;
     ret = wolfIP_sock_recvfrom(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
     ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+    ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, payload, 0, sizeof(payload)), 0);
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ret = wolfIP_sock_recvfrom(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
+    ck_assert_int_eq(ret, sizeof(payload));
+    ck_assert_mem_eq(buf, payload, sizeof(payload));
+
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+    ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, payload, 0, sizeof(payload)), 0);
+    ts->sock.tcp.state = TCP_FIN_WAIT_2;
+    ret = wolfIP_sock_recvfrom(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
+    ck_assert_int_eq(ret, sizeof(payload));
+    ck_assert_mem_eq(buf, payload, sizeof(payload));
 }
 END_TEST
 
@@ -3788,4 +3803,3 @@ START_TEST(test_dns_callback_abort_clears_query_state)
     ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
 }
 END_TEST
-
