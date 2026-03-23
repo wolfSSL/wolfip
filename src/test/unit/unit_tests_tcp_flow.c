@@ -567,6 +567,118 @@ START_TEST(test_tcp_input_syn_sent_synack_invalid_ack_rejected)
 }
 END_TEST
 
+START_TEST(test_tcp_input_syn_listen_does_not_scale_syn_window)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct {
+        struct wolfIP_tcp_seg seg;
+        uint8_t ws_opt[4];
+    } syn;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    memset(&syn, 0, sizeof(syn));
+    syn.seg.ip.ver_ihl = 0x45;
+    syn.seg.ip.proto = WI_IPPROTO_TCP;
+    syn.seg.ip.ttl = 64;
+    syn.seg.ip.src = ee32(0x0A0000A1U);
+    syn.seg.ip.dst = ee32(0x0A000001U);
+    syn.seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    syn.seg.src_port = ee16(40000);
+    syn.seg.dst_port = ee16(1234);
+    syn.seg.seq = ee32(1);
+    syn.seg.hlen = (TCP_HEADER_LEN + 4) << 2;
+    syn.seg.flags = TCP_FLAG_SYN;
+    syn.seg.win = ee16(29200);
+    syn.ws_opt[0] = TCP_OPTION_WS;
+    syn.ws_opt[1] = TCP_OPTION_WS_LEN;
+    syn.ws_opt[2] = 7;
+    syn.ws_opt[3] = TCP_OPTION_NOP;
+    fix_tcp_checksums(&syn.seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &syn.seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+
+    ck_assert_uint_eq(ts->sock.tcp.ws_enabled, 1);
+    ck_assert_uint_eq(ts->sock.tcp.snd_wscale, 7);
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 29200U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_syn_sent_does_not_scale_synack_window)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct {
+        struct wolfIP_tcp_seg seg;
+        uint8_t ws_opt[4];
+    } synack;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->src_port = 23456;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5001);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    memset(&synack, 0, sizeof(synack));
+    synack.seg.ip.ver_ihl = 0x45;
+    synack.seg.ip.proto = WI_IPPROTO_TCP;
+    synack.seg.ip.ttl = 64;
+    synack.seg.ip.src = ee32(0x0A000002U);
+    synack.seg.ip.dst = ee32(0x0A000001U);
+    synack.seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    synack.seg.src_port = ee16(5001);
+    synack.seg.dst_port = ee16(ts->src_port);
+    synack.seg.seq = ee32(100);
+    synack.seg.ack = ee32(ts->sock.tcp.seq + 1);
+    synack.seg.hlen = (TCP_HEADER_LEN + 4) << 2;
+    synack.seg.flags = (TCP_FLAG_SYN | TCP_FLAG_ACK);
+    synack.seg.win = ee16(29200);
+    synack.ws_opt[0] = TCP_OPTION_WS;
+    synack.ws_opt[1] = TCP_OPTION_WS_LEN;
+    synack.ws_opt[2] = 7;
+    synack.ws_opt[3] = TCP_OPTION_NOP;
+    fix_tcp_checksums(&synack.seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &synack.seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.ws_enabled, 1);
+    ck_assert_uint_eq(ts->sock.tcp.snd_wscale, 7);
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 29200U);
+}
+END_TEST
+
 START_TEST(test_tcp_parse_sack_wraparound_block_accepted)
 {
     uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 10];
@@ -3658,4 +3770,3 @@ START_TEST(test_tcp_input_established_fin_out_of_order_no_transition)
     ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, 0);
 }
 END_TEST
-

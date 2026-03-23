@@ -1,3 +1,19 @@
+static struct wolfIP *poll_rearm_stack;
+static int poll_rearm_cb_calls;
+static int poll_rearm_recv_len;
+
+static void test_poll_rearm_tcp_cb(int sock_fd, uint16_t events, void *arg)
+{
+    uint8_t buf[8];
+
+    (void)arg;
+    poll_rearm_cb_calls++;
+    ck_assert_ptr_nonnull(poll_rearm_stack);
+    ck_assert_uint_eq(events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(poll_rearm_stack, sock_fd, buf,
+            (size_t)poll_rearm_recv_len, 0, NULL, NULL), poll_rearm_recv_len);
+}
+
 START_TEST(test_wolfip_poll_executes_timers_and_callbacks)
 {
     struct wolfIP s;
@@ -28,6 +44,39 @@ START_TEST(test_wolfip_poll_executes_timers_and_callbacks)
     ck_assert_int_eq(socket_cb_last_fd, udp_sd);
     ck_assert_int_eq(socket_cb_last_events, CB_EVENT_READABLE);
     ck_assert_int_eq(s.udpsockets[SOCKET_UNMARK(udp_sd)].events, 0);
+}
+END_TEST
+
+START_TEST(test_wolfip_poll_preserves_tcp_events_raised_during_callback)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    uint8_t payload[8] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+    ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, payload, 0, sizeof(payload)), 0);
+
+    poll_rearm_stack = &s;
+    poll_rearm_cb_calls = 0;
+    poll_rearm_recv_len = 4;
+    wolfIP_register_callback(&s, tcp_sd, test_poll_rearm_tcp_cb, NULL);
+    ts->events = CB_EVENT_READABLE;
+
+    (void)wolfIP_poll(&s, 100);
+    ck_assert_int_eq(poll_rearm_cb_calls, 1);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+
+    (void)wolfIP_poll(&s, 101);
+    ck_assert_int_eq(poll_rearm_cb_calls, 2);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0U);
 }
 END_TEST
 

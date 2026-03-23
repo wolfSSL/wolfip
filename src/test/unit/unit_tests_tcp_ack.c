@@ -2012,6 +2012,48 @@ START_TEST(test_arp_recv_request_sends_reply)
 }
 END_TEST
 
+START_TEST(test_arp_recv_request_does_not_store_self_neighbor)
+{
+    struct wolfIP s;
+    struct arp_packet arp_req;
+    const ip4 local_ip = 0x0A000001U;
+    const ip4 sender_ip = 0x0A000002U;
+    const uint8_t sender_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    int i;
+    int sender_count = 0;
+    int self_count = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    memset(&arp_req, 0, sizeof(arp_req));
+    arp_req.opcode = ee16(ARP_REQUEST);
+    arp_req.sip = ee32(sender_ip);
+    memcpy(arp_req.sma, sender_mac, sizeof(sender_mac));
+    arp_req.tip = ee32(local_ip);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
+
+    for (i = 0; i < MAX_NEIGHBORS; i++) {
+        if (s.arp.neighbors[i].if_idx != TEST_PRIMARY_IF)
+            continue;
+        if (s.arp.neighbors[i].ip == sender_ip) {
+            sender_count++;
+            ck_assert_mem_eq(s.arp.neighbors[i].mac, sender_mac,
+                             sizeof(sender_mac));
+        }
+        if (s.arp.neighbors[i].ip == local_ip)
+            self_count++;
+    }
+
+    ck_assert_int_eq(sender_count, 1);
+    ck_assert_int_eq(self_count, 0);
+}
+END_TEST
+
 START_TEST(test_send_ttl_exceeded_filter_drop)
 {
     struct wolfIP s;
