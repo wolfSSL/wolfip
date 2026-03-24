@@ -41,22 +41,29 @@ void DebugMon_Handler(void)   __attribute__((weak, alias("default_handler")));
 void PendSV_Handler(void)     __attribute__((weak, alias("default_handler")));
 void SysTick_Handler(void)    __attribute__((weak, alias("default_handler")));
 
+/* Repeat macros for filling IRQ entries portably */
+#define DH       (uint32_t)&default_handler
+#define DH5      DH, DH, DH, DH, DH
+#define DH10     DH5, DH5
+#define DH50     DH10, DH10, DH10, DH10, DH10
+#define DH200    DH50, DH50, DH50, DH50
+
 /* Cortex-M55 vector table: 16 system + 200 IRQs (ETH1_IRQn = 179) */
 __attribute__((section(".isr_vector")))
 const uint32_t vector_table[16 + 200] = {
-    [0]  = (uint32_t)&_estack,
-    [1]  = (uint32_t)&Reset_Handler,
-    [2]  = (uint32_t)&NMI_Handler,
-    [3]  = (uint32_t)&HardFault_Handler,
-    [4]  = (uint32_t)&MemManage_Handler,
-    [5]  = (uint32_t)&BusFault_Handler,
-    [6]  = (uint32_t)&UsageFault_Handler,
-    [7]  = (uint32_t)&SecureFault_Handler,
-    [8]  = 0, [9] = 0, [10] = 0,
-    [11] = (uint32_t)&SVC_Handler,
-    [12] = (uint32_t)&DebugMon_Handler,
-    [13] = 0,
-    [14] = (uint32_t)&PendSV_Handler,
-    [15] = (uint32_t)&SysTick_Handler,
-    [16 ... 215] = (uint32_t)&default_handler
+    (uint32_t)&_estack,
+    (uint32_t)&Reset_Handler,
+    (uint32_t)&NMI_Handler,
+    (uint32_t)&HardFault_Handler,
+    (uint32_t)&MemManage_Handler,
+    (uint32_t)&BusFault_Handler,
+    (uint32_t)&UsageFault_Handler,
+    (uint32_t)&SecureFault_Handler,
+    0, 0, 0,
+    (uint32_t)&SVC_Handler,
+    (uint32_t)&DebugMon_Handler,
+    0,
+    (uint32_t)&PendSV_Handler,
+    (uint32_t)&SysTick_Handler,
+    DH200
 };

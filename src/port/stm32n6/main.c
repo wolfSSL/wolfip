@@ -184,6 +184,7 @@ static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
 
+#ifdef DEBUG_FAULT
 /* HardFault Handler use only prints if uart_ready (avoids double-fault on
  * unclocked peripherals which would cause CPU LOCKUP). */
 static volatile int uart_ready = 0;
@@ -208,8 +209,9 @@ static void fault_uart_puts(const char *s)
 static void fault_uart_puthex(uint32_t val)
 {
     const char hex[] = "0123456789ABCDEF";
+    int i;
     fault_uart_puts("0x");
-    for (int i = 28; i >= 0; i -= 4)
+    for (i = 28; i >= 0; i -= 4)
         fault_uart_putc(hex[(val >> i) & 0xF]);
 }
 
@@ -248,6 +250,7 @@ void HardFault_Handler(void)
         "b hard_fault_handler_c \n"
     );
 }
+#endif /* DEBUG_FAULT */
 
 /* Clock: HSI 64MHz -> PLL1 (M=4,N=75) -> 1200MHz VCO
  *   IC1/2=600MHz CPU, IC2/3=400MHz AXI, IC6/4=300MHz, IC11/3=400MHz
@@ -385,7 +388,8 @@ static void mpu_configure_eth_nocache(void)
 
 static void delay(uint32_t count)
 {
-    for (volatile uint32_t i = 0; i < count; i++) { }
+    volatile uint32_t i;
+    for (i = 0; i < count; i++) { }
 }
 
 static void led_init(void)
@@ -469,8 +473,9 @@ static void uart_puts(const char *s)
 static void uart_puthex(uint32_t val)
 {
     const char hex[] = "0123456789ABCDEF";
+    int i;
     uart_puts("0x");
-    for (int i = 28; i >= 0; i -= 4) {
+    for (i = 28; i >= 0; i -= 4) {
         uart_putc(hex[(val >> i) & 0xF]);
     }
 }
@@ -582,44 +587,39 @@ static void gpio_eth_pin(uint32_t base, uint32_t pin)
 
 static void eth_gpio_init(void)
 {
+    volatile uint32_t *ramcfg_sram2_cr = (volatile uint32_t *)0x52023080u;
+    volatile uint32_t *rimc_attr6 = (volatile uint32_t *)(0x54024000u + 0xC28u);
+
     /* Enable GPIO clocks: F and G */
     RCC_AHB4ENSR = (1u << 5u) | (1u << 6u); /* GPIOFEN + GPIOGEN */
     delay(1000);
 
     /* Power on AXISRAM2 for ETH DMA buffers.
      * AXISRAM2-6 are powered down by default after boot ROM. */
-    {
-        volatile uint32_t *ramcfg_sram2_cr = (volatile uint32_t *)0x52023080u;
-        RCC_AHB2ENSR = (1u << 12u); /* RAMCFGEN */
-        RCC_MEMENSR = (1u << 1u);    /* AXISRAM2EN */
-        delay(100);
-        *ramcfg_sram2_cr &= ~(1u << 20u); /* Clear SRAMSD → power on */
-        DSB();
-        delay(10000);
-    }
+    RCC_AHB2ENSR = (1u << 12u); /* RAMCFGEN */
+    RCC_MEMENSR = (1u << 1u);    /* AXISRAM2EN */
+    delay(100);
+    *ramcfg_sram2_cr &= ~(1u << 20u); /* Clear SRAMSD -> power on */
+    DSB();
+    delay(10000);
 
     /* RISAF3 (AXISRAM2): extend base region to full 1MB, all CIDs R+W, SEC=1 */
-    {
-        *(volatile uint32_t *)0x54028044u = 0x00000000u; /* STARTR = 0 */
-        *(volatile uint32_t *)0x54028048u = 0x000FFFFFu; /* ENDR = 1MB-1 */
-        *(volatile uint32_t *)0x5402804Cu = 0x000F000Fu; /* CIDCFGR: CID0-3 R+W */
-        *(volatile uint32_t *)0x54028040u = 0x00000101u; /* CFGR: BREN=1, SEC=1 */
-        DSB();
-    }
+    *(volatile uint32_t *)0x54028044u = 0x00000000u; /* STARTR = 0 */
+    *(volatile uint32_t *)0x54028048u = 0x000FFFFFu; /* ENDR = 1MB-1 */
+    *(volatile uint32_t *)0x5402804Cu = 0x000F000Fu; /* CIDCFGR: CID0-3 R+W */
+    *(volatile uint32_t *)0x54028040u = 0x00000101u; /* CFGR: BREN=1, SEC=1 */
+    DSB();
 
     /* RIFSC: ETH1 DMA as CID=1/SEC/PRIV, ETH1 peripheral as SEC+PRIV */
-    {
-        volatile uint32_t *rimc_attr6 = (volatile uint32_t *)(0x54024000u + 0xC28u);
-        RCC_AHB3ENSR = (1u << 9u); /* RIFSCEN */
-        delay(100);
-        *rimc_attr6 = 0x1u | (1u << 8u) | (1u << 9u); /* CID=1, SEC, PRIV */
-        *(volatile uint32_t *)(0x54024000u + 0x14u) |= (1u << 28u); /* ETH1 SEC */
-        *(volatile uint32_t *)(0x54024000u + 0x34u) |= (1u << 28u); /* ETH1 PRIV */
-        DSB();
-        uart_puts("  RIMC_ATTR6 (ETH1): ");
-        uart_puthex(*rimc_attr6);
-        uart_puts("\n");
-    }
+    RCC_AHB3ENSR = (1u << 9u); /* RIFSCEN */
+    delay(100);
+    *rimc_attr6 = 0x1u | (1u << 8u) | (1u << 9u); /* CID=1, SEC, PRIV */
+    *(volatile uint32_t *)(0x54024000u + 0x14u) |= (1u << 28u); /* ETH1 SEC */
+    *(volatile uint32_t *)(0x54024000u + 0x34u) |= (1u << 28u); /* ETH1 PRIV */
+    DSB();
+    uart_puts("  RIMC_ATTR6 (ETH1): ");
+    uart_puthex(*rimc_attr6);
+    uart_puts("\n");
 
     /* VDDIO3 compensation cells per Errata ES0620 */
     RCC_APB4ENSR2 = (1u << 0u); /* SYSCFGEN */
@@ -675,26 +675,30 @@ int main(void)
     struct wolfIP_sockaddr_in addr;
     uint64_t tick = 0;
     int ret;
+    volatile uint32_t *sau_ctrl = (volatile uint32_t *)0xE000EDD0u;
+    volatile uint32_t *sau_rnr  = (volatile uint32_t *)0xE000EDD8u;
+    volatile uint32_t *sau_rbar = (volatile uint32_t *)0xE000EDDCu;
+    volatile uint32_t *sau_rlar = (volatile uint32_t *)0xE000EDE0u;
+    volatile uint32_t *ic9cfgr = (volatile uint32_t *)(RCC_BASE + 0xE4u);
+    volatile uint32_t *ccipr13 = (volatile uint32_t *)(RCC_BASE + 0x174u);
+    ip4 ip, nm, gw;
+    int i;
+#ifdef DEBUG_BLINK
+    int blink;
+#endif
 
     /* SAU ALLNS=1: all memory Non-Secure (required for ETH DMA access).
      * Note: disables TrustZone isolation. Production builds with TZEN=1
      * should configure SAU regions to restrict DMA to ETH buffer memory only. */
-    {
-        volatile uint32_t *sau_ctrl = (volatile uint32_t *)0xE000EDD0u;
-        volatile uint32_t *sau_rnr  = (volatile uint32_t *)0xE000EDD8u;
-        volatile uint32_t *sau_rbar = (volatile uint32_t *)0xE000EDDCu;
-        volatile uint32_t *sau_rlar = (volatile uint32_t *)0xE000EDE0u;
-        int i;
-        *sau_ctrl = 0;
-        DSB();
-        for (i = 0; i < 8; i++) {
-            *sau_rnr  = (uint32_t)i;
-            *sau_rbar = 0;
-            *sau_rlar = 0;
-        }
-        *sau_ctrl = 2u; /* ALLNS=1, ENABLE=0 -> all memory Non-Secure */
-        DSB(); ISB();
+    *sau_ctrl = 0;
+    DSB();
+    for (i = 0; i < 8; i++) {
+        *sau_rnr  = (uint32_t)i;
+        *sau_rbar = 0;
+        *sau_rlar = 0;
     }
+    *sau_ctrl = 2u; /* ALLNS=1, ENABLE=0 -> all memory Non-Secure */
+    DSB(); ISB();
 
     pwr_enable_io_supply();
 
@@ -707,34 +711,28 @@ int main(void)
 
 #ifdef DEBUG_BLINK
     /* Blink LED 3x fast to indicate PLL locked */
-    {
-        int blink;
-        for (blink = 0; blink < 3; blink++) {
-            led_toggle();
-            delay(500000);
-            led_toggle();
-            delay(500000);
-        }
+    for (blink = 0; blink < 3; blink++) {
+        led_toggle();
+        delay(500000);
+        led_toggle();
+        delay(500000);
     }
 #endif
 
     /* Enable IC9 divider (USART1 kernel clock source on N6).
      * CubeN6 uses IC9CFGR=0x30000000 (SEL=3=HSI, INT=0=div1) -> 64 MHz.
      * Then CCIPR13 USART1SEL=2 selects ic9_ck as USART1 kernel clock. */
-    {
-        volatile uint32_t *ic9cfgr = (volatile uint32_t *)(RCC_BASE + 0xE4u);
-        volatile uint32_t *ccipr13 = (volatile uint32_t *)(RCC_BASE + 0x174u);
-        /* Disable IC9, configure, re-enable */
-        RCC_DIVENCR = (1u << 8u); /* IC9 disable */
-        *ic9cfgr = 0x30000000u; /* SEL=3 (HSI), INT=0 (div 1) -> 64 MHz */
-        RCC_DIVENSR = (1u << 8u); /* IC9 enable */
-        DSB();
-        *ccipr13 = (*ccipr13 & ~0x7u) | 0x2u; /* USART1SEL = ic9_ck */
-        DSB();
-    }
+    RCC_DIVENCR = (1u << 8u); /* IC9 disable */
+    *ic9cfgr = 0x30000000u; /* SEL=3 (HSI), INT=0 (div 1) -> 64 MHz */
+    RCC_DIVENSR = (1u << 8u); /* IC9 enable */
+    DSB();
+    *ccipr13 = (*ccipr13 & ~0x7u) | 0x2u; /* USART1SEL = ic9_ck */
+    DSB();
 
     uart_init();
+#ifdef DEBUG_FAULT
     uart_ready = 1;
+#endif
 
     icache_enable();
     mpu_configure_eth_nocache();
@@ -803,20 +801,18 @@ int main(void)
     }
 
     /* Static IP configuration */
-    {
-        ip4 ip = atoip4(WOLFIP_IP);
-        ip4 nm = atoip4(WOLFIP_NETMASK);
-        ip4 gw = atoip4(WOLFIP_GW);
-        uart_puts("Setting IP configuration:\n");
-        uart_puts("  IP: ");
-        uart_putip4(ip);
-        uart_puts("\n  Mask: ");
-        uart_putip4(nm);
-        uart_puts("\n  GW: ");
-        uart_putip4(gw);
-        uart_puts("\n");
-        wolfIP_ipconfig_set(IPStack, ip, nm, gw);
-    }
+    ip = atoip4(WOLFIP_IP);
+    nm = atoip4(WOLFIP_NETMASK);
+    gw = atoip4(WOLFIP_GW);
+    uart_puts("Setting IP configuration:\n");
+    uart_puts("  IP: ");
+    uart_putip4(ip);
+    uart_puts("\n  Mask: ");
+    uart_putip4(nm);
+    uart_puts("\n  GW: ");
+    uart_putip4(gw);
+    uart_puts("\n");
+    wolfIP_ipconfig_set(IPStack, ip, nm, gw);
 
     /* TCP echo server on port 7 */
     uart_puts("Creating TCP socket on port 7...\n");

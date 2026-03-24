@@ -33,14 +33,8 @@
 /* MDIO clock divider: CR field in ETH_MACMDIOAR.
  * CR=0: 20-35MHz, CR=1: 35-60MHz, CR=2: 60-100MHz,
  * CR=3: 100-150MHz, CR=4: 150-250MHz, CR=5: 250-300MHz
- * STM32N6 at HSI: HCLK ~32MHz → CR=0
- * STM32N6 at PLL: HCLK 250-300MHz → CR=5
- * STM32H5/H7: HCLK 150-250MHz → CR=4 */
-#if defined(STM32N6)
-#define MDIO_CR_VALUE 4U  /* PLL: AHB5 ~200MHz → CR=4 (150-250MHz range) */
-#else
+ * HCLK 150-250MHz -> CR=4 */
 #define MDIO_CR_VALUE 4U
-#endif
 
 #define ETH_REG(offset)     (*(volatile uint32_t *)(ETH_BASE + (offset)))
 #define ETH_TPDR            ETH_REG(0x1180U)
@@ -175,7 +169,7 @@
 
 /* DMA descriptor structure.
  * On N6 GMAC v5.20, DSL=1 skips 1 doubleword (8 bytes) between
- * 16-byte descriptors → stride = 24 bytes. HAL uses 6-field struct
+ * 16-byte descriptors -> stride = 24 bytes. HAL uses 6-field struct
  * (DESC0-3 + BackupAddr0/1). */
 struct eth_desc {
     volatile uint32_t des0;
@@ -248,7 +242,8 @@ static void eth_mdio_write(uint32_t phy, uint32_t reg, uint16_t value);
 #if STM32_ETH_NEEDS_MDIO_DELAY
 static void eth_delay(uint32_t count)
 {
-    for (volatile uint32_t i = 0; i < count; i++) { }
+    volatile uint32_t i;
+    for (i = 0; i < count; i++) { }
 }
 #endif
 
@@ -314,7 +309,7 @@ static void eth_config_mac(const uint8_t mac[6])
      * SARC=0: don't modify source address (wolfIP constructs full frame). */
     maccr |= ETH_MACCR_PS;
     /* Configure 1µs tick counter — required for MAC internal timing.
-     * Value = (HCLK_Hz / 1000000) - 1. With PLL: HCLK ~200MHz → 199. */
+     * Value = (HCLK_Hz / 1000000) - 1. With PLL: HCLK ~200MHz -> 199. */
     ETH_MAC1USTCR = 199U;
 #endif
     ETH_MACCR = maccr;
@@ -523,7 +518,7 @@ static void eth_config_dma(void)
     ETH_MTLTXQ1OMR = ETH_MTLTXQOMR_TSF | ETH_MTLTXQOMR_TXQEN_ENABLE |
                      ETH_MTLTXQOMR_TQS_2048;
 
-    /* Map RX Q1 → DMA CH1 */
+    /* Map RX Q1 -> DMA CH1 */
     ETH_MTLRXQDMAMR = (1u << 8); /* Q1MDMACH = 1 */
 #else
     ETH_DMACTXCR = ETH_DMACTXCR_OSF | ETH_DMACTXCR_TPBL(DMA_TPBL);
@@ -551,6 +546,9 @@ static void eth_arm_rx_descriptors(void)
 
 static void eth_start(void)
 {
+#if defined(STM32N6)
+    uint32_t j;
+#endif
     ETH_MACCR |= ETH_MACCR_TE | ETH_MACCR_RE;
     ETH_MTLTXQOMR |= ETH_MTLTXQOMR_FTQ;
     ETH_DMACTXCR |= ETH_DMACTXCR_ST;
@@ -586,17 +584,14 @@ static void eth_start(void)
      * This tells the DMA about available descriptors via tail pointer. */
     eth_arm_rx_descriptors();
 #if defined(STM32N6)
-    {
-        uint32_t j;
-        for (j = 0; j < RX_DESC_COUNT; j++) {
-            rx_ring1[j].des0 = ETH_DMA_ADDR(rx_buffers1[j]);
-            rx_ring1[j].des1 = 0; rx_ring1[j].des2 = 0;
-            __asm volatile ("dsb sy" ::: "memory");
-            rx_ring1[j].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
-        }
-        __asm volatile ("dmb sy" ::: "memory");
-        ETH_DMAC1RXDTPR = ETH_DMA_ADDR(&rx_ring1[RX_DESC_COUNT - 1U]);
+    for (j = 0; j < RX_DESC_COUNT; j++) {
+        rx_ring1[j].des0 = ETH_DMA_ADDR(rx_buffers1[j]);
+        rx_ring1[j].des1 = 0; rx_ring1[j].des2 = 0;
+        __asm volatile ("dsb sy" ::: "memory");
+        rx_ring1[j].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     }
+    __asm volatile ("dmb sy" ::: "memory");
+    ETH_DMAC1RXDTPR = ETH_DMA_ADDR(&rx_ring1[RX_DESC_COUNT - 1U]);
 #endif
 }
 

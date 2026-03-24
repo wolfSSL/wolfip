@@ -11,6 +11,11 @@ CFLAGS += -DSTM32N6 -DTZEN_ENABLED=0
 EXTRA_CFLAGS ?=
 CFLAGS += $(EXTRA_CFLAGS)
 
+# Optional: DEBUG_FAULT=1 enables verbose HardFault handler with register dump
+ifdef DEBUG_FAULT
+CFLAGS += -DDEBUG_FAULT
+endif
+
 LDSCRIPT := target.ld
 LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
 
