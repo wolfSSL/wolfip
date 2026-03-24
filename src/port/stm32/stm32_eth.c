@@ -823,6 +823,14 @@ uint32_t stm32_eth_get_rx_des3(void)
     return rx_ring[0].des3;
 }
 
+uint32_t stm32_eth_get_dmacsr(void)
+{
+    uint32_t val = ETH_DMACSR;
+    if (val & 0x80) {
+        ETH_DMACSR = 0x80; /* Clear RBU (W1C) */
+    }
+    return val;
+}
 
 int stm32_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 {

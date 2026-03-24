@@ -510,16 +510,32 @@ static void uart_putip4(ip4 ip)
     uart_putdec(ip & 0xFF);
 }
 
-/* wolfIP requires this symbol */
+/* STM32N6 hardware RNG (TRNG) */
+#define RNG_BASE_ADDR     0x54020000UL /* AHB3 offset 0x0000 (secure) */
+#define RNG_CR            (*(volatile uint32_t *)(RNG_BASE_ADDR + 0x00u))
+#define RNG_SR            (*(volatile uint32_t *)(RNG_BASE_ADDR + 0x04u))
+#define RNG_DR            (*(volatile uint32_t *)(RNG_BASE_ADDR + 0x08u))
+
+static int rng_initialized = 0;
+
+static void rng_init(void)
+{
+    RCC_AHB3ENSR = (1u << 0u); /* RNGEN clock */
+    DSB();
+    delay(100);
+    RNG_CR = (1u << 2u); /* RNGEN=1 */
+    rng_initialized = 1;
+}
+
 uint32_t wolfIP_getrandom(void)
 {
-    /* Simple LFSR-based PRNG, no HW RNG on initial bring-up.
-     * Replace with TRNG when available. */
-    static uint32_t state = 0xDEADBEEF;
-    state ^= state << 13;
-    state ^= state >> 17;
-    state ^= state << 5;
-    return state;
+    uint32_t timeout = 100000u;
+    if (!rng_initialized)
+        rng_init();
+    while (!(RNG_SR & 1u) && --timeout) { } /* Wait for DRDY */
+    if (timeout == 0)
+        return 0;
+    return RNG_DR;
 }
 
 /* SYSCFG I/O compensation for VDDIO3 (Ethernet GPIOF pins) */
@@ -660,8 +676,9 @@ int main(void)
     uint64_t tick = 0;
     int ret;
 
-    /* Set SAU ALLNS=1: all memory treated as Non-Secure.
-     * This allows Non-Secure DMA masters to write to any memory region. */
+    /* SAU ALLNS=1: all memory Non-Secure (required for ETH DMA access).
+     * Note: disables TrustZone isolation. Production builds with TZEN=1
+     * should configure SAU regions to restrict DMA to ETH buffer memory only. */
     {
         volatile uint32_t *sau_ctrl = (volatile uint32_t *)0xE000EDD0u;
         volatile uint32_t *sau_rnr  = (volatile uint32_t *)0xE000EDD8u;
