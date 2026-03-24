@@ -39,7 +39,65 @@ A single network interface can be associated with the device.
 | **Application** | DHCP | Client only (DORA) | [RFC 2131](https://datatracker.ietf.org/doc/html/rfc2131) |
 | **Application** | DNS | A and PTR record queries (client) | [RFC 1035](https://datatracker.ietf.org/doc/html/rfc1035) |
 | **Application** | HTTP/HTTPS | Server with wolfSSL TLS support | [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) |
+| **VPN** | wolfGuard | FIPS-compliant WireGuard (P-256, AES-256-GCM, SHA-256) | [Wolfguard](https://www.github.com/wolfssl/wireguard) |
 
+## wolfGuard (FIPS WireGuard)
+
+wolfIP includes a native wolfGuard driver, which is a FIPS-compliant implementation
+of the WireGuard VPN protocol that operates entirely within the wolfIP stack.
+wolfGuard uses wolfSSL/wolfCrypt FIPS-certified cryptographic primitives:
+
+| WireGuard Primitive | wolfGuard FIPS Replacement |
+|---|---|
+| Curve25519 | ECDH with SECP256R1 (P-256) |
+| ChaCha20-Poly1305 | AES-256-GCM |
+| BLAKE2s | SHA-256 |
+| BLAKE2s-HMAC | HMAC-SHA-256 |
+
+wolfGuard is NOT interoperable with standard WireGuard peers. It interoperates
+only with other wolfGuard instances (including the
+[wolfGuard kernel module](https://github.com/wolfssl/wolfguard)).
+
+### Building with wolfGuard
+
+wolfGuard requires wolfSSL with `--enable-wolfguard`:
+
+```sh
+make unit-wolfguard            # unit tests
+make test-wolfguard-loopback   # loopback integration tests
+make test-wolfguard-interop    # interop test binary (used by the script below)
+```
+
+### Interop testing against the kernel wolfGuard module
+
+The interop test validates bidirectional tunnel connectivity between
+wolfIP and the Linux kernel wolfGuard module.  It tests both handshake
+directions (wolfIP as initiator and as responder) and verifies encrypted
+data flows end-to-end.
+
+```sh
+# Requires root, kernel headers, and network access (to clone wolfSSL/wolfGuard)
+sudo ./tools/scripts/test-interop-wolfguard.sh
+```
+
+The script builds wolfSSL and the wolfGuard kernel module from source, loads
+them, generates fresh P-256 keys, and runs a two-phase interop test:
+
+1. **wolfIP initiates** — wolfIP creates a handshake, sends a UDP probe
+   through the tunnel, and verifies the echo reply.
+2. **Kernel initiates** — the kernel creates a fresh handshake to wolfIP,
+   sends data through the tunnel, and wolfIP verifies receipt.
+
+### Compile-time configuration
+
+```c
+/* config.h */
+#define WOLFGUARD                       1   /* Enable wolfGuard support */
+#define WOLFGUARD_MAX_PEERS             8   /* Max peers per device */
+#define WOLFGUARD_MAX_ALLOWED_IPS       32  /* Max allowed-IP entries */
+#define WOLFGUARD_STAGED_PACKETS        16  /* Packets queued during handshake */
+#define WOLFGUARD_COUNTER_WINDOW        1024 /* Replay window size (bits) */
+```
 
 ## Functional tests with `LD_PRELOAD`
 
