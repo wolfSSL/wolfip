@@ -1,0 +1,111 @@
+name: wolfGuard tests
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wolfguard_unit:
+    name: wolfGuard unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "default"
+            target: "unit-wolfguard"
+          - name: "ASan"
+            target: "unit-wolfguard-asan"
+          - name: "UBSan"
+            target: "unit-wolfguard-ubsan"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config check
+
+      - name: Clone and build wolfSSL from nightly-snapshot
+        run: |
+          git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl
+          cd /tmp/wolfssl
+          ./autogen.sh
+          ./configure
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      - name: Build wolfGuard unit tests (${{ matrix.name }})
+        run: make ${{ matrix.target }}
+
+      - name: Run wolfGuard unit tests
+        timeout-minutes: 5
+        run: ./build/test/unit-wolfguard
+
+  wolfguard_loopback:
+    name: wolfGuard loopback tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "default"
+            target: "test-wolfguard-loopback"
+          - name: "ASan"
+            target: "test-wolfguard-loopback-asan"
+          - name: "UBSan"
+            target: "test-wolfguard-loopback-ubsan"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config check
+
+      - name: Clone and build wolfSSL from nightly-snapshot
+        run: |
+          git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl
+          cd /tmp/wolfssl
+          ./autogen.sh
+          ./configure
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      - name: Build wolfGuard loopback test (${{ matrix.name }})
+        run: make ${{ matrix.target }}
+
+      - name: Run wolfGuard loopback test
+        timeout-minutes: 5
+        run: ./build/test/test-wolfguard-loopback
+
+  wolfguard_interop:
+    name: wolfGuard interop (kernel module)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [wolfguard_unit, wolfguard_loopback]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Run wolfGuard interop test
+        timeout-minutes: 25
+        run: sudo ./tools/scripts/test-interop-wolfguard.sh

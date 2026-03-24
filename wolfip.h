@@ -102,6 +102,8 @@ struct wolfIP_ll_dev {
     int (*poll)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
     /* send function */
     int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
+    /* optional context private pointer */
+    void *priv;
 };
 
 /* Struct to contain an IP device configuration */

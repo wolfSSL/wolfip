@@ -202,6 +202,17 @@ leaksan:LDFLAGS+=-fsanitize=leak
 ESP_CFLAGS = \
     -DWOLFIP_ESP  -DWOLFSSL_WOLFIP
 
+# wolfGuard (FIPS WireGuard)
+WOLFGUARD_CFLAGS = -DWOLFGUARD -Wno-cpp
+WOLFGUARD_SRC := src/wolfguard/wolfguard.c \
+                 src/wolfguard/wg_noise.c \
+                 src/wolfguard/wg_crypto.c \
+                 src/wolfguard/wg_cookie.c \
+                 src/wolfguard/wg_allowedips.c \
+                 src/wolfguard/wg_packet.c \
+                 src/wolfguard/wg_timers.c
+WOLFGUARD_OBJ := $(patsubst src/%.c,build/wolfguard/%.o,$(WOLFGUARD_SRC))
+
 # Test
 
 ifeq ($(CHECK_PKG_LIBS),)
@@ -453,8 +464,105 @@ install:
 	install libwolfip.so $(PREFIX)/lib
 	ldconfig
 
+# wolfGuard object files
+build/wolfguard/%.o: src/%.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (wolfguard)"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) -c $< -o $@
+
+# wolfGuard unit tests
+WG_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
+ifeq ($(UNAME_S),Darwin)
+	ifneq ($(CHECK_PREFIX),)
+	WG_UNIT_CHECK_CFLAGS += -I$(CHECK_PREFIX)/include
+endif
+endif
+
+unit-wolfguard: build/test/unit-wolfguard
+
+build/test/unit-wolfguard: src/test/unit/unit_wolfguard.c
+	@mkdir -p build/test/
+	@echo "[CC] unit_wolfguard.c"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) $(WG_UNIT_CHECK_CFLAGS) \
+		-c src/test/unit/unit_wolfguard.c -o build/test/unit_wolfguard.o
+	@echo "[LD] $@"
+	@$(CC) build/test/unit_wolfguard.o -o $@ \
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) -lwolfssl
+
+clean-unit-wolfguard:
+	@rm -f build/test/unit-wolfguard build/test/unit_wolfguard.o
+
+unit-wolfguard-asan: CFLAGS+=-fsanitize=address
+unit-wolfguard-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-wolfguard-asan: clean-unit-wolfguard build/test/unit-wolfguard
+
+unit-wolfguard-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
+unit-wolfguard-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
+unit-wolfguard-ubsan: clean-unit-wolfguard build/test/unit-wolfguard
+
+# wolfGuard integration tests (loopback)
+test-wolfguard-loopback: build/test/test-wolfguard-loopback
+
+build/test/test-wolfguard-loopback: src/test/test_wolfguard_loopback.c
+	@mkdir -p build/test/
+	@echo "[CC] test_wolfguard_loopback.c"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) $(WG_UNIT_CHECK_CFLAGS) \
+		-c src/test/test_wolfguard_loopback.c -o build/test/test_wolfguard_loopback.o
+	@echo "[LD] $@"
+	@$(CC) build/test/test_wolfguard_loopback.o -o $@ \
+		$(UNIT_LDFLAGS) $(LDFLAGS) $(UNIT_LIBS) -lwolfssl
+
+clean-test-wolfguard-loopback:
+	@rm -f build/test/test-wolfguard-loopback build/test/test_wolfguard_loopback.o
+
+test-wolfguard-loopback-asan: CFLAGS+=-fsanitize=address
+test-wolfguard-loopback-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+test-wolfguard-loopback-asan: clean-test-wolfguard-loopback build/test/test-wolfguard-loopback
+
+test-wolfguard-loopback-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all
+test-wolfguard-loopback-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
+test-wolfguard-loopback-ubsan: clean-test-wolfguard-loopback build/test/test-wolfguard-loopback
+
+# wolfGuard benchmark
+bench-wolfguard: build/test/bench-wolfguard
+
+build/test/bench-wolfguard: src/test/bench_wolfguard.c
+	@mkdir -p build/test/
+	@echo "[CC] bench_wolfguard.c"
+	@$(CC) $(CFLAGS) -O2 $(WOLFGUARD_CFLAGS) \
+		-c src/test/bench_wolfguard.c -o build/test/bench_wolfguard.o
+	@echo "[LD] $@"
+	@$(CC) build/test/bench_wolfguard.o -o $@ \
+		$(LDFLAGS) -lwolfssl
+
+clean-bench-wolfguard:
+	@rm -f build/test/bench-wolfguard build/test/bench_wolfguard.o
+
+# wolfGuard interop test (wolfIP <-> kernel wolfGuard via TUN)
+test-wolfguard-interop: build/test/test-wolfguard-interop
+
+build/test/test-wolfguard-interop: src/test/test_wolfguard_interop.c src/port/posix/linux_tun.c
+	@mkdir -p build/test/
+	@echo "[CC] test_wolfguard_interop.c"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) \
+		-c src/test/test_wolfguard_interop.c -o build/test/test_wolfguard_interop.o
+	@echo "[CC] linux_tun.c"
+	@$(CC) $(CFLAGS) $(WOLFGUARD_CFLAGS) \
+		-c src/port/posix/linux_tun.c -o build/test/linux_tun.o
+	@echo "[LD] $@"
+	@$(CC) build/test/test_wolfguard_interop.o build/test/linux_tun.o -o $@ \
+		$(LDFLAGS) -lwolfssl
+
+clean-test-wolfguard-interop:
+	@rm -f build/test/test-wolfguard-interop build/test/test_wolfguard_interop.o build/test/linux_tun.o
+
 .PHONY: clean all static cppcheck cov autocov unit-asan unit-ubsan unit-leaksan clean-unit \
-        unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp
+        unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
+        unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
+        test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \
+        clean-test-wolfguard-loopback \
+        bench-wolfguard clean-bench-wolfguard \
+        test-wolfguard-interop clean-test-wolfguard-interop
 
 cppcheck:
 	$(CPPCHECK) $(CPPCHECK_FLAGS) src/ 2>cppcheck_results.xml
