@@ -12,7 +12,8 @@
 MEMORY
 {
     SRAM     (rwx) : ORIGIN = 0x34000000, LENGTH = 512K
-    AXISRAM2 (rwx) : ORIGIN = 0x34100000, LENGTH = 1024K
+    AXISRAM2 (rwx) : ORIGIN = 0x341F8000, LENGTH = 32K
+    AHBSRAM  (rw)  : ORIGIN = 0x38000000, LENGTH = 32K
 }
 
 _estack = ORIGIN(SRAM) + LENGTH(SRAM);
@@ -88,8 +89,10 @@ SECTIONS
     .eth_buffers (NOLOAD) :
     {
         . = ALIGN(32);
+        _eth_start = .;
         *(.eth_buffers*)
         . = ALIGN(32);
+        _eth_end = .;
     } > AXISRAM2
 
     ._user_heap_stack (NOLOAD) :

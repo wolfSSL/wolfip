@@ -386,7 +386,8 @@ static void pwr_enable_io_supply(void)
     DMB();
     PWR_SVMCR1 |= PWR_SVMCR1_VDDIO4SV;
     PWR_SVMCR2 |= PWR_SVMCR2_VDDIO5SV;
-    PWR_SVMCR3 |= PWR_SVMCR3_VDDIO2SV | PWR_SVMCR3_VDDIO3SV;
+    PWR_SVMCR3 |= (1u << 4u) | PWR_SVMCR3_VDDIO2SV | PWR_SVMCR3_VDDIO3SV |
+                  (1u << 12u) | (1u << 20u); /* Match CubeN6: 0x00101310 */
     DMB();
 }
 
@@ -419,16 +420,22 @@ static void dcache_enable(void)
  *
  * ETH buffers (.eth_buffers) are in AXISRAM2 at 0x34100000.
  * ========================================================================= */
+extern uint32_t _eth_start;
+extern uint32_t _eth_end;
+
 static void mpu_configure_eth_nocache(void)
 {
+    uint32_t base = (uint32_t)&_eth_start & ~0x1Fu; /* Align down to 32 */
+    uint32_t limit = ((uint32_t)&_eth_end + 0x1Fu) & ~0x1Fu; /* Align up */
+
     /* Disable MPU */
     MPU_CTRL = 0;
     DSB();
 
-    /* Region 0: AXISRAM2 (ETH DMA buffers), non-cacheable Normal memory */
+    /* Region 0: ETH DMA descriptors + buffers, Normal Non-cacheable. */
     MPU_RNR = 0;
-    MPU_RBAR = 0x34100000u | (1u << 1u) | (1u << 0u);
-    MPU_RLAR = (0x3410FFFFu & ~0x1Fu) | (2u << 1u) | 1u;
+    MPU_RBAR = base | (1u << 1u) | (1u << 0u); /* AP=RW, XN=1 */
+    MPU_RLAR = ((limit - 1u) & ~0x1Fu) | (2u << 1u) | 1u; /* AttrIdx=2, EN=1 */
 
     /* MAIR0: Attr2 (bits [23:16]) = 0x44 → Normal, Non-cacheable */
     MPU_MAIR0 = (0x44u << 16u);
@@ -469,11 +476,6 @@ static void led_on(void)
     GPIO_BSRR(LED1_PORT) = (1u << LED1_PIN);
 }
 
-static void led_off(void)
-{
-    GPIO_BSRR(LED1_PORT) = (1u << (LED1_PIN + 16u));
-}
-
 static void led_toggle(void)
 {
     GPIO_ODR(LED1_PORT) ^= (1u << LED1_PIN);
@@ -509,25 +511,23 @@ static void uart_init(void)
     afr |= (7u << (5u * 4u)) | (7u << (6u * 4u));
     GPIO_AFRL(GPIOE_BASE) = afr;
 
-    /* Configure USART1: 115200 baud
-     * After reset the CPU runs at HSI 64 MHz, but the APB2 clock feeding
-     * USART1 is 32 MHz (IC2 default divider = 2).
-     * BRR is re-configured after clock_config() switches to PLL. */
+    /* Configure USART1: 115200 baud using IC9 kernel clock (64 MHz).
+     * BRR = 64000000 / 115200 = 556 (0x22C), matching CubeN6. */
     USART1_CR1 = 0;
     USART1_CR2 = 0;
     USART1_CR3 = 0;
-    USART1_BRR = 32000000u / 115200u; /* 278 */
-
-    /* Enable transmitter + receiver + USART */
-    USART1_CR1 = (1u << 3u) | (1u << 2u); /* TE + RE */
-    delay(10);
-    USART1_CR1 |= (1u << 0u); /* UE */
-    delay(100);
+    USART1_BRR = 64000000u / 115200u; /* 556 */
+    DSB();
+    delay(1000);
+    USART1_CR1 = (1u << 0u) | (1u << 2u) | (1u << 3u); /* UE + RE + TE */
+    delay(1000);
 }
 
 static void uart_putc(char c)
 {
-    while ((USART1_ISR & (1u << 7u)) == 0) { } /* Wait for TXE */
+    volatile uint32_t timeout = 100000u;
+    while ((USART1_ISR & (1u << 7u)) == 0 && --timeout) { }
+    if (timeout == 0) return; /* USART kernel clock not running */
     USART1_TDR = (uint32_t)c;
 }
 
@@ -632,9 +632,10 @@ static void gpio_eth_pin(uint32_t base, uint32_t pin)
     moder |= (2u << pos2);
     GPIO_MODER(base) = moder;
 
-    /* High speed */
+    /* High speed (0b10) — match CubeN6. Very High (0b11) causes issues on N6. */
     ospeedr = GPIO_OSPEEDR(base);
-    ospeedr |= (3u << pos2);
+    ospeedr &= ~(3u << pos2);
+    ospeedr |= (2u << pos2);
     GPIO_OSPEEDR(base) = ospeedr;
 
     /* AF11 for Ethernet */
@@ -662,46 +663,58 @@ static void eth_gpio_init(void)
     {
         volatile uint32_t *ramcfg_sram2_cr = (volatile uint32_t *)0x52023080u;
         RCC_AHB2ENSR = (1u << 12u); /* RAMCFGEN */
-        RCC_MEMENSR = (1u << 1u); /* AXISRAM2EN */
+        RCC_MEMENSR = (1u << 1u) |   /* AXISRAM2EN */
+                      (1u << 4u) |   /* AHBSRAM1EN */
+                      (1u << 5u);    /* AHBSRAM2EN */
         delay(100);
         *ramcfg_sram2_cr &= ~(1u << 20u); /* Clear SRAMSD → power on */
         DSB();
         delay(10000);
     }
 
+    /* Open RISAF3 (AXISRAM2) to allow ETH DMA R+W access.
+     * Default ENDR=0xFFF covers only 4KB — ETH buffers at offset 0xF8000 are blocked!
+     * Extend to cover full 1MB. Leave RISAF2 (AXISRAM1) untouched (code runs there).
+     * RISAF3_BASE = 0x54028000 */
+    {
+        /* RISAF3 REG0: cover full AXISRAM2 (1MB), all CIDs R+W, Secure.
+         * CFGR: BREN=1 (bit 0), SEC=1 (bit 8) — must match secure bus alias. */
+        *(volatile uint32_t *)0x54028044u = 0x00000000u; /* STARTR = 0 */
+        *(volatile uint32_t *)0x54028048u = 0x000FFFFFu; /* ENDR = 1MB-1 */
+        *(volatile uint32_t *)0x5402804Cu = 0x000F000Fu; /* CIDCFGR: CID0-3 R+W */
+        *(volatile uint32_t *)0x54028040u = 0x00000101u; /* CFGR: BREN=1, SEC=1 */
+        DSB();
+    }
+
     /* Configure RIFSC: grant ETH1 DMA (RIMC master 6) memory access.
-     * RIMC_ATTR6: DSEL=1 (use default CID), DSEC=0 (non-secure), DPRIV=1 (privileged)
-     * RIFSC_BASE = 0x54024000, RIMC_ATTR[6] at offset 0xC10 + 6*4 = 0xC28 */
+     * Matches CubeN6 RISAF_Config exactly:
+     *   1. RIMC_ATTR6: CID=1, SEC, PRIV
+     *   2. RISC slave: ETH1 peripheral marked SEC+PRIV
+     * RIFSC_BASE = 0x54024000 */
     {
         volatile uint32_t *rimc_attr6 = (volatile uint32_t *)(0x54024000u + 0xC28u);
         RCC_AHB3ENSR = (1u << 9u); /* RIFSCEN */
         delay(100);
-        /* CID=1, DSEL=1, DSEC=1 (secure), DPRIV=1 — matches CubeN6 example */
-        *rimc_attr6 = (1u << 0u) | (1u << 4u) | (1u << 8u) | (1u << 9u);
+        /* RIMC: CID=1, DSEL=0, DSEC=1 (secure), DPRIV=1 — 0x301 */
+        *rimc_attr6 = 0x1u | (1u << 8u) | (1u << 9u);
+        /* RISC: Set ETH1 peripheral as Secure + Privileged.
+         * ETH1 is bit 28 of SECCFGRx[1] and PRIVCFGRx[1]. */
+        *(volatile uint32_t *)(0x54024000u + 0x14u) |= (1u << 28u); /* SEC */
+        *(volatile uint32_t *)(0x54024000u + 0x34u) |= (1u << 28u); /* PRIV */
         DSB();
         uart_puts("  RIMC_ATTR6 (ETH1): ");
         uart_puthex(*rimc_attr6);
         uart_puts("\n");
     }
 
-    /* Enable SYSCFG clock and configure VDDIO3 I/O compensation.
-     * GPIOF pins are on VDDIO3 — compensation cell must be enabled
-     * for the RMII data signals to work at 50 MHz. */
+    /* Compensation cells per Errata Sheet ES0620 (from CubeN6 SystemInit).
+     * ALL VDDIO domains get the same errata workaround value 0x287:
+     * CS=1 (manual code selection) + specific NMOS/PMOS compensation codes. */
     RCC_APB4ENSR2 = (1u << 0u); /* SYSCFGEN */
     delay(100);
-    SYSCFG_VDDIO3CCCR |= (1u << 8u); /* EN = 1 (enable compensation) */
+    /* VDDIO3 compensation per Errata ES0620 (CubeN6 SystemInit value) */
+    SYSCFG_VDDIO3CCCR = 0x00000287u;
     DSB();
-
-    /* Enable HSLV (1.8V) mode for VDDIO3 (GPIOF Ethernet pins).
-     * The VDDIO3VRSEL bit in PWR_SVMCR3 is protected by OTP124 bit 15.
-     * Write the BSEC shadow register first to unlock it (non-permanent). */
-    {
-        volatile uint32_t *bsec_fvr124 = (volatile uint32_t *)0x560091F0u;
-        *bsec_fvr124 |= (1u << 15u); /* HSLV_VDDIO3 shadow */
-        DSB();
-        PWR_SVMCR3 |= (1u << 26u); /* VDDIO3VRSEL = 1.8V */
-        DMB();
-    }
 
     /* Configure RMII pins (AF11) — NUCLEO-N657X0-Q pinout */
     gpio_eth_pin(GPIOF_BASE, 4);   /* MDIO */
@@ -757,120 +770,103 @@ int main(void)
     uint64_t tick = 0;
     int ret;
 
-    /* LED first — absolute minimum, just GPIO clock + pin mode.
-     * This ensures the HardFault handler can blink the LED. */
+    /* Set SAU ALLNS=1: all memory treated as Non-Secure.
+     * This allows Non-Secure DMA masters to write to any memory region. */
+    {
+        volatile uint32_t *sau_ctrl = (volatile uint32_t *)0xE000EDD0u;
+        volatile uint32_t *sau_rnr  = (volatile uint32_t *)0xE000EDD8u;
+        volatile uint32_t *sau_rbar = (volatile uint32_t *)0xE000EDDCu;
+        volatile uint32_t *sau_rlar = (volatile uint32_t *)0xE000EDE0u;
+        int i;
+        *sau_ctrl = 0;
+        DSB();
+        for (i = 0; i < 8; i++) {
+            *sau_rnr  = (uint32_t)i;
+            *sau_rbar = 0;
+            *sau_rlar = 0;
+        }
+        *sau_ctrl = 2u; /* ALLNS=1, ENABLE=0 → all memory Non-Secure */
+        DSB(); ISB();
+    }
+
     pwr_enable_io_supply();
 
-    /* Enable HSLV mode for VDDIO3 — AFTER pwr_enable_io_supply to avoid
-     * the PWR_SVMCR3 read-modify-write from clearing VRSEL.
-     * VDDIO3 is 1.8V on NUCLEO-N657X0-Q. Without HSLV, I/O pads can't
-     * switch fast enough for 50MHz RMII Ethernet.
-     * BSEC shadow register unlocks the PWR VRSEL write (non-permanent). */
-    {
-        volatile uint32_t *bsec_fvr124 = (volatile uint32_t *)0x560091F0u;
-        *bsec_fvr124 |= (1u << 15u); /* HSLV_VDDIO3 shadow */
-        __asm volatile ("dsb sy" ::: "memory");
-        for (volatile uint32_t d = 0; d < 10000; d++) {} /* Wait for BSEC */
-        PWR_SVMCR3 |= (1u << 26u); /* VDDIO3VRSEL = 1.8V */
-        __asm volatile ("dmb sy" ::: "memory");
-    }
     led_init();
     led_on();
 
-    /* UART init — after this, HardFault handler can print diagnostics */
-    uart_init(); /* Uses HSI 64 MHz for now — BRR adjusted below */
+    /* PLL + IC dividers must be up before UART — boot ROM leaves IC dividers
+     * disabled, so APB2 has no clock source and USART1 kernel clock is dead. */
+    clock_config();
+
+    /* Blink LED 3x fast to indicate PLL locked */
+    {
+        int blink;
+        for (blink = 0; blink < 3; blink++) {
+            led_toggle();
+            delay(500000);
+            led_toggle();
+            delay(500000);
+        }
+    }
+
+    /* Enable IC9 divider (USART1 kernel clock source on N6).
+     * CubeN6 uses IC9CFGR=0x30000000 (SEL=3=HSI, INT=0=div1) → 64 MHz.
+     * Then CCIPR13 USART1SEL=2 selects ic9_ck as USART1 kernel clock. */
+    {
+        volatile uint32_t *ic9cfgr = (volatile uint32_t *)(RCC_BASE + 0xE4u);
+        volatile uint32_t *ccipr13 = (volatile uint32_t *)(RCC_BASE + 0x174u);
+        /* Disable IC9, configure, re-enable */
+        RCC_DIVENCR = (1u << 8u); /* IC9 disable */
+        *ic9cfgr = 0x30000000u; /* SEL=3 (HSI), INT=0 (div 1) → 64 MHz */
+        RCC_DIVENSR = (1u << 8u); /* IC9 enable */
+        DSB();
+        *ccipr13 = (*ccipr13 & ~0x7u) | 0x2u; /* USART1SEL = ic9_ck */
+        DSB();
+    }
+
+    uart_init();
     uart_ready = 1;
 
-    uart_puts("\n[BOOT] LED+UART OK at HSI\n");
-    uart_puts("[BOOT] Enabling PLL...\n");
-    clock_config();
-    /* UART baud is now wrong (clock changed) — just keep going.
-     * Ping test doesn't need UART output. */
     icache_enable();
     mpu_configure_eth_nocache();
     dcache_enable();
 
-    /* Blink to confirm UART init */
-    led_off(); delay(200000);
-    led_on();  delay(200000);
-    led_off(); delay(200000);
-    led_on();
-
-    uart_puts("\n\n=== wolfIP STM32N6 Echo Server ===\n");
-
     /* Initialize wolfIP stack */
-    uart_puts("Initializing wolfIP stack...\n");
     wolfIP_init_static(&IPStack);
 
-    /* ETH init sequence:
-     * 1. Configure GPIO for RMII (pins + VDDIO3 compensation + RIMC)
-     * 2. Select RMII mode in CCIPR2 BEFORE enabling ETH clocks
-     * 3. Enable ETH clocks
-     * 4. Reset ETH MAC */
+    /* ETH init sequence — matching CubeN6 HAL MspInit order:
+     * 1. Enable ETH clocks (AHB5)
+     * 2. Set RMII mode (CCIPR2)
+     * 3. Configure GPIO + RIMC + compensation
+     * CubeN6 HAL: MspInit enables clocks → HAL_ETH_Init sets CCIPR2 → SWR → config */
 
-    /* Step 1: GPIO and peripheral setup */
-    eth_gpio_init();
-
-    /* Step 2: RMII mode select — must be before ETH clocks on some STM32 */
-    /* ETH1SEL = RMII (bit 18) */
-    RCC_CCIPR2 |= RCC_CCIPR2_ETH1SEL_RMII;
-    DSB();
-    delay(1000);
-
-    /* Step 3: Enable Ethernet clocks (AHB5) */
-    /* Only enable MAC, TX, RX clocks (NOT ETH1EN at bit 25 — per CubeN6 example) */
+    /* Step 1: Enable Ethernet clocks */
     RCC_AHB5ENSR = (1u << 22u) | (1u << 23u) | (1u << 24u);
     DSB();
     delay(10000);
 
-    /* Step 4: Reset Ethernet MAC */
-    RCC_AHB5RSTR |= (1u << 22u);
+    /* Step 1b: RCC peripheral reset of ETH1 — deeper than SWR */
+    RCC_AHB5RSTR = (1u << 22u); /* Assert ETH1MAC reset */
     DSB();
-    delay(1000);
-    RCC_AHB5RSTR &= ~(1u << 22u);
+    delay(10000);
+    RCC_AHB5RSTR = 0;           /* Release reset */
     DSB();
-    delay(100000);  /* Longer delay after reset */
+    delay(10000);
 
-    /* Verify ETH peripheral is accessible */
-    {
-        volatile uint32_t *eth_maccr = (volatile uint32_t *)0x58036000u;
-        volatile uint32_t *eth_dmamr = (volatile uint32_t *)0x58037000u;
-        volatile uint32_t *eth_dmadsr = (volatile uint32_t *)0x58037008u;
-        uart_puts("  ETH1_MACCR  @0x58036000: ");
-        uart_puthex(*eth_maccr);
-        uart_puts("\n  ETH1_DMAMR  @0x58037000: ");
-        uart_puthex(*eth_dmamr);
-        uart_puts("\n  ETH1_DMADSR @0x58037008: ");
-        uart_puthex(*eth_dmadsr);
-        uart_puts("\n");
-        /* Try DMA SWR manually */
-        uart_puts("  Writing SWR...\n");
-        *eth_dmamr |= 1u;
-        delay(100000);
-        uart_puts("  ETH1_DMAMR after SWR: ");
-        uart_puthex(*eth_dmamr);
-        uart_puts("\n");
-    }
+    /* Step 2: Select RMII mode (external REF_CLK from PHY).
+     * RCC_CCIPR2 fields (from Zephyr stm32n6_clock.h):
+     *   ETH1PTP_SEL  [1:0]  = 0 (default)
+     *   ETH1CLK_SEL  [13:12]= 0 (default, bus clock)
+     *   ETH1_SEL     [18:16]= 4 (RMII mode)
+     *   ETH1REFCLK_SEL [20] = 0 (external REF_CLK from PHY)
+     *   ETH1GTXCLK_SEL [24] = 0 (default) */
+    RCC_CCIPR2 |= RCC_CCIPR2_ETH1SEL_RMII;
+    DSB();
+    delay(10000);
 
-    /* Test MDIO directly before full init */
-    {
-        volatile uint32_t *macmdioar = (volatile uint32_t *)0x58036200u;
-        volatile uint32_t *macmdiodr = (volatile uint32_t *)0x58036204u;
-        uint32_t cfg, to;
-        uart_puts("  MDIO test: reading PHY0 reg2...\n");
-        /* CR=0, RDA=2 (ID1), PA=0, GOC=3 (read), MB=1 */
-        cfg = (0u << 8) | (2u << 16) | (0u << 21) | (3u << 2) | 1u;
-        *macmdioar = cfg;
-        to = 100000;
-        while ((*macmdioar & 1u) && --to) {}
-        uart_puts("  MACMDIOAR: ");
-        uart_puthex(*macmdioar);
-        uart_puts("\n  MACMDIODR: ");
-        uart_puthex(*macmdiodr);
-        uart_puts(" (timeout left: ");
-        uart_putdec(to);
-        uart_puts(")\n");
-    }
+    /* Step 3: GPIO and peripheral setup (AFTER clocks + RMII selection) */
+    eth_gpio_init();
+    delay(100000); /* Wait for PHY REF_CLK */
 
     /* Initialize Ethernet MAC + PHY */
     uart_puts("Initializing Ethernet MAC...\n");
