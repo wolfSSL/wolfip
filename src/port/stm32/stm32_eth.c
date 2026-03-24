@@ -78,6 +78,12 @@
 #define ETH_DMACTXRLR       ETH_REG(0x112CU)
 #define ETH_DMACRXRLR       ETH_REG(0x1130U)
 #define ETH_DMACSR          ETH_REG(0x1160U)
+#define ETH_DMACIER         ETH_REG(0x1134U)  /* DMA CH0 Interrupt Enable */
+#define ETH_DMACIER_NIE     (1U << 15)  /* Normal Interrupt Summary Enable */
+#define ETH_DMACIER_AIE     (1U << 14)  /* Abnormal Interrupt Summary Enable */
+#define ETH_DMACIER_RBUE    (1U << 7)   /* RX Buffer Unavailable Enable */
+#define ETH_DMACIER_RIE     (1U << 6)   /* Receive Interrupt Enable */
+#define ETH_DMACIER_TIE     (1U << 0)   /* Transmit Interrupt Enable */
 #define ETH_MACMDIOAR       ETH_REG(0x0200U)
 #define ETH_MACMDIODR       ETH_REG(0x0204U)
 
@@ -93,6 +99,7 @@
 #define ETH_DMAC1TXRLR      ETH_REG(0x11ACU)
 #define ETH_DMAC1RXRLR      ETH_REG(0x11B0U)
 #define ETH_DMAC1SR         ETH_REG(0x11E0U)
+#define ETH_DMAC1IER        ETH_REG(0x11B4U)  /* DMA CH1 Interrupt Enable */
 #define ETH_MTLTXQ1OMR      ETH_REG(0x0D40U)
 #endif
 
@@ -274,11 +281,13 @@ static int eth_hw_reset(void)
     return 0;
 }
 
+#if !defined(STM32N6)
 static void eth_trigger_tx(void)
 {
     ETH_TPDR = 0U;
     __asm volatile ("dsb sy" ::: "memory");
 }
+#endif
 
 static void eth_config_mac(const uint8_t mac[6])
 {
@@ -447,9 +456,8 @@ static void eth_init_desc(void)
         tx_ring1[i].des2 = 0; tx_ring1[i].des3 = 0;
     }
     for (i = 0; i < RX_DESC_COUNT; i++) {
-        rx_ring1[i].des0 = ETH_DMA_ADDR(rx_buffers1[i]);
-        rx_ring1[i].des1 = 0; rx_ring1[i].des2 = 0;
-        rx_ring1[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
+        rx_ring1[i].des0 = 0; rx_ring1[i].des1 = 0;
+        rx_ring1[i].des2 = 0; rx_ring1[i].des3 = 0;
     }
     __asm volatile ("dsb sy" ::: "memory");
     ETH_DMAC1TXDLAR = ETH_DMA_ADDR(&tx_ring1[0]);
@@ -483,10 +491,9 @@ static void eth_config_dma(void)
     /* DMA System Bus Mode (matching CubeN6) */
     ETH_DMASBMR = 0x03031003u;
 
-    /* DMACCR: DSL and PBLX8 mode. CubeN6 uses 0x00040218 (MSS=536, PBLX8=1, DSL=1).
-     * DSL=0 for 16-byte contiguous descriptors (our struct is 16 bytes). */
+    /* DMACCR: DSL=1 (skip 1 doubleword = 8 bytes between 16-byte descriptors,
+     * stride = 24 bytes matching HAL ETH_DMADescTypeDef). MSS=536. */
 #if defined(STM32N6)
-    /* DSL=1 (32-bit/4-byte skip → 20-byte stride), MSS=536 (matches HAL) */
     ETH_DMACCR = 0x40218u;
 #else
     ETH_DMACCR = ETH_DMACCR_DSL_0BIT;
@@ -563,9 +570,11 @@ static void eth_start(void)
     /* Enable DMA interrupt flags (matching CubeN6 HAL_ETH_Start_IT).
      * Even in polled mode, some GMAC implementations need these enabled
      * for the DMA to process descriptors. */
-    ETH_REG(0x1134U) = (1U << 15) | (1U << 14) | (1U << 7) | (1U << 6) | (1U << 0);
+    ETH_DMACIER = ETH_DMACIER_NIE | ETH_DMACIER_AIE | ETH_DMACIER_RBUE |
+                  ETH_DMACIER_RIE | ETH_DMACIER_TIE;
 #if defined(STM32N6)
-    ETH_REG(0x11B4U) = (1U << 15) | (1U << 14) | (1U << 7) | (1U << 6) | (1U << 0);
+    ETH_DMAC1IER = ETH_DMACIER_NIE | ETH_DMACIER_AIE | ETH_DMACIER_RBUE |
+                   ETH_DMACIER_RIE | ETH_DMACIER_TIE;
 #endif
 
     /* Clear TX and RX process stopped flags + RBU (bit 7). */
@@ -766,7 +775,11 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     __asm volatile ("dsb sy" ::: "memory");
 
     ETH_DMACSR = ETH_DMACSR_TBU;
+#if !defined(STM32N6)
+    /* TPDR (0x1180) is a separate TX poll register on H5/H7.
+     * On N6, offset 0x1180 is DMAC1CR — writing 0 would clobber CH1 config. */
     if (tx_idx == 0U) eth_trigger_tx();
+#endif
 
     next_idx = (tx_idx + 1U) % TX_DESC_COUNT;
     ETH_DMACTXDTPR = ETH_DMA_ADDR(&tx_ring[next_idx]);
@@ -810,45 +823,6 @@ uint32_t stm32_eth_get_rx_des3(void)
     return rx_ring[0].des3;
 }
 
-uint32_t stm32_eth_get_rx_des0(void)
-{
-    return rx_ring[0].des0;
-}
-
-uint32_t stm32_eth_get_rx_ring_addr(void)
-{
-    return (uint32_t)&rx_ring[0];
-}
-
-uint32_t stm32_eth_get_dmacsr(void)
-{
-    /* Clear RBU by writing 1 to bit 7. */
-    uint32_t val = ETH_DMACSR;
-    if (val & 0x80) {
-        ETH_DMACSR = 0x80;
-    }
-    return val;
-}
-
-uint32_t stm32_eth_get_rx_tail(void)
-{
-    return ETH_DMACRXDTPR;
-}
-
-void stm32_eth_kick_rx(void)
-{
-    uint32_t i;
-    /* Reinitialize all RX descriptors and kick DMA. */
-    for (i = 0; i < RX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&rx_ring[i].des0 = ETH_DMA_ADDR(rx_buffers[i]);
-        *(volatile uint32_t *)&rx_ring[i].des1 = 0;
-        *(volatile uint32_t *)&rx_ring[i].des2 = 0;
-        *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
-    }
-    __asm volatile ("dsb sy" ::: "memory");
-    __asm volatile ("isb sy" ::: "memory");
-    ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
-}
 
 int stm32_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 {

@@ -30,9 +30,7 @@
 static void uart_puts(const char *s);
 static void delay(uint32_t count);
 
-/* =========================================================================
- * RCC — Reset and Clock Control (base 0x56028000, secure bus)
- * ========================================================================= */
+/* RCC Reset and Clock Control (secure bus) */
 #define RCC_BASE          0x56028000UL
 
 /* Control: direct read / set (+0x800) / clear (+0x1000) */
@@ -42,7 +40,7 @@ static void delay(uint32_t count);
 #define RCC_CR_HSION      (1u << 3)
 #define RCC_CR_PLL1ON     (1u << 8)
 
-/* Status — ready flags */
+/* Status ready flags */
 #define RCC_SR            (*(volatile uint32_t *)(RCC_BASE + 0x04u))
 #define RCC_SR_HSIRDY     (1u << 3)
 #define RCC_SR_PLL1RDY    (1u << 8)
@@ -90,7 +88,7 @@ static void delay(uint32_t count);
 #define RCC_ICCFGR_INT_SHIFT  16u
 #define RCC_ICCFGR_SEL_PLL1  (0x0u << 28u)
 
-/* Divider enable: direct / set (+0x800) / clear (+0x1000) */
+/* Divider enable direct / set (+0x800) / clear (+0x1000) */
 #define RCC_DIVENR        (*(volatile uint32_t *)(RCC_BASE + 0x240u))
 #define RCC_DIVENSR       (*(volatile uint32_t *)(RCC_BASE + 0xA40u))
 #define RCC_DIVENCR       (*(volatile uint32_t *)(RCC_BASE + 0x1240u))
@@ -99,17 +97,7 @@ static void delay(uint32_t count);
 #define RCC_DIVENR_IC6EN  (1u << 5u)
 #define RCC_DIVENR_IC11EN (1u << 10u)
 
-/* Peripheral clock enable — use SET registers (write 1s to set bits).
- * Direct ENR registers are read-only status; ENSR is the set register. */
-#define RCC_AHB1ENR       (*(volatile uint32_t *)(RCC_BASE + 0x250u))  /* read */
-#define RCC_AHB2ENR       (*(volatile uint32_t *)(RCC_BASE + 0x254u))  /* read */
-#define RCC_AHB3ENR       (*(volatile uint32_t *)(RCC_BASE + 0x258u))  /* read */
-#define RCC_AHB4ENR       (*(volatile uint32_t *)(RCC_BASE + 0x25Cu))  /* read */
-#define RCC_AHB5ENR       (*(volatile uint32_t *)(RCC_BASE + 0x260u))  /* read */
-#define RCC_APB2ENR       (*(volatile uint32_t *)(RCC_BASE + 0x26Cu))  /* read */
-#define RCC_MEMENR        (*(volatile uint32_t *)(RCC_BASE + 0x24Cu))  /* read */
-
-/* SET registers — write-only, bits written as 1 get set in ENR */
+/* Peripheral clock enable SET registers (write 1s to set bits) */
 #define RCC_AHB2ENSR      (*(volatile uint32_t *)(RCC_BASE + 0xA54u))
 #define RCC_AHB3ENSR      (*(volatile uint32_t *)(RCC_BASE + 0xA58u))
 #define RCC_AHB4ENSR      (*(volatile uint32_t *)(RCC_BASE + 0xA5Cu))
@@ -117,20 +105,14 @@ static void delay(uint32_t count);
 #define RCC_APB2ENSR      (*(volatile uint32_t *)(RCC_BASE + 0xA6Cu))
 #define RCC_MEMENSR       (*(volatile uint32_t *)(RCC_BASE + 0xA4Cu))
 
-/* Clock configuration — ETH PHY interface selection */
+/* Clock configuration for ETH PHY interface selection */
 #define RCC_CCIPR2        (*(volatile uint32_t *)(RCC_BASE + 0x148u))
 #define RCC_CCIPR2_ETH1SEL_RMII    (0x4u << 16u) /* bit 18 = RMII mode */
 
 /* Peripheral reset */
-#define RCC_AHB1RSTR      (*(volatile uint32_t *)(RCC_BASE + 0x210u))
 #define RCC_AHB5RSTR      (*(volatile uint32_t *)(RCC_BASE + 0x220u))
 
-/* =========================================================================
- * GPIO — secure bus addresses
- * ========================================================================= */
-#define GPIOA_BASE        0x56020000UL
-#define GPIOB_BASE        0x56020400UL
-#define GPIOC_BASE        0x56020800UL
+/* GPIO secure bus addresses */
 #define GPIOE_BASE        0x56021000UL
 #define GPIOF_BASE        0x56021400UL
 #define GPIOG_BASE        0x56021800UL
@@ -144,9 +126,7 @@ static void delay(uint32_t count);
 #define GPIO_AFRL(base)    (*(volatile uint32_t *)((base) + 0x20u))
 #define GPIO_AFRH(base)    (*(volatile uint32_t *)((base) + 0x24u))
 
-/* =========================================================================
- * PWR — Power Control (base 0x56024800)
- * ========================================================================= */
+/* PWR Power Control */
 #define PWR_BASE          0x56024800UL
 #define PWR_SVMCR1        (*(volatile uint32_t *)(PWR_BASE + 0x34u))
 #define PWR_SVMCR2        (*(volatile uint32_t *)(PWR_BASE + 0x38u))
@@ -156,9 +136,7 @@ static void delay(uint32_t count);
 #define PWR_SVMCR3_VDDIO2SV  (1u << 8u)
 #define PWR_SVMCR3_VDDIO3SV  (1u << 9u)
 
-/* =========================================================================
- * USART1 — PE5 (TX) / PE6 (RX), AF7 (base 0x52001000)
- * ========================================================================= */
+/* USART1 PE5 (TX) / PE6 (RX), AF7 */
 #define USART1_BASE       0x52001000UL
 #define USART1_CR1        (*(volatile uint32_t *)(USART1_BASE + 0x00u))
 #define USART1_CR2        (*(volatile uint32_t *)(USART1_BASE + 0x04u))
@@ -167,17 +145,13 @@ static void delay(uint32_t count);
 #define USART1_ISR        (*(volatile uint32_t *)(USART1_BASE + 0x1Cu))
 #define USART1_TDR        (*(volatile uint32_t *)(USART1_BASE + 0x28u))
 
-/* =========================================================================
- * SCB — Cortex-M55 cache control
- * ========================================================================= */
+/* SCB Cortex-M55 cache control */
 #define SCB_CCR           (*(volatile uint32_t *)(0xE000ED14UL))
 #define SCB_CCR_IC        (1u << 17u)
 #define SCB_CCR_DC        (1u << 16u)
 #define SCB_ICIALLU       (*(volatile uint32_t *)(0xE000EF50UL))
 
-/* =========================================================================
- * MPU — Cortex-M55 ARMv8.1-M Memory Protection Unit
- * ========================================================================= */
+/* MPU ARMv8.1-M Memory Protection Unit */
 #define MPU_TYPE          (*(volatile uint32_t *)(0xE000ED90UL))
 #define MPU_CTRL          (*(volatile uint32_t *)(0xE000ED94UL))
 #define MPU_RNR           (*(volatile uint32_t *)(0xE000ED98UL))
@@ -186,25 +160,18 @@ static void delay(uint32_t count);
 #define MPU_MAIR0         (*(volatile uint32_t *)(0xE000EDC0UL))
 #define MPU_MAIR1         (*(volatile uint32_t *)(0xE000EDC4UL))
 
-/* =========================================================================
- * Fault registers
- * ========================================================================= */
+/* Fault registers */
 #define SCB_HFSR          (*(volatile uint32_t *)0xE000ED2CUL)
 #define SCB_CFSR          (*(volatile uint32_t *)0xE000ED28UL)
 #define SCB_BFAR          (*(volatile uint32_t *)0xE000ED38UL)
 #define SCB_MMFAR         (*(volatile uint32_t *)0xE000ED34UL)
 
-/* =========================================================================
- * Barrier macros
- * ========================================================================= */
+/* Barrier macros */
 #define DSB() __asm volatile ("dsb sy" ::: "memory")
 #define ISB() __asm volatile ("isb sy" ::: "memory")
 #define DMB() __asm volatile ("dmb sy" ::: "memory")
 
-/* =========================================================================
- * LED — LD1 green on PO1 (GPIOO), LD2 red on PG10 (GPIOG)
- * Note: These are from the N6570-DK DTS. NUCLEO board may differ.
- * ========================================================================= */
+/* LED — LD1 green on PO1 */
 #define LED1_PORT         GPIOO_BASE
 #define LED1_PIN          1u
 #define LED1_RCC_BIT      14u   /* RCC_AHB4ENR bit for GPIOO */
@@ -217,13 +184,8 @@ static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
 
-/* =========================================================================
- * HardFault Handler — safe version that won't cause LOCKUP
- *
- * IMPORTANT: Do NOT access USART or other peripherals here unless we know
- * their clocks are enabled. Accessing unclocked peripherals from the fault
- * handler causes a double-fault → CPU LOCKUP (unrecoverable without NRST).
- * ========================================================================= */
+/* HardFault Handler use only prints if uart_ready (avoids double-fault on
+ * unclocked peripherals which would cause CPU LOCKUP). */
 static volatile int uart_ready = 0;
 
 #define FAULT_USART1_ISR  (*(volatile uint32_t *)(USART1_BASE + 0x1Cu))
@@ -272,10 +234,6 @@ void hard_fault_handler_c(uint32_t *frame)
             fault_uart_puts("  MMFAR:"); fault_uart_puthex(SCB_MMFAR); fault_uart_puts("\n");
         }
     }
-    /* Bare spin — do NOT access any peripherals (GPIO, UART) here.
-     * If the fault happens before peripheral clocks are enabled,
-     * any peripheral access would cause a double-fault → LOCKUP.
-     * Use GDB to inspect fault registers instead. */
     while (1) { }
 }
 
@@ -291,16 +249,9 @@ void HardFault_Handler(void)
     );
 }
 
-/* =========================================================================
- * Clock Configuration — PLL1 → 600 MHz CPU
- *
- * HSI 64 MHz → PLL1 (M=4, N=75) → VCO 1200 MHz → PDIV1=1 → 1200 MHz
- *   IC1 /2 = 600 MHz → CPU
- *   IC2 /3 = 400 MHz → AXI bus
- *   IC6 /4 = 300 MHz → system bus C
- *   IC11/3 = 400 MHz → system bus D
- * AHB prescaler /2 → HCLK = 300 MHz
- * ========================================================================= */
+/* Clock: HSI 64MHz -> PLL1 (M=4,N=75) -> 1200MHz VCO
+ *   IC1/2=600MHz CPU, IC2/3=400MHz AXI, IC6/4=300MHz, IC11/3=400MHz
+ *   AHB/2 -> HCLK 300MHz */
 static void clock_config(void)
 {
     uint32_t reg;
@@ -316,7 +267,7 @@ static void clock_config(void)
         ;
 
     /* PLL1: HSI / 4 * 75 = 1200 MHz VCO.
-     * Clear BYP — Boot ROM leaves it set. */
+     * Clear BYP for Boot ROM leaves it set. */
     reg = RCC_PLL1CFGR1;
     reg &= ~(RCC_PLL1CFGR1_SEL_MASK | RCC_PLL1CFGR1_DIVM_MASK |
              RCC_PLL1CFGR1_DIVN_MASK | RCC_PLL1CFGR1_BYP);
@@ -327,7 +278,7 @@ static void clock_config(void)
 
     RCC_PLL1CFGR2 = 0; /* no fractional */
 
-    /* PDIV1=1, PDIV2=1 → PLL output = VCO = 1200 MHz */
+    /* PDIV1=1, PDIV2=1 -> PLL output = VCO = 1200 MHz */
     RCC_PLL1CFGR3 = (1u << RCC_PLL1CFGR3_PDIV1_SHIFT) |
                     (1u << RCC_PLL1CFGR3_PDIV2_SHIFT) |
                     RCC_PLL1CFGR3_MODSSDIS |
@@ -339,7 +290,7 @@ static void clock_config(void)
     while (!(RCC_SR & RCC_SR_PLL1RDY))
         ;
 
-    /* Configure IC dividers: disable → configure → re-enable */
+    /* Configure IC dividers: disable -> configure -> re-enable */
     RCC_DIVENCR = RCC_DIVENR_IC1EN;
     RCC_IC1CFGR = RCC_ICCFGR_SEL_PLL1 | ((2u - 1u) << RCC_ICCFGR_INT_SHIFT);
     RCC_DIVENSR = RCC_DIVENR_IC1EN;
@@ -356,13 +307,13 @@ static void clock_config(void)
     RCC_IC11CFGR = RCC_ICCFGR_SEL_PLL1 | ((3u - 1u) << RCC_ICCFGR_INT_SHIFT);
     RCC_DIVENSR = RCC_DIVENR_IC11EN;
 
-    /* AHB prescaler /2 → HCLK = 300 MHz */
+    /* AHB prescaler /2 -> HCLK = 300 MHz */
     reg = RCC_CFGR2;
     reg &= ~RCC_CFGR2_HPRE_MASK;
     reg |= (1u << RCC_CFGR2_HPRE_SHIFT);
     RCC_CFGR2 = reg;
 
-    /* Switch CPU to IC1, system bus to IC2/IC6/IC11 */
+    /* Switch CPU to IC1 system bus to IC2/IC6/IC11 */
     reg = RCC_CFGR1;
     reg &= ~(RCC_CFGR1_CPUSW_MASK | RCC_CFGR1_SYSSW_MASK);
     reg |= (0x3u << RCC_CFGR1_CPUSW_SHIFT) |
@@ -376,9 +327,7 @@ static void clock_config(void)
         ;
 }
 
-/* =========================================================================
- * Power — mark VDDIO supplies valid
- * ========================================================================= */
+/* For power mark VDDIO supplies valid */
 static void pwr_enable_io_supply(void)
 {
     /* Enable PWR peripheral clock */
@@ -391,9 +340,7 @@ static void pwr_enable_io_supply(void)
     DMB();
 }
 
-/* =========================================================================
- * Cache
- * ========================================================================= */
+/* Cache */
 static void icache_enable(void)
 {
     DSB(); ISB();
@@ -410,16 +357,7 @@ static void dcache_enable(void)
     DSB(); ISB();
 }
 
-/* =========================================================================
- * MPU — Configure ETH DMA buffer region as non-cacheable
- *
- * Cortex-M55 ARMv8.1-M MPU:
- *   RBAR: base address | AP[2:1] | XN[0]
- *   RLAR: limit address | AttrIdx[3:1] | EN[0]
- *   MAIR: attribute encoding per index
- *
- * ETH buffers (.eth_buffers) are in AXISRAM2 at 0x34100000.
- * ========================================================================= */
+/* MPU for mark ETH DMA buffers (AXISRAM2) as non-cacheable */
 extern uint32_t _eth_start;
 extern uint32_t _eth_end;
 
@@ -437,7 +375,7 @@ static void mpu_configure_eth_nocache(void)
     MPU_RBAR = base | (1u << 1u) | (1u << 0u); /* AP=RW, XN=1 */
     MPU_RLAR = ((limit - 1u) & ~0x1Fu) | (2u << 1u) | 1u; /* AttrIdx=2, EN=1 */
 
-    /* MAIR0: Attr2 (bits [23:16]) = 0x44 → Normal, Non-cacheable */
+    /* MAIR0: Attr2 (bits [23:16]) = 0x44 -> Normal, Non-cacheable */
     MPU_MAIR0 = (0x44u << 16u);
 
     /* Enable MPU + PRIVDEFENA (default map for other regions) */
@@ -445,17 +383,11 @@ static void mpu_configure_eth_nocache(void)
     DSB(); ISB();
 }
 
-/* =========================================================================
- * Simple delay
- * ========================================================================= */
 static void delay(uint32_t count)
 {
     for (volatile uint32_t i = 0; i < count; i++) { }
 }
 
-/* =========================================================================
- * LED — LD1 green on PO1
- * ========================================================================= */
 static void led_init(void)
 {
     uint32_t moder;
@@ -481,12 +413,7 @@ static void led_toggle(void)
     GPIO_ODR(LED1_PORT) ^= (1u << LED1_PIN);
 }
 
-/* =========================================================================
- * UART — USART1 on PE5 (TX) / PE6 (RX), AF7
- *
- * HCLK (APB2 clock after PLL) = 300 MHz
- * BRR = 300000000 / 115200 = 2604
- * ========================================================================= */
+/* UART USART1 on PE5/PE6 (AF7), 115200 baud via IC9 64MHz kernel clock */
 static void uart_init(void)
 {
     uint32_t moder, afr;
@@ -496,7 +423,7 @@ static void uart_init(void)
     RCC_APB2ENSR = (1u << 4u);   /* USART1EN */
     delay(100);
 
-    /* PE5 + PE6 → AF mode */
+    /* PE5 + PE6 -> AF mode */
     moder = GPIO_MODER(GPIOE_BASE);
     moder &= ~((3u << (5u * 2u)) | (3u << (6u * 2u)));
     moder |= (2u << (5u * 2u)) | (2u << (6u * 2u));
@@ -586,7 +513,7 @@ static void uart_putip4(ip4 ip)
 /* wolfIP requires this symbol */
 uint32_t wolfIP_getrandom(void)
 {
-    /* Simple LFSR-based PRNG — no HW RNG on initial bring-up.
+    /* Simple LFSR-based PRNG, no HW RNG on initial bring-up.
      * Replace with TRNG when available. */
     static uint32_t state = 0xDEADBEEF;
     state ^= state << 13;
@@ -595,32 +522,16 @@ uint32_t wolfIP_getrandom(void)
     return state;
 }
 
-/* =========================================================================
- * SYSCFG — I/O compensation for VDDIO3 (Ethernet GPIOF pins)
- *
- * SYSCFG base = 0x56008000 (secure, APB4 + 0x8000).
- * VDDIO3CCCR (offset 0x5C): compensation cell control for GPIOF.
- *   bit 8 = EN (enable compensation cell)
- *   bit 9 = CS (code selection: 0=auto, 1=manual)
- * VDDIO3CCSR (offset 0x60): compensation cell status (RDY bit).
- * ========================================================================= */
+/* SYSCFG I/O compensation for VDDIO3 (Ethernet GPIOF pins) */
 #define SYSCFG_BASE       0x56008000UL
 #define SYSCFG_VDDIO3CCCR (*(volatile uint32_t *)(SYSCFG_BASE + 0x5Cu))
 #define SYSCFG_VDDIO3CCSR (*(volatile uint32_t *)(SYSCFG_BASE + 0x60u))
 
-/* RCC clock for SYSCFG — APB4ENR2 at offset 0x278, bit 0 = SYSCFGEN */
+/* RCC clock for SYSCFG APB4ENR2 at offset 0x278, bit 0 = SYSCFGEN */
 #define RCC_APB4ENR2      (*(volatile uint32_t *)(RCC_BASE + 0x278u))
 #define RCC_APB4ENSR2     (*(volatile uint32_t *)(RCC_BASE + 0xA78u))
 
-/* =========================================================================
- * Ethernet GPIO — RMII pin configuration (NUCLEO-N657X0-Q)
- *
- * Pin mapping (AF11) — all on GPIOF except MDC on PG11:
- *   PF4  — ETH_MDIO       PG11 — ETH_MDC
- *   PF7  — ETH_REF_CLK    PF10 — ETH_CRS_DV
- *   PF11 — ETH_TX_EN      PF12 — ETH_TXD0     PF13 — ETH_TXD1
- *   PF14 — ETH_RXD0       PF15 — ETH_RXD1
- * ========================================================================= */
+/* Ethernet GPIO RMII pins (AF11) on GPIOF, MDC on PG11 */
 static void gpio_eth_pin(uint32_t base, uint32_t pin)
 {
     uint32_t moder, ospeedr, afr;
@@ -632,7 +543,8 @@ static void gpio_eth_pin(uint32_t base, uint32_t pin)
     moder |= (2u << pos2);
     GPIO_MODER(base) = moder;
 
-    /* High speed (0b10) — match CubeN6. Very High (0b11) causes issues on N6. */
+    /* High speed (0b10) match CubeN6. Very High (0b11)
+     * causes issues on N6. */
     ospeedr = GPIO_OSPEEDR(base);
     ospeedr &= ~(3u << pos2);
     ospeedr |= (2u << pos2);
@@ -663,22 +575,15 @@ static void eth_gpio_init(void)
     {
         volatile uint32_t *ramcfg_sram2_cr = (volatile uint32_t *)0x52023080u;
         RCC_AHB2ENSR = (1u << 12u); /* RAMCFGEN */
-        RCC_MEMENSR = (1u << 1u) |   /* AXISRAM2EN */
-                      (1u << 4u) |   /* AHBSRAM1EN */
-                      (1u << 5u);    /* AHBSRAM2EN */
+        RCC_MEMENSR = (1u << 1u);    /* AXISRAM2EN */
         delay(100);
         *ramcfg_sram2_cr &= ~(1u << 20u); /* Clear SRAMSD → power on */
         DSB();
         delay(10000);
     }
 
-    /* Open RISAF3 (AXISRAM2) to allow ETH DMA R+W access.
-     * Default ENDR=0xFFF covers only 4KB — ETH buffers at offset 0xF8000 are blocked!
-     * Extend to cover full 1MB. Leave RISAF2 (AXISRAM1) untouched (code runs there).
-     * RISAF3_BASE = 0x54028000 */
+    /* RISAF3 (AXISRAM2): extend base region to full 1MB, all CIDs R+W, SEC=1 */
     {
-        /* RISAF3 REG0: cover full AXISRAM2 (1MB), all CIDs R+W, Secure.
-         * CFGR: BREN=1 (bit 0), SEC=1 (bit 8) — must match secure bus alias. */
         *(volatile uint32_t *)0x54028044u = 0x00000000u; /* STARTR = 0 */
         *(volatile uint32_t *)0x54028048u = 0x000FFFFFu; /* ENDR = 1MB-1 */
         *(volatile uint32_t *)0x5402804Cu = 0x000F000Fu; /* CIDCFGR: CID0-3 R+W */
@@ -686,37 +591,27 @@ static void eth_gpio_init(void)
         DSB();
     }
 
-    /* Configure RIFSC: grant ETH1 DMA (RIMC master 6) memory access.
-     * Matches CubeN6 RISAF_Config exactly:
-     *   1. RIMC_ATTR6: CID=1, SEC, PRIV
-     *   2. RISC slave: ETH1 peripheral marked SEC+PRIV
-     * RIFSC_BASE = 0x54024000 */
+    /* RIFSC: ETH1 DMA as CID=1/SEC/PRIV, ETH1 peripheral as SEC+PRIV */
     {
         volatile uint32_t *rimc_attr6 = (volatile uint32_t *)(0x54024000u + 0xC28u);
         RCC_AHB3ENSR = (1u << 9u); /* RIFSCEN */
         delay(100);
-        /* RIMC: CID=1, DSEL=0, DSEC=1 (secure), DPRIV=1 — 0x301 */
-        *rimc_attr6 = 0x1u | (1u << 8u) | (1u << 9u);
-        /* RISC: Set ETH1 peripheral as Secure + Privileged.
-         * ETH1 is bit 28 of SECCFGRx[1] and PRIVCFGRx[1]. */
-        *(volatile uint32_t *)(0x54024000u + 0x14u) |= (1u << 28u); /* SEC */
-        *(volatile uint32_t *)(0x54024000u + 0x34u) |= (1u << 28u); /* PRIV */
+        *rimc_attr6 = 0x1u | (1u << 8u) | (1u << 9u); /* CID=1, SEC, PRIV */
+        *(volatile uint32_t *)(0x54024000u + 0x14u) |= (1u << 28u); /* ETH1 SEC */
+        *(volatile uint32_t *)(0x54024000u + 0x34u) |= (1u << 28u); /* ETH1 PRIV */
         DSB();
         uart_puts("  RIMC_ATTR6 (ETH1): ");
         uart_puthex(*rimc_attr6);
         uart_puts("\n");
     }
 
-    /* Compensation cells per Errata Sheet ES0620 (from CubeN6 SystemInit).
-     * ALL VDDIO domains get the same errata workaround value 0x287:
-     * CS=1 (manual code selection) + specific NMOS/PMOS compensation codes. */
+    /* VDDIO3 compensation cells per Errata ES0620 */
     RCC_APB4ENSR2 = (1u << 0u); /* SYSCFGEN */
     delay(100);
-    /* VDDIO3 compensation per Errata ES0620 (CubeN6 SystemInit value) */
     SYSCFG_VDDIO3CCCR = 0x00000287u;
     DSB();
 
-    /* Configure RMII pins (AF11) — NUCLEO-N657X0-Q pinout */
+    /* Configure RMII pins (AF11) NUCLEO-N657X0-Q pinout */
     gpio_eth_pin(GPIOF_BASE, 4);   /* MDIO */
     gpio_eth_pin(GPIOG_BASE, 11);  /* MDC */
     gpio_eth_pin(GPIOF_BASE, 7);   /* REF_CLK */
@@ -728,9 +623,7 @@ static void eth_gpio_init(void)
     gpio_eth_pin(GPIOF_BASE, 15);  /* RXD1 */
 }
 
-/* =========================================================================
- * TCP echo callback — stack-agnostic, mirrors H563 implementation
- * ========================================================================= */
+/* TCP echo callback */
 static void echo_cb(int fd, uint16_t event, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
@@ -760,9 +653,6 @@ static void echo_cb(int fd, uint16_t event, void *arg)
     }
 }
 
-/* =========================================================================
- * main
- * ========================================================================= */
 int main(void)
 {
     struct wolfIP_ll_dev *ll;
@@ -785,7 +675,7 @@ int main(void)
             *sau_rbar = 0;
             *sau_rlar = 0;
         }
-        *sau_ctrl = 2u; /* ALLNS=1, ENABLE=0 → all memory Non-Secure */
+        *sau_ctrl = 2u; /* ALLNS=1, ENABLE=0 -> all memory Non-Secure */
         DSB(); ISB();
     }
 
@@ -794,10 +684,11 @@ int main(void)
     led_init();
     led_on();
 
-    /* PLL + IC dividers must be up before UART — boot ROM leaves IC dividers
+    /* PLL + IC dividers must be up before UART boot ROM leaves IC dividers
      * disabled, so APB2 has no clock source and USART1 kernel clock is dead. */
     clock_config();
 
+#ifdef DEBUG_BLINK
     /* Blink LED 3x fast to indicate PLL locked */
     {
         int blink;
@@ -808,16 +699,17 @@ int main(void)
             delay(500000);
         }
     }
+#endif
 
     /* Enable IC9 divider (USART1 kernel clock source on N6).
-     * CubeN6 uses IC9CFGR=0x30000000 (SEL=3=HSI, INT=0=div1) → 64 MHz.
+     * CubeN6 uses IC9CFGR=0x30000000 (SEL=3=HSI, INT=0=div1) -> 64 MHz.
      * Then CCIPR13 USART1SEL=2 selects ic9_ck as USART1 kernel clock. */
     {
         volatile uint32_t *ic9cfgr = (volatile uint32_t *)(RCC_BASE + 0xE4u);
         volatile uint32_t *ccipr13 = (volatile uint32_t *)(RCC_BASE + 0x174u);
         /* Disable IC9, configure, re-enable */
         RCC_DIVENCR = (1u << 8u); /* IC9 disable */
-        *ic9cfgr = 0x30000000u; /* SEL=3 (HSI), INT=0 (div 1) → 64 MHz */
+        *ic9cfgr = 0x30000000u; /* SEL=3 (HSI), INT=0 (div 1) -> 64 MHz */
         RCC_DIVENSR = (1u << 8u); /* IC9 enable */
         DSB();
         *ccipr13 = (*ccipr13 & ~0x7u) | 0x2u; /* USART1SEL = ic9_ck */
@@ -834,11 +726,12 @@ int main(void)
     /* Initialize wolfIP stack */
     wolfIP_init_static(&IPStack);
 
-    /* ETH init sequence — matching CubeN6 HAL MspInit order:
+    /* ETH init sequence matching CubeN6 HAL MspInit order:
      * 1. Enable ETH clocks (AHB5)
      * 2. Set RMII mode (CCIPR2)
      * 3. Configure GPIO + RIMC + compensation
-     * CubeN6 HAL: MspInit enables clocks → HAL_ETH_Init sets CCIPR2 → SWR → config */
+     * CubeN6 HAL: MspInit enables clocks -> HAL_ETH_Ini
+     * sets CCIPR2 -> SWR -> config */
 
     /* Step 1: Enable Ethernet clocks */
     RCC_AHB5ENSR = (1u << 22u) | (1u << 23u) | (1u << 24u);

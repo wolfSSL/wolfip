@@ -5,7 +5,7 @@
  *
  * Note: Only AXISRAM1 is guaranteed accessible after boot ROM.
  * Other regions (AXISRAM2-6) may need explicit RCC enable.
- * ETH DMA buffers are placed at the end of AXISRAM1 for now,
+ * ETH DMA buffers are placed in AXISRAM2 at 0x341F8000,
  * with MPU marking them non-cacheable.
  */
 
@@ -13,7 +13,6 @@ MEMORY
 {
     SRAM     (rwx) : ORIGIN = 0x34000000, LENGTH = 512K
     AXISRAM2 (rwx) : ORIGIN = 0x341F8000, LENGTH = 32K
-    AHBSRAM  (rw)  : ORIGIN = 0x38000000, LENGTH = 32K
 }
 
 _estack = ORIGIN(SRAM) + LENGTH(SRAM);

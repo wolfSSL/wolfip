@@ -1,0 +1,32 @@
+name: STM32N6 Build
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  stm32n6_build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi
+
+      - name: Build STM32N6 echo firmware
+        run: |
+          set -euo pipefail
+          make -C src/port/stm32n6 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+
+      - name: Verify binary
+        run: |
+          set -euo pipefail
+          test -f src/port/stm32n6/app.bin
+          arm-none-eabi-size src/port/stm32n6/app.elf
