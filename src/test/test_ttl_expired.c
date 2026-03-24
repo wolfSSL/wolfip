@@ -125,16 +125,7 @@ uint32_t wolfIP_getrandom(void)
             return ret;
     }
 #endif
-    {
-        FILE *f = fopen("/dev/urandom", "rb");
-        if (f) {
-            size_t r = fread(&ret, sizeof(ret), 1, f);
-            fclose(f);
-            if (r == 1)
-                return ret;
-        }
-    }
-    ret = 0;
+    ret = (uint32_t)rand();
     return ret;
 }
 
