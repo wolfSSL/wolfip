@@ -1,6 +1,6 @@
 /* stm32_eth.c
  *
- * Common Ethernet MAC/PHY driver for STM32H5 and STM32H7.
+ * Common Ethernet MAC/PHY driver for STM32H5, STM32H7 and STM32N6.
  *
  * Copyright (C) 2024-2026 wolfSSL Inc.
  *
@@ -11,8 +11,8 @@
 #include "config.h"
 #include "stm32_eth.h"
 
-#if !defined(STM32H5) && !defined(STM32H7)
-#error "Define STM32H5 or STM32H7 for stm32_eth.c"
+#if !defined(STM32H5) && !defined(STM32H7) && !defined(STM32N6)
+#error "Define STM32H5, STM32H7 or STM32N6 for stm32_eth.c"
 #endif
 
 #if defined(STM32H5)
@@ -25,23 +25,39 @@
 #elif defined(STM32H7)
 #define ETH_BASE            0x40028000UL
 #define STM32_ETH_NEEDS_MDIO_DELAY 1
+#elif defined(STM32N6)
+#define ETH_BASE            0x58036000UL  /* ETH1 on AHB5, secure alias */
+#define STM32_ETH_NEEDS_MDIO_DELAY 1     /* M55 at 600MHz needs stabilization */
 #endif
+
+/* MDIO clock divider: CR field in ETH_MACMDIOAR.
+ * CR=0: 20-35MHz, CR=1: 35-60MHz, CR=2: 60-100MHz,
+ * CR=3: 100-150MHz, CR=4: 150-250MHz, CR=5: 250-300MHz
+ * HCLK 150-250MHz -> CR=4 */
+#define MDIO_CR_VALUE 4U
 
 #define ETH_REG(offset)     (*(volatile uint32_t *)(ETH_BASE + (offset)))
 #define ETH_TPDR            ETH_REG(0x1180U)
 
 /* MAC registers */
 #define ETH_MACCR           ETH_REG(0x0000U)
-#define ETH_MACPFR          ETH_REG(0x0004U)
+#define ETH_MACECR          ETH_REG(0x0004U)  /* Extended Configuration */
+#define ETH_MACPFR          ETH_REG(0x0008U)  /* Packet Filter */
+#define ETH_MACWTR          ETH_REG(0x000CU)  /* Watchdog Timeout */
+#define ETH_MACQ0TXFCR      ETH_REG(0x0070U)  /* TX Flow Control Q0 */
+#define ETH_MACRXFCR        ETH_REG(0x0090U)  /* RX Flow Control */
+#define ETH_MAC1USTCR       ETH_REG(0x00DCU)
 #define ETH_MACA0HR         ETH_REG(0x0300U)
 #define ETH_MACA0LR         ETH_REG(0x0304U)
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32N6)
 #define ETH_MACRXQC0R       ETH_REG(0x00A0U)
 #endif
 
 /* MTL registers */
-#define ETH_MTLTXQOMR       ETH_REG(0x0D00U)
-#define ETH_MTLRXQOMR       ETH_REG(0x0D30U)
+#define ETH_MTLOMR          ETH_REG(0x0C00U)  /* MTL Operation Mode */
+#define ETH_MTLTXQOMR       ETH_REG(0x0D00U)  /* MTL TX Q0 Operation Mode */
+#define ETH_MTLRXQOMR       ETH_REG(0x0D30U)  /* MTL RX Q0 Operation Mode */
+#define ETH_MTLRXQDMAMR     ETH_REG(0x0C30U)  /* RX Queue to DMA Mapping */
 
 /* DMA registers */
 #define ETH_DMAMR           ETH_REG(0x1000U)
@@ -56,14 +72,37 @@
 #define ETH_DMACTXRLR       ETH_REG(0x112CU)
 #define ETH_DMACRXRLR       ETH_REG(0x1130U)
 #define ETH_DMACSR          ETH_REG(0x1160U)
+#define ETH_DMACIER         ETH_REG(0x1134U)  /* DMA CH0 Interrupt Enable */
+#define ETH_DMACIER_NIE     (1U << 15)  /* Normal Interrupt Summary Enable */
+#define ETH_DMACIER_AIE     (1U << 14)  /* Abnormal Interrupt Summary Enable */
+#define ETH_DMACIER_RBUE    (1U << 7)   /* RX Buffer Unavailable Enable */
+#define ETH_DMACIER_RIE     (1U << 6)   /* Receive Interrupt Enable */
+#define ETH_DMACIER_TIE     (1U << 0)   /* Transmit Interrupt Enable */
 #define ETH_MACMDIOAR       ETH_REG(0x0200U)
 #define ETH_MACMDIODR       ETH_REG(0x0204U)
+
+/* N6 DMA Channel 1 registers (offset 0x80 from CH0) */
+#if defined(STM32N6)
+#define ETH_DMAC1CR         ETH_REG(0x1180U)
+#define ETH_DMAC1TXCR       ETH_REG(0x1184U)
+#define ETH_DMAC1RXCR       ETH_REG(0x1188U)
+#define ETH_DMAC1TXDLAR     ETH_REG(0x1194U)
+#define ETH_DMAC1RXDLAR     ETH_REG(0x119CU)
+#define ETH_DMAC1TXDTPR     ETH_REG(0x11A0U)
+#define ETH_DMAC1RXDTPR     ETH_REG(0x11A8U)
+#define ETH_DMAC1TXRLR      ETH_REG(0x11ACU)
+#define ETH_DMAC1RXRLR      ETH_REG(0x11B0U)
+#define ETH_DMAC1SR         ETH_REG(0x11E0U)
+#define ETH_DMAC1IER        ETH_REG(0x11B4U)  /* DMA CH1 Interrupt Enable */
+#define ETH_MTLTXQ1OMR      ETH_REG(0x0D40U)
+#endif
 
 /* MAC control bits */
 #define ETH_MACCR_RE        (1U << 0)
 #define ETH_MACCR_TE        (1U << 1)
 #define ETH_MACCR_DM        (1U << 13)
 #define ETH_MACCR_FES       (1U << 14)
+#define ETH_MACCR_PS        (1U << 15)  /* Port Select: 1=MII/RMII, 0=GMII */
 
 /* DMA bits */
 #define ETH_DMAMR_SWR       (1U << 0)
@@ -85,9 +124,14 @@
 #define ETH_MTLTXQOMR_TSF           (1U << 1)
 #define ETH_MTLTXQOMR_TXQEN_SHIFT   2
 #define ETH_MTLTXQOMR_TXQEN_ENABLE  (2U << ETH_MTLTXQOMR_TXQEN_SHIFT)
-#define ETH_MTLTXQOMR_MASK          0x00000072U
+#define ETH_MTLTXQOMR_TQS_SHIFT     16  /* TX Queue Size */
+#define ETH_MTLTXQOMR_TQS_2048      (0x7U << ETH_MTLTXQOMR_TQS_SHIFT)  /* 2KB */
+#define ETH_MTLTXQOMR_MASK          0x00070072U
 #define ETH_MTLRXQOMR_RSF           (1U << 5)
-#define ETH_MTLRXQOMR_MASK          0x0000007BU
+#define ETH_MTLRXQOMR_RQS_SHIFT     20  /* RX Queue Size */
+#define ETH_MTLRXQOMR_RQS_4096      (0xFU << ETH_MTLRXQOMR_RQS_SHIFT)  /* 4KB */
+#define ETH_MTLRXQOMR_DEHF          (1U << 6)  /* Drop Error Half Frame */
+#define ETH_MTLRXQOMR_MASK          0x00F0007FU
 
 /* MDIO bits */
 #define ETH_MACMDIOAR_MB        (1U << 0)
@@ -123,12 +167,18 @@
 
 #define PHY_ANAR_DEFAULT 0x01E1U
 
-/* DMA descriptor structure */
+/* DMA descriptor structure.
+ * On N6 GMAC v5.20, DSL=1 skips 1 doubleword (8 bytes) between
+ * 16-byte descriptors -> stride = 24 bytes. HAL uses 6-field struct
+ * (DESC0-3 + BackupAddr0/1). */
 struct eth_desc {
     volatile uint32_t des0;
     volatile uint32_t des1;
     volatile uint32_t des2;
     volatile uint32_t des3;
+#if defined(STM32N6)
+    volatile uint32_t _pad[2]; /* DSL=1: 8-byte skip (1 doubleword) */
+#endif
 };
 
 /* Descriptor bits */
@@ -154,7 +204,7 @@ struct eth_desc {
 #define DMA_TPBL       32U
 #define DMA_RPBL       32U
 
-#if defined(STM32H7)
+#if defined(STM32H7) || defined(STM32N6)
 #define ETH_SECTION __attribute__((section(".eth_buffers")))
 #elif defined(STM32H5)
 #if TZEN_ENABLED
@@ -164,11 +214,20 @@ struct eth_desc {
 #endif
 #endif
 
+/* DMA buffer address — use secure alias (0x34), matching RISAF SEC=1. */
+#define ETH_DMA_ADDR(ptr) ((uint32_t)(ptr))
+
 static struct eth_desc rx_ring[RX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
 static struct eth_desc tx_ring[TX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
 static uint8_t rx_buffers[RX_DESC_COUNT][RX_BUF_SIZE] __attribute__((aligned(32))) ETH_SECTION;
 static uint8_t tx_buffers[TX_DESC_COUNT][TX_BUF_SIZE] __attribute__((aligned(32))) ETH_SECTION;
-static uint8_t rx_staging_buffer[RX_BUF_SIZE] __attribute__((aligned(32)));
+
+#if defined(STM32N6)
+/* DMA Channel 1 descriptor rings and buffers */
+static struct eth_desc rx_ring1[RX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
+static struct eth_desc tx_ring1[TX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
+static uint8_t rx_buffers1[RX_DESC_COUNT][RX_BUF_SIZE] __attribute__((aligned(32))) ETH_SECTION;
+#endif
 
 static uint32_t rx_idx;
 static uint32_t tx_idx;
@@ -183,13 +242,22 @@ static void eth_mdio_write(uint32_t phy, uint32_t reg, uint16_t value);
 #if STM32_ETH_NEEDS_MDIO_DELAY
 static void eth_delay(uint32_t count)
 {
-    for (volatile uint32_t i = 0; i < count; i++) { }
+    volatile uint32_t i;
+    for (i = 0; i < count; i++) { }
 }
 #endif
 
 static int eth_hw_reset(void)
 {
-    uint32_t timeout = 1000000U;
+    uint32_t timeout;
+
+#if defined(STM32N6)
+    /* On N6, SWR requires REF_CLK from PHY. Use a very long timeout
+     * (HAL uses 1 second). Do NOT manually clear SWR — it corrupts DMA. */
+    timeout = 50000000U; /* ~80ms at 600MHz */
+#else
+    timeout = 1000000U;
+#endif
 
     ETH_DMAMR |= ETH_DMAMR_SWR;
     while ((ETH_DMAMR & ETH_DMAMR_SWR) && (timeout > 0U)) {
@@ -202,28 +270,75 @@ static int eth_hw_reset(void)
     eth_delay(400000); /* ~1ms at 400MHz SYSCLK */
 
     /* Pre-configure MDIO clock divider before PHY access. */
-    ETH_MACMDIOAR = (4U << ETH_MACMDIOAR_CR_SHIFT);
+    ETH_MACMDIOAR = (MDIO_CR_VALUE << ETH_MACMDIOAR_CR_SHIFT);
 #endif
 
     return 0;
 }
 
+#if !defined(STM32N6)
 static void eth_trigger_tx(void)
 {
     ETH_TPDR = 0U;
     __asm volatile ("dsb sy" ::: "memory");
 }
+#endif
 
 static void eth_config_mac(const uint8_t mac[6])
 {
-    uint32_t maccr = ETH_MACCR;
-    maccr &= ~(ETH_MACCR_DM | ETH_MACCR_FES);
-    maccr |= ETH_MACCR_DM | ETH_MACCR_FES;
+    uint32_t maccr;
+
+    /* Build MACCR value to match HAL defaults:
+     * - AutomaticPadCRCStrip = ENABLE (bit 20)
+     * - CRCStripTypePacket = ENABLE (bit 21)
+     * - ChecksumOffload = ENABLE (bit 27)
+     * - Watchdog = ENABLE (bit 19 = 0)
+     * - Jabber = ENABLE (bit 17 = 0)
+     * - InterPacketGap = 96bit (bits 26:24 = 0)
+     * - DuplexMode = Full (bit 13)
+     * - Speed = 100Mbps (bit 14)
+     * - PortSelect = MII/RMII (bit 15) for N6
+     */
+    maccr = (1U << 20) |  /* ACS - Auto Pad/CRC Strip */
+            (1U << 21) |  /* CST - CRC Strip Type */
+            (1U << 27) |  /* IPC - Checksum Offload */
+            ETH_MACCR_DM | ETH_MACCR_FES;
+
+#if defined(STM32N6)
+    /* PS=1 selects MII/RMII port (vs GMII).
+     * SARC=0: don't modify source address (wolfIP constructs full frame). */
+    maccr |= ETH_MACCR_PS;
+    /* Configure 1µs tick counter — required for MAC internal timing.
+     * Value = (HCLK_Hz / 1000000) - 1. With PLL: HCLK ~200MHz -> 199. */
+    ETH_MAC1USTCR = 199U;
+#endif
     ETH_MACCR = maccr;
 
-#if defined(STM32H7)
-    /* Enable RX Queue 0 for DCB/Generic traffic. */
-    ETH_MACRXQC0R = (2U << 0);
+    /* Default packet filter: unicast (our MAC) + broadcast.
+     * Promiscuous mode disabled to avoid flooding wolfIP with irrelevant traffic. */
+    ETH_MACPFR = 0;
+
+    /* Configure MACECR (Extended Config) - HAL defaults:
+     * - GiantPacketSizeLimit = 0x618 (1560 bytes)
+     * - CRCCheckingRxPackets = ENABLE (bit 16 = 0)
+     */
+    ETH_MACECR = 0x618U;  /* Giant packet size limit */
+
+    /* Configure MACWTR (Watchdog Timeout) - HAL defaults:
+     * - WatchdogTimeout = 2KB (bits 3:0 = 0)
+     * - ProgrammableWatchdog = DISABLE (bit 8 = 0)
+     */
+    ETH_MACWTR = 0x0U;
+
+    /* Configure flow control - HAL defaults: disabled */
+    ETH_MACQ0TXFCR = (1U << 7);  /* Zero Quanta Pause disabled (DZPQ=1) */
+    ETH_MACRXFCR = 0x0U;
+
+#if defined(STM32N6)
+    /* Enable both RX queues — N6 requires both DMA channels active */
+    ETH_MACRXQC0R = 0x0Au;
+#elif defined(STM32H7)
+    ETH_MACRXQC0R = 0x02u;
 #endif
 
     ETH_MACA0HR = ((uint32_t)mac[5] << 8) | (uint32_t)mac[4];
@@ -259,15 +374,40 @@ static void eth_config_speed_duplex(void)
 
 static void eth_config_mtl(void)
 {
-    uint32_t txqomr = ETH_MTLTXQOMR;
-    uint32_t rxqomr = ETH_MTLRXQOMR;
+    uint32_t txqomr;
+    uint32_t rxqomr;
 
+    /* Configure MTL Operation Mode (MTLOMR) - HAL defaults:
+     * - TxSchedulingAlgorithm = Strict Priority (bits 6:5 = 0)
+     * - ReceiveArbitrationAlgorithm = Strict Priority (bit 8 = 0)
+     * - TransmitStatus = ENABLE (bit 1 = 0, DTXSTS=0)
+     */
+    /* CubeN6 sets 0x60: bits 6:5 = Strict Priority arbitration */
+    ETH_MTLOMR = 0x00000060u;
+
+#if defined(STM32N6)
+    /* Map RX Queue 0 to DMA Channel 0 (MTLRXQDMAMR) */
+    ETH_MTLRXQDMAMR = 0x0U;  /* Q0 -> CH0, Q1 -> CH1 */
+#endif
+
+    /* Configure TX Queue 0 Operation Mode:
+     * - TSF = Transmit Store and Forward (bit 1)
+     * - TXQEN = Enabled (bits 3:2 = 2)
+     * - TQS = 2KB (bits 22:16 = 0x7)
+     */
+    txqomr = ETH_MTLTXQOMR;
     txqomr &= ~ETH_MTLTXQOMR_MASK;
-    txqomr |= (ETH_MTLTXQOMR_TSF | ETH_MTLTXQOMR_TXQEN_ENABLE);
+    txqomr |= ETH_MTLTXQOMR_TSF | ETH_MTLTXQOMR_TXQEN_ENABLE | ETH_MTLTXQOMR_TQS_2048;
     ETH_MTLTXQOMR = txqomr;
 
+    /* Configure RX Queue 0 Operation Mode:
+     * - RSF = Receive Store and Forward (bit 5)
+     * - RQS = 4KB (bits 23:20 = 0xF)
+     * - DEHF = Drop Error Half Frames (bit 6 = 0, disabled by HAL)
+     */
+    rxqomr = ETH_MTLRXQOMR;
     rxqomr &= ~ETH_MTLRXQOMR_MASK;
-    rxqomr |= ETH_MTLRXQOMR_RSF;
+    rxqomr |= ETH_MTLRXQOMR_RSF | ETH_MTLRXQOMR_RQS_4096;
     ETH_MTLRXQOMR = rxqomr;
 }
 
@@ -275,78 +415,184 @@ static void eth_init_desc(void)
 {
     uint32_t i;
 
-    /* Step 1: Clear all descriptors (like HAL does). */
+    /* Clear all descriptors (HAL flow: init empty, arm later via eth_start). */
     for (i = 0; i < TX_DESC_COUNT; i++) {
-        tx_ring[i].des0 = 0;
-        tx_ring[i].des1 = 0;
-        tx_ring[i].des2 = 0;
-        tx_ring[i].des3 = 0;
+        tx_ring[i].des0 = 0; tx_ring[i].des1 = 0;
+        tx_ring[i].des2 = 0; tx_ring[i].des3 = 0;
     }
     for (i = 0; i < RX_DESC_COUNT; i++) {
-        rx_ring[i].des0 = 0;
-        rx_ring[i].des1 = 0;
-        rx_ring[i].des2 = 0;
-        rx_ring[i].des3 = 0;
+        rx_ring[i].des0 = 0; rx_ring[i].des1 = 0;
+        rx_ring[i].des2 = 0; rx_ring[i].des3 = 0;
     }
     rx_idx = 0;
     tx_idx = 0;
 
-    /* Step 2: Configure DMA registers. */
+    /* Configure DMA descriptor registers with EMPTY descriptors. */
     __asm volatile ("dsb sy" ::: "memory");
-    ETH_DMACTXDLAR = (uint32_t)&tx_ring[0];
-    ETH_DMACRXDLAR = (uint32_t)&rx_ring[0];
+    ETH_DMACTXDLAR = ETH_DMA_ADDR(&tx_ring[0]);
+    ETH_DMACRXDLAR = ETH_DMA_ADDR(&rx_ring[0]);
     ETH_DMACTXRLR = TX_DESC_COUNT - 1U;
     ETH_DMACRXRLR = RX_DESC_COUNT - 1U;
-    ETH_DMACTXDTPR = (uint32_t)&tx_ring[0];
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    ETH_DMACTXDTPR = ETH_DMA_ADDR(&tx_ring[0]);
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
     __asm volatile ("dsb sy" ::: "memory");
 
-    /* Step 3: Now set buffer addresses and OWN bit. */
+    /* TX descriptors: set buffer addresses (no OWN, host owns them). */
     for (i = 0; i < TX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&tx_ring[i].des0 = (uint32_t)tx_buffers[i];
+        *(volatile uint32_t *)&tx_ring[i].des0 = ETH_DMA_ADDR(tx_buffers[i]);
+    }
+    /* RX descriptors: do NOT set OWN yet — will be armed by eth_start
+     * via ETH_UpdateDescriptor-style flow (matching CubeN6 HAL). */
+
+#if defined(STM32N6)
+    /* Initialize DMA Channel 1 descriptors (N6 has 2 channels) */
+    for (i = 0; i < TX_DESC_COUNT; i++) {
+        tx_ring1[i].des0 = 0; tx_ring1[i].des1 = 0;
+        tx_ring1[i].des2 = 0; tx_ring1[i].des3 = 0;
     }
     for (i = 0; i < RX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
-        *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
+        rx_ring1[i].des0 = 0; rx_ring1[i].des1 = 0;
+        rx_ring1[i].des2 = 0; rx_ring1[i].des3 = 0;
     }
-
-    /* Data synchronization barrier before updating tail pointer. */
     __asm volatile ("dsb sy" ::: "memory");
-    __asm volatile ("isb sy" ::: "memory");
-    /* Step 4: Update tail pointer to signal DMA that descriptors are ready. */
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+    ETH_DMAC1TXDLAR = ETH_DMA_ADDR(&tx_ring1[0]);
+    ETH_DMAC1RXDLAR = ETH_DMA_ADDR(&rx_ring1[0]);
+    ETH_DMAC1TXRLR = TX_DESC_COUNT - 1U;
+    ETH_DMAC1RXRLR = RX_DESC_COUNT - 1U;
+    ETH_DMAC1TXDTPR = ETH_DMA_ADDR(&tx_ring1[0]);
+    ETH_DMAC1RXDTPR = ETH_DMA_ADDR(&rx_ring1[RX_DESC_COUNT - 1U]);
+#endif
+
     /* Final barrier. */
     __asm volatile ("dsb sy" ::: "memory");
 }
 
 #define ETH_DMACCR_DSL_0BIT  (0x00000000u)
 
+/* DMA System Bus Mode Register bits */
+#define ETH_DMASBMR_RX_OSR_LIMIT_3  (0x3U << 16)  /* RX Outstanding requests limit */
+#define ETH_DMASBMR_TX_OSR_LIMIT_3  (0x3U << 24)  /* TX Outstanding requests limit */
+#define ETH_DMASBMR_BLEN4           (1U << 1)     /* AXI Burst Length 4 */
+
 static void eth_config_dma(void)
 {
-    ETH_DMASBMR = ETH_DMASBMR_FB | ETH_DMASBMR_AAL;
-    /* Set DSL=0 for 16-byte descriptors (no skip). */
+    /* Configure DMA System Bus Mode (DMASBMR) - HAL defaults:
+     * - AddressAlignedBeats = ENABLE (bit 12)
+     * - BurstMode = Fixed (bit 0)
+     * - RxOSRLimit = 3 (bits 17:16)
+     * - TxOSRLimit = 3 (bits 25:24)
+     * - AXIBLENMaxSize = 4 (bit 1)
+     */
+    /* DMA System Bus Mode (matching CubeN6) */
+    ETH_DMASBMR = 0x03031003u;
+
+    /* DMACCR: DSL=1 (skip 1 doubleword = 8 bytes between 16-byte descriptors,
+     * stride = 24 bytes matching HAL ETH_DMADescTypeDef). MSS=536. */
+#if defined(STM32N6)
+    ETH_DMACCR = 0x40218u;
+#else
     ETH_DMACCR = ETH_DMACCR_DSL_0BIT;
+#endif
+
+    /* Configure RX DMA:
+     * - RBSZ = buffer size
+     * - RPBL = 32 beat burst
+     */
     ETH_DMACRXCR = ((RX_BUF_SIZE & ETH_RDES3_PL_MASK) << ETH_DMACRXCR_RBSZ_SHIFT) |
                    ETH_DMACRXCR_RPBL(DMA_RPBL);
+
+    /* Configure TX DMA:
+     * - TPBL = 32 beat burst
+     * - OSF = Operate on Second Frame (bit 4) - N6 does NOT use OSF (per CubeN6/Oryx)
+     */
+#if defined(STM32N6)
+    ETH_DMACTXCR = ETH_DMACTXCR_TPBL(DMA_TPBL);
+
+    /* Configure DMA Channel 1 (N6 has 2 TX queues / DMA channels) */
+    ETH_DMAC1CR = 0x40218u; /* DSL=1, MSS=536 — same as CH0 */
+    ETH_DMAC1RXCR = ((RX_BUF_SIZE & ETH_RDES3_PL_MASK) << ETH_DMACRXCR_RBSZ_SHIFT) |
+                    ETH_DMACRXCR_RPBL(DMA_RPBL);
+    ETH_DMAC1TXCR = ETH_DMACTXCR_TPBL(DMA_TPBL);
+
+    /* MTL TX Queue 1: same as Q0 */
+    ETH_MTLTXQ1OMR = ETH_MTLTXQOMR_TSF | ETH_MTLTXQOMR_TXQEN_ENABLE |
+                     ETH_MTLTXQOMR_TQS_2048;
+
+    /* Map RX Q1 -> DMA CH1 */
+    ETH_MTLRXQDMAMR = (1u << 8); /* Q1MDMACH = 1 */
+#else
     ETH_DMACTXCR = ETH_DMACTXCR_OSF | ETH_DMACTXCR_TPBL(DMA_TPBL);
+#endif
 }
 
 #define ETH_DMACSR_TPS  (1U << 1)
 #define ETH_DMACSR_RPS  (1U << 8)
 
+static void eth_arm_rx_descriptors(void)
+{
+    uint32_t i;
+    /* Arm RX descriptors: set buffer address + OWN bit (HAL ETH_UpdateDescriptor flow).
+     * Must be done AFTER DMA is started. */
+    for (i = 0; i < RX_DESC_COUNT; i++) {
+        rx_ring[i].des0 = ETH_DMA_ADDR(rx_buffers[i]);
+        rx_ring[i].des1 = 0;
+        rx_ring[i].des2 = 0;
+        __asm volatile ("dsb sy" ::: "memory");
+        rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
+    }
+    __asm volatile ("dmb sy" ::: "memory");
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
+}
+
 static void eth_start(void)
 {
+#if defined(STM32N6)
+    uint32_t j;
+#endif
     ETH_MACCR |= ETH_MACCR_TE | ETH_MACCR_RE;
     ETH_MTLTXQOMR |= ETH_MTLTXQOMR_FTQ;
     ETH_DMACTXCR |= ETH_DMACTXCR_ST;
     ETH_DMACRXCR |= ETH_DMACRXCR_SR;
 
-    /* Clear TX and RX process stopped flags. */
-    ETH_DMACSR = ETH_DMACSR_TPS | ETH_DMACSR_RPS;
+#if defined(STM32N6)
+    /* N6 has 2 DMA channels. Both must be started for MAC RX to work.
+     * CubeN6 configures both channels identically. */
+    ETH_MTLTXQ1OMR |= ETH_MTLTXQOMR_FTQ;
+    ETH_DMAC1TXCR |= ETH_DMACTXCR_ST;
+    ETH_DMAC1RXCR |= ETH_DMACRXCR_SR;
+    ETH_DMAC1SR = 0xFFFF; /* Clear all status */
+    __asm volatile ("dsb sy" ::: "memory");
+    ETH_DMAC1RXDTPR = ETH_DMA_ADDR(&rx_ring1[RX_DESC_COUNT - 1U]);
+#endif
+
+    /* Enable DMA interrupt flags (matching CubeN6 HAL_ETH_Start_IT).
+     * Even in polled mode, some GMAC implementations need these enabled
+     * for the DMA to process descriptors. */
+    ETH_DMACIER = ETH_DMACIER_NIE | ETH_DMACIER_AIE | ETH_DMACIER_RBUE |
+                  ETH_DMACIER_RIE | ETH_DMACIER_TIE;
+#if defined(STM32N6)
+    ETH_DMAC1IER = ETH_DMACIER_NIE | ETH_DMACIER_AIE | ETH_DMACIER_RBUE |
+                   ETH_DMACIER_RIE | ETH_DMACIER_TIE;
+#endif
+
+    /* Clear TX and RX process stopped flags + RBU (bit 7). */
+    ETH_DMACSR = ETH_DMACSR_TPS | ETH_DMACSR_RPS | (1U << 7);
 
     __asm volatile ("dsb sy" ::: "memory");
-    /* Write tail pointer to start RX DMA. */
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
+
+    /* Arm RX descriptors AFTER DMA is started (HAL_ETH_Start_IT flow).
+     * This tells the DMA about available descriptors via tail pointer. */
+    eth_arm_rx_descriptors();
+#if defined(STM32N6)
+    for (j = 0; j < RX_DESC_COUNT; j++) {
+        rx_ring1[j].des0 = ETH_DMA_ADDR(rx_buffers1[j]);
+        rx_ring1[j].des1 = 0; rx_ring1[j].des2 = 0;
+        __asm volatile ("dsb sy" ::: "memory");
+        rx_ring1[j].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
+    }
+    __asm volatile ("dmb sy" ::: "memory");
+    ETH_DMAC1RXDTPR = ETH_DMA_ADDR(&rx_ring1[RX_DESC_COUNT - 1U]);
+#endif
 }
 
 static void eth_stop(void)
@@ -370,8 +616,7 @@ static uint16_t eth_mdio_read(uint32_t phy, uint32_t reg)
 {
     uint32_t cfg;
     eth_mdio_wait_ready();
-    /* CR = 4 for HCLK 150-250MHz range. */
-    cfg = (4U << ETH_MACMDIOAR_CR_SHIFT) |
+    cfg = (MDIO_CR_VALUE << ETH_MACMDIOAR_CR_SHIFT) |
           (reg << ETH_MACMDIOAR_RDA_SHIFT) |
           (phy << ETH_MACMDIOAR_PA_SHIFT) |
           (ETH_MACMDIOAR_GOC_READ << ETH_MACMDIOAR_GOC_SHIFT);
@@ -385,8 +630,7 @@ static void eth_mdio_write(uint32_t phy, uint32_t reg, uint16_t value)
     uint32_t cfg;
     eth_mdio_wait_ready();
     ETH_MACMDIODR = (uint32_t)value;
-    /* CR = 4 for HCLK 150-250MHz range. */
-    cfg = (4U << ETH_MACMDIOAR_CR_SHIFT) |
+    cfg = (MDIO_CR_VALUE << ETH_MACMDIOAR_CR_SHIFT) |
           (reg << ETH_MACMDIOAR_RDA_SHIFT) |
           (phy << ETH_MACMDIOAR_PA_SHIFT) |
           (ETH_MACMDIOAR_GOC_WRITE << ETH_MACMDIOAR_GOC_SHIFT);
@@ -414,7 +658,10 @@ static void eth_phy_init(void)
 
     if (phy_addr < 0) {
         phy_addr = eth_detect_phy();
-        if (phy_addr < 0) phy_addr = 0;
+        if (phy_addr < 0) {
+            phy_addr = 0;
+            return; /* No PHY found — skip init to avoid long timeouts */
+        }
     }
 
     /* Reset PHY. */
@@ -445,6 +692,8 @@ static void eth_phy_init(void)
     } while ((bsr & PHY_BSR_LINK_STATUS) == 0U && --timeout != 0U);
 }
 
+#define ETH_DMACSR_RBU      (1U << 7)
+
 static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 {
     struct eth_desc *desc;
@@ -453,6 +702,14 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 
     (void)dev;
     rx_poll_count++;
+
+    /* Recover from RBU (Receive Buffer Unavailable) — DMA stops after
+     * exhausting all descriptors. Clear the status and kick the DMA. */
+    if (ETH_DMACSR & ETH_DMACSR_RBU) {
+        ETH_DMACSR = ETH_DMACSR_RBU; /* W1C */
+        __asm volatile ("dsb sy" ::: "memory");
+        ETH_DMACRXDTPR = ETH_DMA_ADDR(&rx_ring[RX_DESC_COUNT - 1U]);
+    }
 
     desc = &rx_ring[rx_idx];
     if (desc->des3 & ETH_RDES3_OWN) return 0;
@@ -463,15 +720,20 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     if ((status & (ETH_RDES3_FS | ETH_RDES3_LS)) == (ETH_RDES3_FS | ETH_RDES3_LS)) {
         frame_len = status & ETH_RDES3_PL_MASK;
         if (frame_len > len) frame_len = len;
-        memcpy(rx_staging_buffer, rx_buffers[rx_idx], frame_len);
-        memcpy(frame, rx_staging_buffer, frame_len);
+        if (frame_len > 0) {
+            memcpy(frame, rx_buffers[rx_idx], frame_len);
+        }
     }
 
-    /* Reinitialize descriptor. */
+    /* Reinitialize descriptor — must restore des0 (buffer address) since
+     * DMA writeback overwrites it with timestamp data. */
+    desc->des0 = ETH_DMA_ADDR(rx_buffers[rx_idx]);
     desc->des1 = 0;
+    desc->des2 = 0;
+    __asm volatile ("dsb sy" ::: "memory");
     desc->des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
     __asm volatile ("dsb sy" ::: "memory");
-    ETH_DMACRXDTPR = (uint32_t)desc;
+    ETH_DMACRXDTPR = ETH_DMA_ADDR(desc);
     rx_idx = (rx_idx + 1U) % RX_DESC_COUNT;
 
     return (int)frame_len;
@@ -497,7 +759,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     if (dma_len > len) memset(tx_buffers[tx_idx] + len, 0, dma_len - len);
 
     /* Setup descriptor. */
-    desc->des0 = (uint32_t)tx_buffers[tx_idx];
+    desc->des0 = ETH_DMA_ADDR(tx_buffers[tx_idx]);
     desc->des1 = 0;
     desc->des2 = (dma_len & ETH_TDES2_B1L_MASK);
     __asm volatile ("dsb sy" ::: "memory");
@@ -508,10 +770,14 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     __asm volatile ("dsb sy" ::: "memory");
 
     ETH_DMACSR = ETH_DMACSR_TBU;
+#if !defined(STM32N6)
+    /* TPDR (0x1180) is a separate TX poll register on H5/H7.
+     * On N6, offset 0x1180 is DMAC1CR — writing 0 would clobber CH1 config. */
     if (tx_idx == 0U) eth_trigger_tx();
+#endif
 
     next_idx = (tx_idx + 1U) % TX_DESC_COUNT;
-    ETH_DMACTXDTPR = (uint32_t)&tx_ring[next_idx];
+    ETH_DMACTXDTPR = ETH_DMA_ADDR(&tx_ring[next_idx]);
     tx_idx = next_idx;
 
     return (int)len;
@@ -527,6 +793,11 @@ static void stm32_eth_generate_mac(uint8_t mac[6])
     mac[3] = 0x33;
     mac[4] = 0x44;
     mac[5] = 0x55;
+#elif defined(STM32N6)
+    mac[2] = 0xCC;
+    mac[3] = 0xDD;
+    mac[4] = 0x55;
+    mac[5] = 0x66;
 #else
     mac[2] = 0xAA;
     mac[3] = 0xBB;
@@ -541,49 +812,19 @@ void stm32_eth_get_stats(uint32_t *polls, uint32_t *pkts)
     if (pkts) *pkts = rx_pkt_count;
 }
 
+
 uint32_t stm32_eth_get_rx_des3(void)
 {
     return rx_ring[0].des3;
 }
 
-uint32_t stm32_eth_get_rx_des0(void)
-{
-    return rx_ring[0].des0;
-}
-
-uint32_t stm32_eth_get_rx_ring_addr(void)
-{
-    return (uint32_t)&rx_ring[0];
-}
-
 uint32_t stm32_eth_get_dmacsr(void)
 {
-    /* Clear RBU by writing 1 to bit 7. */
     uint32_t val = ETH_DMACSR;
     if (val & 0x80) {
-        ETH_DMACSR = 0x80;
+        ETH_DMACSR = 0x80; /* Clear RBU (W1C) */
     }
     return val;
-}
-
-uint32_t stm32_eth_get_rx_tail(void)
-{
-    return ETH_DMACRXDTPR;
-}
-
-void stm32_eth_kick_rx(void)
-{
-    uint32_t i;
-    /* Reinitialize all RX descriptors and kick DMA. */
-    for (i = 0; i < RX_DESC_COUNT; i++) {
-        *(volatile uint32_t *)&rx_ring[i].des0 = (uint32_t)rx_buffers[i];
-        *(volatile uint32_t *)&rx_ring[i].des1 = 0;
-        *(volatile uint32_t *)&rx_ring[i].des2 = 0;
-        *(volatile uint32_t *)&rx_ring[i].des3 = ETH_RDES3_OWN | ETH_RDES3_IOC | ETH_RDES3_BUF1V;
-    }
-    __asm volatile ("dsb sy" ::: "memory");
-    __asm volatile ("isb sy" ::: "memory");
-    ETH_DMACRXDTPR = (uint32_t)&rx_ring[RX_DESC_COUNT - 1U];
 }
 
 int stm32_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
@@ -610,8 +851,8 @@ int stm32_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     }
     eth_config_mac(mac);
     eth_config_mtl();
+    eth_config_dma();    /* DMA mode config BEFORE descriptor setup (per CubeN6 HAL) */
     eth_init_desc();
-    eth_config_dma();
     eth_phy_init();
     eth_config_speed_duplex();
     eth_start();
