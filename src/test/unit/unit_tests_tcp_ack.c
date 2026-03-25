@@ -4,6 +4,7 @@ START_TEST(test_dns_abort_query_null_noop)
 }
 END_TEST
 
+
 START_TEST(test_tcp_input_ttl_zero_local_ack_still_processes)
 {
     struct wolfIP s;
@@ -1148,7 +1149,7 @@ START_TEST(test_forward_interface_variants)
     ck_assert_int_eq((int)out_if, -1);
 
     s.if_count = 1;
-    ck_assert_uint_eq(wolfIP_forward_interface(&s, TEST_PRIMARY_IF, 0x0A000099U), 1U);
+    ck_assert_int_eq(wolfIP_forward_interface(&s, TEST_PRIMARY_IF, 0x0A000099U), -1);
 }
 END_TEST
 
@@ -1183,11 +1184,11 @@ START_TEST(test_forward_interface_short_circuit_cases)
 {
     struct wolfIP s;
 
-    ck_assert_int_eq(wolfIP_forward_interface(NULL, 0, 0x0A000001U), 0);
+    ck_assert_int_eq(wolfIP_forward_interface(NULL, 0, 0x0A000001U), -1);
 
     wolfIP_init(&s);
     s.if_count = 1;
-    ck_assert_uint_eq(wolfIP_forward_interface(&s, 0, 0x0A000001U), 1U);
+    ck_assert_int_eq(wolfIP_forward_interface(&s, 0, 0x0A000001U), -1);
 }
 END_TEST
 
@@ -4142,4 +4143,3 @@ START_TEST(test_tcp_ack_no_sack_three_dupacks_with_zero_rwnd_triggers_retransmit
     ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
 }
 END_TEST
-

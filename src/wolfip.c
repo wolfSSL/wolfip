@@ -1446,7 +1446,7 @@ static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 de
 {
     int i;
     if (!s || s->if_count < 2)
-        return s ? s->if_count : 0;
+        return -1;
     for (i = 0; i < (int)s->if_count; i++) {
         struct ipconf *conf = &s->ipconf[i];
         if (i == (int)in_if)
