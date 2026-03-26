@@ -1159,19 +1159,20 @@ esp_check_icv_hmac(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 }
 
 /**
- * Check sequence number against replay_t state.
+ * Check sequence number against replay_t state (read-only).
+ * RFC 4303 s3.4.3: the window must not be updated until after ICV
+ * verification succeeds.  Call esp_replay_commit() after ICV passes.
  *
  * return 0 on success.
  * */
 static int
-esp_check_replay(struct replay_t * replay, uint32_t seq)
+esp_check_replay(const struct replay_t * replay, uint32_t seq)
 {
     #if !defined(ESP_REPLAY_WIN)
     /* anti-replay service not enabled */
     (void)replay;
     (void)seq;
     #else
-    uint32_t diff = 0;
     uint32_t bitn = 0;
     uint32_t seq_low = 1U;
 
@@ -1201,29 +1202,41 @@ esp_check_replay(struct replay_t * replay, uint32_t seq)
             ESP_LOG("error: seq replayed: %u, %d\n", bitn, seq);
             return -1;
         }
-        else {
-            ESP_DEBUG("info: new seq : %d\n", seq);
-            replay->bitmap |= bitn;
-        }
-    }
-    else {
-        /* seq number above window. */
-        ESP_DEBUG("info: new hi_seq : %d, %d\n", replay->hi_seq, seq);
-        diff = seq - replay->hi_seq;
-        if (diff < ESP_REPLAY_WIN) {
-            /* within a window width, slide up. */
-            replay->bitmap = (replay->bitmap << diff) | 1U;
-        }
-        else {
-            /* reset window. */
-            replay->bitmap = 1;
-        }
-
-        replay->hi_seq = seq;
     }
     #endif /* ESP_REPLAY_WIN */
 
     return 0;
+}
+
+/**
+ * Commit a verified sequence number to the replay window.
+ * Called only after ICV verification succeeds (RFC 4303 s3.4.3).
+ * */
+static void
+esp_replay_commit(struct replay_t * replay, uint32_t seq)
+{
+    #if !defined(ESP_REPLAY_WIN)
+    (void)replay;
+    (void)seq;
+    #else
+    uint32_t diff;
+
+    if (seq <= replay->hi_seq) {
+        /* Within window: mark the bit. */
+        replay->bitmap |= 1U << (replay->hi_seq - seq);
+    }
+    else {
+        /* Above window: slide up. */
+        diff = seq - replay->hi_seq;
+        if (diff < ESP_REPLAY_WIN) {
+            replay->bitmap = (replay->bitmap << diff) | 1U;
+        }
+        else {
+            replay->bitmap = 1;
+        }
+        replay->hi_seq = seq;
+    }
+    #endif /* ESP_REPLAY_WIN */
 }
 
 /**
@@ -1348,6 +1361,10 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
             return -1;
         }
     }
+
+    /* ICV verified; now safe to commit the sequence to the replay window
+     * (RFC 4303 s3.4.3). */
+    esp_replay_commit(&esp_sa->replay, seq);
 
     /* icv check good, now finish unwrapping esp packet. */
     if (iv_len != 0) {

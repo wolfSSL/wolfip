@@ -424,8 +424,9 @@ START_TEST(test_replay_duplicate_rejected)
 {
     replay_t r;
     esp_replay_init(r);
-    ck_assert_int_eq(esp_check_replay(&r, 5U), 0);  /* first time: ok  */
-    ck_assert_int_ne(esp_check_replay(&r, 5U), 0);  /* second time: replayed */
+    ck_assert_int_eq(esp_check_replay(&r, 5U), 0);
+    esp_replay_commit(&r, 5U);                       /* ICV passed */
+    ck_assert_int_ne(esp_check_replay(&r, 5U), 0);   /* second time: replayed */
 }
 END_TEST
 
@@ -437,6 +438,7 @@ START_TEST(test_replay_multiple_in_window)
     esp_replay_init(r); /* window [1..32] */
     for (i = 1U; i <= 31U; i++) {
         ck_assert_int_eq(esp_check_replay(&r, i), 0);
+        esp_replay_commit(&r, i);
     }
 }
 END_TEST
@@ -447,7 +449,8 @@ START_TEST(test_replay_below_window_rejected)
     replay_t r;
     esp_replay_init(r);
     /* Advance the window by receiving a high sequence number. */
-    ck_assert_int_eq(esp_check_replay(&r, 64U), 0); /* hi_seq=64, seq_low=34 */
+    ck_assert_int_eq(esp_check_replay(&r, 64U), 0);
+    esp_replay_commit(&r, 64U);                      /* hi_seq=64, seq_low=34 */
     /* seq=1 is now below the window floor. */
     ck_assert_int_ne(esp_check_replay(&r, 1U), 0);
 }
@@ -459,6 +462,7 @@ START_TEST(test_replay_advance_hi_seq)
     replay_t r;
     esp_replay_init(r); /* hi_seq=32 */
     ck_assert_int_eq(esp_check_replay(&r, 33U), 0);
+    esp_replay_commit(&r, 33U);
     ck_assert_uint_eq(r.hi_seq, 33U);
 }
 END_TEST
@@ -469,6 +473,7 @@ START_TEST(test_replay_advanced_hi_seq_duplicate_rejected)
     replay_t r;
     esp_replay_init(r); /* hi_seq=32 */
     ck_assert_int_eq(esp_check_replay(&r, 33U), 0);
+    esp_replay_commit(&r, 33U);
     ck_assert_int_ne(esp_check_replay(&r, 33U), 0);
 }
 END_TEST
@@ -491,9 +496,12 @@ START_TEST(test_replay_jump_resets_bitmap)
     esp_replay_init(r);
     /* Accept some sequences so the bitmap has bits set. */
     ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+    esp_replay_commit(&r, 1U);
     ck_assert_int_eq(esp_check_replay(&r, 2U), 0);
+    esp_replay_commit(&r, 2U);
     /* Jump more than ESP_REPLAY_WIN (32) ahead. */
     ck_assert_int_eq(esp_check_replay(&r, 1000U), 0);
+    esp_replay_commit(&r, 1000U);
     ck_assert_uint_eq(r.hi_seq, 1000U);
     /* seq=1 is now far outside the window. */
     ck_assert_int_ne(esp_check_replay(&r, 1U), 0);
@@ -507,9 +515,41 @@ START_TEST(test_replay_old_seqs_after_jump)
     replay_t r;
     esp_replay_init(r);
     ck_assert_int_eq(esp_check_replay(&r, 10U), 0);
-    ck_assert_int_eq(esp_check_replay(&r, 500U), 0); /* jump > 32 */
+    esp_replay_commit(&r, 10U);
+    ck_assert_int_eq(esp_check_replay(&r, 500U), 0);
+    esp_replay_commit(&r, 500U); /* jump > 32 */
     /* 10 is now well below the new window floor (500-31=469). */
     ck_assert_int_ne(esp_check_replay(&r, 10U), 0);
+}
+END_TEST
+
+/* RFC 4303 s3.4.3: the replay window must not be updated until after
+ * ICV verification succeeds.  esp_check_replay must be read-only;
+ * esp_replay_commit updates the window after ICV passes. */
+START_TEST(test_regression_replay_window_not_updated_before_icv)
+{
+    replay_t r;
+    replay_t saved;
+
+    esp_replay_init(r);
+
+    /* Accept a few packets to establish window state */
+    ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+    esp_replay_commit(&r, 1U);
+    ck_assert_int_eq(esp_check_replay(&r, 2U), 0);
+    esp_replay_commit(&r, 2U);
+
+    /* Save the replay state before the "unverified" packet arrives */
+    memcpy(&saved, &r, sizeof(r));
+
+    /* Simulate receiving seq=10. This should only CHECK, not UPDATE.
+     * In the real flow, ICV verification would follow and might fail. */
+    ck_assert_int_eq(esp_check_replay(&r, 10U), 0);
+
+    /* esp_check_replay is now read-only (correct behavior), so the
+     * replay state must be unchanged. */
+    ck_assert_uint_eq(r.bitmap, saved.bitmap);
+    ck_assert_uint_eq(r.hi_seq, saved.hi_seq);
 }
 END_TEST
 
@@ -1273,6 +1313,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_replay_jump_resets_bitmap);
     tcase_add_test(tc, test_replay_old_seqs_after_jump);
     tcase_add_test(tc, test_replay_overflow);
+    tcase_add_test(tc, test_regression_replay_window_not_updated_before_icv);
     suite_add_tcase(s, tc);
 
     /* Unwrap error paths */
