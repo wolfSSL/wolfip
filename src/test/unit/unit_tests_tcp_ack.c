@@ -3020,6 +3020,8 @@ START_TEST(test_tcp_last_ack_closes_socket)
     ts->remote_ip = remote_ip;
     ts->src_port = local_port;
     ts->dst_port = remote_port;
+    ts->sock.tcp.ack = 10;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
     ts->sock.tcp.ctrl_rto_active = 1;
     memset(&tmr, 0, sizeof(tmr));
     tmr.cb = test_timer_cb;
@@ -3069,6 +3071,8 @@ START_TEST(test_tcp_last_ack_partial_ack_keeps_socket_and_timer)
     ts->remote_ip = remote_ip;
     ts->src_port = local_port;
     ts->dst_port = remote_port;
+    ts->sock.tcp.ack = 10;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
     ts->sock.tcp.ctrl_rto_active = 1;
     memset(&tmr, 0, sizeof(tmr));
     tmr.cb = test_timer_cb;

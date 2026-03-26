@@ -3753,6 +3753,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                 }
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
+                /* RFC 9293 s3.10.7.2: segment acceptability applies
+                 * to all synchronized states including LAST_ACK. */
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
+                }
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
                  * synchronized connection, send a challenge ACK and
                  * drop the segment (RFC 5961). */
