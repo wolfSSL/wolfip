@@ -3084,8 +3084,12 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
         tcp->csum = ee16(transport_checksum(&ph, &tcp->src_port));
     } else if (proto == WI_IPPROTO_UDP) {
         struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)ip;
+        uint16_t udp_csum;
         udp->csum = 0;
-        udp->csum = ee16(transport_checksum(&ph, &udp->src_port));
+        udp_csum = transport_checksum(&ph, &udp->src_port);
+        /* RFC 768: a zero checksum means "no checksum computed," so
+         * a computed zero must be transmitted as 0xFFFF. */
+        udp->csum = ee16(udp_csum ? udp_csum : 0xFFFF);
     } else if (proto == WI_IPPROTO_ICMP) {
         struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)ip;
         icmp->csum = 0;

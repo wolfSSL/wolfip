@@ -4317,4 +4317,52 @@ START_TEST(test_regression_dns_rcode_error_aborts_query)
 END_TEST
 
 
+/* RFC 768: if the computed UDP checksum is zero, it must be transmitted
+ * as 0xFFFF.  A zero checksum means "no checksum computed" and the
+ * receiver would skip verification.  The current code stores the raw
+ * transport_checksum result without zero-substitution. */
+START_TEST(test_regression_udp_checksum_zero_substituted_with_ffff)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_udp_datagram udp;
+
+    /* Craft a UDP datagram whose pseudo-header + data sums to 0xFFFF
+     * in one's complement, causing transport_checksum to return 0.
+     *
+     * Pseudo-header: src=0, dst=0, proto=0x11, len=8
+     *   sum = 0x0011 + 0x0008 = 0x0019
+     * UDP header: src_port=0xFFDE, dst_port=0, udp_len=8, csum=0
+     *   sum += 0xFFDE + 0 + 0x0008 = 0xFFE6
+     * Total = 0x0019 + 0xFFE6 = 0xFFFF -> ~0xFFFF = 0 */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0, 0, 0);
+
+    /* Set up a UDP socket so ip_output_add_header can be called */
+    ts = &s.udpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_UDP;
+    ts->S = &s;
+    ts->local_ip = 0;
+    ts->remote_ip = 0;
+    ts->if_idx = TEST_PRIMARY_IF;
+
+    memset(&udp, 0, sizeof(udp));
+    udp.src_port = ee16(0xFFDE);
+    udp.dst_port = 0;
+    udp.len = ee16(8);
+    udp.csum = 0;
+
+    ip_output_add_header(ts, (struct wolfIP_ip_packet *)&udp,
+                         WI_IPPROTO_UDP, IP_HEADER_LEN + 8);
+
+    /* The stored checksum must be 0xFFFF, not 0. */
+    ck_assert_uint_ne(udp.csum, 0);
+    ck_assert_uint_eq(ee16(udp.csum), 0xFFFF);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
