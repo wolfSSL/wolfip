@@ -3762,6 +3762,14 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
 
+                /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
+                 * synchronized connection, send a challenge ACK and
+                 * drop the segment (RFC 5961). */
+                if (tcp->flags & TCP_FLAG_SYN) {
+                    tcp_send_ack(t);
+                    continue;
+                }
+
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
                     if (t->sock.tcp.state == TCP_CLOSED)
