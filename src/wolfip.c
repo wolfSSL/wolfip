@@ -976,6 +976,7 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_OFFER 2
 #define DHCP_REQUEST 3
 #define DHCP_ACK 5
+#define DHCP_NAK 6
 
 #define DHCP_MAGIC 0x63825363
 #define DHCP_SERVER_PORT 67
@@ -5387,6 +5388,42 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
 }
 
 
+/* Return the DHCP message type from a validated message, or -1 on error. */
+static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
+{
+    uint8_t *opt = (uint8_t *)msg->options;
+    uint8_t *opt_end;
+    if (msg_len < DHCP_HEADER_LEN)
+        return -1;
+    if (ee32(msg->magic) != DHCP_MAGIC)
+        return -1;
+    if (ee32(msg->xid) != s->dhcp_xid)
+        return -1;
+    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
+        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
+    else
+        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
+    while (opt < opt_end) {
+        uint8_t code = opt[0];
+        uint8_t len;
+        if (code == DHCP_OPTION_END)
+            break;
+        if (code == 0) {
+            opt++;
+            continue;
+        }
+        if (opt + 2 > opt_end)
+            break;
+        len = opt[1];
+        if (opt + 2 + len > opt_end)
+            break;
+        if (code == DHCP_OPTION_MSG_TYPE && len == 1)
+            return opt[2];
+        opt += 2 + len;
+    }
+    return -1;
+}
+
 static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
     uint8_t *opt = (uint8_t *)msg->options;
@@ -5520,19 +5557,28 @@ static int dhcp_poll(struct wolfIP *s)
         return -1;
     if ((s->dhcp_state == DHCP_DISCOVER_SENT) && (dhcp_parse_offer(s, &msg, (uint32_t)len) == 0))
         dhcp_send_request(s);
-    else if ((s->dhcp_state == DHCP_REQUEST_SENT ||
+    else if (s->dhcp_state == DHCP_REQUEST_SENT ||
               s->dhcp_state == DHCP_RENEWING ||
-              s->dhcp_state == DHCP_REBINDING) &&
-            (dhcp_parse_ack(s, &msg, (uint32_t)len) == 0)) {
-        struct ipconf *primary = wolfIP_primary_ipconf(s);
-        LOG("DHCP configuration received.\n");
-        if (primary) {
-            LOG("IP Address: %u.%u.%u.%u\n", (unsigned int)((primary->ip >> 24) & 0xFF), (unsigned int)((primary->ip >> 16) & 0xFF), (unsigned int)((primary->ip >> 8) & 0xFF), (unsigned int)((primary->ip >> 0) & 0xFF));
-            LOG("Subnet Mask: %u.%u.%u.%u\n", (unsigned int)((primary->mask >> 24) & 0xFF), (unsigned int)((primary->mask >> 16) & 0xFF), (unsigned int)((primary->mask >> 8) & 0xFF), (unsigned int)((primary->mask >> 0) & 0xFF));
-            LOG("Gateway: %u.%u.%u.%u\n", (unsigned int)((primary->gw >> 24) & 0xFF), (unsigned int)((primary->gw >> 16) & 0xFF), (unsigned int)((primary->gw >> 8) & 0xFF), (unsigned int)((primary->gw >> 0) & 0xFF));
+              s->dhcp_state == DHCP_REBINDING) {
+        /* RFC 2131 s4.4.1: if the client receives a DHCPNAK,
+         * it must restart the configuration process. */
+        if (dhcp_msg_type(s, &msg, (uint32_t)len) == DHCP_NAK) {
+            dhcp_cancel_timer(s);
+            s->dhcp_state = DHCP_OFF;
+            dhcp_send_discover(s);
+            return 0;
         }
-        if (s->dns_server)
-            LOG("DNS Server: %u.%u.%u.%u\n", (unsigned int)((s->dns_server >> 24) & 0xFF), (unsigned int)((s->dns_server >> 16) & 0xFF), (unsigned int)((s->dns_server >> 8) & 0xFF), (unsigned int)((s->dns_server >> 0) & 0xFF));
+        if (dhcp_parse_ack(s, &msg, (uint32_t)len) == 0) {
+            struct ipconf *primary = wolfIP_primary_ipconf(s);
+            LOG("DHCP configuration received.\n");
+            if (primary) {
+                LOG("IP Address: %u.%u.%u.%u\n", (unsigned int)((primary->ip >> 24) & 0xFF), (unsigned int)((primary->ip >> 16) & 0xFF), (unsigned int)((primary->ip >> 8) & 0xFF), (unsigned int)((primary->ip >> 0) & 0xFF));
+                LOG("Subnet Mask: %u.%u.%u.%u\n", (unsigned int)((primary->mask >> 24) & 0xFF), (unsigned int)((primary->mask >> 16) & 0xFF), (unsigned int)((primary->mask >> 8) & 0xFF), (unsigned int)((primary->mask >> 0) & 0xFF));
+                LOG("Gateway: %u.%u.%u.%u\n", (unsigned int)((primary->gw >> 24) & 0xFF), (unsigned int)((primary->gw >> 16) & 0xFF), (unsigned int)((primary->gw >> 8) & 0xFF), (unsigned int)((primary->gw >> 0) & 0xFF));
+            }
+            if (s->dns_server)
+                LOG("DNS Server: %u.%u.%u.%u\n", (unsigned int)((s->dns_server >> 24) & 0xFF), (unsigned int)((s->dns_server >> 16) & 0xFF), (unsigned int)((s->dns_server >> 8) & 0xFF), (unsigned int)((s->dns_server >> 0) & 0xFF));
+        }
     }
     return 0;
 }

@@ -4215,4 +4215,54 @@ START_TEST(test_regression_paws_rejects_stale_timestamp)
 END_TEST
 
 
+/* RFC 2131 s4.4.1: if the client receives a DHCPNAK, it must restart
+ * the configuration process.  The current code silently ignores NAKs
+ * during RENEWING/REBINDING because dhcp_parse_ack returns -1 and
+ * dhcp_poll treats that as a no-op. */
+START_TEST(test_regression_dhcp_nak_restarts_configuration)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0);
+
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    /* Simulate a RENEWING client that receives a DHCPNAK */
+    s.dhcp_state = DHCP_RENEWING;
+    s.dhcp_xid = 0x12345678U;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    /* Build a minimal DHCPNAK message (type 6) */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = 2; /* BOOT_REPLY */
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(0x12345678U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = 6; /* DHCPNAK */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    (void)dhcp_poll(&s);
+
+    /* After receiving NAK, the client must not remain in RENEWING.
+     * It should restart discovery (transition to DHCP_OFF or
+     * DHCP_DISCOVER_SENT). */
+    ck_assert_int_ne(s.dhcp_state, DHCP_RENEWING);
+    ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
