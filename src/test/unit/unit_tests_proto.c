@@ -3928,5 +3928,79 @@ START_TEST(test_regression_syn_on_established_not_silently_processed)
 }
 END_TEST
 
+/* RFC 9293 §3.10.7.4: LAST-ACK is a synchronized state.  A SYN arriving
+ * on a LAST_ACK socket must trigger a challenge ACK and be dropped, not
+ * silently ignored or processed as a normal ACK. */
+START_TEST(test_regression_syn_on_last_ack_not_silently_processed)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    uint32_t original_ack;
+    uint32_t original_seq;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    original_ack = ts->sock.tcp.ack;
+    original_seq = ts->sock.tcp.seq;
+
+    /* In-window SYN+ACK: without the fix tcp_ack() would process this
+     * as a normal acknowledgment in LAST_ACK. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_SYN | TCP_FLAG_ACK;
+    seg.seq = ee32(100);
+    seg.ack = ee32(ts->sock.tcp.seq);
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    (void)wolfIP_poll(&s, 200);
+
+    /* The SYN must not be silently processed.  A challenge ACK must be
+     * sent and the segment dropped without altering connection state. */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+    ck_assert_uint_eq(ts->sock.tcp.ack, original_ack);
+    ck_assert_uint_eq(ts->sock.tcp.seq, original_seq);
+}
+END_TEST
+
 
 /* ----------------------------------------------------------------------- */
