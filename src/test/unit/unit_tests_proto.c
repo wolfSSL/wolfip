@@ -4365,4 +4365,66 @@ START_TEST(test_regression_udp_checksum_zero_substituted_with_ffff)
 END_TEST
 
 
+/* RFC 9293 s3.10.7.2: segment acceptability applies to all synchronized
+ * states including LAST_ACK.  The current LAST_ACK handler processes ACKs
+ * without checking tcp_segment_acceptable, so an out-of-window ACK could
+ * close the connection. */
+START_TEST(test_regression_last_ack_rejects_out_of_window_segment)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.last = 999; /* FIN was at seq 999 */
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Send an ACK with an out-of-window sequence number.
+     * rcv_nxt = 100, window = RXBUF_SIZE (20480), so seq = 99999
+     * is far outside the window. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(99999);
+    seg.ack = ee32(1001); /* ACKs the FIN */
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    /* The out-of-window segment must be rejected; connection must
+     * remain in LAST_ACK, not transition to CLOSED. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
