@@ -3848,4 +3848,85 @@ START_TEST(test_regression_tcp_ip_len_below_ip_header)
 END_TEST
 
 
+/* RFC 9293 §3.10.7.4: SYN on synchronized connection must not be silently
+ * processed.  The implementation must either send a challenge ACK and drop
+ * (RFC 5961) or send RST and abort (original RFC 793).  The current code
+ * silently processes an in-window SYN as normal data on ESTABLISHED
+ * connections, potentially corrupting connection state. */
+START_TEST(test_regression_syn_on_established_not_silently_processed)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    uint32_t original_ack;
+    uint32_t original_seq;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    /* Set up an ARP entry so the stack can send a reply frame */
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    /* Wire up socket slot 0 as an ESTABLISHED connection */
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    original_ack = ts->sock.tcp.ack;
+    original_seq = ts->sock.tcp.seq;
+
+    /* Craft an in-window SYN segment (seq == rcv_nxt so it passes the
+     * acceptability test and reaches the established-state handler). */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_SYN;
+    seg.seq = ee32(100); /* == ts->sock.tcp.ack, i.e. in-window */
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    /* tcp_send_ack enqueues into txbuf; flush it via wolfIP_poll */
+    (void)wolfIP_poll(&s, 200);
+
+    /* The SYN must NOT be silently accepted.  The connection state must not
+     * have been corrupted by processing the SYN as data. Verify:
+     * 1) The connection did not stay silently in ESTABLISHED with no reply
+     *    (last_frame_sent_size > 0 means a challenge ACK or RST was sent).
+     * 2) The ack/seq values were not altered by data processing. */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ack, original_ack);
+    ck_assert_uint_eq(ts->sock.tcp.seq, original_seq);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
