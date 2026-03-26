@@ -674,6 +674,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);
     tcase_add_test(tc_proto, test_regression_dhcp_nak_restarts_configuration);
+    tcase_add_test(tc_proto, test_regression_dns_rcode_error_aborts_query);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);

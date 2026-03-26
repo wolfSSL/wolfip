@@ -6637,6 +6637,10 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
     char buf[MAX_DNS_RESPONSE];
     struct dns_header *hdr = (struct dns_header *)buf;
     int dns_len;
+    int pos;
+    int qcount;
+    int ancount;
+
     if (!s)
         return;
     if (ev & CB_EVENT_READABLE) {
@@ -6653,9 +6657,14 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
             return;
         /* Parse DNS response */
         if ((ee16(hdr->flags) & 0x8100) == 0x8100) {
-            int pos = sizeof(struct dns_header);
-            int qcount = ee16(hdr->qdcount);
-            int ancount = ee16(hdr->ancount);
+            /* RFC 1035 s4.1.1: RCODE != 0 is an error; abort query. */
+            if ((ee16(hdr->flags) & 0x000F) != 0) {
+                dns_abort_query(s);
+                return;
+            }
+            pos = sizeof(struct dns_header);
+            qcount = ee16(hdr->qdcount);
+            ancount = ee16(hdr->ancount);
             while (qcount-- > 0) {
                 pos = dns_skip_name((const uint8_t *)buf, dns_len, pos);
                 if (pos < 0 || pos + (int)sizeof(struct dns_question) > dns_len) {

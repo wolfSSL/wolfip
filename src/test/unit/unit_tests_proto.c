@@ -4264,5 +4264,57 @@ START_TEST(test_regression_dhcp_nak_restarts_configuration)
 }
 END_TEST
 
+/* DNS response parser does not check the RCODE field.  An error response
+ * such as NXDOMAIN (RCODE=3) passes the QR+RD check, the empty answer
+ * section is silently skipped, and the query stays active until the
+ * retry timer fires.  RFC 1035 s4.1.1: RCODE != 0 is an error. */
+START_TEST(test_regression_dns_rcode_error_aborts_query)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t response[64];
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    int pos;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+
+    /* Set up an active DNS query */
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)];
+    s.dns_id = 0xABCD;
+    s.dns_query_type = DNS_QUERY_TYPE_A;
+    s.dns_lookup_cb = test_dns_lookup_cb;
+
+    /* Build a DNS response with RCODE=3 (NXDOMAIN).
+     * flags = 0x8183: QR=1, RD=1, RA=1, RCODE=3
+     * ancount=0 (no answers, as expected for NXDOMAIN). */
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(0xABCD);
+    hdr->flags = ee16(0x8183);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(0);
+    pos = sizeof(struct dns_header);
+    response[pos++] = 3; memcpy(&response[pos], "foo", 3); pos += 3;
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(1);
+    pos += sizeof(struct dns_question);
+
+    enqueue_udp_rx(ts, response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* The query must be aborted after receiving an authoritative error,
+     * not left active for the retry timer to fire. */
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+}
+END_TEST
+
 
 /* ----------------------------------------------------------------------- */
