@@ -3744,6 +3744,13 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                 }
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
+                /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
+                 * synchronized connection, send a challenge ACK and
+                 * drop the segment (RFC 5961). */
+                if (tcp->flags & TCP_FLAG_SYN) {
+                    tcp_send_ack(t);
+                    continue;
+                }
                 if (tcp->flags & TCP_FLAG_ACK) {
                     tcp_ack(t, tcp);
                     /* tcp_ack may have closed the socket via close_socket();
