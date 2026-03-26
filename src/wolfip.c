@@ -6747,7 +6747,9 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
             return -1;
         wolfIP_register_callback(s, s->dns_udp_sd, dns_callback, s);
     }
-    s->dns_id = wolfIP_getrandom();
+    s->dns_id = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
+    if (s->dns_id == 0)
+        s->dns_id = 1;
     *id = s->dns_id;
     memset(buf, 0, 512);
     s->dns_query_type = (qtype == DNS_PTR) ? DNS_QUERY_TYPE_PTR : DNS_QUERY_TYPE_A;

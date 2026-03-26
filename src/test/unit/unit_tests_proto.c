@@ -4426,5 +4426,32 @@ START_TEST(test_regression_last_ack_rejects_out_of_window_segment)
 }
 END_TEST
 
+/* dns_id is assigned from wolfIP_getrandom() which can truncate to 0.
+ * Zero is the sentinel for "no query active," so a zero dns_id breaks
+ * the re-entry guard, disables retransmission, and puts a predictable
+ * transaction ID on the wire. */
+START_TEST(test_regression_dns_id_never_zero)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+
+    /* Force wolfIP_getrandom to return 0 */
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 0;
+
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+
+    /* dns_id must never be zero even when the RNG returns zero */
+    ck_assert_uint_ne(s.dns_id, 0);
+    ck_assert_uint_ne(id, 0);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
 
 /* ----------------------------------------------------------------------- */
