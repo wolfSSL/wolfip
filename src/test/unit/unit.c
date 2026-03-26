@@ -671,6 +671,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_tcp_ip_len_below_ip_header);
     tcase_add_test(tc_proto, test_regression_syn_on_established_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_syn_on_last_ack_not_silently_processed);
+    tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);

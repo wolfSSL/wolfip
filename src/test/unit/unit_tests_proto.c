@@ -4003,4 +4003,124 @@ START_TEST(test_regression_syn_on_last_ack_not_silently_processed)
 END_TEST
 
 
+/* RFC 5681 §3.2: fast recovery deviates in multiple ways.
+ * (a) ssthresh uses cwnd/2 instead of max(FlightSize/2, 2*SMSS)
+ * (b) cwnd set to ssthresh + 1*SMSS instead of ssthresh + 3*SMSS
+ * (c) no cwnd inflation by SMSS for each dup ACK beyond the 3rd
+ * (d) no cwnd deflation to ssthresh on new-data ACK exiting recovery */
+START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    uint32_t smss;
+    uint32_t flight_size;
+    uint32_t expected_ssthresh;
+    uint32_t expected_cwnd;
+    uint32_t cwnd_after_3rd;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    smss = tcp_cc_mss(ts);
+    ck_assert_uint_gt(smss, 0);
+
+    flight_size = 4 * smss;
+
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.ack = 500;
+    ts->sock.tcp.cwnd = 10 * smss;     /* App-limited: cwnd >> FlightSize */
+    ts->sock.tcp.ssthresh = 20 * smss;
+    ts->sock.tcp.peer_rwnd = 20 * smss;
+    ts->sock.tcp.bytes_in_flight = flight_size;
+
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Enqueue a sent segment at seq=snd_una so the retransmit path has
+     * something to work with (payload=8 bytes). */
+    {
+        uint32_t saved_seq = ts->sock.tcp.seq;
+        struct pkt_desc *desc;
+        ts->sock.tcp.seq = ts->sock.tcp.snd_una;
+        enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK | TCP_FLAG_PSH);
+        desc = fifo_peek(&ts->sock.tcp.txbuf);
+        ck_assert_ptr_nonnull(desc);
+        desc->flags |= PKT_FLAG_SENT;
+        ts->sock.tcp.seq = 1000 + flight_size;
+        (void)saved_seq;
+    }
+
+    /* --- Phase 1: send 3 duplicate ACKs to enter fast recovery --- */
+    for (i = 0; i < 3; i++) {
+        memset(&seg, 0, sizeof(seg));
+        seg.ip.ver_ihl = 0x45;
+        seg.ip.ttl = 64;
+        seg.ip.proto = WI_IPPROTO_TCP;
+        seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+        seg.ip.src = ee32(ts->remote_ip);
+        seg.ip.dst = ee32(ts->local_ip);
+        seg.dst_port = ee16(ts->src_port);
+        seg.src_port = ee16(ts->dst_port);
+        seg.hlen = TCP_HEADER_LEN << 2;
+        seg.flags = TCP_FLAG_ACK;
+        seg.seq = ee32(ts->sock.tcp.ack);
+        seg.ack = ee32(1000);  /* == snd_una, no advance */
+        seg.win = ee16(65535);
+        fix_tcp_checksums(&seg);
+
+        tcp_input(&s, TEST_PRIMARY_IF, &seg,
+                  (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    }
+
+    /* (a) ssthresh = max(FlightSize/2, 2*SMSS) = max(2*SMSS, 2*SMSS) = 2*SMSS
+     *     Bug: max(cwnd/2, 2*SMSS) = max(5*SMSS, 2*SMSS) = 5*SMSS
+     * (b) cwnd = ssthresh + 3*SMSS = 5*SMSS
+     *     Bug: ssthresh + 1*SMSS = 6*SMSS */
+    expected_ssthresh = 2 * smss;
+    expected_cwnd = expected_ssthresh + 3 * smss;
+    ck_assert_uint_eq(ts->sock.tcp.ssthresh, expected_ssthresh);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, expected_cwnd);
+
+    /* --- Phase 2: 4th dup ACK should inflate cwnd by SMSS (c) --- */
+    cwnd_after_3rd = ts->sock.tcp.cwnd;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(ts->sock.tcp.ack);
+    seg.ack = ee32(1000);
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    /* (c) cwnd should be inflated by exactly SMSS, not recomputed */
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, cwnd_after_3rd + smss);
+}
+END_TEST
+
+
 /* ----------------------------------------------------------------------- */
