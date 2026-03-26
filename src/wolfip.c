@@ -3773,6 +3773,19 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
 
+                /* RFC 7323 §3.2 PAWS: if timestamps were negotiated,
+                 * reject segments with stale TSval (send ACK, drop). */
+                if (t->sock.tcp.ts_enabled &&
+                        !(tcp->flags & TCP_FLAG_RST)) {
+                    struct tcp_parsed_opts po;
+                    tcp_parse_options(tcp, frame_len, &po);
+                    if (po.ts_found &&
+                            po.ts_val < ee32(t->sock.tcp.last_ts)) {
+                        tcp_send_ack(t);
+                        continue;
+                    }
+                }
+
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
                  * synchronized connection, send a challenge ACK and
                  * drop the segment (RFC 5961). */
