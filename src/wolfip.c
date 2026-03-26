@@ -3495,16 +3495,20 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         }
         if (t->sock.tcp.dup_acks < 3)
             return;
-        {
+        if (t->sock.tcp.dup_acks == 3) {
+            /* RFC 5681 §3.2 step 2-3: enter fast recovery */
             uint32_t smss = tcp_cc_mss(t);
-            t->sock.tcp.ssthresh = t->sock.tcp.cwnd / 2;
-            if (t->sock.tcp.ssthresh < 2 * smss) {
+            t->sock.tcp.ssthresh = inflight_pre / 2;
+            if (t->sock.tcp.ssthresh < 2 * smss)
                 t->sock.tcp.ssthresh = 2 * smss;
-            }
-            t->sock.tcp.cwnd = t->sock.tcp.ssthresh + smss;
+            t->sock.tcp.cwnd = t->sock.tcp.ssthresh + 3 * smss;
+            t->sock.tcp.cwnd_count = 0;
+            (void)tcp_mark_unsacked_for_retransmit(t, ack);
+        } else {
+            /* RFC 5681 §3.2 step 4: inflate cwnd by SMSS for each
+             * additional duplicate ACK during fast recovery */
+            t->sock.tcp.cwnd += tcp_cc_mss(t);
         }
-        t->sock.tcp.cwnd_count = 0;
-        (void)tcp_mark_unsacked_for_retransmit(t, ack);
     }
 
 }

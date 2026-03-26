@@ -1739,7 +1739,8 @@ START_TEST(test_tcp_ack_duplicate_zero_len_segment_large_ack)
     tcp_ack(ts, &ackseg);
     ck_assert_uint_le(fifo_len(&ts->sock.tcp.txbuf), TXBUF_SIZE);
     ck_assert_uint_eq(ts->sock.tcp.ssthresh, TCP_MSS * 2);
-    ck_assert_uint_eq(ts->sock.tcp.cwnd, TCP_MSS * 3);
+    /* RFC 5681 §3.2: cwnd = ssthresh + 3*SMSS on entering fast recovery */
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, TCP_MSS * 5);
 }
 END_TEST
 
