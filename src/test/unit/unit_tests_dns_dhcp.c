@@ -2052,6 +2052,34 @@ START_TEST(test_dns_send_query_schedules_timeout)
 }
 END_TEST
 
+START_TEST(test_dns_send_query_send_failure_clears_outstanding_state)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint16_t id = 0;
+    uint8_t tiny[2];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)];
+    fifo_init(&ts->sock.udp.txbuf, tiny, sizeof(tiny));
+
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(id, 0U);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.txbuf), NULL);
+    ck_assert_int_eq(s.dns_timer, NO_TIMER);
+    ck_assert_uint_eq(s.dns_id, 0U);
+    ck_assert_uint_eq(s.dns_retry_count, 0U);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_uint_eq(s.dns_query_len, 0U);
+}
+END_TEST
+
 START_TEST(test_dns_resend_query_uses_stored_query_buffer)
 {
     struct wolfIP s;

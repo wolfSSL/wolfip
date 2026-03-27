@@ -6748,6 +6748,7 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     struct dns_question *q;
     char *q_name, *tok_start, *tok_end;
     struct wolfIP_sockaddr_in dns_srv;
+    int ret;
     uint32_t tok_len = 0;
     uint32_t label_len = 0;
     if (!dname || !id) return -22;
@@ -6802,8 +6803,14 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     dns_srv.sin_family = AF_INET;
     dns_srv.sin_port = ee16(DNS_PORT);
     dns_srv.sin_addr.s_addr = ee32(s->dns_server);
-    wolfIP_sock_sendto(s, s->dns_udp_sd, buf, s->dns_query_len, 0,
+    ret = wolfIP_sock_sendto(s, s->dns_udp_sd, buf, s->dns_query_len, 0,
             (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
+    if (ret < 0) {
+        /* Roll back the outstanding query state when the first send never queues. */
+        dns_abort_query(s);
+        *id = 0;
+        return ret;
+    }
     dns_schedule_timer(s);
     return 0;
 }
