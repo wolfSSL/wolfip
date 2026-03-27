@@ -4759,7 +4759,9 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         int value;
         if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
             return -WOLFIP_EINVAL;
-        value = ts->recv_ttl ? ts->last_pkt_ttl : 0;
+        /* getsockopt reports whether TTL receipt is enabled; callers obtain
+         * the last observed TTL via recvmsg control data or wolfIP_sock_get_recv_ttl(). */
+        value = ts->recv_ttl ? 1 : 0;
         memcpy(optval, &value, sizeof(int));
         *optlen = sizeof(int);
         return 0;

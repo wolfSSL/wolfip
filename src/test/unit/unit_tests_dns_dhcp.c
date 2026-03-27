@@ -381,7 +381,7 @@ START_TEST(test_sock_opts_and_names)
     ttl = 0;
     ck_assert_int_eq(wolfIP_sock_getsockopt(&s, udp_sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL,
             &ttl, &optlen), 0);
-    ck_assert_int_eq(ttl, 42);
+    ck_assert_int_eq(ttl, 1);
 
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;

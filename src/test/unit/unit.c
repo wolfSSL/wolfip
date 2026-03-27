@@ -227,7 +227,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_setsockopt_recvttl);
     tcase_add_test(tc_utils, test_sock_setsockopt_invalid_socket);
     tcase_add_test(tc_utils, test_sock_setsockopt_recvttl_invalid_params);
-    tcase_add_test(tc_utils, test_sock_getsockopt_recvttl_value);
+    tcase_add_test(tc_utils, test_sock_getsockopt_recvttl_enabled_state);
     tcase_add_test(tc_utils, test_sock_getsockopt_invalid_socket);
     tcase_add_test(tc_utils, test_sock_can_read_write_paths);
     tcase_add_test(tc_utils, test_sock_getsockopt_recvttl_invalid_params);
