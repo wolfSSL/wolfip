@@ -2961,6 +2961,134 @@ START_TEST(test_non_ethernet_recv_oversize_dropped)
 }
 END_TEST
 
+START_TEST(test_non_ethernet_recv_wrapper_delivers_udp_and_skips_eth_filter)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_sockaddr_in from;
+    uint8_t raw[IP_HEADER_LEN + UDP_HEADER_LEN + 4];
+    uint8_t payload[4] = {1, 2, 3, 4};
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + sizeof(payload)];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    uint8_t rxbuf[sizeof(payload)];
+    socklen_t from_len = sizeof(from);
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ll->non_ethernet = 1;
+
+    filter_block_reason = WOLFIP_FILT_RECEIVING;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_eth_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_RECEIVING));
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + sizeof(payload));
+    udp->ip.src = ee32(0x0A000002U);
+    udp->ip.dst = ee32(0x0A000001U);
+    udp->src_port = ee16(5678);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + sizeof(payload));
+    memcpy(udp->data, payload, sizeof(payload));
+    fix_udp_checksums(udp);
+    memcpy(raw, udp_buf + ETH_HEADER_LEN, sizeof(raw));
+
+    wolfIP_recv(&s, raw, (uint32_t)sizeof(raw));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    ck_assert_uint_eq(from.sin_addr.s_addr, ee32(0x0A000002U));
+    ck_assert_uint_eq(from.sin_port, ee16(5678));
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_eth_mask(0);
+}
+END_TEST
+
+START_TEST(test_non_ethernet_recv_ex_wrapper_delivers_udp_on_second_if)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_sockaddr_in from;
+    uint8_t raw[IP_HEADER_LEN + UDP_HEADER_LEN + 4];
+    uint8_t payload[4] = {9, 8, 7, 6};
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + sizeof(payload)];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    uint8_t rxbuf[sizeof(payload)];
+    socklen_t from_len = sizeof(from);
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    s.ipconf[TEST_SECOND_IF].ip = 0x0A000101U;
+    s.ipconf[TEST_SECOND_IF].mask = 0xFFFFFF00U;
+
+    ll = wolfIP_getdev_ex(&s, TEST_SECOND_IF);
+    ck_assert_ptr_nonnull(ll);
+    ll->non_ethernet = 1;
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(2345);
+    sin.sin_addr.s_addr = ee32(0x0A000101U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + sizeof(payload));
+    udp->ip.src = ee32(0x0A000102U);
+    udp->ip.dst = ee32(0x0A000101U);
+    udp->src_port = ee16(6789);
+    udp->dst_port = ee16(2345);
+    udp->len = ee16(UDP_HEADER_LEN + sizeof(payload));
+    memcpy(udp->data, payload, sizeof(payload));
+    fix_udp_checksums(udp);
+    memcpy(raw, udp_buf + ETH_HEADER_LEN, sizeof(raw));
+
+    wolfIP_recv_ex(&s, TEST_SECOND_IF, raw, (uint32_t)sizeof(raw));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    ck_assert_uint_eq(from.sin_addr.s_addr, ee32(0x0A000102U));
+    ck_assert_uint_eq(from.sin_port, ee16(6789));
+}
+END_TEST
+
 START_TEST(test_forward_packet_filter_drop_udp_icmp)
 {
     struct wolfIP s;

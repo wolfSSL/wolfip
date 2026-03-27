@@ -374,6 +374,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ll_send_frame_drops_oversize);
     tcase_add_test(tc_utils, test_ll_helpers_invalid_inputs);
     tcase_add_test(tc_utils, test_non_ethernet_recv_oversize_dropped);
+    tcase_add_test(tc_utils, test_non_ethernet_recv_wrapper_delivers_udp_and_skips_eth_filter);
+    tcase_add_test(tc_utils, test_non_ethernet_recv_ex_wrapper_delivers_udp_on_second_if);
 #endif
     tcase_add_test(tc_utils, test_dns_format_ptr_name);
     tcase_add_test(tc_utils, test_dns_skip_and_copy_name);
