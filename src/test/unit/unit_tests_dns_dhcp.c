@@ -2067,6 +2067,12 @@ START_TEST(test_dns_resend_query_fails_without_cached_query_buffer)
 }
 END_TEST
 
+START_TEST(test_dns_resend_query_fails_with_null_stack)
+{
+    ck_assert_int_eq(dns_resend_query(NULL), -1);
+}
+END_TEST
+
 START_TEST(test_dns_abort_query_clears_timer_and_query_state)
 {
     struct wolfIP s;

@@ -275,6 +275,32 @@ START_TEST(test_filter_socket_event_unknown_proto)
 }
 END_TEST
 
+START_TEST(test_filter_socket_event_null_socket_uses_primary_defaults)
+{
+    struct wolfIP s;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_CONNECTING));
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0xA5, sizeof(filter_last_event));
+
+    (void)wolfIP_filter_notify_socket_event(WOLFIP_FILT_CONNECTING, &s, NULL,
+            local_ip, 1234, remote_ip, 4321);
+
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_uint_eq(filter_last_event.if_idx, WOLFIP_PRIMARY_IF_IDX);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto, 0);
+    ck_assert_uint_eq(filter_last_event.meta.src_ip, ee32(local_ip));
+    ck_assert_uint_eq(filter_last_event.meta.dst_ip, ee32(remote_ip));
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+}
+END_TEST
+
 START_TEST(test_filter_socket_event_proto_variants)
 {
     struct wolfIP s;
