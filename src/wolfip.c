@@ -5221,6 +5221,7 @@ static void dhcp_schedule_lease_timer(struct wolfIP *s,
 static void dhcp_timer_cb(void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
+    int ret;
     LOG("dhcp timeout\n");
     if (!s)
         return;
@@ -5228,15 +5229,17 @@ static void dhcp_timer_cb(void *arg)
     switch(s->dhcp_state) {
         case DHCP_DISCOVER_SENT:
             if (s->dhcp_timeout_count < DHCP_DISCOVER_RETRIES) {
-                dhcp_send_discover(s);
-                s->dhcp_timeout_count++;
+                ret = dhcp_send_discover(s);
+                if (ret >= 0)
+                    s->dhcp_timeout_count++;
             } else
                 s->dhcp_state = DHCP_OFF;
             break;
         case DHCP_REQUEST_SENT:
             if (s->dhcp_timeout_count < DHCP_REQUEST_RETRIES) {
-                dhcp_send_request(s);
-                s->dhcp_timeout_count++;
+                ret = dhcp_send_request(s);
+                if (ret >= 0)
+                    s->dhcp_timeout_count++;
             } else
                 s->dhcp_state = DHCP_OFF;
             break;
@@ -5247,24 +5250,27 @@ static void dhcp_timer_cb(void *arg)
             }
             s->dhcp_state = DHCP_RENEWING;
             s->dhcp_timeout_count = 0;
-            dhcp_send_request(s);
-            s->dhcp_timeout_count++;
+            ret = dhcp_send_request(s);
+            if (ret >= 0)
+                s->dhcp_timeout_count++;
             break;
         case DHCP_RENEWING:
             if (s->dhcp_rebind_at != 0 && s->last_tick >= s->dhcp_rebind_at) {
                 s->dhcp_state = DHCP_REBINDING;
                 s->dhcp_timeout_count = 0;
             }
-            dhcp_send_request(s);
-            s->dhcp_timeout_count++;
+            ret = dhcp_send_request(s);
+            if (ret >= 0)
+                s->dhcp_timeout_count++;
             break;
         case DHCP_REBINDING:
             if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
                 s->dhcp_state = DHCP_OFF;
                 break;
             }
-            dhcp_send_request(s);
-            s->dhcp_timeout_count++;
+            ret = dhcp_send_request(s);
+            if (ret >= 0)
+                s->dhcp_timeout_count++;
             break;
         default:
             break;
@@ -5738,8 +5744,10 @@ static int dhcp_send_discover(struct wolfIP *s)
     ret = wolfIP_sock_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
     if (ret < 0) {
-        /* Retry on the next tick after local backpressure instead of
+        /* Enter discover-sent before retrying so dhcp_timer_cb() continues
+         * DHCP startup after local backpressure. Retry on the next tick instead of
          * waiting a full discover timeout for a packet that never queued. */
+        s->dhcp_state = DHCP_DISCOVER_SENT;
         dhcp_schedule_timer_at(s, retry_at);
         return ret;
     }

@@ -952,7 +952,7 @@ START_TEST(test_dhcp_send_discover_send_failure_retries_next_tick)
 
     ck_assert_int_eq(dhcp_send_discover(&s), -WOLFIP_EAGAIN);
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.txbuf), NULL);
-    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
     ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.last_tick + 1U);
 }
 END_TEST
@@ -3513,6 +3513,38 @@ START_TEST(test_dhcp_timer_cb_paths)
     (void)wolfIP_poll(&s, s.last_tick);
     ck_assert_uint_gt(last_frame_sent_size, 0U);
     ck_assert_int_eq(s.dhcp_state, DHCP_RENEWING);
+}
+END_TEST
+
+START_TEST(test_dhcp_timer_cb_send_failure_does_not_consume_retry_budget)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t tiny[2];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+    fifo_init(&ts->sock.udp.txbuf, tiny, sizeof(tiny));
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    s.dhcp_timeout_count = 0;
+    dhcp_timer_cb(&s);
+    ck_assert_int_eq(s.dhcp_timeout_count, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.last_tick + 1U);
+
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.dhcp_timeout_count = 0;
+    dhcp_timer_cb(&s);
+    ck_assert_int_eq(s.dhcp_timeout_count, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.last_tick + 1U);
 }
 END_TEST
 
