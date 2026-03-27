@@ -1,6 +1,21 @@
 static struct wolfIP *poll_rearm_stack;
 static int poll_rearm_cb_calls;
 static int poll_rearm_recv_len;
+static int poll_budget_packets_left;
+static int poll_budget_poll_calls;
+
+static int test_poll_budget_ll_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
+{
+    struct wolfIP_eth_frame *eth = (struct wolfIP_eth_frame *)frame;
+
+    (void)dev;
+    if (len < ETH_HEADER_LEN || poll_budget_packets_left <= 0)
+        return 0;
+    memset(eth, 0, ETH_HEADER_LEN);
+    poll_budget_packets_left--;
+    poll_budget_poll_calls++;
+    return ETH_HEADER_LEN;
+}
 
 static void test_poll_rearm_tcp_cb(int sock_fd, uint16_t events, void *arg)
 {
@@ -47,6 +62,34 @@ START_TEST(test_wolfip_poll_executes_timers_and_callbacks)
 }
 END_TEST
 
+START_TEST(test_wolfip_poll_drains_all_expired_timers_in_one_pass)
+{
+    struct wolfIP s;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    timer_cb_calls = 0;
+
+    /* Multiple expired timers should all run during the same poll iteration. */
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    timers_binheap_insert(&s.timers, tmr);
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 90;
+    timers_binheap_insert(&s.timers, tmr);
+
+    (void)wolfIP_poll(&s, 100);
+
+    /* The timer heap should be empty once all expired callbacks have run. */
+    ck_assert_int_eq(timer_cb_calls, 2);
+    ck_assert_uint_eq(s.timers.size, 0U);
+}
+END_TEST
+
 START_TEST(test_wolfip_poll_preserves_tcp_events_raised_during_callback)
 {
     struct wolfIP s;
@@ -77,6 +120,29 @@ START_TEST(test_wolfip_poll_preserves_tcp_events_raised_during_callback)
     (void)wolfIP_poll(&s, 101);
     ck_assert_int_eq(poll_rearm_cb_calls, 2);
     ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0U);
+}
+END_TEST
+
+START_TEST(test_wolfip_poll_limits_device_drain_to_poll_budget)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ll = wolfIP_ll_at(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ll->poll = test_poll_budget_ll_poll;
+    ll->non_ethernet = 0;
+
+    /* Feed more frames than the scheduler budget allows in a single poll call. */
+    poll_budget_packets_left = WOLFIP_POLL_BUDGET + 3;
+    poll_budget_poll_calls = 0;
+    (void)wolfIP_poll(&s, 100);
+
+    /* Step 1 should stop after consuming exactly one poll budget worth of packets. */
+    ck_assert_int_eq(poll_budget_poll_calls, WOLFIP_POLL_BUDGET);
+    ck_assert_int_eq(poll_budget_packets_left, 3);
 }
 END_TEST
 
@@ -2179,6 +2245,135 @@ START_TEST(test_sock_accept_initializes_snd_una)
     ck_assert_uint_eq(accepted->sock.tcp.seq, (uint32_t)(0x80000000U + 1U));
     ck_assert_uint_eq(accepted->sock.tcp.snd_una, 0x80000000U);
     ck_assert_int_eq(tcp_seq_leq(accepted->sock.tcp.snd_una, accepted->sock.tcp.seq), 1);
+}
+END_TEST
+
+START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *listener;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+    void *cb_arg = &s;
+    uint32_t pre_accept_seq;
+    uint32_t pre_accept_ack;
+    uint32_t pre_accept_last_ts;
+    uint32_t pre_accept_local_ip;
+    uint32_t pre_accept_remote_ip;
+    uint32_t pre_accept_peer_rwnd;
+    uint16_t pre_accept_peer_mss;
+    uint16_t pre_accept_src_port;
+    uint16_t pre_accept_dst_port;
+    uint8_t pre_accept_snd_wscale;
+    uint8_t pre_accept_rcv_wscale;
+    uint8_t pre_accept_ws_enabled;
+    uint8_t pre_accept_ws_offer;
+    uint8_t pre_accept_ts_enabled;
+    uint8_t pre_accept_ts_offer;
+    uint8_t pre_accept_sack_offer;
+    uint8_t pre_accept_sack_permitted;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    listener->callback = test_socket_cb;
+    listener->callback_arg = cb_arg;
+
+    /* Drive the listener into SYN_RCVD so accept() has half-open state to fork. */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Seed half-open negotiation state so accept() must clone it into the child socket. */
+    listener->sock.tcp.last_ts = 0x11223344U;
+    listener->sock.tcp.peer_rwnd = 4096;
+    listener->sock.tcp.peer_mss = 1200;
+    listener->sock.tcp.snd_wscale = 4;
+    listener->sock.tcp.rcv_wscale = 2;
+    listener->sock.tcp.ws_enabled = 1;
+    listener->sock.tcp.ws_offer = 1;
+    listener->sock.tcp.ts_enabled = 1;
+    listener->sock.tcp.ts_offer = 1;
+    listener->sock.tcp.sack_offer = 1;
+    listener->sock.tcp.sack_permitted = 1;
+
+    pre_accept_seq = listener->sock.tcp.seq;
+    pre_accept_ack = listener->sock.tcp.ack;
+    pre_accept_last_ts = listener->sock.tcp.last_ts;
+    pre_accept_local_ip = listener->local_ip;
+    pre_accept_remote_ip = listener->remote_ip;
+    pre_accept_peer_rwnd = listener->sock.tcp.peer_rwnd;
+    pre_accept_peer_mss = listener->sock.tcp.peer_mss;
+    pre_accept_src_port = listener->src_port;
+    pre_accept_dst_port = listener->dst_port;
+    pre_accept_snd_wscale = listener->sock.tcp.snd_wscale;
+    pre_accept_rcv_wscale = listener->sock.tcp.rcv_wscale;
+    pre_accept_ws_enabled = listener->sock.tcp.ws_enabled;
+    pre_accept_ws_offer = listener->sock.tcp.ws_offer;
+    pre_accept_ts_enabled = listener->sock.tcp.ts_enabled;
+    pre_accept_ts_offer = listener->sock.tcp.ts_offer;
+    pre_accept_sack_offer = listener->sock.tcp.sack_offer;
+    pre_accept_sack_permitted = listener->sock.tcp.sack_permitted;
+
+    /* Accept should fork the half-open state into a child socket and queue a SYN-ACK there. */
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    /* The child socket should inherit the negotiated transport parameters verbatim. */
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_ptr_eq(accepted->callback, test_socket_cb);
+    ck_assert_ptr_eq(accepted->callback_arg, cb_arg);
+    ck_assert_uint_eq(accepted->local_ip, pre_accept_local_ip);
+    ck_assert_uint_eq(accepted->bound_local_ip, listener->bound_local_ip);
+    ck_assert_uint_eq(accepted->if_idx, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(accepted->remote_ip, pre_accept_remote_ip);
+    ck_assert_uint_eq(accepted->src_port, pre_accept_src_port);
+    ck_assert_uint_eq(accepted->dst_port, pre_accept_dst_port);
+    ck_assert_uint_eq(accepted->sock.tcp.ack, pre_accept_ack);
+    ck_assert_uint_eq(accepted->sock.tcp.snd_una, pre_accept_seq);
+    ck_assert_uint_eq(accepted->sock.tcp.last_ts, pre_accept_last_ts);
+    ck_assert_uint_eq(accepted->sock.tcp.peer_rwnd, pre_accept_peer_rwnd);
+    ck_assert_uint_eq(accepted->sock.tcp.peer_mss, pre_accept_peer_mss);
+    ck_assert_uint_eq(accepted->sock.tcp.snd_wscale, pre_accept_snd_wscale);
+    ck_assert_uint_eq(accepted->sock.tcp.rcv_wscale, pre_accept_rcv_wscale);
+    ck_assert_uint_eq(accepted->sock.tcp.ws_enabled, pre_accept_ws_enabled);
+    ck_assert_uint_eq(accepted->sock.tcp.ws_offer, pre_accept_ws_offer);
+    ck_assert_uint_eq(accepted->sock.tcp.ts_enabled, pre_accept_ts_enabled);
+    ck_assert_uint_eq(accepted->sock.tcp.ts_offer, pre_accept_ts_offer);
+    ck_assert_uint_eq(accepted->sock.tcp.sack_offer, pre_accept_sack_offer);
+    ck_assert_uint_eq(accepted->sock.tcp.sack_permitted, pre_accept_sack_permitted);
+    ck_assert_uint_eq(accepted->sock.tcp.cwnd,
+            tcp_initial_cwnd(pre_accept_peer_rwnd, tcp_cc_mss(accepted)));
+    ck_assert_uint_eq(accepted->sock.tcp.ssthresh,
+            tcp_initial_ssthresh(pre_accept_peer_rwnd));
+
+    desc = fifo_peek(&accepted->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(accepted->txmem + desc->pos + sizeof(*desc));
+    /* SYN-ACK transmission must be queued on the accepted child, not the listener. */
+    ck_assert_uint_eq(seg->flags, (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    ck_assert_uint_eq(ee32(seg->seq), pre_accept_seq);
+    ck_assert_uint_eq(ee32(seg->ack), pre_accept_ack);
+
+    /* The listener should be reset to passive-open state once the child is created. */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(listener->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_uint_eq(listener->events & CB_EVENT_READABLE, 0);
 }
 END_TEST
 

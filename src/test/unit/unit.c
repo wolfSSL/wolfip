@@ -117,7 +117,9 @@ Suite *wolf_suite(void)
 #endif
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
     tcase_add_test(tc_utils, test_wolfip_poll_executes_timers_and_callbacks);
+    tcase_add_test(tc_utils, test_wolfip_poll_drains_all_expired_timers_in_one_pass);
     tcase_add_test(tc_utils, test_wolfip_poll_preserves_tcp_events_raised_during_callback);
+    tcase_add_test(tc_utils, test_wolfip_poll_limits_device_drain_to_poll_budget);
     tcase_add_test(tc_utils, test_filter_notify_tcp_metadata);
     tcase_add_test(tc_utils, test_filter_dispatch_no_callback);
     tcase_add_test(tc_utils, test_filter_dispatch_mask_not_set);
@@ -192,6 +194,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_bound_local_ip_no_match);
     tcase_add_test(tc_utils, test_sock_accept_starts_rto_timer);
     tcase_add_test(tc_utils, test_sock_accept_initializes_snd_una);
+    tcase_add_test(tc_utils, test_sock_accept_clones_half_open_state_and_queues_synack);
     tcase_add_test(tc_utils, test_sock_accept_synack_retransmission);
     tcase_add_test(tc_utils, test_sock_accept_synack_window_not_scaled);
     tcase_add_test(tc_utils, test_sock_accept_ack_transitions_to_established);
@@ -281,9 +284,15 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_gates_data_segment);
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_allows_exact_fit);
     tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
+    tcase_add_test(tc_utils, test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload);
     tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);
     tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
+    tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_selects_middle_byte_at_snd_una);
     tcase_add_test(tc_utils, test_tcp_persist_probe_byte_matches_snd_una_offset);
+    tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_arp_miss_requests_resolution);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_marks_snd_una_payload_for_retransmit);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_clears_bookkeeping_when_no_payload_pending);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_closes_socket_when_backoff_exhausted);
     tcase_add_test(tc_utils, test_tcp_input_window_reopen_stops_persist);
     tcase_add_test(tc_utils, test_tcp_persist_cb_stops_when_state_invalid);
     tcase_add_test(tc_utils, test_tcp_persist_cb_stops_when_window_reopens);
@@ -295,6 +304,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline);
     tcase_add_test(tc_utils, test_dhcp_send_request_rebinding_broadcasts_to_lease_expiry);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
+    tcase_add_test(tc_utils, test_dhcp_poll_renewing_ack_binds_client);
+    tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
     tcase_add_test(tc_utils, test_dns_callback_ptr_response);
     tcase_add_test(tc_utils, test_udp_try_recv_short_frame);
     tcase_add_test(tc_utils, test_udp_try_recv_filter_drop);
@@ -309,6 +320,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
     tcase_add_test(tc_utils, test_dns_callback_wrong_id_ignored);
+    tcase_add_test(tc_utils, test_dns_callback_malformed_compressed_name_aborts_query);
     tcase_add_test(tc_utils, test_dns_callback_abort_clears_query_state);
     tcase_add_test(tc_utils, test_dns_abort_query_null_noop);
     tcase_add_test(tc_utils, test_tcp_input_ttl_zero_local_ack_still_processes);
@@ -356,6 +368,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_schedule_timer_caps_large_retry_shift);
     tcase_add_test(tc_utils, test_dns_send_query_schedules_timeout);
     tcase_add_test(tc_utils, test_dns_resend_query_uses_stored_query_buffer);
+    tcase_add_test(tc_utils, test_dns_resend_query_fails_without_valid_socket);
+    tcase_add_test(tc_utils, test_dns_resend_query_fails_without_cached_query_buffer);
     tcase_add_test(tc_utils, test_dns_abort_query_clears_timer_and_query_state);
     tcase_add_test(tc_utils, test_dns_timeout_retries_then_aborts_and_allows_new_query);
     tcase_add_test(tc_utils, test_dns_send_query_invalid_name);

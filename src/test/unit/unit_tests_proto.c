@@ -1438,6 +1438,57 @@ START_TEST(test_poll_tcp_zero_window_arms_persist)
 }
 END_TEST
 
+START_TEST(test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    /* Baseline: zero peer window plus unsent payload arms persist probing. */
+    tcp_persist_start(ts, 1000);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+
+    /* Reopening the advertised window should tear persist state back down. */
+    ts->sock.tcp.persist_backoff = 3;
+    ts->sock.tcp.peer_rwnd = 32;
+    tcp_persist_start(ts, 1100);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_backoff, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+
+    /* Closing the window again with the same queued data should re-arm persist. */
+    ts->sock.tcp.peer_rwnd = 0;
+    tcp_persist_start(ts, 1200);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+
+    /* Once the queued segment is no longer unsent payload, the guard must stop probing. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    ts->sock.tcp.persist_backoff = 5;
+    tcp_persist_start(ts, 1300);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_backoff, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
 START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
 {
     struct wolfIP s;
@@ -1497,6 +1548,53 @@ START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
 }
 END_TEST
 
+START_TEST(test_tcp_zero_wnd_probe_selects_middle_byte_at_snd_una)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0x45};
+    uint8_t payload[8] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17};
+    struct wolfIP_tcp_seg *tcp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.snd_una = 103;
+    ts->sock.tcp.ack = 20;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* snd_una points into the middle of this payload, so the probe must reuse that byte. */
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    ck_assert_int_eq(tcp_send_zero_wnd_probe(ts), 0);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(tcp->seq), 103U);
+    ck_assert_uint_eq(tcp->data[0], payload[3]);
+}
+END_TEST
+
 START_TEST(test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd)
 {
     ck_assert_uint_eq(tcp_initial_cwnd(65535U, 1460U), 14600U);
@@ -1551,6 +1649,191 @@ START_TEST(test_tcp_persist_probe_byte_matches_snd_una_offset)
     tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
     ck_assert_uint_eq(ee32(tcp->seq), 103U);
     ck_assert_uint_eq(tcp->data[0], payload[3]);
+}
+END_TEST
+
+START_TEST(test_tcp_zero_wnd_probe_arp_miss_requests_resolution)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct arp_packet *arp;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t payload[4] = {0x21, 0x22, 0x23, 0x24};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    s.last_tick = 1000;
+    last_frame_sent_size = 0;
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.ack = 20;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* With no ARP cache entry for the peer, probing should trigger resolution instead of send. */
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    ck_assert_int_eq(tcp_send_zero_wnd_probe(ts), -1);
+
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    arp = (struct arp_packet *)last_frame_sent;
+    ck_assert_int_eq(arp->opcode, ee16(ARP_REQUEST));
+    ck_assert_int_eq(arp->tip, ee32(remote_ip));
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_marks_snd_una_payload_for_retransmit)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_timer tmr;
+    uint32_t smss;
+    uint8_t payload[4] = {0x31, 0x32, 0x33, 0x34};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.rto_backoff = 1;
+    ts->sock.tcp.bytes_in_flight = sizeof(payload);
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->sock.tcp.peer_sack_count = 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Seed one sent payload segment so data-RTO has a retransmission candidate. */
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    /* This callback should discard stale SACK state and retransmit from snd_una. */
+    s.last_tick = 500;
+    tcp_rto_cb(ts);
+
+    smss = tcp_cc_mss(ts);
+    /* RTO recovery should restart from one MSS and leave the segment pending retransmit. */
+    ck_assert_uint_eq(ts->sock.tcp.peer_sack_count, 0);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
+    ck_assert_uint_eq(ts->sock.tcp.rto_backoff, 2);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, smss);
+    ck_assert_uint_eq(ts->sock.tcp.ssthresh, 2 * smss);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_clears_bookkeeping_when_no_payload_pending)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer tmr;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.rto_backoff = 3;
+    ts->sock.tcp.bytes_in_flight = 64;
+    ts->sock.tcp.peer_sack_count = 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    /* If bookkeeping says bytes are in flight but no payload is queued, recover by clearing state. */
+    tcp_rto_cb(ts);
+
+    /* No retransmission should be armed in this recovery-only path. */
+    ck_assert_uint_eq(ts->sock.tcp.peer_sack_count, 0);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
+    ck_assert_uint_eq(ts->sock.tcp.rto_backoff, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_int_ne(ts->events & CB_EVENT_WRITABLE, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_rto_cb_closes_socket_when_backoff_exhausted)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_timer tmr;
+    uint8_t payload[4] = {0x41, 0x42, 0x43, 0x44};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 200;
+    ts->sock.tcp.snd_una = 200;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.rto_backoff = TCP_RTO_MAX_BACKOFF;
+    ts->sock.tcp.bytes_in_flight = sizeof(payload);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Present one outstanding payload so the callback takes the data-RTO close path. */
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 100;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    /* Once data-RTO backoff is exhausted, the callback should abandon the TCP socket. */
+    tcp_rto_cb(ts);
+
+    /* close_socket() zeros the descriptor, so the original TCP identity should be gone. */
+    ck_assert_int_eq(ts->proto, 0);
+    ck_assert_int_eq(ts->sock.tcp.state, 0);
+    ck_assert_ptr_eq(ts->S, NULL);
 }
 END_TEST
 
