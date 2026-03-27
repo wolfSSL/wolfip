@@ -309,7 +309,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_persist_cb_stops_when_window_reopens);
     tcase_add_test(tc_utils, test_poll_tcp_arp_request_on_miss);
     tcase_add_test(tc_utils, test_poll_udp_send_on_arp_hit);
+    tcase_add_test(tc_utils, test_poll_udp_send_on_arp_miss_requests_arp_and_retains_queue);
     tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_hit);
+    tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_miss_requests_arp_and_retains_queue);
     tcase_add_test(tc_utils, test_dhcp_timer_cb_paths);
     tcase_add_test(tc_utils, test_dhcp_client_init_and_bound);
     tcase_add_test(tc_utils, test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline);

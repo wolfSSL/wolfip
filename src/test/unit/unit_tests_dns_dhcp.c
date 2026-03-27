@@ -2638,7 +2638,7 @@ START_TEST(test_poll_tcp_ack_only_skips_send)
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
-    (void)wolfIP_poll(&s, 100);
+    (void)wolfIP_poll(&s, 2000);
 
     ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
     ck_assert_uint_gt(last_frame_sent_size, 0);
@@ -3353,10 +3353,46 @@ START_TEST(test_poll_udp_send_on_arp_hit)
             (struct wolfIP_sockaddr *)&sin, sizeof(sin));
     ck_assert_int_eq(ret, (int)sizeof(payload));
 
-    (void)wolfIP_poll(&s, 100);
+    (void)wolfIP_poll(&s, 2000);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(last_frame_sent[12], 0x08);
     ck_assert_uint_eq(last_frame_sent[13], 0x00);
+}
+END_TEST
+
+START_TEST(test_poll_udp_send_on_arp_miss_requests_arp_and_retains_queue)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {1, 2, 3, 4};
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ret = wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ts->if_idx = TEST_PRIMARY_IF;
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.txbuf));
+
+    (void)wolfIP_poll(&s, 2000);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    ck_assert_uint_eq(last_frame_sent[12], 0x08);
+    ck_assert_uint_eq(last_frame_sent[13], 0x06);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.txbuf));
 }
 END_TEST
 
@@ -3394,6 +3430,43 @@ START_TEST(test_poll_icmp_send_on_arp_hit)
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(last_frame_sent[12], 0x08);
     ck_assert_uint_eq(last_frame_sent[13], 0x00);
+}
+END_TEST
+
+START_TEST(test_poll_icmp_send_on_arp_miss_requests_arp_and_retains_queue)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN + 1];
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    memset(payload, 0, sizeof(payload));
+    payload[0] = ICMP_ECHO_REQUEST;
+    ret = wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ts->if_idx = TEST_PRIMARY_IF;
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.txbuf));
+
+    (void)wolfIP_poll(&s, 2000);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    ck_assert_uint_eq(last_frame_sent[12], 0x08);
+    ck_assert_uint_eq(last_frame_sent[13], 0x06);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.txbuf));
 }
 END_TEST
 
