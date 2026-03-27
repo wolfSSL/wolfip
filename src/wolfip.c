@@ -5599,8 +5599,10 @@ static int dhcp_send_request(struct wolfIP *s)
     struct dhcp_option *opt = (struct dhcp_option *)(req.options);
     struct wolfIP_sockaddr_in sin;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
+    uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
     int renewing = (s->dhcp_state == DHCP_RENEWING);
     int rebinding = (s->dhcp_state == DHCP_REBINDING);
+    int ret;
     uint32_t opt_sz = 0;
     /* Prepare DHCP request */
     memset(&req, 0, sizeof(struct dhcp_msg));
@@ -5655,13 +5657,21 @@ static int dhcp_send_request(struct wolfIP *s)
     else
         sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
-    wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
+    ret = wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
     if (!renewing && !rebinding) {
         /* Reset local_ip so DHCP ACK matches via DHCP_IS_RUNNING path in
          * udp_try_recv(). wolfIP_sock_sendto() sets local_ip from conf->ip
          * (the offered IP), but we haven't confirmed the lease yet. */
         s->udpsockets[SOCKET_UNMARK(s->dhcp_udp_sd)].local_ip = 0;
+    }
+    if (ret < 0) {
+        /* Retry on the next tick after local backpressure instead of
+         * waiting a full DHCP timeout for a request that never queued. */
+        dhcp_schedule_timer_at(s, retry_at);
+        return ret;
+    }
+    if (!renewing && !rebinding) {
         dhcp_schedule_retry_timer(s, 0);
     } else if (renewing) {
         dhcp_schedule_retry_timer(s, s->dhcp_rebind_at);
@@ -5685,8 +5695,9 @@ static int dhcp_send_discover(struct wolfIP *s)
 {
     struct dhcp_msg disc;
     struct dhcp_option *opt = (struct dhcp_option *)(disc.options);
-    struct wolfIP_timer tmr = { };
     struct wolfIP_sockaddr_in sin;
+    uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
+    int ret;
     uint32_t opt_sz = 0;
     /* Prepare DHCP discover */
     memset(&disc, 0, sizeof(struct dhcp_msg));
@@ -5722,14 +5733,16 @@ static int dhcp_send_discover(struct wolfIP *s)
     sin.sin_port = ee16(DHCP_SERVER_PORT);
     sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
-    wolfIP_sock_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
+    ret = wolfIP_sock_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
-    tmr.expires = s->last_tick + DHCP_DISCOVER_TIMEOUT + (wolfIP_getrandom() % 200);
-    tmr.arg = s;
-    tmr.cb = dhcp_timer_cb;
+    if (ret < 0) {
+        /* Retry on the next tick after local backpressure instead of
+         * waiting a full discover timeout for a packet that never queued. */
+        dhcp_schedule_timer_at(s, retry_at);
+        return ret;
+    }
+    dhcp_schedule_timer_at(s, s->last_tick + DHCP_DISCOVER_TIMEOUT + (wolfIP_getrandom() % 200U));
     s->dhcp_state = DHCP_DISCOVER_SENT;
-
-    s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
     return 0;
 }
 

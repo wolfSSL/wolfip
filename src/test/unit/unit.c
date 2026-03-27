@@ -314,6 +314,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_client_init_and_bound);
     tcase_add_test(tc_utils, test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline);
     tcase_add_test(tc_utils, test_dhcp_send_request_rebinding_broadcasts_to_lease_expiry);
+    tcase_add_test(tc_utils, test_dhcp_send_request_send_failure_retries_next_tick);
+    tcase_add_test(tc_utils, test_dhcp_send_discover_send_failure_retries_next_tick);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
     tcase_add_test(tc_utils, test_dhcp_poll_renewing_ack_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
