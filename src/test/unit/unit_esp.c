@@ -129,9 +129,59 @@ static uint32_t build_ip_packet(uint8_t *buf, size_t buf_size,
     return frame_len;
 }
 
+static uint32_t build_udp_ip_packet(uint8_t *buf, size_t buf_size,
+                                    uint32_t src_ip, uint32_t dst_ip,
+                                    uint16_t src_port, uint16_t dst_port,
+                                    const uint8_t *payload, uint16_t payload_len)
+{
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_udp_datagram *udp;
+    uint32_t frame_len;
+    uint16_t udp_len = (uint16_t)(UDP_HEADER_LEN + payload_len);
+
+    frame_len = build_ip_packet(buf, buf_size, WI_IPPROTO_UDP, NULL, udp_len);
+    ip = (struct wolfIP_ip_packet *)buf;
+    udp = (struct wolfIP_udp_datagram *)ip;
+
+    ip->src = ee32(src_ip);
+    ip->dst = ee32(dst_ip);
+    udp->src_port = ee16(src_port);
+    udp->dst_port = ee16(dst_port);
+    udp->len = ee16(udp_len);
+    udp->csum = 0;
+    if (payload_len > 0U) {
+        memcpy(udp->data, payload, payload_len);
+    }
+    ip->csum = 0;
+    iphdr_set_checksum(ip);
+
+    return frame_len;
+}
+
 static void esp_setup(void)
 {
     int ret = wolfIP_esp_init();
+    ck_assert_int_eq(ret, 0);
+}
+
+static void esp_add_cbc_test_sas(void)
+{
+    int ret;
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
     ck_assert_int_eq(ret, 0);
 }
 
@@ -1278,6 +1328,105 @@ START_TEST(test_wrap_rejects_ip_len_below_header)
 }
 END_TEST
 
+START_TEST(test_ip_recv_esp_transport_delivers_udp_payload)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    struct wolfIP s;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[] = { 'e', 's', 'p', '!' };
+    uint8_t rxbuf[sizeof(payload)] = {0};
+    uint32_t frame_len;
+    uint16_t ip_len;
+    int udp_sd;
+    int ret;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+    wolfIP_ipconfig_set(&s, atoip4(T_DST), 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(atoip4(T_DST));
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    frame_len = build_udp_ip_packet(buf, sizeof(buf), atoip4(T_SRC), atoip4(T_DST),
+                                    4321, 1234, payload, sizeof(payload));
+    ip_len = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+
+    frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
+    ip->proto = 0x32U;
+    ip->len = ee16(ip_len);
+    ip->csum = 0U;
+    iphdr_set_checksum(ip);
+
+    ip_recv(&s, 0, ip, frame_len);
+
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+}
+END_TEST
+
+START_TEST(test_ip_recv_esp_transport_unwrap_failure_drops_packet)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    struct wolfIP s;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[] = { 'b', 'a', 'd', '!' };
+    uint8_t rxbuf[sizeof(payload)] = {0};
+    uint32_t frame_len;
+    uint16_t ip_len;
+    uint32_t esp_len;
+    int udp_sd;
+    int ret;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+    wolfIP_ipconfig_set(&s, atoip4(T_DST), 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(atoip4(T_DST));
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    frame_len = build_udp_ip_packet(buf, sizeof(buf), atoip4(T_SRC), atoip4(T_DST),
+                                    4321, 1234, payload, sizeof(payload));
+    ip_len = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+
+    frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
+    ip->proto = 0x32U;
+    ip->len = ee16(ip_len);
+    ip->csum = 0U;
+    iphdr_set_checksum(ip);
+
+    esp_len = frame_len - ETH_HEADER_LEN - IP_HEADER_LEN;
+    ip->data[esp_len - 1U] ^= 0xFFU;
+
+    ip_recv(&s, 0, ip, frame_len);
+
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
 static Suite *esp_suite(void)
 {
     Suite *s;
@@ -1350,6 +1499,11 @@ static Suite *esp_suite(void)
     tc = tcase_create("integrity");
     tcase_add_test(tc, test_icv_tamper_cbc_sha256);
     tcase_add_test(tc, test_ciphertext_tamper_cbc_sha256);
+    suite_add_tcase(s, tc);
+
+    tc = tcase_create("ip_recv");
+    tcase_add_test(tc, test_ip_recv_esp_transport_delivers_udp_payload);
+    tcase_add_test(tc, test_ip_recv_esp_transport_unwrap_failure_drops_packet);
     suite_add_tcase(s, tc);
 
     /* No-SA outbound path */

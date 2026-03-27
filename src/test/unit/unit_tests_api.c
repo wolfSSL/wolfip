@@ -3358,7 +3358,7 @@ START_TEST(test_sock_setsockopt_invalid_socket)
 }
 END_TEST
 
-START_TEST(test_sock_getsockopt_recvttl_value)
+START_TEST(test_sock_getsockopt_recvttl_enabled_state)
 {
     struct wolfIP s;
     int udp_sd;
@@ -3374,7 +3374,7 @@ START_TEST(test_sock_getsockopt_recvttl_value)
     s.udpsockets[SOCKET_UNMARK(udp_sd)].last_pkt_ttl = 77;
 
     ck_assert_int_eq(wolfIP_sock_getsockopt(&s, udp_sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL, &value, &len), 0);
-    ck_assert_int_eq(value, 77);
+    ck_assert_int_eq(value, 1);
 }
 END_TEST
 

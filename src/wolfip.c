@@ -4759,7 +4759,9 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         int value;
         if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
             return -WOLFIP_EINVAL;
-        value = ts->recv_ttl ? ts->last_pkt_ttl : 0;
+        /* getsockopt reports whether TTL receipt is enabled; callers obtain
+         * the last observed TTL via recvmsg control data or wolfIP_sock_get_recv_ttl(). */
+        value = ts->recv_ttl ? 1 : 0;
         memcpy(optval, &value, sizeof(int));
         *optlen = sizeof(int);
         return 0;
@@ -5219,6 +5221,7 @@ static void dhcp_schedule_lease_timer(struct wolfIP *s,
 static void dhcp_timer_cb(void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
+    int ret;
     LOG("dhcp timeout\n");
     if (!s)
         return;
@@ -5226,15 +5229,17 @@ static void dhcp_timer_cb(void *arg)
     switch(s->dhcp_state) {
         case DHCP_DISCOVER_SENT:
             if (s->dhcp_timeout_count < DHCP_DISCOVER_RETRIES) {
-                dhcp_send_discover(s);
-                s->dhcp_timeout_count++;
+                ret = dhcp_send_discover(s);
+                if (ret >= 0)
+                    s->dhcp_timeout_count++;
             } else
                 s->dhcp_state = DHCP_OFF;
             break;
         case DHCP_REQUEST_SENT:
             if (s->dhcp_timeout_count < DHCP_REQUEST_RETRIES) {
-                dhcp_send_request(s);
-                s->dhcp_timeout_count++;
+                ret = dhcp_send_request(s);
+                if (ret >= 0)
+                    s->dhcp_timeout_count++;
             } else
                 s->dhcp_state = DHCP_OFF;
             break;
@@ -5245,24 +5250,27 @@ static void dhcp_timer_cb(void *arg)
             }
             s->dhcp_state = DHCP_RENEWING;
             s->dhcp_timeout_count = 0;
-            dhcp_send_request(s);
-            s->dhcp_timeout_count++;
+            ret = dhcp_send_request(s);
+            if (ret >= 0)
+                s->dhcp_timeout_count++;
             break;
         case DHCP_RENEWING:
             if (s->dhcp_rebind_at != 0 && s->last_tick >= s->dhcp_rebind_at) {
                 s->dhcp_state = DHCP_REBINDING;
                 s->dhcp_timeout_count = 0;
             }
-            dhcp_send_request(s);
-            s->dhcp_timeout_count++;
+            ret = dhcp_send_request(s);
+            if (ret >= 0)
+                s->dhcp_timeout_count++;
             break;
         case DHCP_REBINDING:
             if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
                 s->dhcp_state = DHCP_OFF;
                 break;
             }
-            dhcp_send_request(s);
-            s->dhcp_timeout_count++;
+            ret = dhcp_send_request(s);
+            if (ret >= 0)
+                s->dhcp_timeout_count++;
             break;
         default:
             break;
@@ -5599,8 +5607,10 @@ static int dhcp_send_request(struct wolfIP *s)
     struct dhcp_option *opt = (struct dhcp_option *)(req.options);
     struct wolfIP_sockaddr_in sin;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
+    uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
     int renewing = (s->dhcp_state == DHCP_RENEWING);
     int rebinding = (s->dhcp_state == DHCP_REBINDING);
+    int ret;
     uint32_t opt_sz = 0;
     /* Prepare DHCP request */
     memset(&req, 0, sizeof(struct dhcp_msg));
@@ -5655,13 +5665,21 @@ static int dhcp_send_request(struct wolfIP *s)
     else
         sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
-    wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
+    ret = wolfIP_sock_sendto(s, s->dhcp_udp_sd, &req, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
     if (!renewing && !rebinding) {
         /* Reset local_ip so DHCP ACK matches via DHCP_IS_RUNNING path in
          * udp_try_recv(). wolfIP_sock_sendto() sets local_ip from conf->ip
          * (the offered IP), but we haven't confirmed the lease yet. */
         s->udpsockets[SOCKET_UNMARK(s->dhcp_udp_sd)].local_ip = 0;
+    }
+    if (ret < 0) {
+        /* Retry on the next tick after local backpressure instead of
+         * waiting a full DHCP timeout for a request that never queued. */
+        dhcp_schedule_timer_at(s, retry_at);
+        return ret;
+    }
+    if (!renewing && !rebinding) {
         dhcp_schedule_retry_timer(s, 0);
     } else if (renewing) {
         dhcp_schedule_retry_timer(s, s->dhcp_rebind_at);
@@ -5685,8 +5703,9 @@ static int dhcp_send_discover(struct wolfIP *s)
 {
     struct dhcp_msg disc;
     struct dhcp_option *opt = (struct dhcp_option *)(disc.options);
-    struct wolfIP_timer tmr = { };
     struct wolfIP_sockaddr_in sin;
+    uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
+    int ret;
     uint32_t opt_sz = 0;
     /* Prepare DHCP discover */
     memset(&disc, 0, sizeof(struct dhcp_msg));
@@ -5722,14 +5741,18 @@ static int dhcp_send_discover(struct wolfIP *s)
     sin.sin_port = ee16(DHCP_SERVER_PORT);
     sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
     sin.sin_family = AF_INET;
-    wolfIP_sock_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
+    ret = wolfIP_sock_sendto(s, s->dhcp_udp_sd, &disc, DHCP_HEADER_LEN + opt_sz, 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
-    tmr.expires = s->last_tick + DHCP_DISCOVER_TIMEOUT + (wolfIP_getrandom() % 200);
-    tmr.arg = s;
-    tmr.cb = dhcp_timer_cb;
+    if (ret < 0) {
+        /* Enter discover-sent before retrying so dhcp_timer_cb() continues
+         * DHCP startup after local backpressure. Retry on the next tick instead of
+         * waiting a full discover timeout for a packet that never queued. */
+        s->dhcp_state = DHCP_DISCOVER_SENT;
+        dhcp_schedule_timer_at(s, retry_at);
+        return ret;
+    }
+    dhcp_schedule_timer_at(s, s->last_tick + DHCP_DISCOVER_TIMEOUT + (wolfIP_getrandom() % 200U));
     s->dhcp_state = DHCP_DISCOVER_SENT;
-
-    s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
     return 0;
 }
 
@@ -6735,6 +6758,7 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     struct dns_question *q;
     char *q_name, *tok_start, *tok_end;
     struct wolfIP_sockaddr_in dns_srv;
+    int ret;
     uint32_t tok_len = 0;
     uint32_t label_len = 0;
     if (!dname || !id) return -22;
@@ -6789,8 +6813,14 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     dns_srv.sin_family = AF_INET;
     dns_srv.sin_port = ee16(DNS_PORT);
     dns_srv.sin_addr.s_addr = ee32(s->dns_server);
-    wolfIP_sock_sendto(s, s->dns_udp_sd, buf, s->dns_query_len, 0,
+    ret = wolfIP_sock_sendto(s, s->dns_udp_sd, buf, s->dns_query_len, 0,
             (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
+    if (ret < 0) {
+        /* Roll back the outstanding query state when the first send never queues. */
+        dns_abort_query(s);
+        *id = 0;
+        return ret;
+    }
     dns_schedule_timer(s);
     return 0;
 }
