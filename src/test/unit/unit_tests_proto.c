@@ -2964,7 +2964,8 @@ END_TEST
 START_TEST(test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter)
 {
     struct wolfIP s;
-    struct wolfIP_ip_packet orig;
+    uint8_t orig_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE];
+    struct wolfIP_ip_packet *orig = (struct wolfIP_ip_packet *)orig_buf;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -2977,10 +2978,10 @@ START_TEST(test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter)
     wolfIP_filter_set_ip_mask(0);
     last_frame_sent_size = 0;
 
-    memset(&orig, 0, sizeof(orig));
-    orig.src = ee32(0x0A000002U);
+    memset(orig_buf, 0, sizeof(orig_buf));
+    orig->src = ee32(0x0A000002U);
 
-    wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, &orig);
+    wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, orig);
     ck_assert_uint_eq(last_frame_sent_size,
             sizeof(struct wolfIP_icmp_dest_unreachable_packet) - ETH_HEADER_LEN);
 
