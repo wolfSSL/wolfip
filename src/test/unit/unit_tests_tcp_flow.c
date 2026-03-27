@@ -710,6 +710,258 @@ START_TEST(test_tcp_parse_sack_wraparound_block_accepted)
 }
 END_TEST
 
+START_TEST(test_tcp_parse_options_stops_on_truncated_or_invalid_option_length)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 1) << 2);
+    seg->data[0] = TCP_OPTION_WS;
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 1;
+    tcp_parse_options(seg, frame_len, &po);
+    ck_assert_int_eq(po.ws_found, 0);
+    ck_assert_int_eq(po.mss_found, 0);
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 2) << 2);
+    seg->data[0] = TCP_OPTION_WS;
+    seg->data[1] = 1;
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 2;
+    tcp_parse_options(seg, frame_len, &po);
+    ck_assert_int_eq(po.ws_found, 0);
+    ck_assert_int_eq(po.mss_found, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_parse_options_returns_when_frame_has_no_option_bytes)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 4) << 2);
+    seg->data[0] = TCP_OPTION_WS;
+    seg->data[1] = TCP_OPTION_WS_LEN;
+    seg->data[2] = 4;
+
+    tcp_parse_options(seg, sizeof(struct wolfIP_tcp_seg), &po);
+
+    ck_assert_int_eq(po.ws_found, 0);
+    ck_assert_int_eq(po.ts_found, 0);
+    ck_assert_int_eq(po.sack_count, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_parse_options_parses_and_clamps_mixed_options)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 32];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint8_t *opt;
+    uint32_t ts_val = 0x01020304U;
+    uint32_t ts_ecr = 0x05060708U;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 30) << 2);
+    opt = seg->data;
+    opt[0] = TCP_OPTION_WS;
+    opt[1] = TCP_OPTION_WS_LEN;
+    opt[2] = 20;
+    opt += 3;
+    opt[0] = TCP_OPTION_MSS;
+    opt[1] = TCP_OPTION_MSS_LEN;
+    opt[2] = 0;
+    opt[3] = 0;
+    opt += 4;
+    opt[0] = TCP_OPTION_SACK_PERMITTED;
+    opt[1] = TCP_OPTION_SACK_PERMITTED_LEN;
+    opt += 2;
+    opt[0] = TCP_OPTION_TS;
+    opt[1] = TCP_OPTION_TS_LEN;
+    {
+        uint32_t be = ee32(ts_val);
+        memcpy(opt + 2, &be, sizeof(be));
+        be = ee32(ts_ecr);
+        memcpy(opt + 6, &be, sizeof(be));
+    }
+    opt += 10;
+    opt[0] = TCP_OPTION_SACK;
+    opt[1] = 10;
+    {
+        uint32_t left = ee32(100U);
+        uint32_t right = ee32(120U);
+        memcpy(opt + 2, &left, sizeof(left));
+        memcpy(opt + 6, &right, sizeof(right));
+    }
+    opt += 10;
+    opt[0] = TCP_OPTION_EOO;
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 30;
+
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.ws_found, 1);
+    ck_assert_uint_eq(po.ws_shift, 14);
+    ck_assert_int_eq(po.mss_found, 0);
+    ck_assert_int_eq(po.sack_permitted, 1);
+    ck_assert_int_eq(po.ts_found, 1);
+    ck_assert_uint_eq(po.ts_val, ts_val);
+    ck_assert_uint_eq(po.ts_ecr, ts_ecr);
+    ck_assert_int_eq(po.sack_count, 1);
+    ck_assert_uint_eq(po.sack[0].left, 100U);
+    ck_assert_uint_eq(po.sack[0].right, 120U);
+}
+END_TEST
+
+START_TEST(test_tcp_parse_options_parses_mss_sack_permitted_timestamp_and_two_sack_blocks)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 40];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint8_t *opt;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 34) << 2);
+    opt = seg->data;
+    opt[0] = TCP_OPTION_MSS;
+    opt[1] = TCP_OPTION_MSS_LEN;
+    opt[2] = 0x05;
+    opt[3] = 0xB4;
+    opt += 4;
+    opt[0] = TCP_OPTION_SACK_PERMITTED;
+    opt[1] = TCP_OPTION_SACK_PERMITTED_LEN;
+    opt += 2;
+    opt[0] = TCP_OPTION_TS;
+    opt[1] = TCP_OPTION_TS_LEN;
+    {
+        uint32_t be = ee32(0x11121314U);
+        memcpy(opt + 2, &be, sizeof(be));
+        be = ee32(0x21222324U);
+        memcpy(opt + 6, &be, sizeof(be));
+    }
+    opt += 10;
+    opt[0] = TCP_OPTION_SACK;
+    opt[1] = 18;
+    {
+        uint32_t left = ee32(100U), right = ee32(120U);
+        memcpy(opt + 2, &left, sizeof(left));
+        memcpy(opt + 6, &right, sizeof(right));
+        left = ee32(140U);
+        right = ee32(160U);
+        memcpy(opt + 10, &left, sizeof(left));
+        memcpy(opt + 14, &right, sizeof(right));
+    }
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 34;
+
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.mss_found, 1);
+    ck_assert_uint_eq(po.mss, 1460U);
+    ck_assert_int_eq(po.sack_permitted, 1);
+    ck_assert_int_eq(po.ts_found, 1);
+    ck_assert_uint_eq(po.ts_val, 0x11121314U);
+    ck_assert_uint_eq(po.ts_ecr, 0x21222324U);
+    ck_assert_int_eq(po.sack_count, 2);
+    ck_assert_uint_eq(po.sack[0].left, 100U);
+    ck_assert_uint_eq(po.sack[0].right, 120U);
+    ck_assert_uint_eq(po.sack[1].left, 140U);
+    ck_assert_uint_eq(po.sack[1].right, 160U);
+}
+END_TEST
+
+START_TEST(test_tcp_parse_options_ignores_unknown_option_kinds)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 8];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 4) << 2);
+    seg->data[0] = 99;
+    seg->data[1] = 4;
+    seg->data[2] = 0xAA;
+    seg->data[3] = 0xBB;
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.ws_found, 0);
+    ck_assert_int_eq(po.mss_found, 0);
+    ck_assert_int_eq(po.sack_permitted, 0);
+    ck_assert_int_eq(po.ts_found, 0);
+    ck_assert_int_eq(po.sack_count, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_parse_options_caps_sack_block_count)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 48];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint8_t *opt;
+    uint32_t frame_len;
+    int i;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 42) << 2);
+    opt = seg->data;
+    opt[0] = TCP_OPTION_SACK;
+    opt[1] = 42;
+    for (i = 0; i < 5; i++) {
+        uint32_t left = ee32((uint32_t)(100 + (i * 20)));
+        uint32_t right = ee32((uint32_t)(110 + (i * 20)));
+        memcpy(opt + 2 + (i * 8), &left, sizeof(left));
+        memcpy(opt + 2 + (i * 8) + 4, &right, sizeof(right));
+    }
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 42;
+
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.sack_count, TCP_SACK_MAX_BLOCKS);
+    ck_assert_uint_eq(po.sack[0].left, 100U);
+    ck_assert_uint_eq(po.sack[TCP_SACK_MAX_BLOCKS - 1].right, 170U);
+}
+END_TEST
+
+START_TEST(test_tcp_parse_options_ignores_known_kinds_with_wrong_lengths)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 20];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint8_t *opt;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 14) << 2);
+    opt = seg->data;
+    opt[0] = TCP_OPTION_MSS;
+    opt[1] = 3;
+    opt[2] = 0x05;
+    opt += 3;
+    opt[0] = TCP_OPTION_SACK_PERMITTED;
+    opt[1] = 3;
+    opt[2] = 0x00;
+    opt += 3;
+    opt[0] = TCP_OPTION_TS;
+    opt[1] = 8;
+    memset(opt + 2, 0, 6);
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 14;
+
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.mss_found, 0);
+    ck_assert_int_eq(po.sack_permitted, 0);
+    ck_assert_int_eq(po.ts_found, 0);
+    ck_assert_int_eq(po.sack_count, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_input_rst_bad_seq_ignored)
 {
     struct wolfIP s;

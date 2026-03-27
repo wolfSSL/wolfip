@@ -9,6 +9,50 @@ static uint64_t find_timer_expiry(const struct wolfIP *s, uint32_t timer_id)
     return 0;
 }
 
+static void build_dhcp_ack_msg(struct dhcp_msg *msg, uint32_t server_ip, uint32_t mask,
+        uint32_t router_ip, uint32_t dns_ip)
+{
+    struct dhcp_option *opt;
+
+    memset(msg, 0, sizeof(*msg));
+    msg->magic = ee32(DHCP_MAGIC);
+    opt = (struct dhcp_option *)msg->options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = (server_ip >> 24) & 0xFF;
+    opt->data[1] = (server_ip >> 16) & 0xFF;
+    opt->data[2] = (server_ip >> 8) & 0xFF;
+    opt->data[3] = (server_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    opt->data[0] = (mask >> 24) & 0xFF;
+    opt->data[1] = (mask >> 16) & 0xFF;
+    opt->data[2] = (mask >> 8) & 0xFF;
+    opt->data[3] = (mask >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_ROUTER;
+    opt->len = 4;
+    opt->data[0] = (router_ip >> 24) & 0xFF;
+    opt->data[1] = (router_ip >> 16) & 0xFF;
+    opt->data[2] = (router_ip >> 8) & 0xFF;
+    opt->data[3] = (router_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_DNS;
+    opt->len = 4;
+    opt->data[0] = (dns_ip >> 24) & 0xFF;
+    opt->data[1] = (dns_ip >> 16) & 0xFF;
+    opt->data[2] = (dns_ip >> 8) & 0xFF;
+    opt->data[3] = (dns_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+}
+
 START_TEST(test_wolfip_static_instance_apis)
 {
     struct wolfIP *s = NULL;
@@ -1979,6 +2023,56 @@ START_TEST(test_dns_resend_query_uses_stored_query_buffer)
 }
 END_TEST
 
+START_TEST(test_dns_resend_query_fails_without_valid_socket)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 2U;
+
+    /* Seed a cached query, then invalidate the socket so resend must reject it. */
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+    ck_assert_uint_gt(s.dns_query_len, 0U);
+    s.dns_udp_sd = 0;
+    ck_assert_int_eq(dns_resend_query(&s), -1);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+START_TEST(test_dns_resend_query_fails_without_cached_query_buffer)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 3U;
+
+    /* A live DNS socket alone is not enough; resend needs a cached query payload as well. */
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+    s.dns_query_len = 0U;
+    ck_assert_int_eq(dns_resend_query(&s), -1);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+START_TEST(test_dns_resend_query_fails_with_null_stack)
+{
+    ck_assert_int_eq(dns_resend_query(NULL), -1);
+}
+END_TEST
+
 START_TEST(test_dns_abort_query_clears_timer_and_query_state)
 {
     struct wolfIP s;
@@ -3539,6 +3633,92 @@ START_TEST(test_dhcp_poll_offer_and_ack)
 }
 END_TEST
 
+START_TEST(test_dhcp_poll_renewing_ack_binds_client)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+    uint32_t router_ip = 0x0A000002U;
+    uint32_t dns_ip = 0x08080808U;
+    uint32_t mask = 0xFFFFFF00U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    /* Simulate a renewing client that already owns an address and receives a valid ACK. */
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_RENEWING;
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_server_ip = server_ip;
+    primary->ip = client_ip;
+    build_dhcp_ack_msg(&msg, server_ip, mask, router_ip, dns_ip);
+    msg.xid = ee32(s.dhcp_xid);
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+
+    /* The poll dispatcher should route renewing traffic through ACK parsing to BOUND. */
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(primary->ip, client_ip);
+    ck_assert_uint_eq(primary->mask, mask);
+    ck_assert_uint_eq(primary->gw, router_ip);
+    ck_assert_uint_eq(s.dns_server, dns_ip);
+}
+END_TEST
+
+START_TEST(test_dhcp_poll_rebinding_ack_binds_client)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+    uint32_t router_ip = 0x0A000002U;
+    uint32_t dns_ip = 0x08080808U;
+    uint32_t mask = 0xFFFFFF00U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    /* Rebinding uses the same ACK branch, but arrives after the server-specific renew phase. */
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_REBINDING;
+    s.dhcp_xid = 0xABCDEF01U;
+    s.dhcp_server_ip = server_ip;
+    primary->ip = client_ip;
+    build_dhcp_ack_msg(&msg, server_ip, mask, router_ip, dns_ip);
+    msg.xid = ee32(s.dhcp_xid);
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+
+    /* Rebinding ACKs should also drive the client back to BOUND with refreshed config. */
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(primary->ip, client_ip);
+    ck_assert_uint_eq(primary->mask, mask);
+    ck_assert_uint_eq(primary->gw, router_ip);
+    ck_assert_uint_eq(s.dns_server, dns_ip);
+}
+END_TEST
+
 START_TEST(test_dns_callback_ptr_response)
 {
     struct wolfIP s;
@@ -4040,6 +4220,54 @@ START_TEST(test_dns_callback_wrong_id_ignored)
     ck_assert_uint_eq(dns_lookup_ip, 0U);
     ck_assert_uint_eq(s.dns_id, 0x1234);
     ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+}
+END_TEST
+
+START_TEST(test_dns_callback_malformed_compressed_name_aborts_query)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    s.dns_query_type = DNS_QUERY_TYPE_A;
+    s.dns_id = 0x1234;
+    s.dns_lookup_cb = test_dns_lookup_cb;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(s.dns_id);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = sizeof(struct dns_header);
+    response[pos++] = 1;
+    response[pos++] = 'a';
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(1);
+    pos += sizeof(struct dns_question);
+
+    /* Truncate the compressed owner name so dns_skip_name() hits the abort path. */
+    response[pos++] = 0xC0;
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* Malformed compressed names must abort the active query and suppress callbacks. */
+    ck_assert_int_eq(dns_lookup_calls, 0);
+    ck_assert_uint_eq(dns_lookup_ip, 0U);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
 }
 END_TEST
 

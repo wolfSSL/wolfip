@@ -1081,6 +1081,19 @@ START_TEST(test_route_for_ip_dest_matches_iface_ip)
 }
 END_TEST
 
+START_TEST(test_route_for_ip_matches_exact_ip_when_mask_is_zero)
+{
+    struct wolfIP s;
+    ip4 primary_ip = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    s.ipconf[TEST_SECOND_IF].mask = 0U;
+
+    ck_assert_uint_eq(wolfIP_route_for_ip(&s, secondary_ip), TEST_SECOND_IF);
+}
+END_TEST
+
 START_TEST(test_route_for_ip_gw_and_nonloop_fallback)
 {
     struct wolfIP s;
@@ -2157,6 +2170,37 @@ START_TEST(test_send_ttl_exceeded_no_send)
 
     wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, &ip);
     ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+START_TEST(test_send_ttl_exceeded_non_ethernet_skips_eth_filter)
+{
+    struct wolfIP s;
+    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 1;
+    filter_block_reason = WOLFIP_FILT_SENDING;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_eth_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+    wolfIP_filter_set_icmp_mask(0);
+    wolfIP_filter_set_ip_mask(0);
+    last_frame_sent_size = 0;
+
+    memset(ip_buf, 0, sizeof(ip_buf));
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->src = ee32(0x0A000002U);
+    ip->dst = ee32(0x0A000001U);
+
+    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
+    ck_assert_uint_eq(last_frame_sent_size,
+            sizeof(struct wolfIP_icmp_ttl_exceeded_packet) - ETH_HEADER_LEN);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_eth_mask(0);
 }
 END_TEST
 
