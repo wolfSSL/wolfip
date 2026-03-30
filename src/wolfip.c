@@ -5508,6 +5508,8 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
     struct ipconf *primary = wolfIP_primary_ipconf(s);
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
+    if (msg->op != BOOT_REPLY)
+        return -1;
     if (ee32(msg->magic) != DHCP_MAGIC)
         return -1;
     if (ee32(msg->xid) != s->dhcp_xid)
@@ -5643,6 +5645,8 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     uint32_t renew_s = 0;
     uint32_t rebind_s = 0;
     if (msg_len < DHCP_HEADER_LEN)
+        return -1;
+    if (msg->op != BOOT_REPLY)
         return -1;
     if (ee32(msg->magic) != DHCP_MAGIC)
         return -1;

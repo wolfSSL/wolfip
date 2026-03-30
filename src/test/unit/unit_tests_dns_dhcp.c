@@ -15,6 +15,7 @@ static void build_dhcp_ack_msg(struct dhcp_msg *msg, uint32_t server_ip, uint32_
     struct dhcp_option *opt;
 
     memset(msg, 0, sizeof(*msg));
+    msg->op = BOOT_REPLY;
     msg->magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg->options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -99,6 +100,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     ck_assert_ptr_nonnull(primary);
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.yiaddr = ee32(offer_ip);
     opt = (struct dhcp_option *)msg.options;
@@ -131,6 +133,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     s.last_tick = 1000U;
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -242,6 +245,7 @@ START_TEST(test_dhcp_parse_offer_defaults_mask_when_missing)
     ck_assert_ptr_nonnull(primary);
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.yiaddr = ee32(offer_ip);
     opt = (struct dhcp_option *)msg.options;
@@ -3918,6 +3922,7 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.yiaddr = ee32(0x0A000064U);
     opt = (struct dhcp_option *)msg.options;
@@ -3949,6 +3954,7 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;

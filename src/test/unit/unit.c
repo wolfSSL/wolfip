@@ -362,6 +362,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_parse_ack_missing_end_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_offer_bad_magic_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_bad_magic_rejected);
+    tcase_add_test(tc_utils, test_dhcp_parse_offer_rejects_boot_request_op);
+    tcase_add_test(tc_utils, test_dhcp_parse_ack_rejects_boot_request_op);
     tcase_add_test(tc_utils, test_dhcp_parse_offer_zero_len_option_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_zero_len_option_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_no_data_and_wrong_state);
