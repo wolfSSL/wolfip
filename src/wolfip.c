@@ -1984,7 +1984,8 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
                                        const struct wolfIP_icmp_packet *icmp)
 {
     const struct wolfIP_ip_wire *orig_ip;
-    const struct wolfIP_tcp_wire_prefix *orig_tcp;
+    const uint8_t *orig_tcp;
+    uint16_t src_port, dst_port;
     uint32_t icmp_len;
     uint32_t avail;
     uint32_t orig_hlen;
@@ -2012,7 +2013,9 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
     if (avail < (orig_hlen + 8U))
         return;
 
-    orig_tcp = (const struct wolfIP_tcp_wire_prefix *)orig_ip;
+    orig_tcp = ((const uint8_t *)orig_ip) + orig_hlen;
+    memcpy(&src_port, orig_tcp, sizeof(src_port));
+    memcpy(&dst_port, orig_tcp + sizeof(src_port), sizeof(dst_port));
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *t = &s->tcpsockets[i];
 
@@ -2022,8 +2025,7 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
             continue;
         if (t->local_ip != ee32(orig_ip->src) || t->remote_ip != ee32(orig_ip->dst))
             continue;
-        if (t->src_port != ee16(orig_tcp->src_port) ||
-                t->dst_port != ee16(orig_tcp->dst_port))
+        if (t->src_port != ee16(src_port) || t->dst_port != ee16(dst_port))
             continue;
 
         if (icmp->type == ICMP_DEST_UNREACH) {
@@ -5923,11 +5925,15 @@ static int dhcp_send_discover(struct wolfIP *s)
     struct dhcp_msg disc;
     struct dhcp_option *opt = (struct dhcp_option *)(disc.options);
     struct wolfIP_sockaddr_in sin;
-    uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
+    uint64_t retry_at;
     int ret;
     uint32_t opt_sz = 0;
 
-    if (s && s->dhcp_state == DHCP_OFF)
+    if (!s)
+        return -1;
+
+    retry_at = s->last_tick + 1U;
+    if (s->dhcp_state == DHCP_OFF)
         s->dhcp_start_tick = s->last_tick;
 
     /* Prepare DHCP discover */

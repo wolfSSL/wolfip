@@ -698,6 +698,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_filter_drop_receiving);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_closes_matching_tcp_socket);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_frag_needed_reduces_tcp_peer_mss);
+    tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_match_tcp_socket);
     tcase_add_test(tc_proto, test_udp_sendto_and_recvfrom);
     tcase_add_test(tc_proto, test_udp_sendto_respects_mtu_api);
     tcase_add_test(tc_proto, test_udp_recvfrom_sets_remote_ip);

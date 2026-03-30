@@ -2142,6 +2142,65 @@ START_TEST(test_icmp_input_dest_unreach_frag_needed_reduces_tcp_peer_mss)
 }
 END_TEST
 
+START_TEST(test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_match_tcp_socket)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t packet[sizeof(struct wolfIP_icmp_dest_unreachable_packet) + 4];
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)packet;
+    struct wolfIP_ip_wire *orig_ip;
+    uint8_t *orig_tcp;
+    uint16_t port;
+    uint32_t icmp_body_len;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(packet, 0, sizeof(packet));
+    icmp_body_len = ICMP_HEADER_LEN + 24U + 8U;
+    icmp->ip.src = ee32(0x0A0000FEU);
+    icmp->ip.dst = ee32(ts->local_ip);
+    icmp->ip.ttl = 64;
+    icmp->ip.proto = WI_IPPROTO_ICMP;
+    icmp->ip.len = ee16(IP_HEADER_LEN + icmp_body_len);
+    icmp->type = ICMP_DEST_UNREACH;
+    icmp->code = ICMP_PORT_UNREACH;
+
+    orig_ip = (struct wolfIP_ip_wire *)(packet + sizeof(struct wolfIP_icmp_packet));
+    orig_ip->ver_ihl = 0x46;
+    orig_ip->proto = WI_IPPROTO_TCP;
+    orig_ip->src = ee32(ts->local_ip);
+    orig_ip->dst = ee32(ts->remote_ip);
+    orig_ip->len = ee16(24U + 8U);
+    memset(orig_ip->data, 0xAB, 4);
+
+    orig_tcp = ((uint8_t *)orig_ip) + 24U;
+    port = ee16(ts->src_port);
+    memcpy(orig_tcp, &port, sizeof(port));
+    port = ee16(ts->dst_port);
+    memcpy(orig_tcp + sizeof(port), &port, sizeof(port));
+
+    icmp->csum = ee16(icmp_checksum(icmp, icmp_body_len));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + icmp_body_len);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)icmp, frame_len);
+
+    ck_assert_uint_eq(ts->proto, 0U);
+}
+END_TEST
+
 START_TEST(test_dns_send_query_errors)
 {
     struct wolfIP s;
