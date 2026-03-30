@@ -5503,6 +5503,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
     uint8_t *opt = (uint8_t *)msg->options;
     uint8_t *opt_end;
     int saw_end = 0;
+    int saw_server_id = 0;
     uint32_t ip;
     uint32_t netmask = DHCP_DEFAULT_24BIT_NETMASK;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
@@ -5566,6 +5567,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                         if (len < 4)
                             return -1;
                         s->dhcp_server_ip = DHCP_OPT_data_to_u32(inner);
+                        saw_server_id = 1;
                     }
                     if (code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
@@ -5574,7 +5576,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                     }
                     opt += 2 + len;
                 }
-                if (!saw_end)
+                if (!saw_end || !saw_server_id)
                     return -1;
                 ip = ee32(msg->yiaddr);
                 if (primary) {

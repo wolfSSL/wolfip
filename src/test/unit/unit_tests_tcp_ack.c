@@ -519,6 +519,39 @@ START_TEST(test_dhcp_parse_offer_ignores_zero_len_unknown_option)
 }
 END_TEST
 
+START_TEST(test_dhcp_parse_offer_missing_server_id_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+    uint32_t offer_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    s.dhcp_server_ip = 0x0A000001U;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.yiaddr = ee32(offer_ip);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + 4), -1);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000001U);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_int_ne(s.dhcp_state, DHCP_REQUEST_SENT);
+}
+END_TEST
+
 START_TEST(test_dhcp_parse_offer_missing_end_rejected)
 {
     struct wolfIP s;
