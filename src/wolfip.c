@@ -1248,7 +1248,7 @@ static inline int tx_has_writable_space(const struct tsocket *t)
         return fifo_can_push_len((const struct fifo *)&t->sock.udp.txbuf, min_len);
     }
     if (t->proto == WI_IPPROTO_ICMP) {
-        min_len = (uint32_t)(sizeof(struct wolfIP_icmp_packet) + ICMP_HEADER_LEN);
+        min_len = (uint32_t)sizeof(struct wolfIP_icmp_packet);
         return fifo_can_push_len((const struct fifo *)&t->sock.udp.txbuf, min_len);
     }
     return 0;

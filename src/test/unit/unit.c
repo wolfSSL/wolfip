@@ -107,6 +107,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_getdev_ex_api);
     tcase_add_test(tc_utils, test_wolfip_ll_frame_mtu_enforces_minimum);
     tcase_add_test(tc_utils, test_transport_capacity_helpers_cover_guard_paths);
+    tcase_add_test(tc_utils, test_tx_has_writable_space_icmp_accepts_minimal_packet);
     tcase_add_test(tc_utils, test_wolfip_if_for_local_ip_single_interface_falls_back_to_zero);
     tcase_add_test(tc_utils, test_wolfip_mtu_set_get_api);
     tcase_add_test(tc_utils, test_wolfip_ll_at_and_ipconf_at_invalid);

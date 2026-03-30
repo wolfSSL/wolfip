@@ -2733,6 +2733,22 @@ START_TEST(test_transport_capacity_helpers_cover_guard_paths)
 }
 END_TEST
 
+START_TEST(test_tx_has_writable_space_icmp_accepts_minimal_packet)
+{
+    struct tsocket ts;
+
+    memset(&ts, 0, sizeof(ts));
+    ts.proto = WI_IPPROTO_ICMP;
+    fifo_init(&ts.sock.udp.txbuf, ts.txmem, TXBUF_SIZE);
+
+    /* Exact room for one descriptor plus the minimal queued ICMP frame. */
+    ts.sock.udp.txbuf.size =
+        (uint32_t)(sizeof(struct pkt_desc) + sizeof(struct wolfIP_icmp_packet));
+
+    ck_assert_int_ne(tx_has_writable_space(&ts), 0);
+}
+END_TEST
+
 START_TEST(test_wolfip_if_for_local_ip_single_interface_falls_back_to_zero)
 {
     struct wolfIP s;
