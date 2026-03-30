@@ -3791,7 +3791,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     struct tcp_parsed_opts po;
                     tcp_parse_options(tcp, frame_len, &po);
                     if (po.ts_found &&
-                            po.ts_val < ee32(t->sock.tcp.last_ts)) {
+                            tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts))) {
                         tcp_send_ack(t);
                         continue;
                     }

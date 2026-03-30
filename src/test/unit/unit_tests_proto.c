@@ -4788,6 +4788,92 @@ START_TEST(test_regression_paws_rejects_stale_timestamp)
 }
 END_TEST
 
+/* RFC 7323 §5.2: TSval ordering is modulo 2^32, so after wrap a low
+ * TSval can still be newer than TS.Recent. PAWS must not reject such
+ * segments just because the raw unsigned value is smaller. */
+START_TEST(test_regression_paws_accepts_wrapped_newer_timestamp)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *tsopt;
+    uint8_t payload[4] = {0xCA, 0xFE, 0xBA, 0xBE};
+    uint8_t out[sizeof(payload)] = {0};
+    uint32_t original_ack;
+    uint32_t tcp_hlen = TCP_HEADER_LEN + TCP_OPTIONS_LEN;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.last_ts = ee32(0xFFFFFFF0U);  /* TS.Recent just before wrap */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    original_ack = ts->sock.tcp.ack;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + tcp_hlen + sizeof(payload));
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->hlen = (uint8_t)(tcp_hlen << 2);
+    seg->flags = TCP_FLAG_ACK;
+    seg->seq = ee32(100);  /* == rcv_nxt, in-window */
+    seg->ack = ee32(ts->sock.tcp.seq);
+    seg->win = ee16(65535);
+
+    tsopt = (struct tcp_opt_ts *)seg->data;
+    tsopt->opt = TCP_OPTION_TS;
+    tsopt->len = TCP_OPTION_TS_LEN;
+    tsopt->val = ee32(0x00000010U);   /* Newer than 0xFFFFFFF0 modulo 2^32 */
+    tsopt->ecr = ee32(500);
+    tsopt->pad = TCP_OPTION_NOP;
+    tsopt->eoo = TCP_OPTION_NOP;
+
+    memcpy(seg->data + TCP_OPTIONS_LEN, payload, sizeof(payload));
+    fix_tcp_checksums(seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + tcp_hlen + sizeof(payload)));
+
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_eq(ts->sock.tcp.ack, original_ack + (uint32_t)sizeof(payload));
+    ck_assert_uint_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)),
+                      (uint32_t)sizeof(payload));
+    ck_assert_mem_eq(out, payload, sizeof(payload));
+    ck_assert_uint_eq(ee32(ts->sock.tcp.last_ts), 0x00000010U);
+}
+END_TEST
+
 
 /* RFC 2131 s4.4.1: if the client receives a DHCPNAK, it must restart
  * the configuration process.  The current code silently ignores NAKs
