@@ -2039,7 +2039,7 @@ START_TEST(test_icmp_input_dest_unreach_port_unreachable_closes_matching_tcp_soc
     struct wolfIP s;
     struct tsocket *ts;
     struct wolfIP_icmp_dest_unreachable_packet icmp;
-    struct wolfIP_tcp_seg *orig;
+    struct wolfIP_tcp_wire_prefix *orig;
     uint32_t frame_len;
 
     wolfIP_init(&s);
@@ -2065,15 +2065,14 @@ START_TEST(test_icmp_input_dest_unreach_port_unreachable_closes_matching_tcp_soc
     icmp.type = ICMP_DEST_UNREACH;
     icmp.code = ICMP_PORT_UNREACH;
 
-    orig = (struct wolfIP_tcp_seg *)icmp.orig_packet;
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
     orig->ip.ver_ihl = 0x45;
     orig->ip.proto = WI_IPPROTO_TCP;
     orig->ip.src = ee32(ts->local_ip);
     orig->ip.dst = ee32(ts->remote_ip);
-    orig->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
     orig->src_port = ee16(ts->src_port);
     orig->dst_port = ee16(ts->dst_port);
-    orig->hlen = TCP_HEADER_LEN << 2;
 
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 ICMP_DEST_UNREACH_SIZE));
@@ -2090,7 +2089,7 @@ START_TEST(test_icmp_input_dest_unreach_frag_needed_reduces_tcp_peer_mss)
     struct wolfIP s;
     struct tsocket *ts;
     struct wolfIP_icmp_dest_unreachable_packet icmp;
-    struct wolfIP_tcp_seg *orig;
+    struct wolfIP_tcp_wire_prefix *orig;
     uint32_t frame_len;
     uint16_t next_hop_mtu;
 
@@ -2116,19 +2115,18 @@ START_TEST(test_icmp_input_dest_unreach_frag_needed_reduces_tcp_peer_mss)
     icmp.ip.proto = WI_IPPROTO_ICMP;
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
     icmp.type = ICMP_DEST_UNREACH;
-    icmp.code = 4;
+    icmp.code = ICMP_FRAG_NEEDED;
     next_hop_mtu = ee16(576U);
     memcpy(&icmp.unused[2], &next_hop_mtu, sizeof(next_hop_mtu));
 
-    orig = (struct wolfIP_tcp_seg *)icmp.orig_packet;
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
     orig->ip.ver_ihl = 0x45;
     orig->ip.proto = WI_IPPROTO_TCP;
     orig->ip.src = ee32(ts->local_ip);
     orig->ip.dst = ee32(ts->remote_ip);
-    orig->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
     orig->src_port = ee16(ts->src_port);
     orig->dst_port = ee16(ts->dst_port);
-    orig->hlen = TCP_HEADER_LEN << 2;
 
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 ICMP_DEST_UNREACH_SIZE));

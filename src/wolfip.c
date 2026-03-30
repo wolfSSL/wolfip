@@ -655,6 +655,16 @@ struct PACKED wolfIP_ip_packet {
     uint8_t data[0];
 };
 
+/* ICMP quotes the original IP packet without the link-layer header. */
+struct PACKED wolfIP_ip_wire {
+    uint8_t ver_ihl, tos;
+    uint16_t len, id, flags_fo;
+    uint8_t ttl, proto;
+    uint16_t csum;
+    ip4 src, dst;
+    uint8_t data[0];
+};
+
 /* Describe a TCP segment down to the datalink layer */
 struct PACKED wolfIP_tcp_seg {
     struct wolfIP_ip_packet ip;
@@ -663,6 +673,12 @@ struct PACKED wolfIP_tcp_seg {
     uint8_t hlen, flags;
     uint16_t win, csum, urg;
     uint8_t data[0];
+};
+
+struct PACKED wolfIP_tcp_wire_prefix {
+    struct wolfIP_ip_wire ip;
+    uint16_t src_port, dst_port;
+    uint32_t seq;
 };
 
 struct PACKED tcp_opt_ts {
@@ -1967,8 +1983,8 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
 static void icmp_try_deliver_tcp_error(struct wolfIP *s,
                                        const struct wolfIP_icmp_packet *icmp)
 {
-    const struct wolfIP_ip_packet *orig_ip;
-    const struct wolfIP_tcp_seg *orig_tcp;
+    const struct wolfIP_ip_wire *orig_ip;
+    const struct wolfIP_tcp_wire_prefix *orig_tcp;
     uint32_t icmp_len;
     uint32_t avail;
     uint32_t orig_hlen;
@@ -1986,7 +2002,7 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
     if (avail < IP_HEADER_LEN)
         return;
 
-    orig_ip = (const struct wolfIP_ip_packet *)((const uint8_t *)icmp +
+    orig_ip = (const struct wolfIP_ip_wire *)((const uint8_t *)icmp +
             sizeof(struct wolfIP_icmp_packet));
     orig_hlen = (uint32_t)((orig_ip->ver_ihl & 0x0FU) << 2);
     if (orig_hlen < IP_HEADER_LEN || orig_hlen > avail)
@@ -1996,7 +2012,7 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
     if (avail < (orig_hlen + 8U))
         return;
 
-    orig_tcp = (const struct wolfIP_tcp_seg *)orig_ip;
+    orig_tcp = (const struct wolfIP_tcp_wire_prefix *)orig_ip;
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *t = &s->tcpsockets[i];
 
