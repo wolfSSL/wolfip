@@ -77,7 +77,9 @@ struct wolfIP_icmp_packet;
 #define ICMP_ECHO_REQUEST 8
 #define ICMP_TTL_EXCEEDED 11
 #define ICMP_DEST_UNREACH 3
+#define ICMP_PROT_UNREACH 2
 #define ICMP_PORT_UNREACH 3
+#define ICMP_FRAG_NEEDED 4
 
 #define WI_IPPROTO_ICMP 0x01
 #define WI_IPPROTO_TCP 0x06
@@ -1952,6 +1954,74 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
         fifo_push(&t->sock.udp.rxbuf, icmp, frame_len);
         t->last_pkt_ttl = icmp->ip.ttl;
         t->events |= CB_EVENT_READABLE;
+    }
+}
+
+static void icmp_try_deliver_tcp_error(struct wolfIP *s,
+                                       const struct wolfIP_icmp_packet *icmp)
+{
+    const struct wolfIP_ip_packet *orig_ip;
+    const struct wolfIP_tcp_seg *orig_tcp;
+    uint32_t icmp_len;
+    uint32_t avail;
+    uint32_t orig_hlen;
+    int i;
+
+    if (!s || !icmp)
+        return;
+    if ((icmp->type != ICMP_DEST_UNREACH) && (icmp->type != ICMP_TTL_EXCEEDED))
+        return;
+
+    icmp_len = (uint32_t)(ee16(icmp->ip.len) - IP_HEADER_LEN);
+    if (icmp_len <= ICMP_HEADER_LEN)
+        return;
+    avail = icmp_len - ICMP_HEADER_LEN;
+    if (avail < IP_HEADER_LEN)
+        return;
+
+    orig_ip = (const struct wolfIP_ip_packet *)((const uint8_t *)icmp +
+            sizeof(struct wolfIP_icmp_packet));
+    orig_hlen = (uint32_t)((orig_ip->ver_ihl & 0x0FU) << 2);
+    if (orig_hlen < IP_HEADER_LEN || orig_hlen > avail)
+        return;
+    if (orig_ip->proto != WI_IPPROTO_TCP)
+        return;
+    if (avail < (orig_hlen + 8U))
+        return;
+
+    orig_tcp = (const struct wolfIP_tcp_seg *)orig_ip;
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+
+        if (t->proto != WI_IPPROTO_TCP)
+            continue;
+        if (t->sock.tcp.state == TCP_CLOSED || t->sock.tcp.state == TCP_LISTEN)
+            continue;
+        if (t->local_ip != ee32(orig_ip->src) || t->remote_ip != ee32(orig_ip->dst))
+            continue;
+        if (t->src_port != ee16(orig_tcp->src_port) ||
+                t->dst_port != ee16(orig_tcp->dst_port))
+            continue;
+
+        if (icmp->type == ICMP_DEST_UNREACH) {
+            if (icmp->code == ICMP_FRAG_NEEDED) {
+                uint16_t next_hop_mtu = 0;
+
+                memcpy(&next_hop_mtu, &icmp->unused[2], sizeof(next_hop_mtu));
+                next_hop_mtu = ee16(next_hop_mtu);
+                if (next_hop_mtu > (IP_HEADER_LEN + TCP_HEADER_LEN)) {
+                    uint16_t new_mss =
+                        (uint16_t)(next_hop_mtu - (IP_HEADER_LEN + TCP_HEADER_LEN));
+
+                    if (t->sock.tcp.peer_mss == 0 || new_mss < t->sock.tcp.peer_mss)
+                        t->sock.tcp.peer_mss = new_mss;
+                }
+            } else if (icmp->code == ICMP_PROT_UNREACH ||
+                    icmp->code == ICMP_PORT_UNREACH) {
+                close_socket(t);
+            }
+        }
+        break;
     }
 }
 
@@ -5190,7 +5260,10 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         }
 #endif
         wolfIP_ll_send_frame(s, if_idx, ip, len);
+        return;
     }
+    icmp_try_deliver_tcp_error(s, icmp);
+    icmp_try_recv(s, if_idx, icmp, len);
 }
 
 static int dhcp_send_discover(struct wolfIP *s);
