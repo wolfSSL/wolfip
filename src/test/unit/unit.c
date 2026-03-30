@@ -697,6 +697,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_udp_recvfrom_null_addrlen);
     tcase_add_test(tc_proto, test_udp_recvfrom_src_equals_local_ip_does_not_persist_remote);
     tcase_add_test(tc_proto, test_dns_query_and_callback_a);
+    tcase_add_test(tc_proto, test_dhcp_option_u32_macros_round_trip_wire_order);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_and_ack);
     tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_defaults_t1_t2);
     tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_small_lease_clamps_t1_t2);

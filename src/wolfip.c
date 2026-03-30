@@ -5291,8 +5291,10 @@ static void dhcp_cancel_timer(struct wolfIP *s)
 }
 
 #define DHCP_OPT_data_to_u32(opt)                    \
-   ((opt)->data[0]        | ((opt)->data[1] << 8) |  \
-   ((opt)->data[2] << 16) | ((opt)->data[3] << 24))
+   (((uint32_t)(opt)->data[0] << 24) |               \
+    ((uint32_t)(opt)->data[1] << 16) |               \
+    ((uint32_t)(opt)->data[2] << 8)  |               \
+    ((uint32_t)(opt)->data[3] << 0))
 
 #define DHCP_OPT_u32_to_data(opt, v)          \
     do {                                      \
@@ -5303,10 +5305,9 @@ static void dhcp_cancel_timer(struct wolfIP *s)
     } while (0)
 
 /* Default netmask (returned if the offer does not deliver one)
- * must be in network order (same order as DHCP_OPT_data_to_u32 on the field,
- * if present).
+ * is stored in host order, matching DHCP_OPT_data_to_u32().
  */
-#define DHCP_DEFAULT_24BIT_NETMASK (0x00FFFFFFu)
+#define DHCP_DEFAULT_24BIT_NETMASK (0xFFFFFF00u)
 
 static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
@@ -5373,7 +5374,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                     if (code == DHCP_OPTION_SERVER_ID) {
                         if (len < 4)
                             return -1;
-                        s->dhcp_server_ip = ee32(DHCP_OPT_data_to_u32(inner));
+                        s->dhcp_server_ip = DHCP_OPT_data_to_u32(inner);
                     }
                     if (code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
@@ -5387,7 +5388,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                 ip = ee32(msg->yiaddr);
                 if (primary) {
                     primary->ip = ip;
-                    primary->mask = ee32(netmask);
+                    primary->mask = netmask;
                 }
                 s->dhcp_ip = ip;
                 dhcp_cancel_timer(s);
@@ -5511,39 +5512,39 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                         if (len < 4)
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
-                        s->dhcp_server_ip = ee32(data);
+                        s->dhcp_server_ip = data;
                     } else if (primary && code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
-                        primary->ip = ee32(data);
+                        primary->ip = data;
                     } else if (primary && code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
-                        primary->mask = ee32(data);
+                        primary->mask = data;
                     } else if (primary && code == DHCP_OPTION_ROUTER) {
                         if (len < 4)
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
-                        primary->gw = ee32(data);
+                        primary->gw = data;
                     } else if ((code == DHCP_OPTION_DNS) && (s->dns_server == 0)) {
                         if (len < 4)
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
-                        s->dns_server = ee32(data);
+                        s->dns_server = data;
                     } else if (code == DHCP_OPTION_LEASE_TIME) {
                         if (len < 4)
                             return -1;
-                        lease_s = ee32(DHCP_OPT_data_to_u32(inner));
+                        lease_s = DHCP_OPT_data_to_u32(inner);
                     } else if (code == DHCP_OPTION_RENEWAL_TIME) {
                         if (len < 4)
                             return -1;
-                        renew_s = ee32(DHCP_OPT_data_to_u32(inner));
+                        renew_s = DHCP_OPT_data_to_u32(inner);
                     } else if (code == DHCP_OPTION_REBIND_TIME) {
                         if (len < 4)
                             return -1;
-                        rebind_s = ee32(DHCP_OPT_data_to_u32(inner));
+                        rebind_s = DHCP_OPT_data_to_u32(inner);
                     }
                     opt += 2 + len;
                 }
