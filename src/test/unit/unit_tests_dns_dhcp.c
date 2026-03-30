@@ -975,6 +975,45 @@ START_TEST(test_dhcp_send_discover_send_failure_retries_next_tick)
 }
 END_TEST
 
+START_TEST(test_dhcp_messages_set_secs_from_process_start)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *msg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 1U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    s.dhcp_start_tick = 1000U;
+    s.last_tick = 3500U;
+    ck_assert_int_eq(dhcp_send_discover(&s), 0);
+
+    desc = fifo_peek(&ts->sock.udp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    udp = (struct wolfIP_udp_datagram *)(ts->txmem + desc->pos + sizeof(*desc));
+    msg = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(ee16(msg->secs), 2U);
+
+    ck_assert_ptr_nonnull(fifo_pop(&ts->sock.udp.txbuf));
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 4200U;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+
+    desc = fifo_peek(&ts->sock.udp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    udp = (struct wolfIP_udp_datagram *)(ts->txmem + desc->pos + sizeof(*desc));
+    msg = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(ee16(msg->secs), 3U);
+}
+END_TEST
+
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
     struct wolfIP s;

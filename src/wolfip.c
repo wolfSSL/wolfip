@@ -1212,6 +1212,7 @@ struct wolfIP {
     uint64_t dhcp_renew_at; /* Renewal time (T1) */
     uint64_t dhcp_rebind_at; /* Rebind time (T2) */
     uint64_t dhcp_lease_expires; /* Lease expiration time */
+    uint64_t dhcp_start_tick; /* Start time of current DHCP acquisition/renewal */
     ip4 dns_server;
     uint16_t dns_id;
     int dns_udp_sd;
@@ -5348,6 +5349,24 @@ static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
     dhcp_schedule_timer_at(s, next);
 }
 
+static uint16_t dhcp_elapsed_secs(const struct wolfIP *s)
+{
+    uint64_t elapsed_ms;
+    uint64_t elapsed_secs;
+
+    if (!s)
+        return 0;
+
+    elapsed_ms = s->last_tick;
+    if (s->last_tick >= s->dhcp_start_tick)
+        elapsed_ms = s->last_tick - s->dhcp_start_tick;
+
+    elapsed_secs = elapsed_ms / 1000U;
+    if (elapsed_secs > UINT16_MAX)
+        return UINT16_MAX;
+    return (uint16_t)elapsed_secs;
+}
+
 static void dhcp_schedule_lease_timer(struct wolfIP *s,
                                       uint32_t lease_s,
                                       uint32_t renew_s,
@@ -5418,6 +5437,7 @@ static void dhcp_timer_cb(void *arg)
                 break;
             }
             s->dhcp_state = DHCP_RENEWING;
+            s->dhcp_start_tick = s->last_tick;
             s->dhcp_timeout_count = 0;
             ret = dhcp_send_request(s);
             if (ret >= 0)
@@ -5426,6 +5446,7 @@ static void dhcp_timer_cb(void *arg)
         case DHCP_RENEWING:
             if (s->dhcp_rebind_at != 0 && s->last_tick >= s->dhcp_rebind_at) {
                 s->dhcp_state = DHCP_REBINDING;
+                s->dhcp_start_tick = s->last_tick;
                 s->dhcp_timeout_count = 0;
             }
             ret = dhcp_send_request(s);
@@ -5790,6 +5811,7 @@ static int dhcp_send_request(struct wolfIP *s)
     req.htype = 1; /* Ethernet */
     req.hlen = 6; /* MAC */
     req.xid = ee32(s->dhcp_xid);
+    req.secs = ee16(dhcp_elapsed_secs(s));
     req.magic = ee32(DHCP_MAGIC);
     if ((renewing || rebinding) && primary)
         req.ciaddr = ee32(primary->ip);
@@ -5877,12 +5899,17 @@ static int dhcp_send_discover(struct wolfIP *s)
     uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
     int ret;
     uint32_t opt_sz = 0;
+
+    if (s && s->dhcp_state == DHCP_OFF)
+        s->dhcp_start_tick = s->last_tick;
+
     /* Prepare DHCP discover */
     memset(&disc, 0, sizeof(struct dhcp_msg));
     disc.op = BOOT_REQUEST;
     disc.htype = 1; /* Ethernet */
     disc.hlen = 6; /* MAC */
     disc.xid = ee32(s->dhcp_xid);
+    disc.secs = ee16(dhcp_elapsed_secs(s));
     disc.magic = ee32(DHCP_MAGIC);
     {
         struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
