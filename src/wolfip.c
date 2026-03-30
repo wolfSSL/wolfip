@@ -2043,7 +2043,9 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
                 }
             } else if (icmp->code == ICMP_PROT_UNREACH ||
                     icmp->code == ICMP_PORT_UNREACH) {
-                close_socket(t);
+                if (t->sock.tcp.state == TCP_SYN_SENT ||
+                        t->sock.tcp.state == TCP_SYN_RCVD)
+                    close_socket(t);
             }
         }
         break;
