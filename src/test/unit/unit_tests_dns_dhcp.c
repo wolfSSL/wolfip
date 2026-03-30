@@ -56,19 +56,23 @@ static void build_dhcp_ack_msg(struct dhcp_msg *msg, uint32_t server_ip, uint32_
 
 START_TEST(test_dhcp_option_u32_macros_round_trip_wire_order)
 {
-    struct dhcp_option opt;
+    struct PACKED {
+        struct dhcp_option opt;
+        uint8_t data[4];
+    } opt_buf;
+    struct dhcp_option *opt = &opt_buf.opt;
     uint32_t value = 0x0A000001U;
 
-    memset(&opt, 0, sizeof(opt));
-    opt.len = 4;
+    memset(&opt_buf, 0, sizeof(opt_buf));
+    opt->len = 4;
 
-    DHCP_OPT_u32_to_data(&opt, value);
+    DHCP_OPT_u32_to_data(opt, value);
 
-    ck_assert_uint_eq(opt.data[0], 0x0AU);
-    ck_assert_uint_eq(opt.data[1], 0x00U);
-    ck_assert_uint_eq(opt.data[2], 0x00U);
-    ck_assert_uint_eq(opt.data[3], 0x01U);
-    ck_assert_uint_eq(DHCP_OPT_data_to_u32(&opt), value);
+    ck_assert_uint_eq(opt->data[0], 0x0AU);
+    ck_assert_uint_eq(opt->data[1], 0x00U);
+    ck_assert_uint_eq(opt->data[2], 0x00U);
+    ck_assert_uint_eq(opt->data[3], 0x01U);
+    ck_assert_uint_eq(DHCP_OPT_data_to_u32(opt), value);
 }
 END_TEST
 
