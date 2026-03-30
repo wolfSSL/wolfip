@@ -6759,13 +6759,16 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
             out[o] = '\0';
             return 0;
         }
-            if ((c & 0xC0) == 0xC0) {
-                if (pos + 1 >= len)
+        if ((c & 0xC0) == 0xC0) {
+            int ptr_pos = pos;
+            if (pos + 1 >= len)
+                return -1;
+            {
+                uint16_t ptr = ((c & 0x3F) << 8) | buf[pos + 1];
+                if (ptr >= ptr_pos)
                     return -1;
-                {
-                    uint16_t ptr = ((c & 0x3F) << 8) | buf[pos + 1];
-                    pos = ptr;
-                }
+                pos = ptr;
+            }
             jumped = 1;
             continue;
         }

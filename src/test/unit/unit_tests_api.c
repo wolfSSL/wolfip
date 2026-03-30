@@ -853,6 +853,7 @@ START_TEST(test_dns_skip_and_copy_name)
 {
     uint8_t buf[64];
     int pos = 0;
+    int ptr_pos;
     int ret;
     char out[64];
 
@@ -875,6 +876,15 @@ START_TEST(test_dns_skip_and_copy_name)
     ret = dns_copy_name(buf, sizeof(buf), pos - 2, out, sizeof(out));
     ck_assert_int_eq(ret, 0);
     ck_assert_str_eq(out, "www.example.com");
+
+    /* forward pointer must be rejected */
+    ptr_pos = pos;
+    buf[pos++] = 0xC0;
+    buf[pos++] = (uint8_t)(ptr_pos + 2);
+    buf[pos++] = 3; memcpy(&buf[pos], "bad", 3); pos += 3;
+    buf[pos++] = 0;
+    ret = dns_copy_name(buf, pos, ptr_pos, out, sizeof(out));
+    ck_assert_int_eq(ret, -1);
 }
 END_TEST
 
