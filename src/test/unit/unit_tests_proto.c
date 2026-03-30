@@ -2733,6 +2733,22 @@ START_TEST(test_transport_capacity_helpers_cover_guard_paths)
 }
 END_TEST
 
+START_TEST(test_tx_has_writable_space_icmp_accepts_minimal_packet)
+{
+    struct tsocket ts;
+
+    memset(&ts, 0, sizeof(ts));
+    ts.proto = WI_IPPROTO_ICMP;
+    fifo_init(&ts.sock.udp.txbuf, ts.txmem, TXBUF_SIZE);
+
+    /* Exact room for one descriptor plus the minimal queued ICMP frame. */
+    ts.sock.udp.txbuf.size =
+        (uint32_t)(sizeof(struct pkt_desc) + sizeof(struct wolfIP_icmp_packet));
+
+    ck_assert_int_ne(tx_has_writable_space(&ts), 0);
+}
+END_TEST
+
 START_TEST(test_wolfip_if_for_local_ip_single_interface_falls_back_to_zero)
 {
     struct wolfIP s;
@@ -4587,11 +4603,13 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
     struct wolfIP s;
     struct tsocket *ts;
     struct wolfIP_tcp_seg seg;
+    struct pkt_desc *desc;
     uint32_t smss;
     uint32_t flight_size;
     uint32_t expected_ssthresh;
     uint32_t expected_cwnd;
     uint32_t cwnd_after_3rd;
+    uint8_t txbuf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS];
     int i;
 
     wolfIP_init(&s);
@@ -4624,19 +4642,32 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
     queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    /* Enqueue a sent segment at seq=snd_una so the retransmit path has
-     * something to work with (payload=8 bytes). */
-    {
-        uint32_t saved_seq = ts->sock.tcp.seq;
-        struct pkt_desc *desc;
-        ts->sock.tcp.seq = ts->sock.tcp.snd_una;
-        enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK | TCP_FLAG_PSH);
-        desc = fifo_peek(&ts->sock.tcp.txbuf);
-        ck_assert_ptr_nonnull(desc);
-        desc->flags |= PKT_FLAG_SENT;
-        ts->sock.tcp.seq = 1000 + flight_size;
-        (void)saved_seq;
+    /* Enqueue four full-sized sent segments so partial ACK handling can
+     * advance cumulatively while still leaving data outstanding. */
+    memset(txbuf, 0xAB, sizeof(txbuf));
+    for (i = 0; i < 4; i++) {
+        struct wolfIP_tcp_seg *out = (struct wolfIP_tcp_seg *)txbuf;
+        uint32_t total_len = IP_HEADER_LEN + TCP_HEADER_LEN + smss;
+        uint32_t frame_len = ETH_HEADER_LEN + total_len;
+        memset(txbuf, 0, ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN);
+        out->ip.len = ee16((uint16_t)total_len);
+        out->hlen = TCP_HEADER_LEN << 2;
+        out->flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+        out->seq = ee32(ts->sock.tcp.snd_una + (i * smss));
+        out->ack = ee32(ts->sock.tcp.ack);
+        out->src_port = ee16(ts->src_port);
+        out->dst_port = ee16(ts->dst_port);
+        memset((uint8_t *)out->ip.data + TCP_HEADER_LEN, 0xAB, smss);
+        ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, out, frame_len), 0);
     }
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    while (desc) {
+        desc->flags |= PKT_FLAG_SENT;
+        desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+        if (desc == fifo_peek(&ts->sock.tcp.txbuf))
+            break;
+    }
+    ts->sock.tcp.seq = 1000 + flight_size;
 
     /* --- Phase 1: send 3 duplicate ACKs to enter fast recovery --- */
     for (i = 0; i < 3; i++) {
@@ -4693,6 +4724,71 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
 
     /* (c) cwnd should be inflated by exactly SMSS, not recomputed */
     ck_assert_uint_eq(ts->sock.tcp.cwnd, cwnd_after_3rd + smss);
+
+    /* Simulate the fast retransmit having been sent so a partial ACK can
+     * acknowledge it and expose the next hole. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    desc->flags |= PKT_FLAG_SENT;
+    desc->flags &= ~PKT_FLAG_RETRANS;
+    desc->flags |= PKT_FLAG_WAS_RETRANS;
+
+    /* --- Phase 3: a partial ACK should stay in recovery and mark the next
+     * missing segment for retransmission. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(ts->sock.tcp.ack);
+    seg.ack = ee32(1000 + smss);
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 1000 + smss);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, cwnd_after_3rd + smss);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_eq(ee32(((struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc)))->seq),
+            1000 + smss);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+
+    /* Simulate the second retransmission being sent, then ACK all data that
+     * was outstanding when recovery began. */
+    desc->flags |= PKT_FLAG_SENT;
+    desc->flags &= ~PKT_FLAG_RETRANS;
+    desc->flags |= PKT_FLAG_WAS_RETRANS;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(ts->sock.tcp.ack);
+    seg.ack = ee32(1000 + flight_size);
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, ts->sock.tcp.ssthresh);
 }
 END_TEST
 
@@ -4788,6 +4884,92 @@ START_TEST(test_regression_paws_rejects_stale_timestamp)
 }
 END_TEST
 
+/* RFC 7323 §5.2: TSval ordering is modulo 2^32, so after wrap a low
+ * TSval can still be newer than TS.Recent. PAWS must not reject such
+ * segments just because the raw unsigned value is smaller. */
+START_TEST(test_regression_paws_accepts_wrapped_newer_timestamp)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *tsopt;
+    uint8_t payload[4] = {0xCA, 0xFE, 0xBA, 0xBE};
+    uint8_t out[sizeof(payload)] = {0};
+    uint32_t original_ack;
+    uint32_t tcp_hlen = TCP_HEADER_LEN + TCP_OPTIONS_LEN;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.last_ts = ee32(0xFFFFFFF0U);  /* TS.Recent just before wrap */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    original_ack = ts->sock.tcp.ack;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + tcp_hlen + sizeof(payload));
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->hlen = (uint8_t)(tcp_hlen << 2);
+    seg->flags = TCP_FLAG_ACK;
+    seg->seq = ee32(100);  /* == rcv_nxt, in-window */
+    seg->ack = ee32(ts->sock.tcp.seq);
+    seg->win = ee16(65535);
+
+    tsopt = (struct tcp_opt_ts *)seg->data;
+    tsopt->opt = TCP_OPTION_TS;
+    tsopt->len = TCP_OPTION_TS_LEN;
+    tsopt->val = ee32(0x00000010U);   /* Newer than 0xFFFFFFF0 modulo 2^32 */
+    tsopt->ecr = ee32(500);
+    tsopt->pad = TCP_OPTION_NOP;
+    tsopt->eoo = TCP_OPTION_NOP;
+
+    memcpy(seg->data + TCP_OPTIONS_LEN, payload, sizeof(payload));
+    fix_tcp_checksums(seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + tcp_hlen + sizeof(payload)));
+
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_eq(ts->sock.tcp.ack, original_ack + (uint32_t)sizeof(payload));
+    ck_assert_uint_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)),
+                      (uint32_t)sizeof(payload));
+    ck_assert_mem_eq(out, payload, sizeof(payload));
+    ck_assert_uint_eq(ee32(ts->sock.tcp.last_ts), 0x00000010U);
+}
+END_TEST
+
 
 /* RFC 2131 s4.4.1: if the client receives a DHCPNAK, it must restart
  * the configuration process.  The current code silently ignores NAKs
@@ -4835,6 +5017,48 @@ START_TEST(test_regression_dhcp_nak_restarts_configuration)
      * DHCP_DISCOVER_SENT). */
     ck_assert_int_ne(s.dhcp_state, DHCP_RENEWING);
     ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
+}
+END_TEST
+
+/* RFC 2131 s2: server-to-client DHCP messages use BOOT_REPLY.
+ * A reflected or malformed BOOT_REQUEST must not be treated as a DHCPNAK. */
+START_TEST(test_regression_dhcp_boot_request_nak_ignored)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0);
+
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.dhcp_state = DHCP_RENEWING;
+    s.dhcp_xid = 0x12345678U;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REQUEST;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(0x12345678U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_NAK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    (void)dhcp_poll(&s);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_RENEWING);
+    ck_assert_uint_eq(primary->ip, 0x0A000064U);
 }
 END_TEST
 

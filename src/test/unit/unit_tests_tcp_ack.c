@@ -402,6 +402,7 @@ START_TEST(test_dhcp_parse_offer_truncated_option_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -419,6 +420,7 @@ START_TEST(test_dhcp_parse_offer_len_lt_four_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -446,6 +448,7 @@ START_TEST(test_dhcp_parse_offer_ignores_short_unknown_option)
     ck_assert_ptr_nonnull(primary);
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.yiaddr = ee32(offer_ip);
     opt = (struct dhcp_option *)msg.options;
@@ -488,6 +491,7 @@ START_TEST(test_dhcp_parse_offer_ignores_zero_len_unknown_option)
     ck_assert_ptr_nonnull(primary);
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.yiaddr = ee32(offer_ip);
     opt = (struct dhcp_option *)msg.options;
@@ -515,6 +519,39 @@ START_TEST(test_dhcp_parse_offer_ignores_zero_len_unknown_option)
 }
 END_TEST
 
+START_TEST(test_dhcp_parse_offer_missing_server_id_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+    uint32_t offer_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    s.dhcp_server_ip = 0x0A000001U;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.yiaddr = ee32(offer_ip);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + 4), -1);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000001U);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_int_ne(s.dhcp_state, DHCP_REQUEST_SENT);
+}
+END_TEST
+
 START_TEST(test_dhcp_parse_offer_missing_end_rejected)
 {
     struct wolfIP s;
@@ -523,6 +560,7 @@ START_TEST(test_dhcp_parse_offer_missing_end_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -541,6 +579,7 @@ START_TEST(test_dhcp_parse_offer_msg_type_len_ne_1_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -563,6 +602,7 @@ START_TEST(test_dhcp_parse_ack_truncated_option_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -581,6 +621,7 @@ START_TEST(test_dhcp_parse_ack_msg_type_len_ne_1_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -603,6 +644,7 @@ START_TEST(test_dhcp_parse_ack_len_lt_four_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -623,6 +665,7 @@ START_TEST(test_dhcp_parse_ack_ignores_short_unknown_option)
     struct dhcp_option *opt;
     struct ipconf *primary;
     uint32_t offer_ip = 0x0A000064U;
+    uint32_t server_ip = 0x0A000001U;
     uint32_t mask = 0xFFFFFF00U;
 
     wolfIP_init(&s);
@@ -630,6 +673,7 @@ START_TEST(test_dhcp_parse_ack_ignores_short_unknown_option)
     ck_assert_ptr_nonnull(primary);
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -640,6 +684,13 @@ START_TEST(test_dhcp_parse_ack_ignores_short_unknown_option)
     opt->len = 1;
     opt->data[0] = 0x01;
     opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = (server_ip >> 24) & 0xFF;
+    opt->data[1] = (server_ip >> 16) & 0xFF;
+    opt->data[2] = (server_ip >> 8) & 0xFF;
+    opt->data[3] = (server_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_SUBNET_MASK;
     opt->len = 4;
     opt->data[0] = (mask >> 24) & 0xFF;
@@ -657,13 +708,70 @@ START_TEST(test_dhcp_parse_ack_ignores_short_unknown_option)
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
-    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 20), 0);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 26), 0);
     ck_assert_uint_eq(primary->ip, offer_ip);
     ck_assert_uint_eq(primary->mask, mask);
+    ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
 }
 END_TEST
 
 START_TEST(test_dhcp_parse_ack_ignores_zero_len_unknown_option)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+    uint32_t offer_ip = 0x0A000064U;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t mask = 0xFFFFFF00U;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = 61; /* Client identifier (unused by parser) */
+    opt->len = 0;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 2);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = (server_ip >> 24) & 0xFF;
+    opt->data[1] = (server_ip >> 16) & 0xFF;
+    opt->data[2] = (server_ip >> 8) & 0xFF;
+    opt->data[3] = (server_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    opt->data[0] = (mask >> 24) & 0xFF;
+    opt->data[1] = (mask >> 16) & 0xFF;
+    opt->data[2] = (mask >> 8) & 0xFF;
+    opt->data[3] = (mask >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_OFFER_IP;
+    opt->len = 4;
+    opt->data[0] = (offer_ip >> 24) & 0xFF;
+    opt->data[1] = (offer_ip >> 16) & 0xFF;
+    opt->data[2] = (offer_ip >> 8) & 0xFF;
+    opt->data[3] = (offer_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 25), 0);
+    ck_assert_uint_eq(primary->ip, offer_ip);
+    ck_assert_uint_eq(primary->mask, mask);
+    ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
+}
+END_TEST
+
+START_TEST(test_dhcp_parse_ack_missing_server_id_rejected)
 {
     struct wolfIP s;
     struct dhcp_msg msg;
@@ -675,17 +783,16 @@ START_TEST(test_dhcp_parse_ack_ignores_zero_len_unknown_option)
     wolfIP_init(&s);
     primary = wolfIP_primary_ipconf(&s);
     ck_assert_ptr_nonnull(primary);
+    s.dhcp_server_ip = 0x0A000001U;
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
     opt->len = 1;
     opt->data[0] = DHCP_ACK;
     opt = (struct dhcp_option *)((uint8_t *)opt + 3);
-    opt->code = 61; /* Client identifier (unused by parser) */
-    opt->len = 0;
-    opt = (struct dhcp_option *)((uint8_t *)opt + 2);
     opt->code = DHCP_OPTION_SUBNET_MASK;
     opt->len = 4;
     opt->data[0] = (mask >> 24) & 0xFF;
@@ -703,9 +810,7 @@ START_TEST(test_dhcp_parse_ack_ignores_zero_len_unknown_option)
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
-    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 19), 0);
-    ck_assert_uint_eq(primary->ip, offer_ip);
-    ck_assert_uint_eq(primary->mask, mask);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 16), -1);
 }
 END_TEST
 
@@ -717,6 +822,7 @@ START_TEST(test_dhcp_parse_ack_missing_end_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -740,6 +846,7 @@ START_TEST(test_dhcp_parse_offer_rejects_mismatched_xid)
     s.dhcp_xid = 0x12345678U;
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.xid = ee32(0x87654321U);
     msg.yiaddr = ee32(0x0A000064U);
@@ -774,6 +881,7 @@ START_TEST(test_dhcp_parse_ack_rejects_mismatched_xid)
     s.dhcp_state = DHCP_REQUEST_SENT;
 
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     msg.xid = ee32(0x87654321U);
     opt = (struct dhcp_option *)msg.options;
@@ -790,6 +898,58 @@ START_TEST(test_dhcp_parse_ack_rejects_mismatched_xid)
 }
 END_TEST
 
+START_TEST(test_dhcp_parse_offer_rejects_boot_request_op)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REQUEST;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.yiaddr = ee32(0x0A000064U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), -1);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+}
+END_TEST
+
+START_TEST(test_dhcp_parse_ack_rejects_boot_request_op)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_ip = 0x0A000064U;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+
+    build_dhcp_ack_msg(&msg, 0x0A000001U, 0xFFFFFF00U, 0x0A000002U, 0x08080808U);
+    msg.op = BOOT_REQUEST;
+
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(primary->ip, 0U);
+}
+END_TEST
+
 START_TEST(test_dhcp_parse_offer_bad_magic_rejected)
 {
     struct wolfIP s;
@@ -798,6 +958,7 @@ START_TEST(test_dhcp_parse_offer_bad_magic_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = 0;
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -819,6 +980,7 @@ START_TEST(test_dhcp_parse_ack_bad_magic_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = 0;
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -840,6 +1002,7 @@ START_TEST(test_dhcp_parse_offer_zero_len_option_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -861,6 +1024,7 @@ START_TEST(test_dhcp_parse_ack_zero_len_option_rejected)
 
     wolfIP_init(&s);
     memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;

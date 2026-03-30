@@ -853,6 +853,7 @@ START_TEST(test_dns_skip_and_copy_name)
 {
     uint8_t buf[64];
     int pos = 0;
+    int ptr_pos;
     int ret;
     char out[64];
 
@@ -875,6 +876,15 @@ START_TEST(test_dns_skip_and_copy_name)
     ret = dns_copy_name(buf, sizeof(buf), pos - 2, out, sizeof(out));
     ck_assert_int_eq(ret, 0);
     ck_assert_str_eq(out, "www.example.com");
+
+    /* forward pointer must be rejected */
+    ptr_pos = pos;
+    buf[pos++] = 0xC0;
+    buf[pos++] = (uint8_t)(ptr_pos + 2);
+    buf[pos++] = 3; memcpy(&buf[pos], "bad", 3); pos += 3;
+    buf[pos++] = 0;
+    ret = dns_copy_name(buf, pos, ptr_pos, out, sizeof(out));
+    ck_assert_int_eq(ret, -1);
 }
 END_TEST
 
@@ -2625,6 +2635,35 @@ START_TEST(test_sock_sendto_tcp_not_established)
     ts->sock.tcp.state = TCP_SYN_SENT;
 
     ck_assert_int_eq(wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0), -1);
+}
+END_TEST
+
+START_TEST(test_sock_sendto_tcp_close_wait_allowed)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    uint8_t buf[4] = {1, 2, 3, 4};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;
+    ts->sock.tcp.peer_mss = TCP_MSS;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0),
+            (int)sizeof(buf));
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
 }
 END_TEST
 
