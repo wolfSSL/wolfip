@@ -5644,6 +5644,7 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     uint8_t *opt = (uint8_t *)msg->options;
     uint8_t *opt_end;
     int saw_end = 0;
+    int saw_server_id = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
     uint32_t lease_s = 0;
     uint32_t renew_s = 0;
@@ -5710,6 +5711,7 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                             return -1;
                         data = DHCP_OPT_data_to_u32(inner);
                         s->dhcp_server_ip = data;
+                        saw_server_id = 1;
                     } else if (primary && code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
@@ -5747,7 +5749,8 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 }
                 if (!saw_end)
                     return -1;
-                if (primary && (primary->ip != 0) && (primary->mask != 0)) {
+                if (primary && saw_server_id &&
+                    (primary->ip != 0) && (primary->mask != 0)) {
                     dhcp_cancel_timer(s);
                     s->dhcp_state = DHCP_BOUND;
                     dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);

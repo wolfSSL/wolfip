@@ -360,6 +360,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_parse_ack_msg_type_len_ne_1_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_len_lt_four_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_ignores_zero_len_unknown_option);
+    tcase_add_test(tc_utils, test_dhcp_parse_ack_missing_server_id_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_missing_end_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_offer_bad_magic_rejected);
     tcase_add_test(tc_utils, test_dhcp_parse_ack_bad_magic_rejected);
