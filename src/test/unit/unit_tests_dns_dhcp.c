@@ -3177,14 +3177,16 @@ START_TEST(test_tcp_rto_cb_fin_wait_1_no_data_requeues_finack)
 }
 END_TEST
 
-START_TEST(test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_stops_timer)
+START_TEST(test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_arms_timeout)
 {
     struct wolfIP s;
     struct tsocket *ts;
     struct wolfIP_tcp_seg ackseg;
     struct wolfIP_timer tmr;
+    uint64_t timeout_at;
 
     wolfIP_init(&s);
+    s.last_tick = 1000U;
     ts = &s.tcpsockets[0];
     memset(ts, 0, sizeof(*ts));
     ts->proto = WI_IPPROTO_TCP;
@@ -3213,9 +3215,17 @@ START_TEST(test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_stops_time
     tcp_ack(ts, &ackseg);
 
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
-    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+    ck_assert_uint_eq(ts->sock.tcp.fin_wait_2_timeout_active, 1);
+    timeout_at = find_timer_expiry(&s, ts->sock.tcp.tmr_rto);
+    ck_assert_uint_eq(timeout_at, s.last_tick + TCP_FIN_WAIT_2_TIMEOUT_MS);
+
+    (void)wolfIP_poll(&s, timeout_at);
+
+    ck_assert_int_eq(ts->proto, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
 }
 END_TEST
 

@@ -133,6 +133,9 @@ struct wolfIP_icmp_packet;
 #define TCP_RTO_G_MS 1U
 #define TCP_PERSIST_MIN_MS 1000U
 #define TCP_PERSIST_MAX_MS 60000U
+#ifndef TCP_FIN_WAIT_2_TIMEOUT_MS
+#define TCP_FIN_WAIT_2_TIMEOUT_MS 60000U
+#endif
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
 #define WOLFIP_POLL_BUDGET 128
 
@@ -1063,6 +1066,7 @@ struct tcpsocket {
     uint8_t persist_active;
     uint8_t ctrl_rto_retries;
     uint8_t ctrl_rto_active;
+    uint8_t fin_wait_2_timeout_active;
     ip4 local_ip, remote_ip;
     uint32_t peer_rwnd;
     uint16_t peer_mss;
@@ -1116,6 +1120,8 @@ static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms);
 static void tcp_rto_cb(void *arg);
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
+static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now);
+static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int if_idx);
@@ -2687,6 +2693,7 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
     uint64_t shift_rto;
     if (!t || t->proto != WI_IPPROTO_TCP)
         return;
+    t->sock.tcp.fin_wait_2_timeout_active = 0;
     if (t->sock.tcp.tmr_rto != NO_TIMER) {
         timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
         t->sock.tcp.tmr_rto = NO_TIMER;
@@ -2697,6 +2704,34 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
     tmr.cb = tcp_rto_cb;
     t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, tmr);
     t->sock.tcp.ctrl_rto_active = 1;
+}
+
+static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now)
+{
+    struct wolfIP_timer tmr = {0};
+
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
+        t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    tmr.expires = now + TCP_FIN_WAIT_2_TIMEOUT_MS;
+    tmr.arg = t;
+    tmr.cb = tcp_rto_cb;
+    t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, tmr);
+    t->sock.tcp.fin_wait_2_timeout_active = 1;
+}
+
+static void tcp_fin_wait_2_timeout_stop(struct tsocket *t)
+{
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
+        t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    t->sock.tcp.fin_wait_2_timeout_active = 0;
 }
 
 static int tcp_has_pending_unsent_payload(struct tsocket *t)
@@ -3441,6 +3476,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     if (t->sock.tcp.state == TCP_FIN_WAIT_1 && tcp_seq_leq(fin_acked, ack)) {
         t->sock.tcp.state = TCP_FIN_WAIT_2;
         tcp_ctrl_rto_stop(t);
+        tcp_fin_wait_2_timeout_start(t, t->S->last_tick);
     }
     if (t->sock.tcp.state == TCP_CLOSING && tcp_seq_leq(fin_acked, ack)) {
         t->sock.tcp.state = TCP_TIME_WAIT;
@@ -3491,11 +3527,13 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
          * stop the current RTO timer. If bytes remain in-flight and no new
          * send happens immediately, we must re-arm RTO here to avoid stalls. */
         t->sock.tcp.rto_backoff = 0;
-        if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                t->sock.tcp.tmr_rto != NO_TIMER) {
             timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
             t->sock.tcp.tmr_rto = NO_TIMER;
         }
-        if (t->sock.tcp.bytes_in_flight > 0) {
+        if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                t->sock.tcp.bytes_in_flight > 0) {
             struct wolfIP_timer new_tmr = { 0 };
             new_tmr.cb = tcp_rto_cb;
             new_tmr.expires = t->S->last_tick + t->sock.tcp.rto;
@@ -3943,6 +3981,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         } else if (t->sock.tcp.state == TCP_FIN_WAIT_1) {
                             t->sock.tcp.state = TCP_CLOSING;
                         } else if (t->sock.tcp.state == TCP_FIN_WAIT_2) {
+                            tcp_fin_wait_2_timeout_stop(t);
                             t->sock.tcp.state = TCP_TIME_WAIT;
                         }
                         if (tcplen > 0) {
@@ -3989,6 +4028,16 @@ static void tcp_rto_cb(void *arg)
     uint32_t prev_in_flight;
     if (ts->proto != WI_IPPROTO_TCP)
         return;
+    if (ts->sock.tcp.fin_wait_2_timeout_active) {
+        if (ts->sock.tcp.state != TCP_FIN_WAIT_2) {
+            tcp_fin_wait_2_timeout_stop(ts);
+            return;
+        }
+        tcp_fin_wait_2_timeout_stop(ts);
+        ts->sock.tcp.state = TCP_CLOSED;
+        close_socket(ts);
+        return;
+    }
     if (tcp_ctrl_state_needs_rto(ts) || ts->sock.tcp.ctrl_rto_active) {
         if (!tcp_ctrl_state_needs_rto(ts)) {
             tcp_ctrl_rto_stop(ts);
@@ -4919,6 +4968,7 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             ts->sock.tcp.state = TCP_CLOSING;
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_FIN_WAIT_2) {
+            tcp_fin_wait_2_timeout_stop(ts);
             ts->sock.tcp.state = TCP_TIME_WAIT;
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state != TCP_CLOSED) {
