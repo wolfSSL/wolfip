@@ -4396,7 +4396,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EINVAL;
 
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-        if (ts->sock.tcp.state != TCP_ESTABLISHED)
+        if (ts->sock.tcp.state != TCP_ESTABLISHED &&
+                ts->sock.tcp.state != TCP_CLOSE_WAIT)
             return -1;
 
         while (sent < len) {

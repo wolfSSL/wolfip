@@ -2628,6 +2628,35 @@ START_TEST(test_sock_sendto_tcp_not_established)
 }
 END_TEST
 
+START_TEST(test_sock_sendto_tcp_close_wait_allowed)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    uint8_t buf[4] = {1, 2, 3, 4};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;
+    ts->sock.tcp.peer_mss = TCP_MSS;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0),
+            (int)sizeof(buf));
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+}
+END_TEST
+
 START_TEST(test_sock_sendto_udp_sets_dest_and_assigns)
 {
     struct wolfIP s;

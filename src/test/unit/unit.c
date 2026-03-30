@@ -209,6 +209,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_sendto_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_null_buf_or_len_zero);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_not_established);
+    tcase_add_test(tc_utils, test_sock_sendto_tcp_close_wait_allowed);
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_states);
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_close_wait_empty_returns_zero);
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_close_wait_with_data);
