@@ -4587,11 +4587,13 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
     struct wolfIP s;
     struct tsocket *ts;
     struct wolfIP_tcp_seg seg;
+    struct pkt_desc *desc;
     uint32_t smss;
     uint32_t flight_size;
     uint32_t expected_ssthresh;
     uint32_t expected_cwnd;
     uint32_t cwnd_after_3rd;
+    uint8_t txbuf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS];
     int i;
 
     wolfIP_init(&s);
@@ -4624,19 +4626,32 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
     queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
-    /* Enqueue a sent segment at seq=snd_una so the retransmit path has
-     * something to work with (payload=8 bytes). */
-    {
-        uint32_t saved_seq = ts->sock.tcp.seq;
-        struct pkt_desc *desc;
-        ts->sock.tcp.seq = ts->sock.tcp.snd_una;
-        enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK | TCP_FLAG_PSH);
-        desc = fifo_peek(&ts->sock.tcp.txbuf);
-        ck_assert_ptr_nonnull(desc);
-        desc->flags |= PKT_FLAG_SENT;
-        ts->sock.tcp.seq = 1000 + flight_size;
-        (void)saved_seq;
+    /* Enqueue four full-sized sent segments so partial ACK handling can
+     * advance cumulatively while still leaving data outstanding. */
+    memset(txbuf, 0xAB, sizeof(txbuf));
+    for (i = 0; i < 4; i++) {
+        struct wolfIP_tcp_seg *out = (struct wolfIP_tcp_seg *)txbuf;
+        uint32_t total_len = IP_HEADER_LEN + TCP_HEADER_LEN + smss;
+        uint32_t frame_len = ETH_HEADER_LEN + total_len;
+        memset(txbuf, 0, ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN);
+        out->ip.len = ee16((uint16_t)total_len);
+        out->hlen = TCP_HEADER_LEN << 2;
+        out->flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+        out->seq = ee32(ts->sock.tcp.snd_una + (i * smss));
+        out->ack = ee32(ts->sock.tcp.ack);
+        out->src_port = ee16(ts->src_port);
+        out->dst_port = ee16(ts->dst_port);
+        memset((uint8_t *)out->ip.data + TCP_HEADER_LEN, 0xAB, smss);
+        ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, out, frame_len), 0);
     }
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    while (desc) {
+        desc->flags |= PKT_FLAG_SENT;
+        desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+        if (desc == fifo_peek(&ts->sock.tcp.txbuf))
+            break;
+    }
+    ts->sock.tcp.seq = 1000 + flight_size;
 
     /* --- Phase 1: send 3 duplicate ACKs to enter fast recovery --- */
     for (i = 0; i < 3; i++) {
@@ -4693,6 +4708,71 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
 
     /* (c) cwnd should be inflated by exactly SMSS, not recomputed */
     ck_assert_uint_eq(ts->sock.tcp.cwnd, cwnd_after_3rd + smss);
+
+    /* Simulate the fast retransmit having been sent so a partial ACK can
+     * acknowledge it and expose the next hole. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    desc->flags |= PKT_FLAG_SENT;
+    desc->flags &= ~PKT_FLAG_RETRANS;
+    desc->flags |= PKT_FLAG_WAS_RETRANS;
+
+    /* --- Phase 3: a partial ACK should stay in recovery and mark the next
+     * missing segment for retransmission. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(ts->sock.tcp.ack);
+    seg.ack = ee32(1000 + smss);
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 1000 + smss);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, cwnd_after_3rd + smss);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_eq(ee32(((struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc)))->seq),
+            1000 + smss);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+
+    /* Simulate the second retransmission being sent, then ACK all data that
+     * was outstanding when recovery began. */
+    desc->flags |= PKT_FLAG_SENT;
+    desc->flags &= ~PKT_FLAG_RETRANS;
+    desc->flags |= PKT_FLAG_WAS_RETRANS;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(ts->sock.tcp.ack);
+    seg.ack = ee32(1000 + flight_size);
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, ts->sock.tcp.ssthresh);
 }
 END_TEST
 

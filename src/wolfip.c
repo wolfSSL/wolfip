@@ -1049,11 +1049,13 @@ enum tcp_state {
 struct tcpsocket {
     enum tcp_state state;
     uint32_t last_ts, rtt, rto, cwnd, cwnd_count, ssthresh, tmr_rto, rto_backoff,
-             tmr_persist, seq, ack, last_ack, last, bytes_in_flight, snd_una;
+             tmr_persist, seq, ack, last_ack, last, bytes_in_flight, snd_una,
+             recovery_point;
     uint32_t srtt, rttvar;
     uint32_t last_early_rexmit_ack;
     uint8_t rto_initialized;
     uint8_t dup_acks;
+    uint8_t fast_recovery;
     uint8_t early_rexmit_done;
     uint8_t persist_backoff;
     uint8_t persist_active;
@@ -1994,7 +1996,9 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.tmr_persist = NO_TIMER;
             t->sock.tcp.bytes_in_flight = 0;
             t->sock.tcp.snd_una = t->sock.tcp.seq;
+            t->sock.tcp.recovery_point = t->sock.tcp.snd_una;
             t->sock.tcp.dup_acks = 0;
+            t->sock.tcp.fast_recovery = 0;
             t->sock.tcp.early_rexmit_done = 0;
             t->sock.tcp.persist_backoff = 0;
             t->sock.tcp.persist_active = 0;
@@ -3354,6 +3358,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     struct pkt_desc *desc;
     int ack_count = 0;
     int ack_advanced = 0;
+    int recovery_partial_ack = 0;
+    int recovery_exit_ack = 0;
     uint32_t inflight_pre = t->sock.tcp.bytes_in_flight;
 
     if (t->sock.tcp.state == TCP_LAST_ACK && tcp_seq_leq(fin_acked, ack)) {
@@ -3398,6 +3404,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             tcp_seq_leq(t->sock.tcp.snd_una, ack) &&
             tcp_seq_leq(ack, t->sock.tcp.seq)) {
         uint32_t delta;
+        uint32_t smss = tcp_cc_mss(t);
         if (ack >= t->sock.tcp.snd_una)
             delta = ack - t->sock.tcp.snd_una;
         else
@@ -3427,6 +3434,30 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         }
         if (t->sock.tcp.bytes_in_flight < inflight_pre) {
             t->events |= CB_EVENT_WRITABLE;
+        }
+        if (t->sock.tcp.fast_recovery) {
+            if (tcp_seq_lt(ack, t->sock.tcp.recovery_point)) {
+                recovery_partial_ack = 1;
+                t->sock.tcp.dup_acks = 3;
+                if (delta >= t->sock.tcp.cwnd)
+                    t->sock.tcp.cwnd = smss;
+                else
+                    t->sock.tcp.cwnd -= delta;
+                t->sock.tcp.cwnd += smss;
+                if (t->sock.tcp.cwnd < t->sock.tcp.ssthresh + smss)
+                    t->sock.tcp.cwnd = t->sock.tcp.ssthresh + smss;
+                t->sock.tcp.cwnd_count = 0;
+                (void)tcp_mark_unsacked_for_retransmit(t, ack);
+            } else {
+                recovery_exit_ack = 1;
+                t->sock.tcp.fast_recovery = 0;
+                t->sock.tcp.recovery_point = ack;
+                t->sock.tcp.dup_acks = 0;
+                t->sock.tcp.cwnd = t->sock.tcp.ssthresh;
+                t->sock.tcp.cwnd_count = 0;
+            }
+        } else {
+            t->sock.tcp.dup_acks = 0;
         }
         ack_advanced = 1;
     }
@@ -3463,6 +3494,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             {
                 uint32_t smss = tcp_cc_mss(t);
                 if (ack_advanced &&
+                        !recovery_partial_ack &&
+                        !recovery_exit_ack &&
                         ((t->sock.tcp.cwnd <= inflight_pre + smss) ||
                          (t->sock.tcp.cwnd <= 2 * smss))) {
                     if (t->sock.tcp.cwnd < t->sock.tcp.ssthresh) {
@@ -3508,6 +3541,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                 t->sock.tcp.ssthresh = 2 * smss;
             t->sock.tcp.cwnd = t->sock.tcp.ssthresh + 3 * smss;
             t->sock.tcp.cwnd_count = 0;
+            t->sock.tcp.fast_recovery = 1;
+            t->sock.tcp.recovery_point = t->sock.tcp.seq;
             (void)tcp_mark_unsacked_for_retransmit(t, ack);
         } else {
             /* RFC 5681 §3.2 step 4: inflate cwnd by SMSS for each
@@ -3720,6 +3755,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                         t->sock.tcp.seq = ee32(tcp->ack);
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
+                        t->sock.tcp.recovery_point = t->sock.tcp.snd_una;
+                        t->sock.tcp.fast_recovery = 0;
                         t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
                         t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                         if (tx_has_writable_space(t))
@@ -4003,6 +4040,8 @@ static void tcp_rto_cb(void *arg)
             if (ts->sock.tcp.ssthresh < (2 * smss))
                 ts->sock.tcp.ssthresh = 2 * smss;
         }
+        ts->sock.tcp.fast_recovery = 0;
+        ts->sock.tcp.recovery_point = ts->sock.tcp.snd_una;
 
         ptmr = &tmr;
         ptmr->expires = ts->S->last_tick + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
@@ -4317,6 +4356,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.ack = ts->sock.tcp.ack;
             newts->sock.tcp.seq = ts->sock.tcp.seq;
             newts->sock.tcp.snd_una = newts->sock.tcp.seq;
+            newts->sock.tcp.recovery_point = newts->sock.tcp.snd_una;
+            newts->sock.tcp.fast_recovery = 0;
             newts->sock.tcp.last_ts = ts->sock.tcp.last_ts;
             newts->sock.tcp.peer_rwnd = ts->sock.tcp.peer_rwnd;
             newts->sock.tcp.cwnd = tcp_initial_cwnd(newts->sock.tcp.peer_rwnd, tcp_cc_mss(newts));
