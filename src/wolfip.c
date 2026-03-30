@@ -227,7 +227,7 @@ static void fifo_init(struct fifo *f, uint8_t *data, uint32_t size)
 }
 
 /* Return the number of bytes available */
-static uint32_t fifo_space(struct fifo *f)
+static uint32_t __attribute__((unused)) fifo_space(struct fifo *f)
 {
     if (fifo_is_empty(f))
         return f->size;
@@ -4577,6 +4577,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         unsigned int if_idx;
         struct ipconf *conf;
         uint32_t ip_mtu;
+        uint32_t frame_len;
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
             return -WOLFIP_EINVAL;
 
@@ -4613,7 +4614,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (ip_mtu <= (IP_HEADER_LEN + UDP_HEADER_LEN) ||
                 len > ip_mtu - IP_HEADER_LEN - UDP_HEADER_LEN)
             return -1; /* Fragmentation not supported */
-        if (fifo_space(&ts->sock.udp.txbuf) < len) {
+        frame_len = (uint32_t)sizeof(struct wolfIP_udp_datagram) + (uint32_t)len;
+        if (!fifo_can_push_len(&ts->sock.udp.txbuf, frame_len)) {
             return -WOLFIP_EAGAIN;
         }
 
@@ -4622,7 +4624,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         udp->len = ee16(len + UDP_HEADER_LEN);
         udp->csum = 0;
         memcpy(udp->data, buf, len);
-        if (fifo_push(&ts->sock.udp.txbuf, udp, sizeof(struct wolfIP_udp_datagram) + len) < 0)
+        if (fifo_push(&ts->sock.udp.txbuf, udp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
         return len;
     } else if (IS_SOCKET_ICMP(sockfd)) {
@@ -4631,6 +4633,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         struct ipconf *conf;
         uint32_t payload_len = (uint32_t)len;
         uint32_t ip_mtu;
+        uint32_t frame_len;
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
@@ -4672,7 +4675,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 payload_len < ICMP_HEADER_LEN ||
                 payload_len > (ip_mtu - IP_HEADER_LEN))
             return -WOLFIP_EINVAL;
-        if (fifo_space(&ts->sock.udp.txbuf) < payload_len) {
+        frame_len = (uint32_t)sizeof(struct wolfIP_ip_packet) + payload_len;
+        if (!fifo_can_push_len(&ts->sock.udp.txbuf, frame_len)) {
             return -WOLFIP_EAGAIN;
         }
         if (sizeof(struct wolfIP_ip_packet) + payload_len > sizeof(frame))
@@ -4682,7 +4686,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             icmp_set_echo_id(icmp, ts->src_port);
         icmp->csum = 0;
         icmp->csum = ee16(icmp_checksum(icmp, (uint16_t)payload_len));
-        if (fifo_push(&ts->sock.udp.txbuf, icmp, sizeof(struct wolfIP_ip_packet) + payload_len) < 0)
+        if (fifo_push(&ts->sock.udp.txbuf, icmp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
         return (int)payload_len;
     } else return -1;
