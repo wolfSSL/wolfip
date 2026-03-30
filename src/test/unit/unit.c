@@ -335,6 +335,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp);
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
+    tcase_add_test(tc_utils, test_dns_callback_truncated_response_aborts_query);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
     tcase_add_test(tc_utils, test_dns_callback_wrong_id_ignored);

@@ -6546,6 +6546,7 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define DNS_A 0x01 /* A record only */
 #define DNS_PTR 0x0C
 #define DNS_RD 0x0100 /* Recursion desired */
+#define DNS_TC 0x0200 /* Truncated response */
 #define DNS_QUERY_TYPE_NONE 0
 #define DNS_QUERY_TYPE_A 1
 #define DNS_QUERY_TYPE_PTR 2
@@ -6789,6 +6790,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
     struct wolfIP *s = (struct wolfIP *)arg;
     char buf[MAX_DNS_RESPONSE];
     struct dns_header *hdr = (struct dns_header *)buf;
+    uint16_t flags;
     int dns_len;
     int pos;
     int qcount;
@@ -6808,10 +6810,15 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
             return;
         if (ee16(hdr->id) != s->dns_id)
             return;
+        flags = ee16(hdr->flags);
         /* Parse DNS response */
-        if ((ee16(hdr->flags) & 0x8100) == 0x8100) {
+        if ((flags & 0x8100) == 0x8100) {
+            if ((flags & DNS_TC) != 0) {
+                dns_abort_query(s);
+                return;
+            }
             /* RFC 1035 s4.1.1: RCODE != 0 is an error; abort query. */
-            if ((ee16(hdr->flags) & 0x000F) != 0) {
+            if ((flags & 0x000F) != 0) {
                 dns_abort_query(s);
                 return;
             }
