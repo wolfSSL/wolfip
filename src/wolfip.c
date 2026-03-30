@@ -5610,6 +5610,8 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
         return -1;
     if (ee32(msg->xid) != s->dhcp_xid)
         return -1;
+    if (msg->op != BOOT_REPLY)
+        return -1;
     if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
         opt_end = (uint8_t *)msg->options + sizeof(msg->options);
     else

@@ -5020,6 +5020,48 @@ START_TEST(test_regression_dhcp_nak_restarts_configuration)
 }
 END_TEST
 
+/* RFC 2131 s2: server-to-client DHCP messages use BOOT_REPLY.
+ * A reflected or malformed BOOT_REQUEST must not be treated as a DHCPNAK. */
+START_TEST(test_regression_dhcp_boot_request_nak_ignored)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0);
+
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.dhcp_state = DHCP_RENEWING;
+    s.dhcp_xid = 0x12345678U;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REQUEST;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(0x12345678U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_NAK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    (void)dhcp_poll(&s);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_RENEWING);
+    ck_assert_uint_eq(primary->ip, 0x0A000064U);
+}
+END_TEST
+
 /* DNS response parser does not check the RCODE field.  An error response
  * such as NXDOMAIN (RCODE=3) passes the QR+RD check, the empty answer
  * section is silently skipped, and the query stays active until the
