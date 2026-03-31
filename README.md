@@ -5,11 +5,9 @@
 wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be
 used in resource-constrained embedded systems.
 
-Endpoint only mode is supported, which means that wolfip can be used to
-establish network connections but it does not route traffic between different
-network interfaces.
-
-A single network interface can be associated with the device.
+wolfIP supports both endpoint-only mode and full multi-interface support with
+optional IP forwarding. By default, it operates as a network endpoint, but can be
+configured to forward traffic between multiple network interfaces.
 
 ## Features supported
 
@@ -17,6 +15,8 @@ A single network interface can be associated with the device.
 - No dynamic memory allocation
   - Fixed number of concurrent sockets
   - Pre-allocated buffers for packet processing in static memory
+- Multi-interface support
+- Optional IPv4-forwarding
 
 ## Protocols and RFCs
 
