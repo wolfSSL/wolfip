@@ -2648,7 +2648,7 @@ static void tcp_send_finack(struct tsocket *t)
     t->sock.tcp.last = t->sock.tcp.seq;
 }
 
-static void tcp_send_syn(struct tsocket *t, uint8_t flags)
+static int tcp_send_syn(struct tsocket *t, uint8_t flags)
 {
     struct wolfIP_tcp_seg *tcp;
     struct tcp_opt_ts *ts;
@@ -2731,7 +2731,7 @@ static void tcp_send_syn(struct tsocket *t, uint8_t flags)
         opt_len++;
     }
     tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
-    fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
+    return fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
 }
 
 /* Returns true when handshake/teardown control traffic is outstanding and
@@ -4169,16 +4169,24 @@ static void tcp_rto_cb(void *arg)
             close_socket(ts);
             return;
         }
-        ts->sock.tcp.ctrl_rto_retries++;
-        if (ts->sock.tcp.state == TCP_SYN_SENT) {
-            tcp_send_syn(ts, TCP_FLAG_SYN);
-        } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
-            tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK);
-        } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
-            tcp_send_finack(ts);
+        {
+            int queued = 0;
+
+            if (ts->sock.tcp.state == TCP_SYN_SENT) {
+                queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
+            } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
+                queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
+            } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
+                ts->sock.tcp.ctrl_rto_retries++;
+                tcp_send_finack(ts);
+                tcp_ctrl_rto_start(ts, ts->S->last_tick);
+                return;
+            }
+            if (queued)
+                ts->sock.tcp.ctrl_rto_retries++;
+            tcp_ctrl_rto_start(ts, ts->S->last_tick);
+            return;
         }
-        tcp_ctrl_rto_start(ts, ts->S->last_tick);
-        return;
     }
     if (ts->sock.tcp.state != TCP_ESTABLISHED &&
             ts->sock.tcp.state != TCP_FIN_WAIT_1)
@@ -4548,7 +4556,10 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             return -1;
         }
         ts->sock.tcp.ctrl_rto_retries = 0;
-        tcp_send_syn(ts, TCP_FLAG_SYN);
+        if (tcp_send_syn(ts, TCP_FLAG_SYN) < 0) {
+            ts->sock.tcp.state = TCP_CLOSED;
+            return -WOLFIP_EAGAIN;
+        }
         tcp_ctrl_rto_start(ts, s->last_tick);
         return -WOLFIP_EAGAIN;
     }
@@ -4581,7 +4592,6 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts = tcp_new_socket(s);
             if (!newts)
                 return -1;
-            ts->events &= ~CB_EVENT_READABLE;
             /* Don't signal writable until connection fully established */
             newts->events &= ~CB_EVENT_WRITABLE;
             newts->callback = ts->callback;
@@ -4616,7 +4626,11 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * the caller could still close the listening socket
              * while we're still accepting.
              */
-            tcp_send_syn(newts, TCP_FLAG_SYN | TCP_FLAG_ACK);
+            if (tcp_send_syn(newts, TCP_FLAG_SYN | TCP_FLAG_ACK) < 0) {
+                close_socket(newts);
+                return -WOLFIP_EAGAIN;
+            }
+            ts->events &= ~CB_EVENT_READABLE;
             newts->sock.tcp.seq++;
             newts->sock.tcp.ctrl_rto_retries = 0;
             tcp_ctrl_rto_start(newts, s->last_tick);

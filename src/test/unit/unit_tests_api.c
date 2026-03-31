@@ -1937,6 +1937,38 @@ START_TEST(test_sock_connect_tcp_local_ip_from_primary)
 }
 END_TEST
 
+START_TEST(test_sock_connect_tcp_txbuf_full_does_not_enter_syn_sent)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t tiny_txbuf[32];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_CLOSED;
+    fifo_init(&ts->sock.tcp.txbuf, tiny_txbuf, sizeof(tiny_txbuf));
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.tcp.txbuf));
+}
+END_TEST
+
 START_TEST(test_sock_connect_tcp_primary_ip_fallback)
 {
     struct wolfIP s;
@@ -2410,6 +2442,48 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
     ck_assert_uint_eq(listener->sock.tcp.ctrl_rto_active, 0);
     ck_assert_uint_eq(listener->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
+START_TEST(test_sock_accept_synack_rto_txbuf_full_does_not_consume_retry)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t tiny_txbuf[32];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+
+    fifo_init(&accepted->sock.tcp.txbuf, tiny_txbuf, sizeof(tiny_txbuf));
+    accepted->sock.tcp.ctrl_rto_retries = 0;
+    s.last_tick = 10000;
+
+    tcp_rto_cb(accepted);
+
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_retries, 0);
+    ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 1);
+    ck_assert_int_ne(accepted->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_ptr_null(fifo_peek(&accepted->sock.tcp.txbuf));
 }
 END_TEST
 

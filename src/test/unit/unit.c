@@ -253,6 +253,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_connect_tcp_filter_drop);
     tcase_add_test(tc_utils, test_sock_connect_tcp_src_port_low);
     tcase_add_test(tc_utils, test_sock_connect_tcp_initial_seq_randomized);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_txbuf_full_does_not_enter_syn_sent);
     tcase_add_test(tc_utils, test_sock_sendto_more_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_udp_no_dest);
     tcase_add_test(tc_utils, test_sock_sendto_udp_sets_dest_and_assigns);
@@ -286,6 +287,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_payload_too_long);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_payload_too_long);
     tcase_add_test(tc_utils, test_sock_accept_success);
+    tcase_add_test(tc_utils, test_sock_accept_synack_rto_txbuf_full_does_not_consume_retry);
     tcase_add_test(tc_utils, test_sock_accept_ack_with_payload_completes_handshake);
     tcase_add_test(tc_utils, test_sock_accept_ack_at_snd_nxt_completes_handshake);
     tcase_add_test(tc_utils, test_sock_accept_ack_psh_with_payload_completes_handshake);
