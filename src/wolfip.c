@@ -2483,11 +2483,64 @@ static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t ma
     return len;
 }
 
+static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
+{
+    unsigned int tx_if;
+    struct wolfIP_ll_dev *ll;
+
+    if (!t || !tcp || frame_len < ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN)
+        return -1;
+
+    tx_if = wolfIP_socket_if_idx(t);
+    ll = wolfIP_ll_at(t->S, tx_if);
+    if (!ll)
+        return -1;
+    if (wolfIP_is_loopback_if(tx_if))
+        return -1;
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
+        struct ipconf *conf = wolfIP_ipconf_at(t->S, tx_if);
+        ip4 nexthop;
+
+        if (!conf)
+            return -1;
+        nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
+
+        if (arp_lookup(t->S, tx_if, nexthop, t->nexthop_mac) < 0) {
+            arp_request(t->S, tx_if, nexthop);
+            return -1;
+        }
+    }
+#endif
+
+    t->sock.tcp.last_ack = t->sock.tcp.ack;
+    tcp->ack = ee32(t->sock.tcp.ack);
+    tcp->win = ee16(tcp_adv_win(t, 1));
+    ip_output_add_header(t, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
+            (uint16_t)(frame_len - ETH_HEADER_LEN));
+
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, tcp, frame_len) != 0)
+        return -1;
+    if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &tcp->ip, frame_len) != 0)
+        return -1;
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
+        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, t->S, tx_if, &tcp->ip.eth, frame_len) != 0)
+            return -1;
+    }
+#endif
+
+    wolfIP_ll_send_frame(t->S, tx_if, tcp, frame_len);
+    return 0;
+}
+
 static void tcp_send_empty(struct tsocket *t, uint8_t flags)
 {
     struct wolfIP_tcp_seg *tcp;
     uint8_t opt_len;
     uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
+    uint32_t frame_len;
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
     opt_len = tcp_build_ack_options(t, tcp->data, TCP_MAX_OPTIONS_LEN);
@@ -2500,8 +2553,14 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
     tcp->win = ee16(tcp_adv_win(t, 1));
     tcp->csum = 0;
     tcp->urg = 0;
-    fifo_push(&t->sock.tcp.txbuf, tcp,
-            sizeof(struct wolfIP_tcp_seg) + opt_len);
+    frame_len = sizeof(struct wolfIP_tcp_seg) + opt_len;
+    if (fifo_push(&t->sock.tcp.txbuf, tcp, frame_len) == 0)
+        return;
+
+    /* Pure ACKs have no retransmission path, so do not drop them when the
+     * shared data/control TX FIFO is saturated by already queued payload. */
+    if (flags == TCP_FLAG_ACK)
+        (void)tcp_send_empty_immediate(t, tcp, frame_len);
 }
 
 static void tcp_send_ack(struct tsocket *t)

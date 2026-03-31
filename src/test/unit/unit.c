@@ -739,6 +739,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_tcp_ip_len_below_ip_header);
     tcase_add_test(tc_proto, test_regression_syn_on_established_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_syn_on_last_ack_not_silently_processed);
+    tcase_add_test(tc_proto, test_regression_full_txbuf_still_sends_pure_ack);
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);
     tcase_add_test(tc_proto, test_regression_paws_accepts_wrapped_newer_timestamp);

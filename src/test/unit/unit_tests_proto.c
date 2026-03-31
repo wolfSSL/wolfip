@@ -4677,6 +4677,83 @@ START_TEST(test_regression_syn_on_last_ack_not_silently_processed)
 }
 END_TEST
 
+/* F/1774: even if the shared TCP TX FIFO is full of sent payload waiting for
+ * ACK, the stack still needs to emit a pure ACK for newly received data. */
+START_TEST(test_regression_full_txbuf_still_sends_pure_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    struct pkt_desc *desc;
+    uint32_t original_ack;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 900;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    while (enqueue_tcp_tx(ts, 16, (TCP_FLAG_ACK | TCP_FLAG_PSH)) == 0) {
+    }
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    while (desc) {
+        desc->flags |= PKT_FLAG_SENT;
+        desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    }
+
+    original_ack = ts->sock.tcp.ack;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->flags = TCP_FLAG_ACK;
+    seg->seq = ee32(original_ack);
+    seg->ack = ee32(ts->sock.tcp.seq);
+    seg->win = ee16(65535);
+    memcpy(seg->data, (uint8_t[]){0xDE, 0xAD, 0xBE, 0xEF}, 4);
+    fix_tcp_checksums(seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+
+    ck_assert_uint_eq(ts->sock.tcp.ack, original_ack + 4);
+
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+}
+END_TEST
+
 
 /* RFC 5681 §3.2: fast recovery deviates in multiple ways.
  * (a) ssthresh uses cwnd/2 instead of max(FlightSize/2, 2*SMSS)
