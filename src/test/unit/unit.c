@@ -742,6 +742,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_udp_checksum_zero_substituted_with_ffff);
     tcase_add_test(tc_proto, test_regression_last_ack_rejects_out_of_window_segment);
     tcase_add_test(tc_proto, test_regression_dns_id_never_zero);
+    tcase_add_test(tc_proto, test_tcp_input_listen_synack_sends_rst_and_stays_listen);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);

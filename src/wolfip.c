@@ -3777,6 +3777,15 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 return; /* malformed: TCP header exceeds IP length */
             }
             tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
+            if (t->sock.tcp.state == TCP_LISTEN) {
+                /* RFC 9293 3.10.7.2: reject ACK-bearing segments before SYN handling. */
+                if (tcp->flags & TCP_FLAG_RST)
+                    continue;
+                if (tcp->flags & TCP_FLAG_ACK) {
+                    tcp_send_reset_reply(S, if_idx, tcp);
+                    continue;
+                }
+            }
             if (tcp->flags & TCP_FLAG_SYN) {
                 struct tcp_parsed_opts po;
                 tcp_parse_options(tcp, frame_len, &po);
