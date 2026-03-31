@@ -4754,6 +4754,52 @@ START_TEST(test_regression_full_txbuf_still_sends_pure_ack)
 }
 END_TEST
 
+START_TEST(test_regression_loopback_immediate_pure_ack_uses_loopback_ll)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *loop;
+    struct wolfIP_tcp_seg seg;
+
+    wolfIP_init(&s);
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
+    loop->send = mock_send;
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_LOOPBACK_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 900;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x7F000001U;
+    ts->remote_ip = 0x7F000001U;
+    memset(&seg, 0, sizeof(seg));
+    seg.src_port = ee16(ts->src_port);
+    seg.dst_port = ee16(ts->dst_port);
+    seg.seq = ee32(ts->sock.tcp.seq);
+    seg.ack = ee32(ts->sock.tcp.ack);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+
+    ck_assert_int_eq(tcp_send_empty_immediate(ts, &seg,
+            (uint32_t)sizeof(seg)), 0);
+    ck_assert_uint_eq(ts->sock.tcp.last_ack, ts->sock.tcp.ack);
+    ck_assert_uint_eq(last_frame_sent_size, (uint32_t)sizeof(seg));
+    ck_assert_mem_eq(seg.ip.eth.dst, loop->mac, 6);
+    ck_assert_mem_eq(seg.ip.eth.src, loop->mac, 6);
+}
+END_TEST
+
 
 /* RFC 5681 §3.2: fast recovery deviates in multiple ways.
  * (a) ssthresh uses cwnd/2 instead of max(FlightSize/2, 2*SMSS)

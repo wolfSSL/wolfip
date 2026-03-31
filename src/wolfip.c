@@ -1910,10 +1910,11 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             expected_len = ee16(udp->len) + IP_HEADER_LEN + ETH_HEADER_LEN;
             if ((int)frame_len < (int)expected_len)
                 return;
-            /* Insert into socket buffer */
+            /* A bound socket matched this datagram. If the RX FIFO is full,
+             * drop silently instead of misreporting the port as closed. */
+            matched = 1;
             if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
                 t->events |= CB_EVENT_READABLE;
-                matched = 1;
             }
         }
     }
@@ -2498,10 +2499,12 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     ll = wolfIP_ll_at(t->S, tx_if);
     if (!ll)
         return -1;
-    if (wolfIP_is_loopback_if(tx_if))
-        return -1;
 #ifdef ETHERNET
-    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
+    if (wolfIP_is_loopback_if(tx_if)) {
+        if (t->local_ip == IPADDR_ANY || t->remote_ip == IPADDR_ANY)
+            return -1;
+        memcpy(t->nexthop_mac, ll->mac, 6);
+    } else if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
         struct ipconf *conf = wolfIP_ipconf_at(t->S, tx_if);
         ip4 nexthop;
 
@@ -2537,7 +2540,7 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     return 0;
 }
 
-static void tcp_send_empty(struct tsocket *t, uint8_t flags)
+static int tcp_send_empty(struct tsocket *t, uint8_t flags)
 {
     struct wolfIP_tcp_seg *tcp;
     uint8_t opt_len;
@@ -2557,17 +2560,18 @@ static void tcp_send_empty(struct tsocket *t, uint8_t flags)
     tcp->urg = 0;
     frame_len = sizeof(struct wolfIP_tcp_seg) + opt_len;
     if (fifo_push(&t->sock.tcp.txbuf, tcp, frame_len) == 0)
-        return;
+        return 0;
 
     /* Pure ACKs have no retransmission path, so do not drop them when the
      * shared data/control TX FIFO is saturated by already queued payload. */
     if (flags == TCP_FLAG_ACK)
-        (void)tcp_send_empty_immediate(t, tcp, frame_len);
+        return tcp_send_empty_immediate(t, tcp, frame_len);
+    return -1;
 }
 
 static void tcp_send_ack(struct tsocket *t)
 {
-    return tcp_send_empty(t, TCP_FLAG_ACK);
+    (void)tcp_send_empty(t, TCP_FLAG_ACK);
 }
 
 static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
@@ -2644,10 +2648,12 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
     wolfIP_ll_send_frame(s, if_idx, &out.ip, sizeof(out));
 }
 
-static void tcp_send_finack(struct tsocket *t)
+static int tcp_send_finack(struct tsocket *t)
 {
-    tcp_send_empty(t, TCP_FLAG_FIN | TCP_FLAG_ACK);
+    if (tcp_send_empty(t, TCP_FLAG_FIN | TCP_FLAG_ACK) < 0)
+        return -1;
     t->sock.tcp.last = t->sock.tcp.seq;
+    return 0;
 }
 
 static int tcp_send_syn(struct tsocket *t, uint8_t flags)
@@ -3766,6 +3772,32 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 
 }
 
+static int tcp_listen_ack_matches_child_socket(struct wolfIP *S,
+        const struct tsocket *listener, const struct wolfIP_tcp_seg *tcp)
+{
+    int i;
+    uint16_t local_port = ee16(tcp->dst_port);
+    uint16_t remote_port = ee16(tcp->src_port);
+    ip4 local_ip = ee32(tcp->ip.dst);
+    ip4 remote_ip = ee32(tcp->ip.src);
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        const struct tsocket *t = &S->tcpsockets[i];
+
+        if (t == listener || t->proto == 0 || t->S == NULL)
+            continue;
+        if (t->sock.tcp.state <= TCP_LISTEN)
+            continue;
+        if (t->src_port != local_port || t->dst_port != remote_port)
+            continue;
+        if (t->local_ip != local_ip || t->remote_ip != remote_ip)
+            continue;
+        return 1;
+    }
+
+    return 0;
+}
+
 /* Preselect socket, parse options, manage handshakes, pass to application */
 static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                       struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
@@ -3809,7 +3841,6 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         if (t->proto == 0 || t->S == NULL)
             continue;
         if (t->src_port == ee16(tcp->dst_port)) {
-            t->if_idx = (uint8_t)if_idx;
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
             if (iplen > frame_len - ETH_HEADER_LEN) {
@@ -3830,6 +3861,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
             }
+            t->if_idx = (uint8_t)if_idx;
             matched = 1;
             /* Validate minimum TCP header length (data offset). */
             if ((tcp->hlen >> 2) < TCP_HEADER_LEN) {
@@ -3845,7 +3877,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 if (tcp->flags & TCP_FLAG_RST)
                     continue;
                 if (tcp->flags & TCP_FLAG_ACK) {
-                    tcp_send_reset_reply(S, if_idx, tcp);
+                    if (!tcp_listen_ack_matches_child_socket(S, t, tcp))
+                        tcp_send_reset_reply(S, if_idx, tcp);
                     continue;
                 }
             }
@@ -4179,8 +4212,9 @@ static void tcp_rto_cb(void *arg)
             } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
                 queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
             } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
-                ts->sock.tcp.ctrl_rto_retries++;
-                tcp_send_finack(ts);
+                queued = (tcp_send_finack(ts) == 0);
+                if (queued)
+                    ts->sock.tcp.ctrl_rto_retries++;
                 tcp_ctrl_rto_start(ts, ts->S->last_tick);
                 return;
             }
@@ -5079,9 +5113,10 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
         if (ts->sock.tcp.state == TCP_ESTABLISHED) {
+            if (tcp_send_finack(ts) < 0)
+                return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             ts->sock.tcp.ctrl_rto_retries = 0;
-            tcp_send_finack(ts);
             tcp_ctrl_rto_start(ts, s->last_tick);
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
@@ -5092,9 +5127,10 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             close_socket(ts);
             return 0;
         } else if (ts->sock.tcp.state == TCP_CLOSE_WAIT) {
+            if (tcp_send_finack(ts) < 0)
+                return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_LAST_ACK;
             ts->sock.tcp.ctrl_rto_retries = 0;
-            tcp_send_finack(ts);
             tcp_ctrl_rto_start(ts, s->last_tick);
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_CLOSING) {
