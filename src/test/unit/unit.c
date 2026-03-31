@@ -329,6 +329,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
     tcase_add_test(tc_utils, test_dhcp_poll_renewing_ack_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
+    tcase_add_test(tc_utils, test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind);
     tcase_add_test(tc_utils, test_dns_callback_ptr_response);
     tcase_add_test(tc_utils, test_udp_try_recv_short_frame);
     tcase_add_test(tc_utils, test_udp_try_recv_filter_drop);

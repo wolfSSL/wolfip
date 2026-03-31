@@ -5851,6 +5851,7 @@ static int dhcp_poll(struct wolfIP *s)
          * it must restart the configuration process. */
         if (dhcp_msg_type(s, &msg, (uint32_t)len) == DHCP_NAK) {
             dhcp_cancel_timer(s);
+            wolfIP_ipconfig_set(s, 0, 0, 0);
             s->dhcp_state = DHCP_OFF;
             dhcp_send_discover(s);
             return 0;

@@ -4272,6 +4272,57 @@ START_TEST(test_dhcp_poll_rebinding_ack_binds_client)
 }
 END_TEST
 
+START_TEST(test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+    s.dhcp_xid = 0x12345678U;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_NAK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+
+    wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0x0A000001U);
+    s.dhcp_state = DHCP_RENEWING;
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(primary->mask, 0U);
+    ck_assert_uint_eq(primary->gw, 0U);
+
+    wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0x0A000001U);
+    s.dhcp_state = DHCP_REBINDING;
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(primary->mask, 0U);
+    ck_assert_uint_eq(primary->gw, 0U);
+}
+END_TEST
+
 START_TEST(test_dns_callback_ptr_response)
 {
     struct wolfIP s;
