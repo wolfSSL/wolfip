@@ -1516,6 +1516,33 @@ START_TEST(test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs)
 }
 END_TEST
 
+START_TEST(test_tcp_has_pending_unsent_payload_ignores_zero_ip_len_ack_only_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    seg->ip.len = 0;
+
+    ck_assert_int_eq(tcp_has_pending_unsent_payload(ts), 0);
+}
+END_TEST
+
 START_TEST(test_tcp_zero_wnd_probe_rejects_invalid_inputs_and_empty_payload)
 {
     struct wolfIP s;
@@ -1539,6 +1566,8 @@ START_TEST(test_tcp_zero_wnd_probe_skips_ack_only_segment)
 {
     struct wolfIP s;
     struct tsocket *ts;
+    struct pkt_desc *ack_desc;
+    struct pkt_desc *data_desc;
     ip4 local_ip = 0x0A000001U;
     ip4 remote_ip = 0x0A000002U;
     uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0x46};
@@ -1573,6 +1602,12 @@ START_TEST(test_tcp_zero_wnd_probe_skips_ack_only_segment)
     ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
     ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
             (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    ack_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(ack_desc);
+    ((struct wolfIP_tcp_seg *)(ts->txmem + ack_desc->pos + sizeof(*ack_desc)))->ip.len = 0;
+    data_desc = fifo_next(&ts->sock.tcp.txbuf, ack_desc);
+    ck_assert_ptr_nonnull(data_desc);
+    ((struct wolfIP_tcp_seg *)(ts->txmem + data_desc->pos + sizeof(*data_desc)))->ip.len = 0;
     ck_assert_int_eq(tcp_send_zero_wnd_probe(ts), 0);
 
     ck_assert_uint_gt(last_frame_sent_size, 0);
@@ -1884,6 +1919,38 @@ START_TEST(test_tcp_rto_cb_clears_bookkeeping_when_no_payload_pending)
 }
 END_TEST
 
+START_TEST(test_tcp_rto_cb_does_not_signal_writable_for_zero_ip_len_ack_only_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.rto_backoff = 3;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    seg->ip.len = 0;
+    seg->seq = ee32(100);
+
+    tcp_rto_cb(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rto_backoff, 0);
+    ck_assert_int_eq(ts->events & CB_EVENT_WRITABLE, 0);
+}
+END_TEST
 START_TEST(test_tcp_rto_cb_closes_socket_when_backoff_exhausted)
 {
     struct wolfIP s;

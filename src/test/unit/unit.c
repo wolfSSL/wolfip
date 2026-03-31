@@ -296,6 +296,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
     tcase_add_test(tc_utils, test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload);
     tcase_add_test(tc_utils, test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs);
+    tcase_add_test(tc_utils, test_tcp_has_pending_unsent_payload_ignores_zero_ip_len_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);
     tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_rejects_invalid_inputs_and_empty_payload);
@@ -410,6 +411,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_no_pending_resets_backoff);
     tcase_add_test(tc_utils, test_tcp_rto_cb_skips_unsent_desc);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_does_not_signal_writable_for_zero_ip_len_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_tcp_noop);
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_established_noop);
     tcase_add_test(tc_utils, test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer);
@@ -553,6 +555,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_for_retransmit_wrap_seg_end);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_retransmits_partially_acked_segment);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_rescans_after_clearing_stale_sack);
+    tcase_add_test(tc_utils, test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);

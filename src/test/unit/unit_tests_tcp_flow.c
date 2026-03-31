@@ -190,6 +190,47 @@ START_TEST(test_tcp_mark_unsacked_rescans_after_clearing_stale_sack)
 }
 END_TEST
 
+START_TEST(test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc1;
+    struct pkt_desc *desc2;
+    struct wolfIP_tcp_seg *seg1;
+    int ret;
+    uint8_t payload[4] = {0x21, 0x22, 0x23, 0x24};
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.bytes_in_flight = sizeof(payload);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    desc1 = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc1);
+    seg1 = (struct wolfIP_tcp_seg *)(ts->txmem + desc1->pos + sizeof(*desc1));
+    seg1->ip.len = 0;
+    seg1->seq = ee32(100);
+
+    desc2 = fifo_next(&ts->sock.tcp.txbuf, desc1);
+    ck_assert_ptr_nonnull(desc2);
+    desc2->flags |= PKT_FLAG_SENT;
+
+    ret = tcp_mark_unsacked_for_retransmit(ts, 100);
+    ck_assert_int_eq(ret, 1);
+    ck_assert_int_eq(desc2->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc2->flags & PKT_FLAG_RETRANS, 0);
+}
+END_TEST
 START_TEST(test_tcp_ack_sack_blocks_clamped_and_dropped)
 {
     struct wolfIP s;

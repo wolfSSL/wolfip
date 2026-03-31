@@ -2755,6 +2755,27 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t)
     t->sock.tcp.fin_wait_2_timeout_active = 0;
 }
 
+static uint32_t tcp_tx_desc_payload_len(const struct pkt_desc *desc,
+        const struct wolfIP_tcp_seg *seg)
+{
+    uint32_t seg_ip_len;
+    uint32_t seg_hdr_len;
+
+    if (!desc || !seg)
+        return 0;
+    seg_hdr_len = IP_HEADER_LEN + (uint32_t)(seg->hlen >> 2);
+    seg_ip_len = ee16(seg->ip.len);
+    if (seg_ip_len == 0) {
+        if (desc->len >= (ETH_HEADER_LEN + seg_hdr_len))
+            seg_ip_len = desc->len - ETH_HEADER_LEN;
+        else
+            seg_ip_len = desc->len;
+    }
+    if (seg_ip_len <= seg_hdr_len)
+        return 0;
+    return seg_ip_len - seg_hdr_len;
+}
+
 static int tcp_has_pending_unsent_payload(struct tsocket *t)
 {
     struct pkt_desc *desc;
@@ -2769,7 +2790,7 @@ static int tcp_has_pending_unsent_payload(struct tsocket *t)
         struct wolfIP_tcp_seg *seg;
         uint32_t seg_len;
         seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
-        seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+        seg_len = tcp_tx_desc_payload_len(desc, seg);
         if (seg_len > 0 && !(desc->flags & PKT_FLAG_SENT))
             return 1;
         desc = fifo_next(&t->sock.tcp.txbuf, desc);
@@ -2846,7 +2867,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     while (desc && guard++ < budget) {
         struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         uint32_t hdr_len = (uint32_t)(seg->hlen >> 2);
-        uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + hdr_len);
+        uint32_t seg_len = tcp_tx_desc_payload_len(desc, seg);
         uint32_t seg_seq = ee32(seg->seq);
         const uint8_t *payload;
         if (seg_len == 0) {
@@ -3406,7 +3427,7 @@ static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
             if (guard++ >= budget)
                 break;
             seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
-            seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            seg_len = tcp_tx_desc_payload_len(desc, seg);
             if (seg_len == 0) {
                 desc = fifo_next(&t->sock.tcp.txbuf, desc);
                 continue;
@@ -4095,7 +4116,7 @@ static void tcp_rto_cb(void *arg)
         if (desc->flags & PKT_FLAG_SENT) {
             struct wolfIP_tcp_seg *seg =
                 (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
-            uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            uint32_t seg_len = tcp_tx_desc_payload_len(desc, seg);
             uint32_t seg_start = ee32(seg->seq);
             uint32_t seg_end = tcp_seq_inc(seg_start, seg_len);
 
@@ -4117,7 +4138,7 @@ static void tcp_rto_cb(void *arg)
         } else {
             struct wolfIP_tcp_seg *seg =
                 (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
-            uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            uint32_t seg_len = tcp_tx_desc_payload_len(desc, seg);
             uint32_t seg_start = ee32(seg->seq);
             uint32_t seg_end = tcp_seq_inc(seg_start, seg_len);
             if (seg_len > 0 &&
