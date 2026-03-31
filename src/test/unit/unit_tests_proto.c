@@ -621,7 +621,7 @@ START_TEST(test_tcp_sock_close_state_transitions)
 
     ts->sock.tcp.state = TCP_CLOSING;
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
-    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
 
     ts->sock.tcp.state = TCP_LISTEN;
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
