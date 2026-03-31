@@ -4040,6 +4040,12 @@ START_TEST(test_sock_close_tcp_fin_wait_1_repeated_close_keeps_fin_wait_2_path)
     ck_assert_uint_eq(ts->sock.tcp.fin_wait_2_timeout_active, 1);
     timeout_at = find_timer_expiry(&s, ts->sock.tcp.tmr_rto);
     ck_assert_uint_eq(timeout_at, s.last_tick + TCP_FIN_WAIT_2_TIMEOUT_MS);
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.fin_wait_2_timeout_active, 1);
+    ck_assert_uint_eq(find_timer_expiry(&s, ts->sock.tcp.tmr_rto), timeout_at);
 }
 END_TEST
 

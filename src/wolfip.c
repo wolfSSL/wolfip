@@ -5084,11 +5084,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
         } else if (ts->sock.tcp.state == TCP_CLOSING) {
             ts->sock.tcp.state = TCP_TIME_WAIT;
             return -WOLFIP_EAGAIN;
-        } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1) {
-            return -WOLFIP_EAGAIN;
-        } else if (ts->sock.tcp.state == TCP_FIN_WAIT_2) {
-            tcp_fin_wait_2_timeout_stop(ts);
-            ts->sock.tcp.state = TCP_TIME_WAIT;
+        } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                ts->sock.tcp.state == TCP_FIN_WAIT_2) {
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state != TCP_CLOSED) {
             ts->sock.tcp.state = TCP_CLOSED;
