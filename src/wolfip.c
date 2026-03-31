@@ -5382,6 +5382,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
 static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
 static void dhcp_timer_cb(void *arg);
+static void dhcp_cancel_timer(struct wolfIP *s);
 
 static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
 {
@@ -5491,7 +5492,10 @@ static void dhcp_timer_cb(void *arg)
             break;
         case DHCP_BOUND:
             if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
+                dhcp_cancel_timer(s);
+                wolfIP_ipconfig_set(s, 0, 0, 0);
                 s->dhcp_state = DHCP_OFF;
+                dhcp_send_discover(s);
                 break;
             }
             s->dhcp_state = DHCP_RENEWING;
@@ -5513,7 +5517,10 @@ static void dhcp_timer_cb(void *arg)
             break;
         case DHCP_REBINDING:
             if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
+                dhcp_cancel_timer(s);
+                wolfIP_ipconfig_set(s, 0, 0, 0);
                 s->dhcp_state = DHCP_OFF;
+                dhcp_send_discover(s);
                 break;
             }
             ret = dhcp_send_request(s);
