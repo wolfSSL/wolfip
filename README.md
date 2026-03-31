@@ -16,7 +16,7 @@ configured to forward traffic between multiple network interfaces.
   - Fixed number of concurrent sockets
   - Pre-allocated buffers for packet processing in static memory
 - Multi-interface support
-- IP forwarding and routing (configurable)
+- Optional ip-forwarding
 
 ## Protocols and RFCs
 
