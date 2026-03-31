@@ -343,6 +343,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
     tcase_add_test(tc_utils, test_dns_callback_wrong_id_ignored);
+    tcase_add_test(tc_utils, test_dns_callback_non_in_a_answer_ignored);
+    tcase_add_test(tc_utils, test_dns_callback_non_in_ptr_answer_ignored);
     tcase_add_test(tc_utils, test_dns_callback_malformed_compressed_name_aborts_query);
     tcase_add_test(tc_utils, test_dns_callback_abort_clears_query_state);
     tcase_add_test(tc_utils, test_dns_abort_query_null_noop);

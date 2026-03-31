@@ -7027,6 +7027,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 }
                 if (s->dns_query_type == DNS_QUERY_TYPE_A &&
                         ee16(rr->type) == DNS_A &&
+                        ee16(rr->class) == DNS_CLASS_IN &&
                         rdlen >= DNS_IPV4_RDATA_LEN) {
                     uint32_t ip;
                     if (pos + DNS_IPV4_RDATA_LEN > dns_len) {
@@ -7041,7 +7042,9 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                         s->dns_lookup_cb(ip);
                     dns_abort_query(s);
                     return;
-                } else if (s->dns_query_type == DNS_QUERY_TYPE_PTR && ee16(rr->type) == DNS_PTR) {
+                } else if (s->dns_query_type == DNS_QUERY_TYPE_PTR &&
+                        ee16(rr->type) == DNS_PTR &&
+                        ee16(rr->class) == DNS_CLASS_IN) {
                     if (dns_copy_name((const uint8_t *)buf, dns_len, pos,
                             s->dns_ptr_name, sizeof(s->dns_ptr_name)) == 0) {
                         if (s->dns_ptr_cb)
