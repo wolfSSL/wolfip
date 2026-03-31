@@ -4800,6 +4800,41 @@ START_TEST(test_regression_loopback_immediate_pure_ack_uses_loopback_ll)
 }
 END_TEST
 
+START_TEST(test_regression_tcp_tx_desc_payload_len_uses_link_type_not_length_heuristic)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc desc;
+    struct wolfIP_tcp_seg seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+
+    memset(&desc, 0, sizeof(desc));
+    memset(&seg, 0, sizeof(seg));
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.ip.len = 0;
+
+    /* Short Ethernet-backed descriptors must not be treated as if desc->len
+     * were already an IP length. */
+    desc.len = IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg), 0U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 0U);
+
+    /* The same descriptor length is valid on non-Ethernet/L3 links. */
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 1;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg),
+            (uint32_t)desc.len);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 4U);
+}
+END_TEST
+
 
 /* RFC 5681 §3.2: fast recovery deviates in multiple ways.
  * (a) ssthresh uses cwnd/2 instead of max(FlightSize/2, 2*SMSS)
