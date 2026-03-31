@@ -663,6 +663,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_local_ip);
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_src_port);
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_remote_ip);
+    tcase_add_test(tc_proto, test_icmp_try_recv_full_fifo_does_not_signal_readable);
     tcase_add_test(tc_proto, test_wolfip_recv_on_not_for_us);
     tcase_add_test(tc_proto, test_wolfip_recv_on_filter_drop_eth);
 #if WOLFIP_ENABLE_FORWARDING

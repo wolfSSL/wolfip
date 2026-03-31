@@ -1975,9 +1975,10 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
             continue;
         if ((int)frame_len < ee16(icmp->ip.len) + ETH_HEADER_LEN)
             continue;
-        fifo_push(&t->sock.udp.rxbuf, icmp, frame_len);
-        t->last_pkt_ttl = icmp->ip.ttl;
-        t->events |= CB_EVENT_READABLE;
+        if (fifo_push(&t->sock.udp.rxbuf, icmp, frame_len) == 0) {
+            t->last_pkt_ttl = icmp->ip.ttl;
+            t->events |= CB_EVENT_READABLE;
+        }
     }
 }
 

@@ -2704,6 +2704,53 @@ START_TEST(test_icmp_try_recv_mismatch_remote_ip)
 }
 END_TEST
 
+START_TEST(test_icmp_try_recv_full_fifo_does_not_signal_readable)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+    uint32_t fifo_used;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = icmp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 0x1234U;
+    ts->last_pkt_ttl = 77U;
+    ts->events = 0U;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.ip.src = ee32(ts->remote_ip);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 29U;
+    icmp.type = ICMP_ECHO_REPLY;
+    icmp_set_echo_id(&icmp, ts->src_port);
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    while (fifo_can_push_len(&ts->sock.udp.rxbuf, frame_len)) {
+        ret = fifo_push(&ts->sock.udp.rxbuf, &icmp, frame_len);
+        ck_assert_int_eq(ret, 0);
+    }
+
+    fifo_used = fifo_len(&ts->sock.udp.rxbuf);
+    ck_assert_uint_gt(fifo_used, 0U);
+    ck_assert_int_eq(fifo_can_push_len(&ts->sock.udp.rxbuf, frame_len), 0);
+
+    icmp.ip.ttl = 42U;
+    icmp_try_recv(&s, TEST_PRIMARY_IF, &icmp, frame_len);
+
+    ck_assert_uint_eq(fifo_len(&ts->sock.udp.rxbuf), fifo_used);
+    ck_assert_uint_eq(ts->last_pkt_ttl, 77U);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0U);
+}
+END_TEST
+
 START_TEST(test_wolfip_recv_on_not_for_us)
 {
     struct wolfIP s;
