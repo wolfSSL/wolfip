@@ -4800,7 +4800,7 @@ START_TEST(test_regression_loopback_immediate_pure_ack_uses_loopback_ll)
 }
 END_TEST
 
-START_TEST(test_regression_tcp_tx_desc_payload_len_uses_link_type_not_length_heuristic)
+START_TEST(test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity)
 {
     struct wolfIP s;
     struct tsocket *ts;
@@ -4827,10 +4827,22 @@ START_TEST(test_regression_tcp_tx_desc_payload_len_uses_link_type_not_length_heu
     ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg), 0U);
     ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 0U);
 
-    /* The same descriptor length is valid on non-Ethernet/L3 links. */
+    /* Non-Ethernet links still use the same queued descriptor layout. */
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 1;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg), 0U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 0U);
+
+    /* Once the descriptor includes stored link headroom, both paths decode
+     * the same IP and payload lengths. */
+    desc.len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 0;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg),
+            IP_HEADER_LEN + TCP_HEADER_LEN + 4U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 4U);
+
     s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 1;
     ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg),
-            (uint32_t)desc.len);
+            IP_HEADER_LEN + TCP_HEADER_LEN + 4U);
     ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 4U);
 }
 END_TEST

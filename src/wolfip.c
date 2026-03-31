@@ -2829,7 +2829,6 @@ static uint32_t tcp_tx_desc_ip_len(const struct tsocket *t,
 {
     uint32_t seg_ip_len;
     uint32_t seg_hdr_len;
-    unsigned int tx_if;
 
     if (!t || !desc || !seg)
         return 0;
@@ -2837,9 +2836,6 @@ static uint32_t tcp_tx_desc_ip_len(const struct tsocket *t,
     seg_ip_len = ee16(seg->ip.len);
     if (seg_ip_len != 0)
         return seg_ip_len;
-    tx_if = wolfIP_socket_if_idx(t);
-    if (wolfIP_ll_is_non_ethernet(t->S, tx_if))
-        return desc->len;
     if (desc->len < (ETH_HEADER_LEN + seg_hdr_len))
         return 0;
     return desc->len - ETH_HEADER_LEN;
