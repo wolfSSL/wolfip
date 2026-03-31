@@ -75,7 +75,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 workspace_root="$(cd "${repo_root}/.." && pwd)"
 repo_name="$(basename "${repo_root}")"
-image="${M33MU_CI_IMAGE:-ghcr.io/danielinux/m33mu-ci:1.7}"
+image="${M33MU_CI_IMAGE:-ghcr.io/wolfssl/wolfboot-ci:v1.2}"
 podman_tty_args=(--rm --privileged --security-opt label=disable)
 
 if [ -t 0 ] && [ -t 1 ]; then

@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.8
+      image: ghcr.io/wolfssl/wolfboot-ci:v1.2
       options: --privileged
 
     steps:
@@ -57,7 +57,7 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           EOF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          sudo dnsmasq --no-poll --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
           sudo m33mu src/port/stm32h563/app.bin \
             --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 120 \
@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.8
+      image: ghcr.io/wolfssl/wolfboot-ci:v1.2
       options: --privileged
 
     steps:
@@ -173,7 +173,7 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           EOF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          sudo dnsmasq --no-poll --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
           sudo m33mu src/port/stm32h563/app.bin \
             --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 240 \
@@ -323,7 +323,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.8
+      image: ghcr.io/wolfssl/wolfboot-ci:v1.2
       options: --privileged
 
     steps:
@@ -385,7 +385,7 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           CONF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          sudo dnsmasq --no-poll --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
           sudo tcpdump -i tap0 -nn -U -w /tmp/https-test.pcap > /tmp/tcpdump.log 2>&1 &
           echo $! > /tmp/tcpdump.pid

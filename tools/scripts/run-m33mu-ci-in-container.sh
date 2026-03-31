@@ -145,7 +145,7 @@ dhcp-range=192.168.12.50,192.168.12.100,255.255.255.0,12h
 dhcp-leasefile=/tmp/dnsmasq.leases
 log-dhcp
 EOF
-  run_root dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+  run_root dnsmasq --no-poll --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 }
 
 start_m33mu() {
