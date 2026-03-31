@@ -4751,6 +4751,75 @@ START_TEST(test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp)
 }
 END_TEST
 
+START_TEST(test_udp_try_recv_full_fifo_drop_does_not_set_readable_or_suppress_icmp)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    struct wolfIP_icmp_dest_unreachable_packet *icmp;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t remote_ip = 0x0A000002U;
+    uint8_t src_mac[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
+    uint32_t frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    uint32_t head_before;
+    uint32_t tail_before;
+    uint32_t h_wrap_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = local_ip;
+
+    memset(udp_buf, 0, sizeof(udp_buf));
+    memcpy(udp->ip.eth.src, src_mac, sizeof(src_mac));
+    memcpy(udp->ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    udp->ip.eth.type = ee16(ETH_TYPE_IP);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->ip.src = ee32(remote_ip);
+    udp->ip.dst = ee32(local_ip);
+    udp->src_port = ee16(4321);
+    udp->dst_port = ee16(1234);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    memcpy(udp->data, "test", 4);
+    fix_udp_checksums(udp);
+
+    /* Mirror the FIFO's canonical full state: head == tail with wrap set. */
+    ts->sock.udp.rxbuf.head = 0;
+    ts->sock.udp.rxbuf.tail = 0;
+    ts->sock.udp.rxbuf.h_wrap = ts->sock.udp.rxbuf.size;
+    ck_assert_int_eq(fifo_can_push_len(&ts->sock.udp.rxbuf, frame_len), 0);
+
+    head_before = ts->sock.udp.rxbuf.head;
+    tail_before = ts->sock.udp.rxbuf.tail;
+    h_wrap_before = ts->sock.udp.rxbuf.h_wrap;
+    ts->events = 0;
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp, frame_len);
+
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0U);
+    ck_assert_uint_eq(ts->sock.udp.rxbuf.head, head_before);
+    ck_assert_uint_eq(ts->sock.udp.rxbuf.tail, tail_before);
+    ck_assert_uint_eq(ts->sock.udp.rxbuf.h_wrap, h_wrap_before);
+    ck_assert_uint_eq(last_frame_sent_size,
+            sizeof(struct wolfIP_icmp_dest_unreachable_packet));
+
+    icmp = (struct wolfIP_icmp_dest_unreachable_packet *)last_frame_sent;
+    ck_assert_uint_eq(icmp->type, 3U);
+    ck_assert_uint_eq(icmp->code, 3U);
+}
+END_TEST
+
 START_TEST(test_dns_callback_bad_flags)
 {
     struct wolfIP s;

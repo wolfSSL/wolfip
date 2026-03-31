@@ -1911,9 +1911,10 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             if ((int)frame_len < (int)expected_len)
                 return;
             /* Insert into socket buffer */
-            fifo_push(&t->sock.udp.rxbuf, udp, frame_len);
-            t->events |= CB_EVENT_READABLE;
-            matched = 1;
+            if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
+                t->events |= CB_EVENT_READABLE;
+                matched = 1;
+            }
         }
     }
     if (!matched) {

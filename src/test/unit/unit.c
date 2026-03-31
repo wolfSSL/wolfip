@@ -342,6 +342,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_remote_ip_matches_local_ip);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp);
+    tcase_add_test(tc_utils, test_udp_try_recv_full_fifo_drop_does_not_set_readable_or_suppress_icmp);
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
     tcase_add_test(tc_utils, test_dns_callback_truncated_response_aborts_query);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
