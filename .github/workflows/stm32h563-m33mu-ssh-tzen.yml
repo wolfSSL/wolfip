@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.8
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
       options: --privileged
 
     steps:

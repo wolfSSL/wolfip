@@ -123,6 +123,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter);
     tcase_add_test(tc_utils, test_tcp_adv_win_clamps_and_applies_window_scale);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
+    tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
     tcase_add_test(tc_utils, test_wolfip_poll_executes_timers_and_callbacks);
     tcase_add_test(tc_utils, test_wolfip_poll_drains_all_expired_timers_in_one_pass);
@@ -252,6 +253,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_connect_tcp_filter_drop);
     tcase_add_test(tc_utils, test_sock_connect_tcp_src_port_low);
     tcase_add_test(tc_utils, test_sock_connect_tcp_initial_seq_randomized);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_txbuf_full_does_not_enter_syn_sent);
     tcase_add_test(tc_utils, test_sock_sendto_more_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_udp_no_dest);
     tcase_add_test(tc_utils, test_sock_sendto_udp_sets_dest_and_assigns);
@@ -285,6 +287,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_payload_too_long);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_payload_too_long);
     tcase_add_test(tc_utils, test_sock_accept_success);
+    tcase_add_test(tc_utils, test_sock_accept_synack_rto_txbuf_full_does_not_consume_retry);
     tcase_add_test(tc_utils, test_sock_accept_ack_with_payload_completes_handshake);
     tcase_add_test(tc_utils, test_sock_accept_ack_at_snd_nxt_completes_handshake);
     tcase_add_test(tc_utils, test_sock_accept_ack_psh_with_payload_completes_handshake);
@@ -296,6 +299,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
     tcase_add_test(tc_utils, test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload);
     tcase_add_test(tc_utils, test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs);
+    tcase_add_test(tc_utils, test_tcp_has_pending_unsent_payload_ignores_zero_ip_len_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);
     tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_rejects_invalid_inputs_and_empty_payload);
@@ -315,8 +319,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_hit);
     tcase_add_test(tc_utils, test_poll_icmp_send_on_arp_miss_requests_arp_and_retains_queue);
     tcase_add_test(tc_utils, test_dhcp_timer_cb_paths);
+    tcase_add_test(tc_utils, test_regression_dhcp_lease_expiry_deconfigures_address);
     tcase_add_test(tc_utils, test_dhcp_timer_cb_send_failure_does_not_consume_retry_budget);
     tcase_add_test(tc_utils, test_dhcp_client_init_and_bound);
+    tcase_add_test(tc_utils, test_dhcp_client_init_bind_failure_closes_socket);
     tcase_add_test(tc_utils, test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline);
     tcase_add_test(tc_utils, test_dhcp_send_request_rebinding_broadcasts_to_lease_expiry);
     tcase_add_test(tc_utils, test_dhcp_send_request_send_failure_retries_next_tick);
@@ -325,6 +331,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
     tcase_add_test(tc_utils, test_dhcp_poll_renewing_ack_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
+    tcase_add_test(tc_utils, test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind);
     tcase_add_test(tc_utils, test_dns_callback_ptr_response);
     tcase_add_test(tc_utils, test_udp_try_recv_short_frame);
     tcase_add_test(tc_utils, test_udp_try_recv_filter_drop);
@@ -335,11 +342,14 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_try_recv_remote_ip_matches_local_ip);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp);
+    tcase_add_test(tc_utils, test_udp_try_recv_full_fifo_drop_does_not_set_readable_or_send_icmp);
     tcase_add_test(tc_utils, test_dns_callback_bad_flags);
     tcase_add_test(tc_utils, test_dns_callback_truncated_response_aborts_query);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);
     tcase_add_test(tc_utils, test_dns_callback_wrong_id_ignored);
+    tcase_add_test(tc_utils, test_dns_callback_non_in_a_answer_ignored);
+    tcase_add_test(tc_utils, test_dns_callback_non_in_ptr_answer_ignored);
     tcase_add_test(tc_utils, test_dns_callback_malformed_compressed_name_aborts_query);
     tcase_add_test(tc_utils, test_dns_callback_abort_clears_query_state);
     tcase_add_test(tc_utils, test_dns_abort_query_null_noop);
@@ -410,14 +420,17 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_no_pending_resets_backoff);
     tcase_add_test(tc_utils, test_tcp_rto_cb_skips_unsent_desc);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_does_not_signal_writable_for_zero_ip_len_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_tcp_noop);
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_established_noop);
     tcase_add_test(tc_utils, test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_input_synack_cancels_control_rto);
     tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_requeues_finack_and_arms_timer);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_full_txbuf_keeps_retry_budget);
     tcase_add_test(tc_utils, test_tcp_ctrl_state_needs_rto_fin_wait_1_waits_for_payload_drain);
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_with_data_uses_data_recovery);
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_no_data_requeues_finack);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_no_data_full_txbuf_keeps_retry_budget);
     tcase_add_test(tc_utils, test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_arms_timeout);
     tcase_add_test(tc_utils, test_tcp_ack_closing_ack_of_fin_moves_to_time_wait_and_stops_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_control_retry_cap_closes_socket);
@@ -429,6 +442,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_close_udp_icmp);
     tcase_add_test(tc_utils, test_sock_close_invalid_fds);
     tcase_add_test(tc_utils, test_sock_close_tcp_fin_wait_1);
+    tcase_add_test(tc_utils, test_sock_close_tcp_established_full_txbuf_preserves_state);
+    tcase_add_test(tc_utils, test_sock_close_tcp_close_wait_full_txbuf_preserves_state);
     tcase_add_test(tc_utils, test_sock_close_tcp_other_state_closes);
     tcase_add_test(tc_utils, test_sock_close_tcp_cancels_rto_timer);
     tcase_add_test(tc_utils, test_sock_close_tcp_closed_returns_minus_one);
@@ -458,6 +473,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_invalid_seq_rejected);
     tcase_add_test(tc_utils, test_tcp_input_filter_drop);
     tcase_add_test(tc_utils, test_tcp_input_port_mismatch_skips_socket);
+    tcase_add_test(tc_utils, test_tcp_input_remote_ip_mismatch_skips_socket);
+    tcase_add_test(tc_utils, test_tcp_input_local_ip_mismatch_preserves_if_idx);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_sends_rst);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_nonlocal_dst_does_not_send_rst);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_syn_sends_rst_ack);
@@ -553,6 +570,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_for_retransmit_wrap_seg_end);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_retransmits_partially_acked_segment);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_rescans_after_clearing_stale_sack);
+    tcase_add_test(tc_utils, test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);
@@ -580,6 +598,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_header_len_below_min_dropped);
     tcase_add_test(tc_utils, test_socket_from_fd_invalid);
     tcase_add_test(tc_utils, test_socket_from_fd_valid);
+    tcase_add_test(tc_utils, test_sock_close_tcp_fin_wait_1_repeated_close_keeps_fin_wait_2_path);
 
     tcase_add_test(tc_proto, test_arp_request_basic);
     tcase_add_test(tc_proto, test_arp_request_throttle);
@@ -649,6 +668,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_local_ip);
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_src_port);
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_remote_ip);
+    tcase_add_test(tc_proto, test_icmp_try_recv_full_fifo_does_not_signal_readable);
     tcase_add_test(tc_proto, test_wolfip_recv_on_not_for_us);
     tcase_add_test(tc_proto, test_wolfip_recv_on_filter_drop_eth);
 #if WOLFIP_ENABLE_FORWARDING
@@ -728,6 +748,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_tcp_ip_len_below_ip_header);
     tcase_add_test(tc_proto, test_regression_syn_on_established_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_syn_on_last_ack_not_silently_processed);
+    tcase_add_test(tc_proto, test_regression_full_txbuf_still_sends_pure_ack);
+    tcase_add_test(tc_proto, test_regression_loopback_immediate_pure_ack_uses_loopback_ll);
+    tcase_add_test(tc_proto, test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity);
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);
     tcase_add_test(tc_proto, test_regression_paws_accepts_wrapped_newer_timestamp);
@@ -737,6 +760,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_udp_checksum_zero_substituted_with_ffff);
     tcase_add_test(tc_proto, test_regression_last_ack_rejects_out_of_window_segment);
     tcase_add_test(tc_proto, test_regression_dns_id_never_zero);
+    tcase_add_test(tc_proto, test_tcp_input_listen_synack_sends_rst_and_stays_listen);
+    tcase_add_test(tc_proto, test_tcp_input_listen_accept_final_ack_does_not_send_rst);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);

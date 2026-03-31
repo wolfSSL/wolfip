@@ -617,11 +617,11 @@ START_TEST(test_tcp_sock_close_state_transitions)
 
     ts->sock.tcp.state = TCP_FIN_WAIT_2;
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
-    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
 
     ts->sock.tcp.state = TCP_CLOSING;
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
-    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
 
     ts->sock.tcp.state = TCP_LISTEN;
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
@@ -1516,6 +1516,33 @@ START_TEST(test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs)
 }
 END_TEST
 
+START_TEST(test_tcp_has_pending_unsent_payload_ignores_zero_ip_len_ack_only_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    seg->ip.len = 0;
+
+    ck_assert_int_eq(tcp_has_pending_unsent_payload(ts), 0);
+}
+END_TEST
+
 START_TEST(test_tcp_zero_wnd_probe_rejects_invalid_inputs_and_empty_payload)
 {
     struct wolfIP s;
@@ -1539,6 +1566,8 @@ START_TEST(test_tcp_zero_wnd_probe_skips_ack_only_segment)
 {
     struct wolfIP s;
     struct tsocket *ts;
+    struct pkt_desc *ack_desc;
+    struct pkt_desc *data_desc;
     ip4 local_ip = 0x0A000001U;
     ip4 remote_ip = 0x0A000002U;
     uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0x46};
@@ -1573,6 +1602,12 @@ START_TEST(test_tcp_zero_wnd_probe_skips_ack_only_segment)
     ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
     ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
             (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    ack_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(ack_desc);
+    ((struct wolfIP_tcp_seg *)(ts->txmem + ack_desc->pos + sizeof(*ack_desc)))->ip.len = 0;
+    data_desc = fifo_next(&ts->sock.tcp.txbuf, ack_desc);
+    ck_assert_ptr_nonnull(data_desc);
+    ((struct wolfIP_tcp_seg *)(ts->txmem + data_desc->pos + sizeof(*data_desc)))->ip.len = 0;
     ck_assert_int_eq(tcp_send_zero_wnd_probe(ts), 0);
 
     ck_assert_uint_gt(last_frame_sent_size, 0);
@@ -1884,6 +1919,38 @@ START_TEST(test_tcp_rto_cb_clears_bookkeeping_when_no_payload_pending)
 }
 END_TEST
 
+START_TEST(test_tcp_rto_cb_does_not_signal_writable_for_zero_ip_len_ack_only_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.rto_backoff = 3;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    seg->ip.len = 0;
+    seg->seq = ee32(100);
+
+    tcp_rto_cb(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rto_backoff, 0);
+    ck_assert_int_eq(ts->events & CB_EVENT_WRITABLE, 0);
+}
+END_TEST
 START_TEST(test_tcp_rto_cb_closes_socket_when_backoff_exhausted)
 {
     struct wolfIP s;
@@ -3051,6 +3118,24 @@ START_TEST(test_tcp_segment_acceptable_zero_window_and_overlap_cases)
     ck_assert_int_eq(tcp_segment_acceptable(&ts, &seg, 2U), 1);
     seg.seq = ee32(100U + wnd);
     ck_assert_int_eq(tcp_segment_acceptable(&ts, &seg, 2U), 0);
+}
+END_TEST
+
+START_TEST(test_tcp_segment_acceptable_counts_syn_in_segment_length)
+{
+    struct tsocket ts;
+    struct wolfIP_tcp_seg seg;
+
+    memset(&ts, 0, sizeof(ts));
+    memset(&seg, 0, sizeof(seg));
+    queue_init(&ts.sock.tcp.rxbuf, ts.rxmem, RXBUF_SIZE, 100U);
+    ts.sock.tcp.ack = 100U;
+
+    ts.sock.tcp.rxbuf.size = RXBUF_SIZE;
+    seg.seq = ee32(99U);
+    seg.flags = TCP_FLAG_SYN | TCP_FLAG_FIN;
+
+    ck_assert_int_eq(tcp_segment_acceptable(&ts, &seg, 0U), 1);
 }
 END_TEST
 
@@ -4589,6 +4674,176 @@ START_TEST(test_regression_syn_on_last_ack_not_silently_processed)
     ck_assert_uint_eq(ts->sock.tcp.state, TCP_LAST_ACK);
     ck_assert_uint_eq(ts->sock.tcp.ack, original_ack);
     ck_assert_uint_eq(ts->sock.tcp.seq, original_seq);
+}
+END_TEST
+
+/* F/1774: even if the shared TCP TX FIFO is full of sent payload waiting for
+ * ACK, the stack still needs to emit a pure ACK for newly received data. */
+START_TEST(test_regression_full_txbuf_still_sends_pure_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    struct pkt_desc *desc;
+    uint32_t original_ack;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 900;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    while (enqueue_tcp_tx(ts, 16, (TCP_FLAG_ACK | TCP_FLAG_PSH)) == 0) {
+    }
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    while (desc) {
+        desc->flags |= PKT_FLAG_SENT;
+        desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    }
+
+    original_ack = ts->sock.tcp.ack;
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->flags = TCP_FLAG_ACK;
+    seg->seq = ee32(original_ack);
+    seg->ack = ee32(ts->sock.tcp.seq);
+    seg->win = ee16(65535);
+    memcpy(seg->data, (uint8_t[]){0xDE, 0xAD, 0xBE, 0xEF}, 4);
+    fix_tcp_checksums(seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+
+    ck_assert_uint_eq(ts->sock.tcp.ack, original_ack + 4);
+
+    (void)wolfIP_poll(&s, 200);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+}
+END_TEST
+
+START_TEST(test_regression_loopback_immediate_pure_ack_uses_loopback_ll)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *loop;
+    struct wolfIP_tcp_seg seg;
+
+    wolfIP_init(&s);
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
+    loop->send = mock_send;
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_LOOPBACK_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 900;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x7F000001U;
+    ts->remote_ip = 0x7F000001U;
+    memset(&seg, 0, sizeof(seg));
+    seg.src_port = ee16(ts->src_port);
+    seg.dst_port = ee16(ts->dst_port);
+    seg.seq = ee32(ts->sock.tcp.seq);
+    seg.ack = ee32(ts->sock.tcp.ack);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+
+    ck_assert_int_eq(tcp_send_empty_immediate(ts, &seg,
+            (uint32_t)sizeof(seg)), 0);
+    ck_assert_uint_eq(ts->sock.tcp.last_ack, ts->sock.tcp.ack);
+    ck_assert_uint_eq(last_frame_sent_size, (uint32_t)sizeof(seg));
+    ck_assert_mem_eq(seg.ip.eth.dst, loop->mac, 6);
+    ck_assert_mem_eq(seg.ip.eth.src, loop->mac, 6);
+}
+END_TEST
+
+START_TEST(test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc desc;
+    struct wolfIP_tcp_seg seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+
+    memset(&desc, 0, sizeof(desc));
+    memset(&seg, 0, sizeof(seg));
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.ip.len = 0;
+
+    /* Short Ethernet-backed descriptors must not be treated as if desc->len
+     * were already an IP length. */
+    desc.len = IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg), 0U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 0U);
+
+    /* Non-Ethernet links still use the same queued descriptor layout. */
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 1;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg), 0U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 0U);
+
+    /* Once the descriptor includes stored link headroom, both paths decode
+     * the same IP and payload lengths. */
+    desc.len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 0;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg),
+            IP_HEADER_LEN + TCP_HEADER_LEN + 4U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 4U);
+
+    s.ll_dev[TEST_PRIMARY_IF].non_ethernet = 1;
+    ck_assert_uint_eq(tcp_tx_desc_ip_len(ts, &desc, &seg),
+            IP_HEADER_LEN + TCP_HEADER_LEN + 4U);
+    ck_assert_uint_eq(tcp_tx_desc_payload_len(ts, &desc, &seg), 4U);
 }
 END_TEST
 

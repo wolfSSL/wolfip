@@ -190,6 +190,47 @@ START_TEST(test_tcp_mark_unsacked_rescans_after_clearing_stale_sack)
 }
 END_TEST
 
+START_TEST(test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc1;
+    struct pkt_desc *desc2;
+    struct wolfIP_tcp_seg *seg1;
+    int ret;
+    uint8_t payload[4] = {0x21, 0x22, 0x23, 0x24};
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.bytes_in_flight = sizeof(payload);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    desc1 = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc1);
+    seg1 = (struct wolfIP_tcp_seg *)(ts->txmem + desc1->pos + sizeof(*desc1));
+    seg1->ip.len = 0;
+    seg1->seq = ee32(100);
+
+    desc2 = fifo_next(&ts->sock.tcp.txbuf, desc1);
+    ck_assert_ptr_nonnull(desc2);
+    desc2->flags |= PKT_FLAG_SENT;
+
+    ret = tcp_mark_unsacked_for_retransmit(ts, 100);
+    ck_assert_int_eq(ret, 1);
+    ck_assert_int_eq(desc2->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc2->flags & PKT_FLAG_RETRANS, 0);
+}
+END_TEST
 START_TEST(test_tcp_ack_sack_blocks_clamped_and_dropped)
 {
     struct wolfIP s;
@@ -3616,6 +3657,92 @@ START_TEST(test_tcp_input_port_mismatch_skips_socket)
 }
 END_TEST
 
+START_TEST(test_tcp_input_remote_ip_mismatch_skips_socket)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg seg;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_SECOND_IF;
+    ts->sock.tcp.peer_rwnd = 100;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(0x0A000003U);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.win = ee16(777);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 100);
+    ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
+}
+END_TEST
+
+START_TEST(test_tcp_input_local_ip_mismatch_preserves_if_idx)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg seg;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_SECOND_IF;
+    ts->sock.tcp.peer_rwnd = 100;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(0x0A000003U);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.win = ee16(777);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 100);
+    ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
+}
+END_TEST
+
 START_TEST(test_tcp_input_unmatched_ack_sends_rst)
 {
     struct wolfIP s;
@@ -3703,6 +3830,104 @@ START_TEST(test_tcp_input_unmatched_rst_is_discarded)
             4321, 1234, 77, 0, TCP_FLAG_RST);
 
     ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_listen_synack_sends_rst_and_stays_listen)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg *rst;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+        (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 77, 101, (uint8_t)(TCP_FLAG_SYN | TCP_FLAG_ACK));
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(last_frame_sent_size, (uint32_t)sizeof(struct wolfIP_tcp_seg));
+    rst = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(rst->ip.src), 0x0A000001U);
+    ck_assert_uint_eq(ee32(rst->ip.dst), 0x0A000002U);
+    ck_assert_uint_eq(ee16(rst->src_port), 1234);
+    ck_assert_uint_eq(ee16(rst->dst_port), 4321);
+    ck_assert_uint_eq(rst->flags, TCP_FLAG_RST);
+    ck_assert_uint_eq(ee32(rst->seq), 101U);
+    ck_assert_uint_eq(ee32(rst->ack), 0U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_listen_accept_final_ack_does_not_send_rst)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *listen_ts;
+    struct tsocket *client_ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+        (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, 77, 0, TCP_FLAG_SYN);
+
+    listen_ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_SYN_RCVD);
+
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    client_ts = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(client_ts->sock.tcp.state, TCP_SYN_RCVD);
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, client_ts->sock.tcp.ack,
+            tcp_seq_inc(client_ts->sock.tcp.snd_una, 1), TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(client_ts->sock.tcp.state, TCP_ESTABLISHED);
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U,
+            4321, 1234, client_ts->sock.tcp.ack, client_ts->sock.tcp.seq, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(client_ts->sock.tcp.state, TCP_ESTABLISHED);
 }
 END_TEST
 

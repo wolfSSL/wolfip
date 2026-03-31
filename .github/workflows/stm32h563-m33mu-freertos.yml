@@ -9,7 +9,7 @@ jobs:
   stm32h563_m33mu_echo_freertos:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/danielinux/m33mu-ci:1.8
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
       options: --privileged
     steps:
       - name: Checkout
