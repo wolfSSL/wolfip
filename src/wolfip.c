@@ -5491,6 +5491,7 @@ static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
 static void dhcp_timer_cb(void *arg);
 static void dhcp_cancel_timer(struct wolfIP *s);
+static void dhcp_deconfigure_lease(struct wolfIP *s);
 
 static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
 {
@@ -5601,7 +5602,7 @@ static void dhcp_timer_cb(void *arg)
         case DHCP_BOUND:
             if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
                 dhcp_cancel_timer(s);
-                wolfIP_ipconfig_set(s, 0, 0, 0);
+                dhcp_deconfigure_lease(s);
                 s->dhcp_state = DHCP_OFF;
                 dhcp_send_discover(s);
                 break;
@@ -5626,7 +5627,7 @@ static void dhcp_timer_cb(void *arg)
         case DHCP_REBINDING:
             if (s->dhcp_lease_expires != 0 && s->last_tick >= s->dhcp_lease_expires) {
                 dhcp_cancel_timer(s);
-                wolfIP_ipconfig_set(s, 0, 0, 0);
+                dhcp_deconfigure_lease(s);
                 s->dhcp_state = DHCP_OFF;
                 dhcp_send_discover(s);
                 break;
@@ -5642,14 +5643,21 @@ static void dhcp_timer_cb(void *arg)
 
 static void dhcp_cancel_timer(struct wolfIP *s)
 {
+    s->dhcp_timeout_count = 0;
     if (s->dhcp_timer != NO_TIMER) {
         timer_binheap_cancel(&s->timers, s->dhcp_timer);
         s->dhcp_timer = NO_TIMER;
-        s->dhcp_timeout_count = 0;
     }
     s->dhcp_renew_at = 0;
     s->dhcp_rebind_at = 0;
     s->dhcp_lease_expires = 0;
+}
+
+static void dhcp_deconfigure_lease(struct wolfIP *s)
+{
+    wolfIP_ipconfig_set(s, 0, 0, 0);
+    s->dhcp_ip = 0;
+    s->dhcp_server_ip = 0;
 }
 
 #define DHCP_OPT_data_to_u32(opt)                    \
@@ -5957,7 +5965,7 @@ static int dhcp_poll(struct wolfIP *s)
          * it must restart the configuration process. */
         if (dhcp_msg_type(s, &msg, (uint32_t)len) == DHCP_NAK) {
             dhcp_cancel_timer(s);
-            wolfIP_ipconfig_set(s, 0, 0, 0);
+            dhcp_deconfigure_lease(s);
             s->dhcp_state = DHCP_OFF;
             dhcp_send_discover(s);
             return 0;
