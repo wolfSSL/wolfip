@@ -3657,6 +3657,47 @@ START_TEST(test_tcp_input_port_mismatch_skips_socket)
 }
 END_TEST
 
+START_TEST(test_tcp_input_remote_ip_mismatch_skips_socket)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg seg;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.peer_rwnd = 100;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(0x0A000003U);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    seg.win = ee16(777);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 100);
+}
+END_TEST
+
 START_TEST(test_tcp_input_unmatched_ack_sends_rst)
 {
     struct wolfIP s;

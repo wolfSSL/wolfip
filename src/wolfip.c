@@ -3758,6 +3758,14 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* Not the right socket */
                     continue;
                 }
+                if (t->remote_ip != ee32(tcp->ip.src)) {
+                    /* Not the right peer */
+                    continue;
+                }
+                if (t->local_ip != IPADDR_ANY && t->local_ip != ee32(tcp->ip.dst)) {
+                    /* Not the right local endpoint */
+                    continue;
+                }
             }
             matched = 1;
             /* Validate minimum TCP header length (data offset). */

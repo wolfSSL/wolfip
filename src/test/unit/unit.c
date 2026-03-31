@@ -461,6 +461,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_invalid_seq_rejected);
     tcase_add_test(tc_utils, test_tcp_input_filter_drop);
     tcase_add_test(tc_utils, test_tcp_input_port_mismatch_skips_socket);
+    tcase_add_test(tc_utils, test_tcp_input_remote_ip_mismatch_skips_socket);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_sends_rst);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_ack_nonlocal_dst_does_not_send_rst);
     tcase_add_test(tc_utils, test_tcp_input_unmatched_syn_sends_rst_ack);
