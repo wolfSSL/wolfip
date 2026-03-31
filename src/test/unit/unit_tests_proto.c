@@ -3121,6 +3121,24 @@ START_TEST(test_tcp_segment_acceptable_zero_window_and_overlap_cases)
 }
 END_TEST
 
+START_TEST(test_tcp_segment_acceptable_counts_syn_in_segment_length)
+{
+    struct tsocket ts;
+    struct wolfIP_tcp_seg seg;
+
+    memset(&ts, 0, sizeof(ts));
+    memset(&seg, 0, sizeof(seg));
+    queue_init(&ts.sock.tcp.rxbuf, ts.rxmem, RXBUF_SIZE, 100U);
+    ts.sock.tcp.ack = 100U;
+
+    ts.sock.tcp.rxbuf.size = RXBUF_SIZE;
+    seg.seq = ee32(99U);
+    seg.flags = TCP_FLAG_SYN | TCP_FLAG_FIN;
+
+    ck_assert_int_eq(tcp_segment_acceptable(&ts, &seg, 0U), 1);
+}
+END_TEST
+
 START_TEST(test_wolfip_ipconfig_ex_per_interface)
 {
     struct wolfIP s;

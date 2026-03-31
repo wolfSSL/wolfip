@@ -2154,7 +2154,9 @@ static int tcp_segment_acceptable(const struct tsocket *t,
     uint32_t rcv_nxt = t->sock.tcp.ack;
     uint32_t rcv_wnd = queue_space((struct queue *)&t->sock.tcp.rxbuf);
     uint32_t seg_seq = ee32(tcp->seq);
-    uint32_t seg_len = tcplen + ((tcp->flags & TCP_FLAG_FIN) ? 1U : 0U);
+    uint32_t seg_len = tcplen +
+        ((tcp->flags & TCP_FLAG_SYN) ? 1U : 0U) +
+        ((tcp->flags & TCP_FLAG_FIN) ? 1U : 0U);
 
     if (seg_len == 0U) {
         if (rcv_wnd == 0U)

@@ -123,6 +123,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter);
     tcase_add_test(tc_utils, test_tcp_adv_win_clamps_and_applies_window_scale);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
+    tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
     tcase_add_test(tc_utils, test_wolfip_poll_executes_timers_and_callbacks);
     tcase_add_test(tc_utils, test_wolfip_poll_drains_all_expired_timers_in_one_pass);
