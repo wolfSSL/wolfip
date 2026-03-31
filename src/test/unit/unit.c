@@ -590,6 +590,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_header_len_below_min_dropped);
     tcase_add_test(tc_utils, test_socket_from_fd_invalid);
     tcase_add_test(tc_utils, test_socket_from_fd_valid);
+    tcase_add_test(tc_utils, test_sock_close_tcp_fin_wait_1_repeated_close_keeps_fin_wait_2_path);
 
     tcase_add_test(tc_proto, test_arp_request_basic);
     tcase_add_test(tc_proto, test_arp_request_throttle);

@@ -3986,7 +3986,60 @@ START_TEST(test_sock_close_tcp_fin_wait_1)
     ts->sock.tcp.state = TCP_FIN_WAIT_1;
 
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
-    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+}
+END_TEST
+
+START_TEST(test_sock_close_tcp_fin_wait_1_repeated_close_keeps_fin_wait_2_path)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    struct wolfIP_timer tmr;
+    int sd;
+    uint64_t timeout_at;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.last_tick = 1000U;
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->sock.tcp.last = 100;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = 2;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.cb = test_timer_cb;
+    tmr.expires = 200;
+    tmr.arg = ts;
+    ts->sock.tcp.tmr_rto = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(101);
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+    ck_assert_uint_eq(ts->sock.tcp.fin_wait_2_timeout_active, 1);
+    timeout_at = find_timer_expiry(&s, ts->sock.tcp.tmr_rto);
+    ck_assert_uint_eq(timeout_at, s.last_tick + TCP_FIN_WAIT_2_TIMEOUT_MS);
 }
 END_TEST
 
