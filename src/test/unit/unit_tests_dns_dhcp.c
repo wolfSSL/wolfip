@@ -3857,6 +3857,37 @@ START_TEST(test_dhcp_client_init_and_bound)
     ck_assert_int_eq(dhcp_client_is_running(&s), 1);
 }
 END_TEST
+
+START_TEST(test_dhcp_client_init_bind_failure_closes_socket)
+{
+    struct wolfIP s;
+    unsigned int i;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    filter_block_reason = WOLFIP_FILT_BINDING;
+    filter_block_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_BINDING));
+
+    ret = dhcp_client_init(&s);
+    ck_assert_int_eq(ret, -1);
+    ck_assert_int_eq(s.dhcp_udp_sd, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+    ck_assert_int_gt(filter_block_calls, 0);
+    for (i = 0; i < MAX_UDPSOCKETS; i++) {
+        ck_assert_int_eq(s.udpsockets[i].proto, 0);
+        ck_assert_uint_eq(s.udpsockets[i].src_port, 0U);
+    }
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+}
+END_TEST
+
 START_TEST(test_sock_close_udp_icmp)
 {
     struct wolfIP s;

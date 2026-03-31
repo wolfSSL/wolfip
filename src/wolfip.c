@@ -6042,6 +6042,8 @@ int dhcp_client_init(struct wolfIP *s)
     sin.sin_port = ee16(DHCP_CLIENT_PORT);
     if (wolfIP_sock_bind(s, s->dhcp_udp_sd, (struct wolfIP_sockaddr *)&sin,
                          sizeof(struct wolfIP_sockaddr_in)) < 0) {
+        wolfIP_sock_close(s, s->dhcp_udp_sd);
+        s->dhcp_udp_sd = 0;
         s->dhcp_state = DHCP_OFF;
         return -1;
     }

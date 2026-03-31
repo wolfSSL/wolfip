@@ -318,6 +318,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_timer_cb_paths);
     tcase_add_test(tc_utils, test_dhcp_timer_cb_send_failure_does_not_consume_retry_budget);
     tcase_add_test(tc_utils, test_dhcp_client_init_and_bound);
+    tcase_add_test(tc_utils, test_dhcp_client_init_bind_failure_closes_socket);
     tcase_add_test(tc_utils, test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline);
     tcase_add_test(tc_utils, test_dhcp_send_request_rebinding_broadcasts_to_lease_expiry);
     tcase_add_test(tc_utils, test_dhcp_send_request_send_failure_retries_next_tick);
