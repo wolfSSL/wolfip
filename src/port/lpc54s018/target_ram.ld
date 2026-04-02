@@ -2,7 +2,7 @@
  *
  * SRAM0: 64KB @ 0x20000000 - code, data, BSS
  * SRAM1: 64KB @ 0x20010000 - BSS overflow
- * SRAM2: 32KB @ 0x20020000 - stack (separate to avoid BSS/stack overlap)
+ * SRAM2: 32KB @ 0x20020000 - stack only (32KB on J4M package, not 64KB)
  */
 MEMORY
 {

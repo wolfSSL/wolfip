@@ -26,6 +26,7 @@ extern uint32_t _edata;
 extern uint32_t _sbss;
 extern uint32_t _ebss;
 
+extern void __libc_init_array(void);
 int main(void);
 
 /* Enable SRAM1/2 clocks before touching BSS or stack in those regions */
@@ -45,6 +46,7 @@ void Reset_Handler(void)
     for (dst = &_sbss; dst < &_ebss; )
         *dst++ = 0u;
 
+    __libc_init_array();
     (void)main();
     while (1) { }
 }

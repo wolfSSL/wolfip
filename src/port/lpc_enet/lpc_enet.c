@@ -404,6 +404,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     status = desc->des3;
     if ((status & (RDES3_FS | RDES3_LS)) == (RDES3_FS | RDES3_LS)) {
         frame_len = status & RDES3_PL_MASK;
+        if (frame_len > RX_BUF_SIZE) frame_len = RX_BUF_SIZE;
         if (frame_len > len) frame_len = len;
         if (frame_len > 0)
             memcpy(frame, rx_buffers[rx_idx], frame_len);

@@ -2,49 +2,52 @@
 # fix_checksum.py - compute LPC vector table checksum
 #
 # The LPC54S018 boot ROM requires that vector table entries 0-7 sum to zero.
-# The vector table starts at offset 0x200 in the binary (after the 512-byte
-# SPIFI configuration block).
-#
-# This script patches entry[7] so that sum(entries[0:8]) == 0 (mod 2^32).
+# Auto-detects whether vector table is at offset 0 (RAM build) or 0x200
+# (SPIFI flash build with 512-byte config block).
 
 import struct
 import sys
 
-SPIFI_CONFIG_SIZE = 0x200  # 512-byte SPIFI config block before vector table
+def find_vector_offset(data):
+    """Detect vector table offset by checking for valid SP."""
+    for off in (0, 0x200):
+        if off + 32 > len(data):
+            continue
+        sp = struct.unpack_from('<I', data, off)[0]
+        if 0x20000000 <= sp <= 0x20030000:
+            return off
+    return 0
 
 def main():
     if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <app.bin>")
+        print("Usage: %s <app.bin>" % sys.argv[0])
         sys.exit(1)
 
     fname = sys.argv[1]
     with open(fname, 'r+b') as f:
-        f.seek(SPIFI_CONFIG_SIZE)
-        data = f.read(32)
-        if len(data) < 32:
-            print(f"Error: file too small (need at least {SPIFI_CONFIG_SIZE + 32} bytes)")
+        data = f.read()
+        off = find_vector_offset(data)
+
+        if off + 32 > len(data):
+            print("Error: file too small")
             sys.exit(1)
 
-        vecs = list(struct.unpack('<8I', data))
-        # Compute checksum: entry[7] = -(sum of entries 0-6) mod 2^32
+        vecs = list(struct.unpack_from('<8I', data, off))
         partial_sum = sum(vecs[:7]) & 0xFFFFFFFF
         cksum = (0x100000000 - partial_sum) & 0xFFFFFFFF
-        vecs[7] = cksum
 
-        # Write back
-        f.seek(SPIFI_CONFIG_SIZE + 7 * 4)
+        f.seek(off + 7 * 4)
         f.write(struct.pack('<I', cksum))
 
-    # Verify
     with open(fname, 'rb') as f:
-        f.seek(SPIFI_CONFIG_SIZE)
+        f.seek(off)
         vecs = struct.unpack('<8I', f.read(32))
         total = sum(vecs) & 0xFFFFFFFF
         if total != 0:
-            print(f"ERROR: checksum verification failed (sum=0x{total:08X})")
+            print("ERROR: checksum verification failed (sum=0x%08X)" % total)
             sys.exit(1)
 
-    print(f"Vector checksum patched: entry[7]=0x{cksum:08X}")
+    print("Vector checksum patched: offset=0x%X entry[7]=0x%08X" % (off, cksum))
 
 if __name__ == '__main__':
     main()

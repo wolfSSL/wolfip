@@ -85,12 +85,23 @@ void SysTick_Handler(void)
     tick_ms++;
 }
 
+/* Atomic read of 64-bit tick_ms on 32-bit Cortex-M4.
+ * Briefly disables interrupts to prevent torn reads. */
+static uint64_t get_tick_ms(void)
+{
+    uint64_t val;
+    __asm volatile ("cpsid i" ::: "memory");
+    val = tick_ms;
+    __asm volatile ("cpsie i" ::: "memory");
+    return val;
+}
+
 uint32_t wolfIP_getrandom(void)
 {
     static uint32_t lfsr;
     static int seeded = 0;
     if (!seeded) {
-        lfsr = (uint32_t)tick_ms;
+        lfsr = (uint32_t)get_tick_ms();
         if (lfsr == 0U) lfsr = 0x1A2B3C4DU;
         seeded = 1;
     }
@@ -102,8 +113,8 @@ uint32_t wolfIP_getrandom(void)
 
 static void delay_ms(uint32_t ms)
 {
-    uint64_t target = tick_ms + ms;
-    while (tick_ms < target) { }
+    uint64_t target = get_tick_ms() + ms;
+    while (get_tick_ms() < target) { }
 }
 
 static void clock_init(void)
@@ -257,7 +268,7 @@ int main(void)
     /* IP configuration: DHCP or static fallback */
 #ifdef DHCP
     printf("Starting DHCP...\r\n");
-    (void)wolfIP_poll(IPStack, tick_ms);  /* Prime last_tick */
+    (void)wolfIP_poll(IPStack, get_tick_ms());  /* Prime last_tick */
     (void)dhcp_client_init(IPStack);
 #else
     {
@@ -289,13 +300,13 @@ int main(void)
     {
         uint64_t last_led_ms = 0;
 #ifdef DHCP
-        uint64_t dhcp_start_ms = tick_ms;
-        uint64_t dhcp_reinit_ms = tick_ms;
+        uint64_t dhcp_start_ms = get_tick_ms();
+        uint64_t dhcp_reinit_ms = get_tick_ms();
         int dhcp_done = 0;
 #endif
 
         for (;;) {
-            uint64_t now = tick_ms;
+            uint64_t now = get_tick_ms();
             (void)wolfIP_poll(IPStack, now);
 
 #ifdef DHCP

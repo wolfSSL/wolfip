@@ -10,9 +10,9 @@ Bare-metal port of wolfIP for the NXP LPCXpresso54S018M development board, featu
    make
    ```
 
-2. **Flash to board:**
+2. **Flash to board (RAM-loaded via on-board Link2):**
    ```bash
-   pyocd flash -t lpc54608 app.elf
+   bash flash.sh
    ```
 
 3. **Monitor UART output** (115200 baud on /dev/ttyACM0):
@@ -72,10 +72,10 @@ make size
 ## Flashing
 
 ```bash
-pyocd flash -t lpc54608 app.elf
+bash flash.sh
 ```
 
-Note: use `-t lpc54608` as the target type since `lpc54s018` is not in pyocd's built-in list.
+The flash script loads `app.elf` into SRAM via pyocd and starts execution. Uses `-t lpc54608` as target type since `lpc54s018` is not in pyocd's built-in list.
 
 ## Serial Console
 
