@@ -1,0 +1,37 @@
+name: wolfHAL STM32H563ZI Nucleo Build
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  wolfhal_stm32h563zi_nucleo_build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi
+
+      - name: Clone wolfHAL
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/wolfSSL/wolfHAL.git ../wolfHAL
+
+      - name: Build wolfHAL port
+        run: |
+          set -euo pipefail
+          make -C src/port/wolfHAL BOARD=stm32h563zi_nucleo
+
+      - name: Verify binary
+        run: |
+          set -euo pipefail
+          test -f src/port/wolfHAL/build/stm32h563zi_nucleo/app.bin
+          arm-none-eabi-size src/port/wolfHAL/build/stm32h563zi_nucleo/app.elf
