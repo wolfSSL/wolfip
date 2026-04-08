@@ -66,8 +66,8 @@ int wolfIP_esp_init(void)
 
 void wolfIP_esp_sa_del_all(void)
 {
-    memset(in_sa_list, 0, sizeof(in_sa_list));
-    memset(out_sa_list, 0, sizeof(out_sa_list));
+    wc_ForceZero(in_sa_list, sizeof(in_sa_list));
+    wc_ForceZero(out_sa_list, sizeof(out_sa_list));
     return;
 }
 
@@ -104,7 +104,7 @@ void wolfIP_esp_sa_del(int in, uint8_t * spi)
     wolfIP_esp_sa * sa = NULL;
     sa = esp_sa_get(in, spi);
     if (sa != NULL) {
-        memset(sa, 0, sizeof(*sa));
+        wc_ForceZero(sa, sizeof(*sa));
     }
     return;
 }
@@ -169,7 +169,7 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
                                ESP_GCM_RFC4106_IV_LEN);
     if (err) {
         ESP_LOG("error: wc_RNG_GenerateBlock: %d\n", err);
-        memset(new_sa, 0, sizeof(*new_sa));
+        wc_ForceZero(new_sa, sizeof(*new_sa));
         err = -1;
     }
 

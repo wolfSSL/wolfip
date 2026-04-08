@@ -4090,7 +4090,7 @@ START_TEST(test_tcp_input_established_fin_sets_close_wait)
     seg.dst_port = ee16(ts->src_port);
     seg.seq = ee32(10);
     seg.hlen = TCP_HEADER_LEN << 2;
-    seg.flags = TCP_FLAG_FIN;
+    seg.flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
     fix_tcp_checksums(&seg);
 
     tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
