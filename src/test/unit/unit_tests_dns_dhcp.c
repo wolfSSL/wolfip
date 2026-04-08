@@ -1919,6 +1919,32 @@ START_TEST(test_icmp_input_echo_request_directed_broadcast_no_reply)
 }
 END_TEST
 
+/* Coverage: icmp_input must NOT reply to echo requests with multicast dst. */
+START_TEST(test_icmp_input_echo_request_multicast_no_reply)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_state = DHCP_OFF;
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0xE0000001U);
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_filter_drop)
 {
     struct wolfIP s;
@@ -2875,7 +2901,7 @@ START_TEST(test_tcp_handshake_and_fin_close_wait)
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port, 2, server_seq + 1, TCP_FLAG_ACK);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
 
-    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port, 2, server_seq + 1, TCP_FLAG_FIN);
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port, 2, server_seq + 1, TCP_FLAG_FIN | TCP_FLAG_ACK);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSE_WAIT);
     ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
 }

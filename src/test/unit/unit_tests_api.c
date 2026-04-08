@@ -3638,3 +3638,798 @@ START_TEST(test_dns_wrapper_apis)
     ck_assert_uint_eq(s.dns_query_type, DNS_QUERY_TYPE_PTR);
 }
 END_TEST
+
+/* Regression: a listen socket stuck in SYN_RCVD (e.g. spoofed SYN with no
+ * ACK reply) must revert to TCP_LISTEN when ctrl-RTO retries are exhausted,
+ * not be destroyed via close_socket(). */
+START_TEST(test_listen_socket_survives_synrcvd_rto_expiry)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    /* Inject a SYN, do NOT call accept(), simulating a spoofed source */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Exhaust all ctrl-RTO retries */
+    listener->sock.tcp.ctrl_rto_retries = TCP_CTRL_RTO_MAXRTX;
+    s.last_tick = 100000;
+    tcp_rto_cb(listener);
+
+    /* Listen socket must be alive and back in LISTEN state */
+    ck_assert_uint_eq(listener->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(listener->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_uint_eq(listener->remote_ip, 0);
+    ck_assert_uint_eq(listener->dst_port, 0);
+}
+END_TEST
+
+/* Regression: with a constrained MTU that yields max_opt_len not a multiple
+ * of 4, the TS option fit-check must account for final 4-byte alignment.
+ * Without the alignment guard, opt_len can end up unaligned and hlen encodes
+ * fewer bytes than actually written, corrupting the SYN segment. */
+START_TEST(test_tcp_send_syn_options_aligned_small_mtu)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+    uint8_t opt_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    /* frame MTU 75 -> ip_mtu 61 -> max_opt_len 21: triggers unaligned
+     * options when TS is included without the alignment guard. */
+    wolfIP_mtu_set(&s, TEST_PRIMARY_IF, 75);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5000);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->remote_ip = 0x0A000002U;
+    ts->dst_port = 80;
+
+    ck_assert_int_eq(tcp_send_syn(ts, TCP_FLAG_SYN), 0);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    opt_len = (uint8_t)(desc->len - sizeof(struct wolfIP_tcp_seg));
+
+    /* TCP options must be 4-byte aligned */
+    ck_assert_uint_eq(opt_len % 4, 0);
+    /* hlen must correctly encode the actual header length */
+    ck_assert_uint_eq(seg->hlen >> 2, TCP_HEADER_LEN + opt_len);
+}
+END_TEST
+
+/* Non-listener sockets in SYN_RCVD (created by accept()) must still be
+ * destroyed when ctrl-RTO retries are exhausted. */
+START_TEST(test_accepted_socket_destroyed_on_synrcvd_rto_expiry)
+{
+    struct wolfIP s;
+    int listen_sd, client_sd;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Exhaust all ctrl-RTO retries */
+    accepted->sock.tcp.ctrl_rto_retries = TCP_CTRL_RTO_MAXRTX;
+    s.last_tick = 100000;
+    tcp_rto_cb(accepted);
+
+    /* Non-listener socket must be destroyed (memset to zero) */
+    ck_assert_uint_eq(accepted->proto, 0);
+}
+END_TEST
+
+/* Regression: per RFC 9293, a RST without ACK in SYN_SENT must be silently
+ * dropped.  The generic RST handler checked seg_seq == rcv_nxt, which is
+ * trivially true (both 0) in SYN_SENT, allowing a bare RST with SEQ=0 to
+ * destroy an outgoing connection attempt. */
+START_TEST(test_syn_sent_bare_rst_dropped)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* Bare RST (no ACK) with SEQ=0: must be silently dropped */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       0, 0, TCP_FLAG_RST);
+
+    /* Socket must survive */
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+/* Regression: in SYN_RCVD, a RST with a sequence number outside the receive
+ * window must be silently dropped per RFC 9293 §3.10.7.  The SYN_RCVD branch
+ * bypassed the window check entirely, accepting any RST. */
+START_TEST(test_syn_rcvd_rst_bad_seq_dropped)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    /* SYN puts the listen socket into SYN_RCVD */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* RST with SEQ=0 (wrong - rcv_nxt is ISN_peer+1): must be dropped */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A0000A1U, 0x0A000001U,
+                       listener->dst_port, listener->src_port,
+                       0, 0, TCP_FLAG_RST);
+
+    /* Socket must still be in SYN_RCVD */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+}
+END_TEST
+
+/* Regression: ip_recv must drop packets with broadcast or multicast source
+ * addresses per RFC 1122 §3.2.1.3.  Without the check, a TCP SYN from a
+ * broadcast source reaches tcp_input and transitions a listen socket to
+ * SYN_RCVD. */
+START_TEST(test_ip_recv_drops_broadcast_source)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg seg;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    /* Build a TCP SYN from broadcast source 255.255.255.255 */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(&seg, 0, sizeof(seg));
+    memcpy(seg.ip.eth.dst, ll->mac, 6);
+    memcpy(seg.ip.eth.src, src_mac, 6);
+    seg.ip.eth.type = ee16(ETH_TYPE_IP);
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(0xFFFFFFFFU);
+    seg.ip.dst = ee32(0x0A000001U);
+    seg.ip.csum = 0;
+    iphdr_set_checksum(&seg.ip);
+    seg.src_port = ee16(40000);
+    seg.dst_port = ee16(1234);
+    seg.seq = ee32(1);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_SYN;
+    seg.win = ee16(65535);
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = seg.ip.src;
+    ph.ph.dst = seg.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    seg.csum = ee16(transport_checksum(&ph, &seg.src_port));
+
+    ip_recv(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&seg,
+            sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    /* Socket must stay in LISTEN - broadcast source should be dropped */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
+/* Regression: arp_recv must not cache entries with broadcast, multicast,
+ * zero, or own-IP sender addresses.  Without validation, an ARP request
+ * with a spoofed sender IP poisons the neighbor cache. */
+START_TEST(test_arp_recv_rejects_broadcast_sender)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    static const uint8_t fake_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+
+    /* Build an ARP request for our IP from broadcast sender */
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, fake_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype = ee16(1);
+    arp.ptype = ee16(0x0800);
+    arp.hlen = 6;
+    arp.plen = 4;
+    arp.opcode = ee16(ARP_REQUEST);
+    memcpy(arp.sma, fake_mac, 6);
+    arp.sip = ee32(0xFFFFFFFFU);     /* broadcast sender */
+    memset(arp.tma, 0, 6);
+    arp.tip = ee32(conf->ip);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    /* No neighbor entry should exist for 255.255.255.255 */
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, 0xFFFFFFFFU), 0);
+}
+END_TEST
+
+/* Regression: arp_recv must reject ARP packets with incorrect hardware or
+ * protocol type fields (htype != 1, ptype != 0x0800, hlen != 6, plen != 4).
+ * Without validation, non-Ethernet/IPv4 ARP packets pollute the cache. */
+START_TEST(test_arp_recv_rejects_wrong_htype)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    ip4 sender = 0x0A000099U;
+    static const uint8_t fake_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x02};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, fake_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype = ee16(6);          /* IEEE 802 - wrong for Ethernet */
+    arp.ptype = ee16(0x0800);
+    arp.hlen = 6;
+    arp.plen = 4;
+    arp.opcode = ee16(ARP_REQUEST);
+    memcpy(arp.sma, fake_mac, 6);
+    arp.sip = ee32(sender);
+    memset(arp.tma, 0, 6);
+    arp.tip = ee32(conf->ip);
+
+    last_frame_sent_size = 0;
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    /* No reply sent, no neighbor cached */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender), 0);
+}
+END_TEST
+
+/* Regression: dhcp_parse_ack must reject a DHCPACK whose Server Identifier
+ * differs from the one committed during the OFFER phase.  Without this check,
+ * a rogue server can race a forged ACK with attacker-controlled config. */
+START_TEST(test_dhcp_ack_rejects_mismatched_server_id)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    uint32_t real_server = 0x0A000001U;
+    uint32_t rogue_server = 0x0A000099U;
+
+    wolfIP_init(&s);
+
+    /* Simulate OFFER phase: set committed server IP and XID */
+    s.dhcp_server_ip = real_server;
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+
+    /* Build a DHCPACK with a different Server Identifier */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(0x12345678U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = (rogue_server >> 24) & 0xFF;
+    opt->data[1] = (rogue_server >> 16) & 0xFF;
+    opt->data[2] = (rogue_server >> 8) & 0xFF;
+    opt->data[3] = (rogue_server >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    /* Must be rejected - server ID doesn't match the OFFER */
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    /* Committed server IP must not be overwritten */
+    ck_assert_uint_eq(s.dhcp_server_ip, real_server);
+}
+END_TEST
+
+/* build a minimal UDP datagram for udp_try_recv injection. */
+static void build_udp_datagram(struct wolfIP_udp_datagram *udp,
+                               struct wolfIP *s, unsigned int if_idx,
+                               ip4 src_ip, ip4 dst_ip,
+                               uint16_t src_port, uint16_t dst_port)
+{
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, if_idx);
+    union transport_pseudo_header ph;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    memset(udp, 0, sizeof(*udp));
+    memcpy(udp->ip.eth.dst, ll->mac, 6);
+    memcpy(udp->ip.eth.src, src_mac, 6);
+    udp->ip.eth.type = ee16(ETH_TYPE_IP);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    udp->ip.src = ee32(src_ip);
+    udp->ip.dst = ee32(dst_ip);
+    udp->ip.csum = 0;
+    iphdr_set_checksum(&udp->ip);
+    udp->src_port = ee16(src_port);
+    udp->dst_port = ee16(dst_port);
+    udp->len = ee16(UDP_HEADER_LEN);
+    udp->csum = 0;
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = udp->ip.src;
+    ph.ph.dst = udp->ip.dst;
+    ph.ph.proto = WI_IPPROTO_UDP;
+    ph.ph.len = udp->len;
+    udp->csum = ee16(transport_checksum(&ph, &udp->src_port));
+}
+
+/* udp_try_recv must NOT send ICMP port unreachable when the
+ * source IP is broadcast - prevents amplification attacks. */
+START_TEST(test_udp_no_icmp_unreachable_for_broadcast_src)
+{
+    struct wolfIP s;
+    struct wolfIP_udp_datagram udp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    build_udp_datagram(&udp, &s, TEST_PRIMARY_IF,
+                       0xFFFFFFFFU, 0x0A000001U, 9999, 9999);
+
+    last_frame_sent_size = 0;
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+                 sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + UDP_HEADER_LEN);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* udp_try_recv must NOT send ICMP port unreachable when the
+ * source IP is multicast - prevents amplification attacks. */
+START_TEST(test_udp_no_icmp_unreachable_for_multicast_src)
+{
+    struct wolfIP s;
+    struct wolfIP_udp_datagram udp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    build_udp_datagram(&udp, &s, TEST_PRIMARY_IF,
+                       0xE0000001U, 0x0A000001U, 9999, 9999);
+
+    last_frame_sent_size = 0;
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+                 sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + UDP_HEADER_LEN);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* udp_try_recv must NOT send ICMP port unreachable when the
+ * destination IP is broadcast. */
+START_TEST(test_udp_no_icmp_unreachable_for_broadcast_dst)
+{
+    struct wolfIP s;
+    struct wolfIP_udp_datagram udp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    build_udp_datagram(&udp, &s, TEST_PRIMARY_IF,
+                       0x0A000099U, 0xFFFFFFFFU, 9999, 9999);
+
+    last_frame_sent_size = 0;
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+                 sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + UDP_HEADER_LEN);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* udp_try_recv must NOT send ICMP port unreachable when the
+ * destination IP is multicast. */
+START_TEST(test_udp_no_icmp_unreachable_for_multicast_dst)
+{
+    struct wolfIP s;
+    struct wolfIP_udp_datagram udp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    build_udp_datagram(&udp, &s, TEST_PRIMARY_IF,
+                       0x0A000099U, 0xE0000001U, 9999, 9999);
+
+    last_frame_sent_size = 0;
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+                 sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + UDP_HEADER_LEN);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* tcp_input must NOT send RST for unmatched segments when the
+ * destination IP is broadcast. */
+START_TEST(test_tcp_no_rst_for_broadcast_dst)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000099U, 0xFFFFFFFFU,
+                       12345, 9999,
+                       100, 0, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* tcp_input must NOT send RST for unmatched segments when the
+ * destination IP is multicast. */
+START_TEST(test_tcp_no_rst_for_multicast_dst)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000099U, 0xE0000001U,
+                       12345, 9999,
+                       100, 0, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* dhcp_timer_cb in RENEWING state must transition to REBINDING
+ * when last_tick >= dhcp_rebind_at.
+ * last_tick == rebind_at. */
+START_TEST(test_dhcp_renewing_transitions_to_rebinding)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    s.dhcp_state = DHCP_RENEWING;
+    s.dhcp_rebind_at = 5000;
+    s.dhcp_timeout_count = 3;
+    s.last_tick = 5000;
+
+    dhcp_timer_cb(&s);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_REBINDING);
+    ck_assert_uint_eq(s.dhcp_start_tick, 5000);
+    ck_assert_uint_eq(s.dhcp_timeout_count, 0);
+}
+END_TEST
+
+/* Regression: per RFC 9293, a SYN-ACK with invalid ACK in SYN_SENT must
+ * trigger a RST (<SEQ=SEG.ACK><CTL=RST>) to help the peer clean up stale
+ * half-open connections.  The code silently dropped it with continue. */
+START_TEST(test_syn_sent_bad_ack_synack_sends_rst)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* Inject SYN-ACK with wrong ACK (99 instead of ISN+1) */
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       1000, 99,
+                       TCP_FLAG_SYN | TCP_FLAG_ACK);
+
+    /* A RST must be sent */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    /* Socket must remain in SYN_SENT */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+/* Regression: per RFC 9293 §3.10.7.4, an ACK with invalid ack value in
+ * SYN_RCVD must trigger a RST.  The code silently dropped it. */
+START_TEST(test_syn_rcvd_bad_ack_sends_rst)
+{
+    struct wolfIP s;
+    int listen_sd, client_sd;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    /* SYN puts listen socket in SYN_RCVD, accept creates new socket */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
+    ck_assert_int_gt(client_sd, 0);
+
+    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Inject ACK with wrong ack value (99 instead of snd_una+1) */
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A0000A1U, 0x0A000001U,
+                       accepted->dst_port, 1234,
+                       accepted->sock.tcp.ack, 99,
+                       TCP_FLAG_ACK);
+
+    /* A RST must be sent */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    /* Socket must remain in SYN_RCVD */
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+}
+END_TEST
+
+/* Regression: per RFC 9293 §3.10.7.4 step 5, a segment without ACK in a
+ * synchronized state must be dropped entirely.  Without the check, a FIN
+ * without ACK triggers a state transition in ESTABLISHED. */
+START_TEST(test_established_fin_without_ack_dropped)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->src_port = 1234;
+    ts->dst_port = 5000;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 200;
+    ts->sock.tcp.snd_una = 200;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+
+    /* Inject FIN without ACK - must be dropped */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       5000, 1234,
+                       100, 0, TCP_FLAG_FIN);
+
+    /* State must remain ESTABLISHED - FIN without ACK is invalid */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+}
+END_TEST
+
+/* Regression: ip_recv must drop packets containing source routing options
+ * (LSRR 0x83, SSRR 0x89) per RFC 7126 §3.8. */
+START_TEST(test_ip_recv_drops_source_routed_packet)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t pkt[ETH_HEADER_LEN + 24 + TCP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    uint16_t *tcp_csum_field;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(pkt, 0, sizeof(pkt));
+
+    /* Ethernet header */
+    ip = (struct wolfIP_ip_packet *)pkt;
+    memcpy(ip->eth.dst, ll->mac, 6);
+    memcpy(ip->eth.src, src_mac, 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+
+    /* IP header with IHL=6 (24 bytes) */
+    ip->ver_ihl = 0x46;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_TCP;
+    ip->len = ee16(24 + TCP_HEADER_LEN);
+    ip->src = ee32(0x0A0000A1U);
+    ip->dst = ee32(0x0A000001U);
+
+    /* IP options: LSRR */
+    {
+        uint8_t *opts = pkt + ETH_HEADER_LEN + IP_HEADER_LEN;
+        opts[0] = 0x83;  /* LSRR */
+        opts[1] = 3;
+        opts[2] = 4;
+        opts[3] = 0x00;  /* End of Options */
+    }
+    ip->csum = 0;
+    iphdr_set_checksum(ip);
+
+    /* TCP header at offset ETH+24 with valid checksum */
+    {
+        uint8_t *tcp = pkt + ETH_HEADER_LEN + 24;
+        tcp[0] = (uint8_t)(40000 >> 8);
+        tcp[1] = (uint8_t)(40000 & 0xFF);
+        tcp[2] = (uint8_t)(1234 >> 8);
+        tcp[3] = (uint8_t)(1234 & 0xFF);
+        tcp[4] = 0; tcp[5] = 0; tcp[6] = 0; tcp[7] = 1;  /* seq=1 */
+        tcp[12] = TCP_HEADER_LEN << 2;
+        tcp[13] = TCP_FLAG_SYN;
+        tcp[14] = 0xFF; tcp[15] = 0xFF;  /* window */
+        /* Compute TCP checksum via pseudo-header */
+        tcp_csum_field = (uint16_t *)(tcp + 16);
+        *tcp_csum_field = 0;
+        memset(&ph, 0, sizeof(ph));
+        ph.ph.src = ip->src;
+        ph.ph.dst = ip->dst;
+        ph.ph.proto = WI_IPPROTO_TCP;
+        ph.ph.len = ee16(TCP_HEADER_LEN);
+        *tcp_csum_field = ee16(transport_checksum(&ph, tcp));
+    }
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, sizeof(pkt));
+
+    /* Socket must stay in LISTEN - source-routed packet should be dropped */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST

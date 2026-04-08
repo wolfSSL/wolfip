@@ -21,9 +21,16 @@ jobs:
           prepare: |
             set -ex
             env IGNORE_OSVERSION=yes pkg update -f
-            env IGNORE_OSVERSION=yes pkg install -y gmake gcc wolfssl check vim
+            env IGNORE_OSVERSION=yes pkg install -y gmake gcc check vim autoconf automake libtool git
             kldload if_tap || true
             sysctl net.link.tap.up_on_open=1 || true
+            git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl
+            cd /tmp/wolfssl
+            ./autogen.sh
+            ./configure --enable-all --enable-md5
+            gmake -j$(sysctl -n hw.ncpu)
+            gmake install
+            ldconfig
           run: |
             set -ex
             cd "${GITHUB_WORKSPACE:-/root/work/github/workspace}"

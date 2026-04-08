@@ -272,7 +272,7 @@ START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
     seg->seq = ee32(100);
     seg->ack = ee32(100);
     seg->hlen = TCP_HEADER_LEN << 2;
-    seg->flags = TCP_FLAG_FIN;
+    seg->flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
     memcpy(seg->data, payload, sizeof(payload));
     fix_tcp_checksums(seg);
 
@@ -2441,6 +2441,10 @@ START_TEST(test_arp_request_handling) {
     s.ipconf[TEST_PRIMARY_IF].ip = device_ip;
 
     /* Prepare ARP request */
+    arp_req.htype = ee16(1);
+    arp_req.ptype = ee16(0x0800);
+    arp_req.hlen = 6;
+    arp_req.plen = 4;
     arp_req.opcode = ee16(ARP_REQUEST);
     arp_req.sip = ee32(req_ip);
     memcpy(arp_req.sma, req_mac, 6);
@@ -2478,6 +2482,10 @@ START_TEST(test_arp_reply_handling) {
     mock_link_init(&s);
 
     /* Prepare ARP reply */
+    arp_reply.htype = ee16(1);
+    arp_reply.ptype = ee16(0x0800);
+    arp_reply.hlen = 6;
+    arp_reply.plen = 4;
     arp_reply.opcode = ee16(ARP_REPLY);
     arp_reply.sip = ee32(reply_ip);
     memcpy(arp_reply.sma, reply_mac, 6);
@@ -2507,6 +2515,10 @@ START_TEST(test_arp_reply_unsolicited_does_not_overwrite_existing)
     s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
     memcpy(s.arp.neighbors[0].mac, existing_mac, 6);
 
+    arp_reply.htype = ee16(1);
+    arp_reply.ptype = ee16(0x0800);
+    arp_reply.hlen = 6;
+    arp_reply.plen = 4;
     arp_reply.opcode = ee16(ARP_REPLY);
     arp_reply.sip = ee32(reply_ip);
     memcpy(arp_reply.sma, reply_mac, 6);
@@ -2537,6 +2549,10 @@ START_TEST(test_arp_reply_with_pending_request_updates)
     s.arp.last_arp[TEST_PRIMARY_IF] = 0;
     arp_request(&s, TEST_PRIMARY_IF, reply_ip);
 
+    arp_reply.htype = ee16(1);
+    arp_reply.ptype = ee16(0x0800);
+    arp_reply.hlen = 6;
+    arp_reply.plen = 4;
     arp_reply.opcode = ee16(ARP_REPLY);
     arp_reply.sip = ee32(reply_ip);
     memcpy(arp_reply.sma, new_mac, 6);
@@ -2567,6 +2583,10 @@ START_TEST(test_arp_request_refreshes_existing_entry)
     memcpy(s.arp.neighbors[0].mac, existing_mac, 6);
     s.arp.neighbors[0].ts = 10;
 
+    arp_req.htype = ee16(1);
+    arp_req.ptype = ee16(0x0800);
+    arp_req.hlen = 6;
+    arp_req.plen = 4;
     arp_req.opcode = ee16(ARP_REQUEST);
     arp_req.sip = ee32(req_ip);
     memcpy(arp_req.sma, req_mac, 6);
@@ -2598,6 +2618,10 @@ START_TEST(test_arp_request_refreshes_timestamp_on_same_mac)
     s.arp.neighbors[0].ts = 10;
     s.last_tick = 42;
 
+    arp_req.htype = ee16(1);
+    arp_req.ptype = ee16(0x0800);
+    arp_req.hlen = 6;
+    arp_req.plen = 4;
     arp_req.opcode = ee16(ARP_REQUEST);
     arp_req.sip = ee32(req_ip);
     memcpy(arp_req.sma, mac, 6);
@@ -2690,6 +2714,10 @@ START_TEST(test_arp_reply_updates_expired_entry)
     s.arp.neighbors[0].ts = 0;
     memcpy(s.arp.neighbors[0].mac, old_mac, 6);
 
+    arp_reply.htype = ee16(1);
+    arp_reply.ptype = ee16(0x0800);
+    arp_reply.hlen = 6;
+    arp_reply.plen = 4;
     arp_reply.opcode = ee16(ARP_REPLY);
     arp_reply.sip = ee32(reply_ip);
     memcpy(arp_reply.sma, new_mac, 6);
@@ -3198,6 +3226,10 @@ START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
     arp_req.eth.type = ee16(ETH_TYPE_ARP);
     arp_req.htype = ee16(1);
     arp_req.ptype = ee16(ETH_TYPE_IP);
+    arp_req.hlen = 6;
+    arp_req.plen = 4;
+    arp_req.htype = ee16(1);
+    arp_req.ptype = ee16(0x0800);
     arp_req.hlen = 6;
     arp_req.plen = 4;
     arp_req.opcode = ee16(ARP_REQUEST);

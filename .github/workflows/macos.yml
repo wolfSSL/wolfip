@@ -18,7 +18,16 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install make wolfssl check
+          brew install make check autoconf automake libtool
+
+      - name: Clone and build wolfSSL from nightly-snapshot
+        run: |
+          git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl
+          cd /tmp/wolfssl
+          ./autogen.sh
+          ./configure --enable-all --enable-md5
+          make -j$(sysctl -n hw.ncpu)
+          sudo make install
 
       - name: Build tests
         run: |

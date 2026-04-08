@@ -16,11 +16,21 @@ jobs:
         with:
           submodules: true
 
-      - name: Update repo
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwolfssl-dev
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config
           sudo modprobe tun
+
+      - name: Clone and build wolfSSL from nightly-snapshot
+        run: |
+          git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl
+          cd /tmp/wolfssl
+          ./autogen.sh
+          ./configure --enable-all --enable-md5
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
 
       - name: Build linux tests
         run: |
