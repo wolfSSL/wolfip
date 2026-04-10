@@ -1145,6 +1145,7 @@ esp_check_icv_hmac(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     int              rc = 0;
     const uint8_t *  icv = NULL;
     byte             hash[WC_SHA256_DIGEST_SIZE];
+    memset(hash, 0, sizeof(hash));
 
     rc = esp_calc_icv_hmac(hash, esp_sa, esp_data, esp_len);
     if (rc) {
@@ -1357,7 +1358,8 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         }
 
         if (err) {
-            ESP_LOG("error: icv check failed\n");
+            ESP_LOG("error: icv check (auth=%d, icv_len=%d) failed: %d\n",
+                    esp_sa->auth, esp_sa->icv_len, err);
             return -1;
         }
     }
@@ -1643,15 +1645,22 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     }
 
     if (esp_sa->icv_len) {
-        uint8_t * icv = NULL;
         int       err = 0;
 
         switch (esp_sa->auth) {
         case ESP_AUTH_MD5_RFC2403:
         case ESP_AUTH_SHA1_RFC2404:
         case ESP_AUTH_SHA256_RFC4868:
-            icv = ip->data + icv_offset;
-            err = esp_calc_icv_hmac(icv, esp_sa, ip->data, payload_len);
+            {
+                uint8_t * icv = NULL;
+                byte      hash[WC_SHA256_DIGEST_SIZE];
+                memset(hash, 0, sizeof(hash));
+                icv = ip->data + icv_offset;
+                err = esp_calc_icv_hmac(hash, esp_sa, ip->data, payload_len);
+                if (err == 0) {
+                    memcpy(icv, hash, esp_sa->icv_len);
+                }
+            }
             break;
         #if defined(WOLFSSL_AESGCM_STREAM)
         case ESP_AUTH_GCM_RFC4106:
