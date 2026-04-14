@@ -1372,7 +1372,7 @@ END_TEST
 START_TEST(test_ip_recv_forward_ttl_exceeded)
 {
     struct wolfIP s;
-    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE];
+    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
@@ -2267,7 +2267,7 @@ END_TEST
 START_TEST(test_send_ttl_exceeded_filter_drop)
 {
     struct wolfIP s;
-    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE];
+    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
 
     wolfIP_init(&s);
@@ -2348,6 +2348,63 @@ START_TEST(test_send_ttl_exceeded_eth_filter_drop)
 }
 END_TEST
 
+/* Regression: wolfIP_send_ttl_exceeded must include the full original IP
+ * header (including options) plus 8 bytes of transport data per RFC 792.
+ * With IHL=6 (24-byte header), 24+8=32 bytes must be copied, not 28. */
+START_TEST(test_send_ttl_exceeded_includes_full_ip_header_with_options)
+{
+    struct wolfIP s;
+    /* Original packet: IHL=6 (24-byte IP header) + 8 bytes of UDP ports */
+    uint8_t orig_buf[ETH_HEADER_LEN + 24 + 8];
+    struct wolfIP_ip_packet *orig = (struct wolfIP_ip_packet *)orig_buf;
+    struct wolfIP_icmp_ttl_exceeded_packet *icmp_out;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(orig_buf, 0, sizeof(orig_buf));
+    memcpy(orig->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    orig->ver_ihl = 0x46;  /* IHL=6, 24-byte header */
+    orig->len = ee16(24 + 8);
+    orig->ttl = 1;
+    orig->proto = WI_IPPROTO_UDP;
+    orig->src = ee32(0x0A000002U);
+    orig->dst = ee32(0x0A000003U);
+    /* Fill IP option area with a recognizable pattern */
+    ((uint8_t *)orig)[ETH_HEADER_LEN + IP_HEADER_LEN] = 0x01;  /* NOP */
+    ((uint8_t *)orig)[ETH_HEADER_LEN + IP_HEADER_LEN + 1] = 0x01;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + IP_HEADER_LEN + 2] = 0x01;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + IP_HEADER_LEN + 3] = 0x00;  /* EOO */
+    /* Fill transport data (UDP src/dst ports) with recognizable bytes */
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 0] = 0xAA;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 1] = 0xBB;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 2] = 0xCC;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 3] = 0xDD;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 4] = 0x11;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 5] = 0x22;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 6] = 0x33;
+    ((uint8_t *)orig)[ETH_HEADER_LEN + 24 + 7] = 0x44;
+
+    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, orig);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    icmp_out = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
+
+    /* Verify all 8 bytes of transport data are present (bytes 24-31) */
+    ck_assert_uint_eq(icmp_out->orig_packet[24], 0xAA);
+    ck_assert_uint_eq(icmp_out->orig_packet[25], 0xBB);
+    ck_assert_uint_eq(icmp_out->orig_packet[26], 0xCC);
+    ck_assert_uint_eq(icmp_out->orig_packet[27], 0xDD);
+    ck_assert_uint_eq(icmp_out->orig_packet[28], 0x11);
+    ck_assert_uint_eq(icmp_out->orig_packet[29], 0x22);
+    ck_assert_uint_eq(icmp_out->orig_packet[30], 0x33);
+    ck_assert_uint_eq(icmp_out->orig_packet[31], 0x44);
+}
+END_TEST
+
 START_TEST(test_send_ttl_exceeded_no_send)
 {
     struct wolfIP s;
@@ -2372,7 +2429,7 @@ END_TEST
 START_TEST(test_send_ttl_exceeded_non_ethernet_skips_eth_filter)
 {
     struct wolfIP s;
-    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE];
+    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
 
     wolfIP_init(&s);
@@ -2393,7 +2450,7 @@ START_TEST(test_send_ttl_exceeded_non_ethernet_skips_eth_filter)
 
     wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
     ck_assert_uint_eq(last_frame_sent_size,
-            sizeof(struct wolfIP_icmp_ttl_exceeded_packet) - ETH_HEADER_LEN);
+            (uint32_t)(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_eth_mask(0);
@@ -2462,6 +2519,53 @@ START_TEST(test_arp_request_invalid_interface)
 
     arp_request(&s, WOLFIP_MAX_INTERFACES, 0x0A000002U);
     ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* Regression: ARP reply handler must reject sender IPs that are broadcast,
+ * multicast, zero, or the device's own address -- same validation the request
+ * handler already applies.  Without the check, an attacker can poison the
+ * cache by sending a reply with sip set to the victim's own IP. */
+START_TEST(test_arp_reply_rejects_invalid_sender_ip)
+{
+    struct wolfIP s;
+    struct arp_packet arp_rep;
+    struct wolfIP_ll_dev *ll;
+    const ip4 local_ip = 0x0A000001U;
+    static const uint8_t attacker_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+    /* IPs that must never be cached */
+    const ip4 bad_ips[] = {
+        IPADDR_ANY,         /* 0.0.0.0 */
+        local_ip,           /* own IP */
+        0xFFFFFFFFU,        /* broadcast */
+        0xE0000001U,        /* multicast 224.0.0.1 */
+    };
+    int k;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+
+    for (k = 0; k < (int)(sizeof(bad_ips)/sizeof(bad_ips[0])); k++) {
+        memset(&arp_rep, 0, sizeof(arp_rep));
+        memcpy(arp_rep.eth.dst, ll->mac, 6);
+        memcpy(arp_rep.eth.src, attacker_mac, 6);
+        arp_rep.eth.type = ee16(ETH_TYPE_ARP);
+        arp_rep.htype = ee16(1);
+        arp_rep.ptype = ee16(0x0800);
+        arp_rep.hlen = 6;
+        arp_rep.plen = 4;
+        arp_rep.opcode = ee16(ARP_REPLY);
+        memcpy(arp_rep.sma, attacker_mac, 6);
+        arp_rep.sip = ee32(bad_ips[k]);
+        memcpy(arp_rep.tma, ll->mac, 6);
+        arp_rep.tip = ee32(local_ip);
+
+        arp_recv(&s, TEST_PRIMARY_IF, &arp_rep, sizeof(arp_rep));
+
+        ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, bad_ips[k]), 0);
+    }
 }
 END_TEST
 
@@ -4203,6 +4307,48 @@ START_TEST(test_tcp_input_listen_syn_arms_control_rto)
     ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 1);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+}
+END_TEST
+
+/* Regression: when a SYN arrives at a LISTEN socket, the SYN-ACK must be
+ * sent immediately as part of the LISTEN->SYN_RCVD transition, not deferred
+ * until accept() or the ctrl_rto timer fires (up to 1 second later). */
+START_TEST(test_tcp_input_listen_syn_sends_synack_immediately)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U,
+                       40000, 1234, 1, 0, TCP_FLAG_SYN);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* A SYN-ACK must have been queued in the TX FIFO immediately */
+    ck_assert(!fifo_is_empty(&ts->sock.tcp.txbuf));
+    {
+        struct pkt_desc *desc = fifo_peek(&ts->sock.tcp.txbuf);
+        struct wolfIP_tcp_seg *seg;
+        ck_assert_ptr_nonnull(desc);
+        seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+        ck_assert_uint_eq(seg->flags, (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    }
 }
 END_TEST
 

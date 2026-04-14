@@ -3952,6 +3952,40 @@ START_TEST(test_regression_dhcp_lease_expiry_deconfigures_address)
 }
 END_TEST
 
+/* Regression: when DHCP_REQUEST_SENT retries are exhausted, the offered IP
+ * (applied during dhcp_parse_offer) must be deconfigured before transitioning
+ * to DHCP_OFF.  Without the fix the device keeps using an unconfirmed IP. */
+START_TEST(test_dhcp_request_retry_exhaustion_deconfigures_lease)
+{
+    struct wolfIP s;
+    struct ipconf *primary;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1U;
+
+    /* Simulate state after dhcp_parse_offer applied the offered IP */
+    wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0x0A000001U);
+    s.dhcp_ip = primary->ip;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.dhcp_timeout_count = DHCP_REQUEST_RETRIES; /* exhausted */
+
+    dhcp_timer_cb(&s);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+    /* The unconfirmed IP must have been removed */
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(primary->mask, 0U);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0U);
+}
+END_TEST
+
 START_TEST(test_dhcp_timer_cb_send_failure_does_not_consume_retry_budget)
 {
     struct wolfIP s;
@@ -4865,7 +4899,7 @@ START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
 
     ck_assert_uint_eq(last_frame_sent_size,
-            sizeof(struct wolfIP_icmp_dest_unreachable_packet));
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE));
     icmp = (struct wolfIP_icmp_dest_unreachable_packet *)last_frame_sent;
     ck_assert_uint_eq(icmp->type, 3U);
     ck_assert_uint_eq(icmp->code, 3U);
@@ -4875,7 +4909,7 @@ START_TEST(test_udp_try_recv_unmatched_port_sends_icmp_unreachable)
     ck_assert_uint_eq(ee32(icmp->ip.src), local_ip);
     ck_assert_uint_eq(ee32(icmp->ip.dst), remote_ip);
     ck_assert_mem_eq(icmp->orig_packet, ((uint8_t *)udp) + ETH_HEADER_LEN,
-            TTL_EXCEEDED_ORIG_PACKET_SIZE);
+            TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT);
 }
 END_TEST
 

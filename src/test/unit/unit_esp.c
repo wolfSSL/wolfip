@@ -26,9 +26,11 @@
 #define WOLFSSL_WOLFIP
 #endif
 #undef  WOLFIP_MAX_INTERFACES
-#define WOLFIP_MAX_INTERFACES 1
+#define WOLFIP_MAX_INTERFACES 2
 #undef  WOLFIP_ENABLE_LOOPBACK
 #define WOLFIP_ENABLE_LOOPBACK 0
+#undef  WOLFIP_ENABLE_FORWARDING
+#define WOLFIP_ENABLE_FORWARDING 1
 
 #include "check.h"
 #include "../../../config.h"
@@ -1428,6 +1430,297 @@ START_TEST(test_ip_recv_esp_transport_unwrap_failure_drops_packet)
 }
 END_TEST
 
+/* Mock send that captures the last frame sent.
+ * Used by tests that exercise the full TX path (tcp_send_empty_immediate). */
+static uint8_t esp_test_last_frame[LINK_MTU];
+static uint32_t esp_test_last_frame_size;
+
+static int esp_test_mock_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
+{
+    (void)dev;
+    memcpy(esp_test_last_frame, frame, len);
+    esp_test_last_frame_size = len;
+    return 0;
+}
+
+/* Seed an ARP neighbor entry so tcp_send_empty_immediate can resolve
+ * the destination MAC without a pending ARP exchange. */
+static void esp_test_seed_arp(struct wolfIP *s, unsigned int if_idx, ip4 ip)
+{
+    static const uint8_t fake_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    s->arp.neighbors[0].ip = ip;
+    s->arp.neighbors[0].if_idx = (uint8_t)if_idx;
+    s->arp.neighbors[0].ts = s->last_tick;
+    memcpy(s->arp.neighbors[0].mac, fake_mac, 6);
+}
+
+/* Regression: tcp_send_empty_immediate must ESP-wrap outbound frames when
+ * an outbound SA exists.  Without the fix the fallback path calls
+ * wolfIP_ll_send_frame directly, leaking plaintext TCP ACKs. */
+START_TEST(test_tcp_ack_esp_wrapped_when_txfifo_full)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet *sent_ip;
+
+    /* Stack + ESP init */
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+
+    /* Configure interface 0 with the SA's local address */
+    wolfIP_ipconfig_set(&s, atoip4(T_SRC), 0xFFFFFF00U, 0);
+
+    /* Wire up the mock link-layer device */
+    ll = wolfIP_ll_at(&s, 0);
+    ck_assert_ptr_nonnull(ll);
+    memcpy(ll->mac, (uint8_t[]){0x00,0x11,0x22,0x33,0x44,0x55}, 6);
+    ll->send = esp_test_mock_send;
+    ll->poll = NULL;
+
+    /* Seed ARP so the immediate-send path can resolve the peer MAC */
+    esp_test_seed_arp(&s, 0, atoip4(T_DST));
+
+    /* Set up an ESTABLISHED TCP socket whose addresses match the SA */
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->S = &s;
+    ts->proto = WI_IPPROTO_TCP;
+    ts->if_idx = 0;
+    ts->local_ip = atoip4(T_SRC);
+    ts->remote_ip = atoip4(T_DST);
+    ts->src_port = 5000;
+    ts->dst_port = 80;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.ack = 2000;
+    ts->sock.tcp.snd_una = 1000;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Fill the TX FIFO until it cannot accept another segment, so that
+     * tcp_send_empty() is forced into the tcp_send_empty_immediate() fallback */
+    {
+        uint8_t fill[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4];
+        struct wolfIP_tcp_seg *fill_seg = (struct wolfIP_tcp_seg *)fill;
+        uint32_t fill_len = sizeof(fill);
+
+        memset(fill, 0, sizeof(fill));
+        fill_seg->ip.len = ee16((uint16_t)(IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+        fill_seg->hlen = TCP_HEADER_LEN << 2;
+        fill_seg->flags = TCP_FLAG_ACK;
+        fill_seg->seq = ee32(ts->sock.tcp.seq);
+        fill_seg->ack = ee32(ts->sock.tcp.ack);
+        fill_seg->src_port = ee16(ts->src_port);
+        fill_seg->dst_port = ee16(ts->dst_port);
+
+        while (fifo_push(&ts->sock.tcp.txbuf, fill_seg, fill_len) == 0)
+            ;  /* keep pushing until FIFO is full */
+    }
+
+    /* Clear the capture buffer */
+    esp_test_last_frame_size = 0;
+    memset(esp_test_last_frame, 0, sizeof(esp_test_last_frame));
+
+    /* Send a pure ACK, FIFO is full, so this must go through
+     * tcp_send_empty_immediate(). */
+    tcp_send_ack(ts);
+
+    /* A frame must have been sent */
+    ck_assert_uint_gt(esp_test_last_frame_size, 0);
+
+    /* The IP protocol in the sent frame must be ESP (50 / 0x32),
+     * NOT plaintext TCP (6). */
+    sent_ip = (struct wolfIP_ip_packet *)esp_test_last_frame;
+    ck_assert_uint_eq(sent_ip->proto, 0x32);
+}
+END_TEST
+
+/* Regression: tcp_send_zero_wnd_probe must ESP-wrap outbound frames when
+ * an outbound SA exists.  Without the fix the probe (which carries 1 byte
+ * of application payload) is sent in plaintext via wolfIP_ll_send_frame. */
+START_TEST(test_tcp_zero_wnd_probe_esp_wrapped)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet *sent_ip;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+    wolfIP_ipconfig_set(&s, atoip4(T_SRC), 0xFFFFFF00U, 0);
+
+    ll = wolfIP_ll_at(&s, 0);
+    ck_assert_ptr_nonnull(ll);
+    memcpy(ll->mac, (uint8_t[]){0x00,0x11,0x22,0x33,0x44,0x55}, 6);
+    ll->send = esp_test_mock_send;
+    ll->poll = NULL;
+
+    esp_test_seed_arp(&s, 0, atoip4(T_DST));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->S = &s;
+    ts->proto = WI_IPPROTO_TCP;
+    ts->if_idx = 0;
+    ts->local_ip = atoip4(T_SRC);
+    ts->remote_ip = atoip4(T_DST);
+    ts->src_port = 5000;
+    ts->dst_port = 80;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.ack = 2000;
+    ts->sock.tcp.snd_una = 1000;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Enqueue one segment with 4 bytes of payload so the probe has
+     * data to pick from. */
+    {
+        uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4];
+        struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+        uint32_t frame_len = sizeof(buf);
+
+        memset(buf, 0, sizeof(buf));
+        seg->ip.len = ee16((uint16_t)(IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+        seg->hlen = TCP_HEADER_LEN << 2;
+        seg->flags = TCP_FLAG_ACK;
+        seg->seq = ee32(ts->sock.tcp.seq);
+        seg->ack = ee32(ts->sock.tcp.ack);
+        seg->src_port = ee16(ts->src_port);
+        seg->dst_port = ee16(ts->dst_port);
+        /* Application payload byte that must NOT appear in plaintext */
+        seg->data[0] = 0x42;
+        ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, seg, frame_len), 0);
+    }
+
+    esp_test_last_frame_size = 0;
+    memset(esp_test_last_frame, 0, sizeof(esp_test_last_frame));
+
+    /* Call the zero-window probe directly */
+    tcp_send_zero_wnd_probe(ts);
+
+    ck_assert_uint_gt(esp_test_last_frame_size, 0);
+
+    sent_ip = (struct wolfIP_ip_packet *)esp_test_last_frame;
+    ck_assert_uint_eq(sent_ip->proto, 0x32);
+}
+END_TEST
+
+/* Regression: tcp_send_reset_reply must ESP-wrap RST segments when the
+ * destination has a matching outbound ESP SA.  Without the fix the RST is
+ * sent in plaintext via wolfIP_ll_send_frame. */
+START_TEST(test_tcp_reset_reply_esp_wrapped)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet *sent_ip;
+    struct wolfIP_tcp_seg in_seg;
+    union transport_pseudo_header ph;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+    /* Our IP is T_SRC so the RST reply (T_SRC->T_DST) matches the
+     * outbound SA direction. */
+    wolfIP_ipconfig_set(&s, atoip4(T_SRC), 0xFFFFFF00U, 0);
+
+    ll = wolfIP_ll_at(&s, 0);
+    ck_assert_ptr_nonnull(ll);
+    memcpy(ll->mac, (uint8_t[]){0x00,0x11,0x22,0x33,0x44,0x55}, 6);
+    ll->send = esp_test_mock_send;
+    ll->poll = NULL;
+
+    /* Build an inbound SYN from T_DST destined to T_SRC (our IP) on
+     * a port with no listener -- this will trigger a RST reply back
+     * toward T_DST, which has a matching outbound ESP SA. */
+    memset(&in_seg, 0, sizeof(in_seg));
+    memcpy(in_seg.ip.eth.dst, ll->mac, 6);
+    memcpy(in_seg.ip.eth.src, (uint8_t[]){0xAA,0xBB,0xCC,0xDD,0xEE,0xFF}, 6);
+    in_seg.ip.eth.type = ee16(0x0800);
+    in_seg.ip.ver_ihl = 0x45;
+    in_seg.ip.ttl = 64;
+    in_seg.ip.proto = WI_IPPROTO_TCP;
+    in_seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    in_seg.ip.src = ee32(atoip4(T_DST));
+    in_seg.ip.dst = ee32(atoip4(T_SRC));
+    in_seg.ip.csum = 0;
+    iphdr_set_checksum(&in_seg.ip);
+
+    in_seg.src_port = ee16(40000);
+    in_seg.dst_port = ee16(9999);  /* no listener */
+    in_seg.seq = ee32(1);
+    in_seg.hlen = TCP_HEADER_LEN << 2;
+    in_seg.flags = TCP_FLAG_SYN;
+    in_seg.win = ee16(65535);
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = in_seg.ip.src;
+    ph.ph.dst = in_seg.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    in_seg.csum = ee16(transport_checksum(&ph, &in_seg.src_port));
+
+    esp_test_last_frame_size = 0;
+    memset(esp_test_last_frame, 0, sizeof(esp_test_last_frame));
+
+    tcp_send_reset_reply(&s, 0, &in_seg);
+
+    ck_assert_uint_gt(esp_test_last_frame_size, 0);
+
+    sent_ip = (struct wolfIP_ip_packet *)esp_test_last_frame;
+    ck_assert_uint_eq(sent_ip->proto, 0x32);
+}
+END_TEST
+
+/* Regression: wolfIP_forward_packet must ESP-wrap forwarded IP packets when
+ * the outbound interface has an ESP SA configured.  Without the fix the
+ * forwarding path calls wolfIP_ll_send_frame directly, sending full forwarded
+ * payload in plaintext. */
+START_TEST(test_forward_packet_esp_wrapped)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet *sent_ip;
+    uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t payload[] = { 'f', 'w', 'd', '!' };
+    uint8_t buf[LINK_MTU];
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+
+    /* Interface 0: ingress (source side) */
+    wolfIP_ipconfig_set(&s, atoip4("192.168.0.1"), 0xFFFFFF00U, 0);
+
+    /* Interface 1: egress -- its IP matches the SA's source address so
+     * esp_send will find the outbound SA. */
+    ll = wolfIP_ll_at(&s, 1);
+    ck_assert_ptr_nonnull(ll);
+    memcpy(ll->mac, (uint8_t[]){0x00,0x11,0x22,0x33,0x44,0x66}, 6);
+    ll->send = esp_test_mock_send;
+    ll->poll = NULL;
+    wolfIP_ipconfig_set_ex(&s, 1, atoip4(T_SRC), 0xFFFFFF00U, 0);
+
+    /* Build a UDP packet from T_SRC -> T_DST that will be "forwarded" */
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_SRC), atoip4(T_DST),
+                                    1234, 5678, payload, sizeof(payload));
+
+    esp_test_last_frame_size = 0;
+    memset(esp_test_last_frame, 0, sizeof(esp_test_last_frame));
+
+    /* Forward the packet out interface 1 */
+    wolfIP_forward_packet(&s, 1, (struct wolfIP_ip_packet *)buf, frame_len,
+                          peer_mac, 0);
+
+    ck_assert_uint_gt(esp_test_last_frame_size, 0);
+
+    sent_ip = (struct wolfIP_ip_packet *)esp_test_last_frame;
+    ck_assert_uint_eq(sent_ip->proto, 0x32);
+}
+END_TEST
+
 static Suite *esp_suite(void)
 {
     Suite *s;
@@ -1511,6 +1804,14 @@ static Suite *esp_suite(void)
     tc = tcase_create("no_sa");
     tcase_add_test(tc, test_wrap_no_matching_sa);
     tcase_add_test(tc, test_wrap_rejects_ip_len_below_header);
+    suite_add_tcase(s, tc);
+
+    /* TCP immediate-send ESP regression */
+    tc = tcase_create("tcp_immediate_esp");
+    tcase_add_test(tc, test_tcp_ack_esp_wrapped_when_txfifo_full);
+    tcase_add_test(tc, test_tcp_zero_wnd_probe_esp_wrapped);
+    tcase_add_test(tc, test_tcp_reset_reply_esp_wrapped);
+    tcase_add_test(tc, test_forward_packet_esp_wrapped);
     suite_add_tcase(s, tc);
 
     return s;

@@ -1676,6 +1676,58 @@ START_TEST(test_tcp_persist_cb_sends_one_byte_probe)
 }
 END_TEST
 
+/* Regression: zero-window probes must include the TCP timestamp option when
+ * ts_enabled is set, per RFC 7323 section 3.2.  Without the fix the probe buffer
+ * has no room for options and the timestamp is omitted. */
+START_TEST(test_tcp_zero_wnd_probe_includes_timestamp_when_enabled)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t payload[4] = {0x42, 0x43, 0x44, 0x45};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.ts_enabled = 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload), TCP_FLAG_ACK | TCP_FLAG_PSH), 0);
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_int_ge(tcp_option_find(tcp, TCP_OPTION_TS), 0);
+}
+END_TEST
+
 START_TEST(test_tcp_zero_wnd_probe_selects_middle_byte_at_snd_una)
 {
     struct wolfIP s;
@@ -2370,6 +2422,103 @@ START_TEST(test_is_timer_expired_skips_zero_head)
 }
 END_TEST
 
+/* Regression: when timers_binheap_pop skips multiple cancelled timers
+ * (expires==0) in its do-while loop, the sift-down cursor must reset to 0
+ * on each iteration.  Without the fix the cursor stays at a leaf position
+ * from the previous sift-down, so the replacement element at index 0 is
+ * never sifted down, breaking the min-heap invariant. */
+START_TEST(test_timer_pop_siftdown_resets_after_cancelled)
+{
+    struct timers_binheap h;
+    struct wolfIP_timer popped;
+    int id1, id2;
+
+    memset(&h, 0, sizeof(h));
+
+    /* Insert five timers: [10, 20, 50, 100, 200] */
+    id1 = timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 10 });
+    id2 = timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 20 });
+    timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 50 });
+    timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 100 });
+    timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 200 });
+
+    /* Cancel the two smallest */
+    timer_binheap_cancel(&h, id1);
+    timer_binheap_cancel(&h, id2);
+
+    /* Pop must skip both cancelled timers and return 50 */
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 50);
+
+    /* Next pop must return 100 -- verifies the heap invariant held */
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 100);
+}
+END_TEST
+
+/* Regression: tcp_send_reset_reply must set the DF bit on outbound RST
+ * segments, consistent with the normal TCP output path.  Without DF, the
+ * sequential IP ID is observable and exploitable for idle-scan attacks. */
+START_TEST(test_tcp_reset_reply_sets_df_bit)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp_seg in_seg;
+    union transport_pseudo_header ph;
+    struct wolfIP_ip_packet *sent_ip;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(&in_seg, 0, sizeof(in_seg));
+    {
+        struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+        memcpy(in_seg.ip.eth.dst, ll->mac, 6);
+    }
+    memcpy(in_seg.ip.eth.src, "\xAA\xBB\xCC\xDD\xEE\xFF", 6);
+    in_seg.ip.eth.type = ee16(0x0800);
+    in_seg.ip.ver_ihl = 0x45;
+    in_seg.ip.ttl = 64;
+    in_seg.ip.proto = WI_IPPROTO_TCP;
+    in_seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    in_seg.ip.src = ee32(0x0A000002U);
+    in_seg.ip.dst = ee32(0x0A000001U);
+    in_seg.ip.csum = 0;
+    iphdr_set_checksum(&in_seg.ip);
+    in_seg.src_port = ee16(40000);
+    in_seg.dst_port = ee16(9999);
+    in_seg.seq = ee32(1);
+    in_seg.hlen = TCP_HEADER_LEN << 2;
+    in_seg.flags = TCP_FLAG_SYN;
+    in_seg.win = ee16(65535);
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = in_seg.ip.src;
+    ph.ph.dst = in_seg.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    in_seg.csum = ee16(transport_checksum(&ph, &in_seg.src_port));
+
+    tcp_send_reset_reply(&s, TEST_PRIMARY_IF, &in_seg);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    sent_ip = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_uint_eq(sent_ip->flags_fo, ee16(0x4000U));
+}
+END_TEST
+
+/* Regression: ipcounter must be seeded with a random value at init so that
+ * IP identification fields on non-DF packets (UDP, ICMP) are not trivially
+ * predictable starting from zero. */
+START_TEST(test_ipcounter_seeded_at_init)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    ck_assert_uint_ne(s.ipcounter, 0);
+}
+END_TEST
 
 /* Arp suite */
 START_TEST(test_arp_request_basic)
@@ -2906,8 +3055,13 @@ END_TEST
 
 START_TEST(test_wolfip_ip_is_multicast_variants)
 {
-    ck_assert_int_eq(wolfIP_ip_is_multicast(0xE0000001U), 1);
-    ck_assert_int_eq(wolfIP_ip_is_multicast(0x0A000001U), 0);
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xE0000001U), 1);  /* 224.0.0.1 */
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xE1000001U), 1);  /* 225.0.0.1 */
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xEF000001U), 1);  /* 239.0.0.1 */
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xEFFFFFFFU), 1);  /* 239.255.255.255 */
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xDFFFFFFFU), 0);  /* 223.255.255.255 */
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0xF0000000U), 0);  /* 240.0.0.0 */
+    ck_assert_int_eq(wolfIP_ip_is_multicast(0x0A000001U), 0);  /* 10.0.0.1 */
 }
 END_TEST
 
@@ -3149,7 +3303,7 @@ END_TEST
 START_TEST(test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter)
 {
     struct wolfIP s;
-    uint8_t orig_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE];
+    uint8_t orig_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT];
     struct wolfIP_ip_packet *orig = (struct wolfIP_ip_packet *)orig_buf;
 
     wolfIP_init(&s);
@@ -3168,7 +3322,7 @@ START_TEST(test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter)
 
     wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, orig);
     ck_assert_uint_eq(last_frame_sent_size,
-            sizeof(struct wolfIP_icmp_dest_unreachable_packet) - ETH_HEADER_LEN);
+            (uint32_t)(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE));
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_eth_mask(0);
@@ -3416,7 +3570,7 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, ETH_HEADER_LEN + IP_HEADER_LEN + 8);
 
     ck_assert_uint_eq(last_frame_sent_size,
-            sizeof(struct wolfIP_icmp_ttl_exceeded_packet));
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
     icmp = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
     ck_assert_uint_eq(icmp->type, ICMP_TTL_EXCEEDED);
     ck_assert_uint_eq(icmp->code, 0);
@@ -3430,8 +3584,8 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     ck_assert_uint_eq(ee32(icmp->ip.dst), ee32(frame->src));
     ck_assert_mem_eq(icmp->orig_packet,
             ((uint8_t *)frame) + ETH_HEADER_LEN,
-            ee16(frame->len) < TTL_EXCEEDED_ORIG_PACKET_SIZE ?
-            ee16(frame->len) : TTL_EXCEEDED_ORIG_PACKET_SIZE);
+            ee16(frame->len) < TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT ?
+            ee16(frame->len) : TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT);
     ck_assert_uint_eq(frame->ttl, 1); /* original packet should remain unchanged */
 }
 END_TEST

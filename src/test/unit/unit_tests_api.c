@@ -3913,6 +3913,67 @@ START_TEST(test_ip_recv_drops_broadcast_source)
 }
 END_TEST
 
+/* Cover the multicast source branch of the ip_recv source address
+ * validation so that removing || wolfIP_ip_is_multicast(src) is detected. */
+START_TEST(test_ip_recv_drops_multicast_source)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg seg;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(&seg, 0, sizeof(seg));
+    memcpy(seg.ip.eth.dst, ll->mac, 6);
+    memcpy(seg.ip.eth.src, src_mac, 6);
+    seg.ip.eth.type = ee16(ETH_TYPE_IP);
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(0xE0000001U);  /* 224.0.0.1 — multicast */
+    seg.ip.dst = ee32(0x0A000001U);
+    seg.ip.csum = 0;
+    iphdr_set_checksum(&seg.ip);
+    seg.src_port = ee16(40000);
+    seg.dst_port = ee16(1234);
+    seg.seq = ee32(1);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_SYN;
+    seg.win = ee16(65535);
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = seg.ip.src;
+    ph.ph.dst = seg.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    seg.csum = ee16(transport_checksum(&ph, &seg.src_port));
+
+    ip_recv(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&seg,
+            sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
 /* Regression: arp_recv must not cache entries with broadcast, multicast,
  * zero, or own-IP sender addresses.  Without validation, an ARP request
  * with a spoofed sender IP poisons the neighbor cache. */
@@ -3950,6 +4011,43 @@ START_TEST(test_arp_recv_rejects_broadcast_sender)
 
     /* No neighbor entry should exist for 255.255.255.255 */
     ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, 0xFFFFFFFFU), 0);
+}
+END_TEST
+
+/* Cover the multicast branch of the ARP request sender-IP validation so
+ * that removing && !wolfIP_ip_is_multicast(sip) is detected. */
+START_TEST(test_arp_recv_rejects_multicast_sender)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    static const uint8_t fake_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, fake_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype = ee16(1);
+    arp.ptype = ee16(0x0800);
+    arp.hlen = 6;
+    arp.plen = 4;
+    arp.opcode = ee16(ARP_REQUEST);
+    memcpy(arp.sma, fake_mac, 6);
+    arp.sip = ee32(0xE0000001U);     /* multicast sender 224.0.0.1 */
+    memset(arp.tma, 0, 6);
+    arp.tip = ee32(conf->ip);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, 0xE0000001U), 0);
 }
 END_TEST
 
@@ -4430,6 +4528,87 @@ START_TEST(test_ip_recv_drops_source_routed_packet)
     ip_recv(&s, TEST_PRIMARY_IF, ip, sizeof(pkt));
 
     /* Socket must stay in LISTEN - source-routed packet should be dropped */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
+/* Cover the SSRR (0x89) branch of the source-routing drop guard so that
+ * removing the || type == 0x89 check produces a test failure. */
+START_TEST(test_ip_recv_drops_ssrr_source_routed_packet)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t pkt[ETH_HEADER_LEN + 24 + TCP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    uint16_t *tcp_csum_field;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(pkt, 0, sizeof(pkt));
+
+    ip = (struct wolfIP_ip_packet *)pkt;
+    memcpy(ip->eth.dst, ll->mac, 6);
+    memcpy(ip->eth.src, src_mac, 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+
+    ip->ver_ihl = 0x46;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_TCP;
+    ip->len = ee16(24 + TCP_HEADER_LEN);
+    ip->src = ee32(0x0A0000A1U);
+    ip->dst = ee32(0x0A000001U);
+
+    /* IP options: SSRR */
+    {
+        uint8_t *opts = pkt + ETH_HEADER_LEN + IP_HEADER_LEN;
+        opts[0] = 0x89;  /* SSRR */
+        opts[1] = 3;
+        opts[2] = 4;
+        opts[3] = 0x00;  /* End of Options */
+    }
+    ip->csum = 0;
+    iphdr_set_checksum(ip);
+
+    {
+        uint8_t *tcp = pkt + ETH_HEADER_LEN + 24;
+        tcp[0] = (uint8_t)(40000 >> 8);
+        tcp[1] = (uint8_t)(40000 & 0xFF);
+        tcp[2] = (uint8_t)(1234 >> 8);
+        tcp[3] = (uint8_t)(1234 & 0xFF);
+        tcp[4] = 0; tcp[5] = 0; tcp[6] = 0; tcp[7] = 1;
+        tcp[12] = TCP_HEADER_LEN << 2;
+        tcp[13] = TCP_FLAG_SYN;
+        tcp[14] = 0xFF; tcp[15] = 0xFF;
+        tcp_csum_field = (uint16_t *)(tcp + 16);
+        *tcp_csum_field = 0;
+        memset(&ph, 0, sizeof(ph));
+        ph.ph.src = ip->src;
+        ph.ph.dst = ip->dst;
+        ph.ph.proto = WI_IPPROTO_TCP;
+        ph.ph.len = ee16(TCP_HEADER_LEN);
+        *tcp_csum_field = ee16(transport_checksum(&ph, tcp));
+    }
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, sizeof(pkt));
+
     ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
 }
 END_TEST
