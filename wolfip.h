@@ -48,7 +48,6 @@ typedef uint32_t ip4;
 #define PACKED __attribute__((packed))
 #define ee16(x) __builtin_bswap16(x)
 #define ee32(x) __builtin_bswap32(x)
-#define DEBUG
 
 #ifndef WOLFIP_EAGAIN
 #ifdef EAGAIN

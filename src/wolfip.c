@@ -22,9 +22,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <stddef.h>
+#ifdef WOLF_POSIX
 #include <unistd.h>
 #include <stdlib.h>
-#ifdef WOLF_POSIX
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1259,6 +1259,10 @@ struct wolfIP {
     } arp;
     struct arp_pending_entry arp_pending[WOLFIP_ARP_PENDING_MAX];
 #endif
+#if WOLFIP_ENABLE_LOOPBACK
+    uint8_t loopback_buf[IP_MTU_MAX];
+    uint32_t loopback_pending_len;
+#endif
 };
 
 static inline int tx_has_writable_space(const struct tsocket *t)
@@ -1365,18 +1369,40 @@ static inline uint32_t tcp_tx_payload_cap(const struct tsocket *t)
 static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct wolfIP *s;
-    uint32_t copy = len;
-    uint8_t frame[LINK_MTU];
     if (!ll || !buf)
         return -1;
     s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
     if (!s)
         return -1;
-    if (copy > wolfIP_ll_frame_mtu(ll))
+    if (len > IP_MTU_MAX)
         return 0;
-    memcpy(frame, buf, copy);
-    wolfIP_recv_on(s, WOLFIP_LOOPBACK_IF_IDX, frame, copy);
-    return (int)copy;
+    if (s->loopback_pending_len > 0)
+        return 0; /* buffer busy, drop */
+    /* buf is the IP payload (ETH header already stripped by
+     * wolfIP_ll_send_frame for non-ethernet devices).
+     * Store as-is; wolfIP_poll will re-add the ETH prefix. */
+    memcpy(s->loopback_buf, buf, len);
+    s->loopback_pending_len = len;
+    return (int)len;
+}
+
+static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
+{
+    struct wolfIP *s;
+    uint32_t pending;
+    if (!ll)
+        return 0;
+    s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
+    if (!s)
+        return 0;
+    pending = s->loopback_pending_len;
+    if (pending == 0)
+        return 0;
+    if (pending > len)
+        return 0;
+    s->loopback_pending_len = 0;
+    memcpy(buf, s->loopback_buf, pending);
+    return (int)pending;
 }
 #endif
 
@@ -6634,7 +6660,9 @@ void wolfIP_init(struct wolfIP *s)
             memcpy(loop->mac, loop_mac, sizeof(loop_mac));
             strncpy(loop->ifname, "lo", sizeof(loop->ifname) - 1);
             loop->ifname[sizeof(loop->ifname) - 1] = '\0';
-            loop->poll = NULL;
+            loop->non_ethernet = 1;
+            loop->mtu = LINK_MTU;
+            loop->poll = wolfIP_loopback_poll;
             loop->send = wolfIP_loopback_send;
         }
         if (loop_conf) {
@@ -6705,9 +6733,9 @@ size_t wolfIP_instance_size(void)
     return sizeof(struct wolfIP);
 }
 
-#if defined(DEBUG)
+#if defined(DEBUG) || defined(DEBUG_ETH) || defined(DEBUG_IP) || defined(DEBUG_UDP)
 #include "src/wolfip_debug.c"
-#endif /* DEBUG */
+#endif /* DEBUG || DEBUG_ETH || DEBUG_IP || DEBUG_UDP */
 
 static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                            struct wolfIP_ip_packet *ip, uint32_t len)

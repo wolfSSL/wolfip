@@ -40,7 +40,7 @@
 #endif
 
 #ifndef WOLFIP_ENABLE_LOOPBACK
-#define WOLFIP_ENABLE_LOOPBACK 0
+#define WOLFIP_ENABLE_LOOPBACK 1
 #endif
 
 /* Enable HTTP server for POSIX builds */

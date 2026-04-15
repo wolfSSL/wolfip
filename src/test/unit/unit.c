@@ -115,6 +115,9 @@ Suite *wolf_suite(void)
 #if WOLFIP_ENABLE_LOOPBACK
     tcase_add_test(tc_utils, test_wolfip_loopback_defaults);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_paths);
+    tcase_add_test(tc_utils, test_wolfip_loopback_poll_paths);
+    tcase_add_test(tc_utils, test_wolfip_loopback_poll_keeps_pending_on_short_buffer);
+    tcase_add_test(tc_utils, test_wolfip_loopback_poll_null_container);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_drops_oversize);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_null_container);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_rejects_null_args);
@@ -770,7 +773,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_syn_on_established_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_syn_on_last_ack_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_full_txbuf_still_sends_pure_ack);
-    tcase_add_test(tc_proto, test_regression_loopback_immediate_pure_ack_uses_loopback_ll);
+    tcase_add_test(tc_proto, test_regression_loopback_pure_ack_uses_deferred_buffer_until_poll);
+    tcase_add_test(tc_proto, test_regression_loopback_pure_ack_drain_allows_next_send_cycle);
     tcase_add_test(tc_proto, test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity);
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);
