@@ -16,10 +16,18 @@
 #endif
 
 #undef  WOLFIP_MAX_INTERFACES
-#define WOLFIP_MAX_INTERFACES 2
+#define WOLFIP_MAX_INTERFACES 3
 
 #include "check.h"
 #include "../../config.h"
+
+#if WOLFIP_ENABLE_LOOPBACK
+#define TEST_PHYS_IF 1U
+#define TEST_WG_IF   2U
+#else
+#define TEST_PHYS_IF 0U
+#define TEST_WG_IF   1U
+#endif
 
 /* Override after config.h */
 #undef  MAX_UDPSOCKETS
@@ -206,46 +214,46 @@ static void setup_loopback_stacks(uint64_t *now)
     wolfIP_init(&stack_a);
 
     /* Physical interface (non_ethernet, index 0) */
-    ll = wolfIP_getdev_ex(&stack_a, 0);
+    ll = wolfIP_getdev_ex(&stack_a, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_a_poll;
     ll->send = phys_a_send;
     strncpy(ll->ifname, "eth_a", sizeof(ll->ifname) - 1);
 
-    wolfIP_ipconfig_set(&stack_a, MAKE_IP4(192,168,1,1),
-                        MAKE_IP4(255,255,255,0), 0);
+    wolfIP_ipconfig_set_ex(&stack_a, TEST_PHYS_IF, MAKE_IP4(192,168,1,1),
+                           MAKE_IP4(255,255,255,0), 0);
 
     /* wolfGuard on interface 1 (wg0) */
-    ck_assert_int_eq(wolfguard_init(&wg_dev_a, &stack_a, 1, 51820), 0);
+    ck_assert_int_eq(wolfguard_init(&wg_dev_a, &stack_a, TEST_WG_IF, 51820), 0);
 
     /* Generate and set keys for A */
     wc_RNG_GenerateBlock(&test_rng, priv_a, WG_PRIVATE_KEY_LEN);
     ck_assert_int_eq(wolfguard_set_private_key(&wg_dev_a, priv_a), 0);
 
-    wolfIP_ipconfig_set_ex(&stack_a, 1, MAKE_IP4(10,0,0,1),
+    wolfIP_ipconfig_set_ex(&stack_a, TEST_WG_IF, MAKE_IP4(10,0,0,1),
                            MAKE_IP4(255,255,255,0), 0);
 
     /* Stack B */
     wolfIP_init(&stack_b);
 
     /* Physical interface (non_ethernet, index 0) */
-    ll = wolfIP_getdev_ex(&stack_b, 0);
+    ll = wolfIP_getdev_ex(&stack_b, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_b_poll;
     ll->send = phys_b_send;
     strncpy(ll->ifname, "eth_b", sizeof(ll->ifname) - 1);
 
-    wolfIP_ipconfig_set(&stack_b, MAKE_IP4(192,168,1,2),
-                        MAKE_IP4(255,255,255,0), 0);
+    wolfIP_ipconfig_set_ex(&stack_b, TEST_PHYS_IF, MAKE_IP4(192,168,1,2),
+                           MAKE_IP4(255,255,255,0), 0);
 
     /* wolfGuard on interface 1 (wg0) */
-    ck_assert_int_eq(wolfguard_init(&wg_dev_b, &stack_b, 1, 51820), 0);
+    ck_assert_int_eq(wolfguard_init(&wg_dev_b, &stack_b, TEST_WG_IF, 51820), 0);
 
     /* Generate and set keys for B */
     wc_RNG_GenerateBlock(&test_rng, priv_b, WG_PRIVATE_KEY_LEN);
     ck_assert_int_eq(wolfguard_set_private_key(&wg_dev_b, priv_b), 0);
 
-    wolfIP_ipconfig_set_ex(&stack_b, 1, MAKE_IP4(10,0,0,2),
+    wolfIP_ipconfig_set_ex(&stack_b, TEST_WG_IF, MAKE_IP4(10,0,0,2),
                            MAKE_IP4(255,255,255,0), 0);
 
     /* Add peers (A knows B, B knows A) */
@@ -798,50 +806,50 @@ START_TEST(test_multi_peer)
 
     /* Stack A (hub, 2 peers) */
     wolfIP_init(&stack_a);
-    ll = wolfIP_getdev_ex(&stack_a, 0);
+    ll = wolfIP_getdev_ex(&stack_a, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_a_poll_multi;
     ll->send = phys_a_send_multi;
     strncpy(ll->ifname, "eth_a", sizeof(ll->ifname) - 1);
-    wolfIP_ipconfig_set(&stack_a, MAKE_IP4(192,168,1,1),
-                        MAKE_IP4(255,255,255,0), 0);
+    wolfIP_ipconfig_set_ex(&stack_a, TEST_PHYS_IF, MAKE_IP4(192,168,1,1),
+                           MAKE_IP4(255,255,255,0), 0);
 
-    ck_assert_int_eq(wolfguard_init(&wg_dev_a, &stack_a, 1, 51820), 0);
+    ck_assert_int_eq(wolfguard_init(&wg_dev_a, &stack_a, TEST_WG_IF, 51820), 0);
     wc_RNG_GenerateBlock(&test_rng, priv_a, WG_PRIVATE_KEY_LEN);
     ck_assert_int_eq(wolfguard_set_private_key(&wg_dev_a, priv_a), 0);
-    wolfIP_ipconfig_set_ex(&stack_a, 1, MAKE_IP4(10,0,0,1),
+    wolfIP_ipconfig_set_ex(&stack_a, TEST_WG_IF, MAKE_IP4(10,0,0,1),
                            MAKE_IP4(255,0,0,0), 0);
 
     /* Stack B */
     wolfIP_init(&stack_b);
-    ll = wolfIP_getdev_ex(&stack_b, 0);
+    ll = wolfIP_getdev_ex(&stack_b, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_b_poll;
     ll->send = phys_b_send;
     strncpy(ll->ifname, "eth_b", sizeof(ll->ifname) - 1);
-    wolfIP_ipconfig_set(&stack_b, MAKE_IP4(192,168,1,2),
-                        MAKE_IP4(255,255,255,0), 0);
+    wolfIP_ipconfig_set_ex(&stack_b, TEST_PHYS_IF, MAKE_IP4(192,168,1,2),
+                           MAKE_IP4(255,255,255,0), 0);
 
-    ck_assert_int_eq(wolfguard_init(&wg_dev_b, &stack_b, 1, 51820), 0);
+    ck_assert_int_eq(wolfguard_init(&wg_dev_b, &stack_b, TEST_WG_IF, 51820), 0);
     wc_RNG_GenerateBlock(&test_rng, priv_b, WG_PRIVATE_KEY_LEN);
     ck_assert_int_eq(wolfguard_set_private_key(&wg_dev_b, priv_b), 0);
-    wolfIP_ipconfig_set_ex(&stack_b, 1, MAKE_IP4(10,0,1,1),
+    wolfIP_ipconfig_set_ex(&stack_b, TEST_WG_IF, MAKE_IP4(10,0,1,1),
                            MAKE_IP4(255,255,255,0), 0);
 
     /* Stack C */
     wolfIP_init(&stack_c);
-    ll = wolfIP_getdev_ex(&stack_c, 0);
+    ll = wolfIP_getdev_ex(&stack_c, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_c_poll;
     ll->send = phys_c_send;
     strncpy(ll->ifname, "eth_c", sizeof(ll->ifname) - 1);
-    wolfIP_ipconfig_set(&stack_c, MAKE_IP4(192,168,1,3),
-                        MAKE_IP4(255,255,255,0), 0);
+    wolfIP_ipconfig_set_ex(&stack_c, TEST_PHYS_IF, MAKE_IP4(192,168,1,3),
+                           MAKE_IP4(255,255,255,0), 0);
 
-    ck_assert_int_eq(wolfguard_init(&wg_dev_c, &stack_c, 1, 51820), 0);
+    ck_assert_int_eq(wolfguard_init(&wg_dev_c, &stack_c, TEST_WG_IF, 51820), 0);
     wc_RNG_GenerateBlock(&test_rng, priv_c, WG_PRIVATE_KEY_LEN);
     ck_assert_int_eq(wolfguard_set_private_key(&wg_dev_c, priv_c), 0);
-    wolfIP_ipconfig_set_ex(&stack_c, 1, MAKE_IP4(10,0,2,1),
+    wolfIP_ipconfig_set_ex(&stack_c, TEST_WG_IF, MAKE_IP4(10,0,2,1),
                            MAKE_IP4(255,255,255,0), 0);
 
     /* Add peers */
