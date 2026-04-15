@@ -526,9 +526,16 @@ int lpc_enet_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     mac_start();
 
     /* Retry PHY detection after MAC is fully started.
-     * MDIO can be unreliable before the MAC is running on some boards. */
+     * MDIO can be unreliable before the MAC is running on some boards.
+     * On success, re-run phy_init() (resets PHY, restarts autoneg) and
+     * refresh MAC speed/duplex so the MAC isn't left at the default
+     * 100/full guess from config_mac(). */
     if (phy_addr < 0) {
         phy_addr = phy_detect_retry();
+        if (phy_addr >= 0) {
+            phy_init();
+            config_speed_duplex();
+        }
     }
 
     if (phy_addr < 0) {
