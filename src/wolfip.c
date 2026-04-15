@@ -2657,6 +2657,9 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
     uint8_t opt_len;
     uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
     uint32_t frame_len;
+
+    if (!t)
+        return -WOLFIP_EINVAL;
     tcp = (struct wolfIP_tcp_seg *)buffer;
     memset(tcp, 0, sizeof(buffer));
     opt_len = tcp_build_ack_options(t, tcp->data, TCP_MAX_OPTIONS_LEN);
@@ -2682,10 +2685,9 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
 
 static void tcp_send_ack(struct tsocket *t)
 {
-    int ret = tcp_send_empty(t, TCP_FLAG_ACK);
-
     if (!t)
         return;
+    int ret = tcp_send_empty(t, TCP_FLAG_ACK);
     if (ret == -WOLFIP_EAGAIN)
         t->sock.tcp.ack_retry_pending = 1;
     else if (ret >= 0)
