@@ -32,6 +32,18 @@ def find_vector_offset(data):
     return 0
 
 
+def is_flash_image(data, off):
+    """Decide flash vs RAM by inspecting the reset handler (vector[1]).
+    Flash-linked images have the reset handler in SPIFI XIP space
+    (0x10000000+); RAM-linked images point into SRAM (0x20000000+).
+    RAM builds have the vector table at file offset 0 too, so offset
+    alone can't be used to distinguish them. """
+    if off + 8 > len(data):
+        return False
+    reset = struct.unpack_from('<I', data, off + 4)[0]
+    return 0x10000000 <= reset < 0x20000000
+
+
 def patch_vector_checksum(f, off):
     """Patch vector[7] (offset+0x1C) so vectors[0..7] sum to 0."""
     f.seek(off)
@@ -98,7 +110,8 @@ def main():
             print("Error: file too small")
             sys.exit(1)
 
-        if off == 0:
+        flash_image = (off == 0) and is_flash_image(data, off)
+        if flash_image:
             # Flash boot build: write enhanced boot block first
             if size < 0x160 + 100:
                 print("Error: image too small for enhanced boot block")
@@ -116,7 +129,7 @@ def main():
             print("ERROR: checksum verification failed (sum=0x%08X)" % total)
             sys.exit(1)
 
-    if off == 0:
+    if flash_image:
         print("Vector checksum patched: offset=0x%X entry[7]=0x%08X "
               "(+ enhanced boot block @ 0x24/0x160)" % (off, cksum))
     else:

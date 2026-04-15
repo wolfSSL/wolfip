@@ -91,13 +91,17 @@ void SysTick_Handler(void)
 }
 
 /* Atomic read of 64-bit tick_ms on 32-bit Cortex-M4.
- * Briefly disables interrupts to prevent torn reads. */
+ * Briefly disables interrupts to prevent torn reads while preserving
+ * the caller's prior interrupt mask state (save/restore PRIMASK rather
+ * than blindly re-enabling). */
 static uint64_t get_tick_ms(void)
 {
     uint64_t val;
+    uint32_t primask;
+    __asm volatile ("mrs %0, primask" : "=r" (primask) :: "memory");
     __asm volatile ("cpsid i" ::: "memory");
     val = tick_ms;
-    __asm volatile ("cpsie i" ::: "memory");
+    __asm volatile ("msr primask, %0" :: "r" (primask) : "memory");
     return val;
 }
 
