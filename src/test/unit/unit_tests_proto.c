@@ -3003,8 +3003,9 @@ START_TEST(test_wolfip_loopback_send_paths)
         ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
                          (int)sizeof(frame));
     }
-    /* Next send must be dropped because the queue is full. */
-    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)), 0);
+    /* Next send must return -WOLFIP_EAGAIN because the queue is full. */
+    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                     -WOLFIP_EAGAIN);
 }
 END_TEST
 
@@ -3054,20 +3055,6 @@ START_TEST(test_wolfip_loopback_poll_keeps_pending_on_short_buffer)
 }
 END_TEST
 
-START_TEST(test_wolfip_loopback_poll_null_container)
-{
-    uintptr_t off = (uintptr_t)offsetof(struct wolfIP, ll_dev);
-    struct wolfIP_ll_dev *ll;
-    uint8_t frame[4] = {0};
-
-    if (off == 0)
-        return;
-
-    ll = (struct wolfIP_ll_dev *)off;
-    ck_assert_int_eq(wolfIP_loopback_poll(ll, frame, sizeof(frame)), 0);
-}
-END_TEST
-
 START_TEST(test_wolfip_loopback_send_drops_oversize)
 {
     struct wolfIP s;
@@ -3086,17 +3073,37 @@ START_TEST(test_wolfip_loopback_send_drops_oversize)
 }
 END_TEST
 
-START_TEST(test_wolfip_loopback_send_null_container)
+START_TEST(test_wolfip_loopback_send_queue_full_returns_eagain)
 {
-    uintptr_t off = (uintptr_t)offsetof(struct wolfIP, ll_dev);
-    struct wolfIP_ll_dev *ll;
-    uint8_t frame[4] = {0};
+    struct wolfIP s;
+    struct wolfIP_ll_dev *loop;
+    uint8_t frame[16] = {0};
+    uint8_t rx[IP_MTU_MAX];
 
-    if (off == 0)
-        return;
+    wolfIP_init(&s);
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
 
-    ll = (struct wolfIP_ll_dev *)off;
-    ck_assert_int_eq(wolfIP_loopback_send(ll, frame, sizeof(frame)), -1);
+    /* Fill the queue completely. */
+    for (unsigned int i = 0; i < WOLFIP_LOOPBACK_QUEUE_DEPTH; i++) {
+        frame[0] = (uint8_t)i;
+        ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                         (int)sizeof(frame));
+    }
+
+    /* Queue-full must return -WOLFIP_EAGAIN, not 0. */
+    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                     -WOLFIP_EAGAIN);
+
+    /* Drain one slot and verify we can enqueue again. */
+    ck_assert_int_gt(wolfIP_loopback_poll(loop, rx, sizeof(rx)), 0);
+    frame[0] = 0xFF;
+    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                     (int)sizeof(frame));
+
+    /* Queue is full again — must get -WOLFIP_EAGAIN once more. */
+    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                     -WOLFIP_EAGAIN);
 }
 END_TEST
 

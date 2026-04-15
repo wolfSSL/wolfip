@@ -1384,7 +1384,7 @@ static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t le
     if (len == 0 || len > IP_MTU_MAX)
         return 0;
     if (s->loopback_count >= WOLFIP_LOOPBACK_QUEUE_DEPTH)
-        return 0; /* queue full, drop */
+        return -WOLFIP_EAGAIN; /* queue full, retry later */
     /* buf is the IP payload (ETH header already stripped by
      * wolfIP_ll_send_frame for non-ethernet devices).
      * Store as-is; wolfIP_poll will re-add the ETH prefix. */

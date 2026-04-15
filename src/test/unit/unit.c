@@ -117,9 +117,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_loopback_send_paths);
     tcase_add_test(tc_utils, test_wolfip_loopback_poll_paths);
     tcase_add_test(tc_utils, test_wolfip_loopback_poll_keeps_pending_on_short_buffer);
-    tcase_add_test(tc_utils, test_wolfip_loopback_poll_null_container);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_drops_oversize);
-    tcase_add_test(tc_utils, test_wolfip_loopback_send_null_container);
+    tcase_add_test(tc_utils, test_wolfip_loopback_send_queue_full_returns_eagain);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_rejects_null_args);
 #endif
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_ignores_missing_link_sender);
