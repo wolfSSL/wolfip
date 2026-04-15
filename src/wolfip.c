@@ -1480,9 +1480,12 @@ static inline int wolfIP_ll_is_non_ethernet(struct wolfIP *s, unsigned int if_id
 static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
                                        void *buf, uint32_t len)
 {
-    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+    struct wolfIP_ll_dev *ll;
     uint32_t frame_mtu;
 
+    if (!s)
+        return -WOLFIP_EINVAL;
+    ll = wolfIP_ll_at(s, if_idx);
     if (!ll || !ll->send)
         return -WOLFIP_EINVAL;
     frame_mtu = wolfIP_ll_frame_mtu(ll);
@@ -2685,9 +2688,11 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
 
 static void tcp_send_ack(struct tsocket *t)
 {
+    int ret;
+
     if (!t)
         return;
-    int ret = tcp_send_empty(t, TCP_FLAG_ACK);
+    ret = tcp_send_empty(t, TCP_FLAG_ACK);
     if (ret == -WOLFIP_EAGAIN)
         t->sock.tcp.ack_retry_pending = 1;
     else if (ret >= 0)
