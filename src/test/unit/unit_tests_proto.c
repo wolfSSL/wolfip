@@ -5076,6 +5076,133 @@ START_TEST(test_regression_loopback_udp_tx_backpressure_retries_after_queue_drai
 }
 END_TEST
 
+START_TEST(test_regression_ll_send_frame_returns_wolfip_error_codes)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    ck_assert_int_eq(
+        wolfIP_ll_send_frame(NULL, TEST_PRIMARY_IF, frame, sizeof(frame)),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_ll_send_frame(&s, WOLFIP_MAX_INTERFACES, frame, sizeof(frame)),
+        -WOLFIP_EINVAL);
+
+    ll->send = NULL;
+    ck_assert_int_eq(
+        wolfIP_ll_send_frame(&s, TEST_PRIMARY_IF, frame, sizeof(frame)),
+        -WOLFIP_EINVAL);
+
+    ll->send = mock_send;
+    ck_assert_int_eq(
+        wolfIP_ll_send_frame(&s, TEST_PRIMARY_IF, frame, LINK_MTU + 1U),
+        -WOLFIP_EINVAL);
+
+    ll->non_ethernet = 1;
+    ck_assert_int_eq(
+        wolfIP_ll_send_frame(&s, TEST_PRIMARY_IF, frame, ETH_HEADER_LEN),
+        -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_regression_loopback_ack_retry_pending_requeued_on_poll)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *loop;
+    uint8_t frame[16] = {0};
+    uint8_t rx[IP_MTU_MAX];
+    unsigned int i;
+    uint64_t now = 300;
+
+    wolfIP_init(&s);
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
+
+    for (i = 0; i < WOLFIP_LOOPBACK_QUEUE_DEPTH; i++) {
+        ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+            (int)sizeof(frame));
+    }
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_LOOPBACK_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x7F000001U;
+    ts->remote_ip = 0x7F000001U;
+
+    tcp_send_ack(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 1U);
+
+    ck_assert_int_gt(loop->poll(loop, rx, sizeof(rx)), 0);
+
+    loop->poll = mock_poll;
+    (void)wolfIP_poll(&s, now);
+
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 0U);
+    ck_assert_uint_eq(s.loopback_count, WOLFIP_LOOPBACK_QUEUE_DEPTH);
+}
+END_TEST
+
+START_TEST(test_regression_loopback_queue_full_pure_ack_backpressure_retry)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *loop;
+    uint8_t frame[16] = {0};
+    uint8_t rx[IP_MTU_MAX];
+    unsigned int i;
+    uint64_t now = 350;
+
+    wolfIP_init(&s);
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
+
+    for (i = 0; i < WOLFIP_LOOPBACK_QUEUE_DEPTH; i++) {
+        ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+            (int)sizeof(frame));
+    }
+
+    ts = &s.tcpsockets[1];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_LOOPBACK_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 200;
+    ts->sock.tcp.seq = 300;
+    ts->src_port = 5000;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x7F000001U;
+    ts->remote_ip = 0x7F000001U;
+
+    /* Queue full -> pure ACK send must backpressure and mark retry pending. */
+    tcp_send_ack(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 1U);
+    ck_assert_uint_eq(s.loopback_count, WOLFIP_LOOPBACK_QUEUE_DEPTH);
+
+    /* Free one slot, then poll should retry and enqueue the pending ACK. */
+    ck_assert_int_gt(loop->poll(loop, rx, sizeof(rx)), 0);
+    loop->poll = mock_poll;
+    (void)wolfIP_poll(&s, now);
+
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 0U);
+    ck_assert_uint_eq(s.loopback_count, WOLFIP_LOOPBACK_QUEUE_DEPTH);
+}
+END_TEST
+
 START_TEST(test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity)
 {
     struct wolfIP s;

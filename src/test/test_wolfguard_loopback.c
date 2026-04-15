@@ -213,7 +213,7 @@ static void setup_loopback_stacks(uint64_t *now)
     /* ---- Stack A ---- */
     wolfIP_init(&stack_a);
 
-    /* Physical interface (non_ethernet, index 0) */
+    /* Physical interface (non_ethernet, index TEST_PHYS_IF). */
     ll = wolfIP_getdev_ex(&stack_a, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_a_poll;
@@ -236,7 +236,7 @@ static void setup_loopback_stacks(uint64_t *now)
     /* Stack B */
     wolfIP_init(&stack_b);
 
-    /* Physical interface (non_ethernet, index 0) */
+    /* Physical interface (non_ethernet, index TEST_PHYS_IF). */
     ll = wolfIP_getdev_ex(&stack_b, TEST_PHYS_IF);
     ll->non_ethernet = 1;
     ll->poll = phys_b_poll;

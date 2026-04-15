@@ -1084,6 +1084,7 @@ struct tcpsocket {
     uint8_t ctrl_rto_active;
     uint8_t fin_wait_2_timeout_active;
     uint8_t is_listener;
+    uint8_t ack_retry_pending;
     ip4 local_ip, remote_ip;
     uint32_t peer_rwnd;
     uint16_t peer_mss;
@@ -1483,13 +1484,13 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
     uint32_t frame_mtu;
 
     if (!ll || !ll->send)
-        return -1;
+        return -WOLFIP_EINVAL;
     frame_mtu = wolfIP_ll_frame_mtu(ll);
     if (len > frame_mtu)
-        return -1;
+        return -WOLFIP_EINVAL;
     if (ll->non_ethernet) {
         if (len <= ETH_HEADER_LEN)
-            return -1;
+            return -WOLFIP_EINVAL;
         return ll->send(ll, (uint8_t *)buf + ETH_HEADER_LEN, len - ETH_HEADER_LEN);
     }
     return ll->send(ll, buf, len);
@@ -2681,7 +2682,14 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
 
 static void tcp_send_ack(struct tsocket *t)
 {
-    (void)tcp_send_empty(t, TCP_FLAG_ACK);
+    int ret = tcp_send_empty(t, TCP_FLAG_ACK);
+
+    if (!t)
+        return;
+    if (ret == -WOLFIP_EAGAIN)
+        t->sock.tcp.ack_retry_pending = 1;
+    else if (ret >= 0)
+        t->sock.tcp.ack_retry_pending = 0;
 }
 
 static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
@@ -7600,6 +7608,13 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         struct pkt_desc *desc;
         struct wolfIP_tcp_seg *tcp;
         tcp_resync_inflight(s, ts, now);
+        if (ts->sock.tcp.ack_retry_pending) {
+            int ack_ret = tcp_send_empty(ts, TCP_FLAG_ACK);
+            if (ack_ret == -WOLFIP_EAGAIN)
+                ts->sock.tcp.ack_retry_pending = 1;
+            else if (ack_ret >= 0)
+                ts->sock.tcp.ack_retry_pending = 0;
+        }
         in_flight = ts->sock.tcp.bytes_in_flight;
         if (ts->sock.tcp.persist_active && (ts->sock.tcp.peer_rwnd > 0 ||
                 !tcp_has_pending_unsent_payload(ts)))
