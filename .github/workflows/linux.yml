@@ -90,6 +90,12 @@ jobs:
           set -euo pipefail
           timeout --preserve-status 2m sudo LD_PRELOAD=$PWD/libwolfip.so ping -c 5 10.10.10.1
 
+      - name: Rebuild libwolfip.so with loopback enabled
+        run: |
+          set -euo pipefail
+          rm -f libwolfip.so build/pie/wolfip.o
+          make libwolfip.so EXTRA_CFLAGS="-DWOLFIP_ENABLE_LOOPBACK=1"
+
       - name: Testing ICMP loopback smoke (no TUN/TAP)
         timeout-minutes: 2
         run: |

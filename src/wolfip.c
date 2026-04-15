@@ -1260,8 +1260,14 @@ struct wolfIP {
     struct arp_pending_entry arp_pending[WOLFIP_ARP_PENDING_MAX];
 #endif
 #if WOLFIP_ENABLE_LOOPBACK
-    uint8_t loopback_buf[IP_MTU_MAX];
-    uint32_t loopback_pending_len;
+#ifndef WOLFIP_LOOPBACK_QUEUE_DEPTH
+#define WOLFIP_LOOPBACK_QUEUE_DEPTH 4
+#endif
+    uint8_t loopback_buf[WOLFIP_LOOPBACK_QUEUE_DEPTH][IP_MTU_MAX];
+    uint32_t loopback_pending_len[WOLFIP_LOOPBACK_QUEUE_DEPTH];
+    uint8_t loopback_head;
+    uint8_t loopback_tail;
+    uint8_t loopback_count;
 #endif
 };
 
@@ -1369,39 +1375,47 @@ static inline uint32_t tcp_tx_payload_cap(const struct tsocket *t)
 static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct wolfIP *s;
+    uint8_t slot;
     if (!ll || !buf)
         return -1;
     s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
     if (!s)
         return -1;
-    if (len > IP_MTU_MAX)
+    if (len == 0 || len > IP_MTU_MAX)
         return 0;
-    if (s->loopback_pending_len > 0)
-        return 0; /* buffer busy, drop */
+    if (s->loopback_count >= WOLFIP_LOOPBACK_QUEUE_DEPTH)
+        return 0; /* queue full, drop */
     /* buf is the IP payload (ETH header already stripped by
      * wolfIP_ll_send_frame for non-ethernet devices).
      * Store as-is; wolfIP_poll will re-add the ETH prefix. */
-    memcpy(s->loopback_buf, buf, len);
-    s->loopback_pending_len = len;
+    slot = s->loopback_tail;
+    memcpy(s->loopback_buf[slot], buf, len);
+    s->loopback_pending_len[slot] = len;
+    s->loopback_tail = (uint8_t)((slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH);
+    s->loopback_count++;
     return (int)len;
 }
 
 static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct wolfIP *s;
+    uint8_t slot;
     uint32_t pending;
-    if (!ll)
+    if (!ll || !buf)
         return 0;
     s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
     if (!s)
         return 0;
-    pending = s->loopback_pending_len;
-    if (pending == 0)
+    if (s->loopback_count == 0)
         return 0;
+    slot = s->loopback_head;
+    pending = s->loopback_pending_len[slot];
     if (pending > len)
         return 0;
-    s->loopback_pending_len = 0;
-    memcpy(buf, s->loopback_buf, pending);
+    memcpy(buf, s->loopback_buf[slot], pending);
+    s->loopback_pending_len[slot] = 0;
+    s->loopback_head = (uint8_t)((slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH);
+    s->loopback_count--;
     return (int)pending;
 }
 #endif

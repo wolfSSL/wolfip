@@ -28,6 +28,7 @@
 #undef  WOLFIP_MAX_INTERFACES
 #define WOLFIP_MAX_INTERFACES 1
 #undef  WOLFIP_ENABLE_LOOPBACK
+#define WOLFIP_ENABLE_LOOPBACK 0
 
 #include "check.h"
 #include "../../../config.h"

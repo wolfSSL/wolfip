@@ -2998,7 +2998,12 @@ START_TEST(test_wolfip_loopback_send_paths)
 
     ck_assert_int_eq(wolfIP_loopback_send(NULL, frame, sizeof(frame)), -1);
     ck_assert_int_eq(wolfIP_loopback_send(loop, NULL, sizeof(frame)), -1);
-    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)), (int)sizeof(frame));
+    /* Fill the queue, each slot enqueue returns the byte count. */
+    for (unsigned int i = 0; i < WOLFIP_LOOPBACK_QUEUE_DEPTH; i++) {
+        ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                         (int)sizeof(frame));
+    }
+    /* Next send must be dropped because the queue is full. */
     ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)), 0);
 }
 END_TEST
@@ -3018,6 +3023,7 @@ START_TEST(test_wolfip_loopback_poll_paths)
     memset(rx, 0, sizeof(rx));
 
     ck_assert_int_eq(wolfIP_loopback_poll(NULL, rx, sizeof(rx)), 0);
+    ck_assert_int_eq(wolfIP_loopback_poll(loop, NULL, sizeof(rx)), 0);
     ck_assert_int_eq(wolfIP_loopback_poll(loop, rx, sizeof(rx)), 0);
 
     ck_assert_int_eq(wolfIP_loopback_send(loop, tx, sizeof(tx)), (int)sizeof(tx));
@@ -4890,10 +4896,12 @@ START_TEST(test_regression_loopback_pure_ack_uses_deferred_buffer_until_poll)
             (uint32_t)sizeof(seg)), 0);
     ck_assert_uint_eq(ts->sock.tcp.last_ack, ts->sock.tcp.ack);
     ck_assert_uint_eq(last_frame_sent_size, 0U);
-    ck_assert_uint_eq(s.loopback_pending_len, expected_pending_len);
+    ck_assert_uint_eq(s.loopback_count, 1U);
+    ck_assert_uint_eq(s.loopback_pending_len[s.loopback_head],
+                      expected_pending_len);
 
     (void)wolfIP_poll(&s, 200);
-    ck_assert_uint_eq(s.loopback_pending_len, 0U);
+    ck_assert_uint_eq(s.loopback_count, 0U);
 }
 END_TEST
 
@@ -4934,13 +4942,17 @@ START_TEST(test_regression_loopback_pure_ack_drain_allows_next_send_cycle)
     seg.flags = TCP_FLAG_ACK;
 
     ck_assert_int_eq(tcp_send_empty_immediate(ts, &seg, (uint32_t)sizeof(seg)), 0);
-    ck_assert_uint_eq(s.loopback_pending_len, expected_pending_len);
+    ck_assert_uint_eq(s.loopback_count, 1U);
+    ck_assert_uint_eq(s.loopback_pending_len[s.loopback_head],
+                      expected_pending_len);
 
     ck_assert_int_eq(loop->poll(loop, rx, sizeof(rx)), (int)expected_pending_len);
-    ck_assert_uint_eq(s.loopback_pending_len, 0U);
+    ck_assert_uint_eq(s.loopback_count, 0U);
 
     ck_assert_int_eq(tcp_send_empty_immediate(ts, &seg, (uint32_t)sizeof(seg)), 0);
-    ck_assert_uint_eq(s.loopback_pending_len, expected_pending_len);
+    ck_assert_uint_eq(s.loopback_count, 1U);
+    ck_assert_uint_eq(s.loopback_pending_len[s.loopback_head],
+                      expected_pending_len);
 }
 END_TEST
 
