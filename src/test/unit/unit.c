@@ -774,6 +774,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_full_txbuf_still_sends_pure_ack);
     tcase_add_test(tc_proto, test_regression_loopback_pure_ack_uses_deferred_buffer_until_poll);
     tcase_add_test(tc_proto, test_regression_loopback_pure_ack_drain_allows_next_send_cycle);
+    tcase_add_test(tc_proto, test_regression_loopback_pure_ack_immediate_propagates_eagain_when_queue_full);
+    tcase_add_test(tc_proto, test_regression_loopback_udp_tx_backpressure_retries_after_queue_drain);
     tcase_add_test(tc_proto, test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity);
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);

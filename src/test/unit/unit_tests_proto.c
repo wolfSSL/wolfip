@@ -4963,6 +4963,119 @@ START_TEST(test_regression_loopback_pure_ack_drain_allows_next_send_cycle)
 }
 END_TEST
 
+START_TEST(test_regression_loopback_pure_ack_immediate_propagates_eagain_when_queue_full)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *loop;
+    struct wolfIP_tcp_seg seg;
+    uint8_t frame[16] = {0};
+    unsigned int i;
+
+    wolfIP_init(&s);
+    loop = wolfIP_getdev_ex(&s, TEST_LOOPBACK_IF);
+    ck_assert_ptr_nonnull(loop);
+
+    for (i = 0; i < WOLFIP_LOOPBACK_QUEUE_DEPTH; i++) {
+        ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+                (int)sizeof(frame));
+    }
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_LOOPBACK_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x7F000001U;
+    ts->remote_ip = 0x7F000001U;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.src_port = ee16(ts->src_port);
+    seg.dst_port = ee16(ts->dst_port);
+    seg.seq = ee32(ts->sock.tcp.seq);
+    seg.ack = ee32(ts->sock.tcp.ack);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+
+    ck_assert_int_eq(tcp_send_empty_immediate(ts, &seg, (uint32_t)sizeof(seg)),
+            -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(s.loopback_count, WOLFIP_LOOPBACK_QUEUE_DEPTH);
+}
+END_TEST
+
+START_TEST(test_regression_loopback_udp_tx_backpressure_retries_after_queue_drain)
+{
+    struct wolfIP s;
+    struct tsocket *tx;
+    int tx_sd, rx_sd;
+    struct wolfIP_sockaddr_in bind_addr, dst_addr;
+    uint8_t payload = 0x5A;
+    uint8_t rxbuf[4];
+    int ret;
+    int received = 0;
+    uint64_t now = 200;
+    unsigned int i;
+
+    wolfIP_init(&s);
+
+    rx_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(rx_sd, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(7777);
+    bind_addr.sin_addr.s_addr = ee32(0x7F000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, rx_sd,
+            (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    tx_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(tx_sd, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(9999);
+    bind_addr.sin_addr.s_addr = ee32(0x7F000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tx_sd,
+            (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    memset(&dst_addr, 0, sizeof(dst_addr));
+    dst_addr.sin_family = AF_INET;
+    dst_addr.sin_port = ee16(7777);
+    dst_addr.sin_addr.s_addr = ee32(0x7F000001U);
+
+    for (i = 0; i < WOLFIP_LOOPBACK_QUEUE_DEPTH + 1U; i++) {
+        payload = (uint8_t)i;
+        ret = wolfIP_sock_sendto(&s, tx_sd, &payload, 1, 0,
+                (const struct wolfIP_sockaddr *)&dst_addr, sizeof(dst_addr));
+        ck_assert_int_eq(ret, 1);
+    }
+
+    tx = &s.udpsockets[SOCKET_UNMARK(tx_sd)];
+
+    (void)wolfIP_poll(&s, now++);
+    ck_assert_uint_eq(s.loopback_count, WOLFIP_LOOPBACK_QUEUE_DEPTH);
+    ck_assert_ptr_nonnull(fifo_peek(&tx->sock.udp.txbuf));
+
+    (void)wolfIP_poll(&s, now++);
+    ck_assert_uint_ne((uint32_t)(tx->events & CB_EVENT_WRITABLE), 0U);
+    (void)wolfIP_poll(&s, now++);
+    ck_assert_ptr_null(fifo_peek(&tx->sock.udp.txbuf));
+
+    for (;;) {
+        ret = wolfIP_sock_recvfrom(&s, rx_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+        if (ret <= 0)
+            break;
+        received++;
+    }
+
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+    ck_assert_int_eq(received, (int)(WOLFIP_LOOPBACK_QUEUE_DEPTH + 1U));
+}
+END_TEST
+
 START_TEST(test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity)
 {
     struct wolfIP s;

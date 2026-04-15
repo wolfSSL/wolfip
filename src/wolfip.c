@@ -1265,9 +1265,9 @@ struct wolfIP {
 #endif
     uint8_t loopback_buf[WOLFIP_LOOPBACK_QUEUE_DEPTH][IP_MTU_MAX];
     uint32_t loopback_pending_len[WOLFIP_LOOPBACK_QUEUE_DEPTH];
-    uint8_t loopback_head;
-    uint8_t loopback_tail;
-    uint8_t loopback_count;
+    uint32_t loopback_head;
+    uint32_t loopback_tail;
+    uint32_t loopback_count;
 #endif
 };
 
@@ -1372,10 +1372,46 @@ static inline uint32_t tcp_tx_payload_cap(const struct tsocket *t)
 
 #if WOLFIP_ENABLE_LOOPBACK
 
+static void wolfIP_notify_loopback_space_available(struct wolfIP *s)
+{
+    int i;
+
+    if (!s)
+        return;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+        if (t->proto != WI_IPPROTO_TCP)
+            continue;
+        if (wolfIP_socket_if_idx(t) != WOLFIP_LOOPBACK_IF_IDX)
+            continue;
+        if (tx_has_writable_space(t))
+            t->events |= CB_EVENT_WRITABLE;
+    }
+    for (i = 0; i < MAX_UDPSOCKETS; i++) {
+        struct tsocket *t = &s->udpsockets[i];
+        if (t->proto != WI_IPPROTO_UDP)
+            continue;
+        if (wolfIP_socket_if_idx(t) != WOLFIP_LOOPBACK_IF_IDX)
+            continue;
+        if (tx_has_writable_space(t))
+            t->events |= CB_EVENT_WRITABLE;
+    }
+    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
+        struct tsocket *t = &s->icmpsockets[i];
+        if (t->proto != WI_IPPROTO_ICMP)
+            continue;
+        if (wolfIP_socket_if_idx(t) != WOLFIP_LOOPBACK_IF_IDX)
+            continue;
+        if (tx_has_writable_space(t))
+            t->events |= CB_EVENT_WRITABLE;
+    }
+}
+
 static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct wolfIP *s;
-    uint8_t slot;
+    uint32_t slot;
     if (!ll || !buf)
         return -1;
     s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
@@ -1391,7 +1427,7 @@ static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t le
     slot = s->loopback_tail;
     memcpy(s->loopback_buf[slot], buf, len);
     s->loopback_pending_len[slot] = len;
-    s->loopback_tail = (uint8_t)((slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH);
+    s->loopback_tail = (slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH;
     s->loopback_count++;
     return (int)len;
 }
@@ -1399,8 +1435,9 @@ static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t le
 static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
     struct wolfIP *s;
-    uint8_t slot;
+    uint32_t slot;
     uint32_t pending;
+    int queue_was_full;
     if (!ll || !buf)
         return 0;
     s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
@@ -1412,10 +1449,13 @@ static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t le
     pending = s->loopback_pending_len[slot];
     if (pending > len)
         return 0;
+    queue_was_full = (s->loopback_count >= WOLFIP_LOOPBACK_QUEUE_DEPTH) ? 1 : 0;
     memcpy(buf, s->loopback_buf[slot], pending);
     s->loopback_pending_len[slot] = 0;
-    s->loopback_head = (uint8_t)((slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH);
+    s->loopback_head = (slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH;
     s->loopback_count--;
+    if (queue_was_full)
+        wolfIP_notify_loopback_space_available(s);
     return (int)pending;
 }
 #endif
@@ -1436,24 +1476,23 @@ static inline int wolfIP_ll_is_non_ethernet(struct wolfIP *s, unsigned int if_id
     return (ll && ll->non_ethernet) ? 1 : 0;
 }
 
-static inline void wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
-                                        void *buf, uint32_t len)
+static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
+                                       void *buf, uint32_t len)
 {
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
     uint32_t frame_mtu;
 
     if (!ll || !ll->send)
-        return;
+        return -1;
     frame_mtu = wolfIP_ll_frame_mtu(ll);
     if (len > frame_mtu)
-        return;
+        return -1;
     if (ll->non_ethernet) {
         if (len <= ETH_HEADER_LEN)
-            return;
-        ll->send(ll, (uint8_t *)buf + ETH_HEADER_LEN, len - ETH_HEADER_LEN);
-        return;
+            return -1;
+        return ll->send(ll, (uint8_t *)buf + ETH_HEADER_LEN, len - ETH_HEADER_LEN);
     }
-    ll->send(ll, buf, len);
+    return ll->send(ll, buf, len);
 }
 
 static inline struct ipconf *wolfIP_ipconf_at(struct wolfIP *s, unsigned int if_idx)
@@ -2605,8 +2644,10 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     }
 #endif
 
-    wolfIP_ll_send_frame(t->S, tx_if, tcp, frame_len);
-    return 0;
+    {
+        int send_ret = wolfIP_ll_send_frame(t->S, tx_if, tcp, frame_len);
+        return (send_ret < 0) ? send_ret : 0;
+    }
 }
 
 static int tcp_send_empty(struct tsocket *t, uint8_t flags)
@@ -7567,6 +7608,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         while (desc && send_guard++ < send_budget) {
             unsigned int tx_if = wolfIP_socket_if_idx(ts);
             struct pkt_desc *next_desc = NULL;
+            int send_ret = 0;
             tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
             if (desc->flags & PKT_FLAG_SENT) {
                 next_desc = fifo_next(&ts->sock.tcp.txbuf, desc);
@@ -7633,15 +7675,22 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                                 if (esp_err == 1) {
                                     /* ipsec not configured on this interface.
                                      * send plaintext. */
-                                    wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+                                    send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
                                 }
                             } else {
-                                wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+                                send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
                             }
                             #else
-                            wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+                            send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
                             #endif /* WOLFIP_ESP */
                         }
+                        if (send_ret == -WOLFIP_EAGAIN) {
+                            if (tx_has_writable_space(ts))
+                                ts->events |= CB_EVENT_WRITABLE;
+                            break;
+                        }
+                        if (send_ret < 0)
+                            break;
                         desc->flags |= PKT_FLAG_SENT;
                         desc->flags &= ~PKT_FLAG_RETRANS;
                         if (is_retrans)
@@ -7697,6 +7746,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         while (desc) {
             struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
+            int send_ret = 0;
 #ifdef ETHERNET
             struct ipconf *conf = wolfIP_ipconf_at(s, tx_if);
             ip4 nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
@@ -7737,15 +7787,19 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                     if (esp_send(ll, (struct wolfIP_ip_packet *)udp, len) == 1) {
                         /* ipsec not configured on this interface.
                          * send plaintext. */
-                        wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
+                        send_ret = wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
                     }
                 } else {
-                    wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
+                    send_ret = wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
                 }
                 #else
-                wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
+                send_ret = wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
                 #endif /* WOLFIP_ESP */
             }
+            if (send_ret == -WOLFIP_EAGAIN)
+                break;
+            if (send_ret < 0)
+                break;
             fifo_pop(&t->sock.udp.txbuf);
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
@@ -7756,6 +7810,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         while (desc) {
             struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
+            int send_ret = 0;
 #ifdef ETHERNET
             struct ipconf *conf = wolfIP_ipconf_at(s, tx_if);
             ip4 nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
@@ -7792,15 +7847,19 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                     if (esp_send(ll, (struct wolfIP_ip_packet *)icmp, len) == 1) {
                         /* ipsec not configured on this interface.
                          * send plaintext. */
-                        wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
+                        send_ret = wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
                     }
                 } else {
-                    wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
+                    send_ret = wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
                 }
                 #else
-                wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
+                send_ret = wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
                 #endif /* WOLFIP_ESP */
             }
+            if (send_ret == -WOLFIP_EAGAIN)
+                break;
+            if (send_ret < 0)
+                break;
             fifo_pop(&t->sock.udp.txbuf);
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
