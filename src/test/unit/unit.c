@@ -115,8 +115,10 @@ Suite *wolf_suite(void)
 #if WOLFIP_ENABLE_LOOPBACK
     tcase_add_test(tc_utils, test_wolfip_loopback_defaults);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_paths);
+    tcase_add_test(tc_utils, test_wolfip_loopback_poll_paths);
+    tcase_add_test(tc_utils, test_wolfip_loopback_poll_keeps_pending_on_short_buffer);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_drops_oversize);
-    tcase_add_test(tc_utils, test_wolfip_loopback_send_null_container);
+    tcase_add_test(tc_utils, test_wolfip_loopback_send_queue_full_returns_eagain);
     tcase_add_test(tc_utils, test_wolfip_loopback_send_rejects_null_args);
 #endif
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_ignores_missing_link_sender);
@@ -770,7 +772,13 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_syn_on_established_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_syn_on_last_ack_not_silently_processed);
     tcase_add_test(tc_proto, test_regression_full_txbuf_still_sends_pure_ack);
-    tcase_add_test(tc_proto, test_regression_loopback_immediate_pure_ack_uses_loopback_ll);
+    tcase_add_test(tc_proto, test_regression_loopback_pure_ack_uses_deferred_buffer_until_poll);
+    tcase_add_test(tc_proto, test_regression_loopback_pure_ack_drain_allows_next_send_cycle);
+    tcase_add_test(tc_proto, test_regression_loopback_pure_ack_immediate_propagates_eagain_when_queue_full);
+    tcase_add_test(tc_proto, test_regression_loopback_udp_tx_backpressure_retries_after_queue_drain);
+    tcase_add_test(tc_proto, test_regression_ll_send_frame_returns_wolfip_error_codes);
+    tcase_add_test(tc_proto, test_regression_loopback_ack_retry_pending_requeued_on_poll);
+    tcase_add_test(tc_proto, test_regression_loopback_queue_full_pure_ack_backpressure_retry);
     tcase_add_test(tc_proto, test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity);
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);

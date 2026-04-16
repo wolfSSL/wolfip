@@ -1,6 +1,7 @@
 CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
+CFLAGS+=$(EXTRA_CFLAGS)
 LDFLAGS+=-pthread
 # additional debug flags:
 #   CFLAGS+=-DDEBUG_TAP
