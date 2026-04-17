@@ -5699,6 +5699,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         rs = wolfIP_rawsocket_from_fd(s, sockfd);
         if (!rs)
             return -WOLFIP_EINVAL;
+        if (sin && !addrlen)
+            return -WOLFIP_EINVAL;
         if (sin && addrlen && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -WOLFIP_EINVAL;
         desc = fifo_peek(&rs->rxbuf);
@@ -5735,6 +5737,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         uint32_t frame_len;
         uint8_t *pkt;
         if (!ps)
+            return -WOLFIP_EINVAL;
+        if (sll && !addrlen)
             return -WOLFIP_EINVAL;
         if (sll && addrlen && *addrlen < sizeof(struct wolfIP_sockaddr_ll))
             return -WOLFIP_EINVAL;

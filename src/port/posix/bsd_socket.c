@@ -1402,7 +1402,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
                         (const struct wolfIP_sockaddr *)addr, addrlen);
             }
             if (ret < 0) {
-                errno = ret;
+                errno = -ret;
                 pthread_mutex_unlock(&wolfIP_mutex);
                 return -1;
             }
@@ -2020,6 +2020,7 @@ void __attribute__((constructor)) init_wolfip_posix() {
     tapdev = wolfIP_getdev(IPSTACK);
     if (!tapdev) {
         fprintf(stderr, "wolfIP_getdev returned NULL\n");
+        pthread_mutex_unlock(&wolfIP_mutex);
         return;
     }
 #if WOLFIP_USE_VDE
