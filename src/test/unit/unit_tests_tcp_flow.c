@@ -2889,6 +2889,59 @@ START_TEST(test_tcp_input_syn_rcvd_ack_invalid_seq_rejected)
 }
 END_TEST
 
+/* Regression: an ACK+FIN segment in SYN_RCVD must not be silently discarded.
+ * The ACK should complete the handshake (to ESTABLISHED) and the FIN should
+ * be processed in the same pass (to CLOSE_WAIT).  Per RFC 9293 section 3.10.7.4
+ * the ACK field must be processed regardless of other control flags. */
+START_TEST(test_tcp_input_syn_rcvd_ack_fin_transitions_to_close_wait)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Send ACK+FIN with valid seq/ack */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.ttl = 64;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.seq = ee32(ts->sock.tcp.ack);
+    seg.ack = ee32(ts->sock.tcp.seq + 1);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
+    fix_tcp_checksums(&seg);
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    /* The ACK must have completed the handshake and the FIN must have
+     * been processed, landing in CLOSE_WAIT. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSE_WAIT);
+}
+END_TEST
+
 START_TEST(test_tcp_recv_queues_payload_and_advances_ack)
 {
     struct wolfIP s;
