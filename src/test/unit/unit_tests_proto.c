@@ -6200,7 +6200,7 @@ START_TEST(test_getsockopt_unsupported_option_returns_einval)
     wolfIP_init(&s);
     mock_link_init(&s);
 
-    sd = wolfIP_sock_socket(&s, AF_INET, SOCK_DGRAM, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
     ck_assert_int_ge(sd, 0);
     ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP, 0x1234,
                 &value, &optlen), 0);
@@ -6369,6 +6369,27 @@ START_TEST(test_packet_socket_setsockopt_rejected)
     ck_assert_int_ge(sd, 0);
     ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL,
                 &one, sizeof(one)), -WOLFIP_EINVAL);
+#else
+    ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
+#endif
+}
+END_TEST
+
+START_TEST(test_packet_socket_getsockopt_rejected)
+{
+#if WOLFIP_PACKET_SOCKETS
+    struct wolfIP s;
+    int sd;
+    int value = 0;
+    socklen_t optlen = sizeof(value);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+    ck_assert_int_ge(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP, WOLFIP_IP_RECVTTL,
+                &value, &optlen), -WOLFIP_EINVAL);
 #else
     ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
 #endif
@@ -6678,7 +6699,7 @@ START_TEST(test_udp_short_frame_does_not_overread)
     mock_link_init(&s);
     wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
 
-    sd = wolfIP_sock_socket(&s, AF_INET, SOCK_DGRAM, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
     ck_assert_int_ge(sd, 0);
 
     memset(frame, 0, sizeof(frame_buf));

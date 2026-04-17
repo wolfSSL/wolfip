@@ -705,6 +705,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_packet_socket_send_frame);
     tcase_add_test(tc_proto, test_packet_socket_sendto_wrong_family_returns_einval);
     tcase_add_test(tc_proto, test_packet_socket_setsockopt_rejected);
+    tcase_add_test(tc_proto, test_packet_socket_getsockopt_rejected);
     tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
     tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);

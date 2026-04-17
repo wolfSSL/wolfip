@@ -5925,6 +5925,10 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
             return 0;
         }
 #endif
+#if WOLFIP_PACKET_SOCKETS
+        if (ps)
+            return -WOLFIP_EINVAL;
+#endif
         if (ts) {
             value = ts->recv_ttl ? 1 : 0;
             memcpy(optval, &value, sizeof(int));
