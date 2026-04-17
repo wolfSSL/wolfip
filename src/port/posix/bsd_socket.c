@@ -1261,12 +1261,15 @@ int ioctl(int fd, unsigned long request, ...)
             errno = EINVAL;
             return -1;
         }
+        if (ifr->ifr_name[0] == '\0') {
+            errno = ENODEV;
+            return -1;
+        }
         for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
             struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(IPSTACK, (unsigned int)i);
             if (!ll)
                 continue;
-            if (ifr->ifr_name[0] != '\0' &&
-                    strncmp(ifr->ifr_name, (char *)ll->ifname, IFNAMSIZ) != 0)
+            if (strncmp(ifr->ifr_name, (char *)ll->ifname, IFNAMSIZ) != 0)
                 continue;
             if (request == SIOCGIFINDEX) {
                 ifr->ifr_ifindex = wolfip_ifindex_stack_to_user(i);
@@ -1577,7 +1580,7 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
                     pthread_mutex_lock(&wolfIP_mutex);
                 }
             } while (1);
-            errno = ret;
+            errno = -ret;
             pthread_mutex_unlock(&wolfIP_mutex);
             return -1;
         } else {
