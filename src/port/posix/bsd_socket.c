@@ -1445,7 +1445,7 @@ int close(int sockfd) {
         wolfip_fd_release(sockfd);
         ret = wolfIP_sock_close(IPSTACK, internal_fd);
         if (ret < 0) {
-            errno = ret;
+            errno = -ret;
             pthread_mutex_unlock(&wolfIP_mutex);
             return -1;
         }

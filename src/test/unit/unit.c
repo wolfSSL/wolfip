@@ -695,12 +695,16 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_raw_socket_send_hdrincl_respected);
     tcase_add_test(tc_proto, test_raw_socket_send_builds_ip_header);
     tcase_add_test(tc_proto, test_raw_socket_sendto_short_addrlen_returns_einval);
+    tcase_add_test(tc_proto, test_raw_socket_sendto_wrong_family_returns_einval);
+    tcase_add_test(tc_proto, test_raw_socket_sendto_payload_too_large_for_ip_header_returns_einval);
     tcase_add_test(tc_proto, test_getsockopt_invalid_fd_returns_einval);
     tcase_add_test(tc_proto, test_getsockopt_invalid_raw_fd_returns_einval);
     tcase_add_test(tc_proto, test_getsockopt_invalid_packet_fd_returns_einval);
     tcase_add_test(tc_proto, test_getsockopt_unsupported_option_returns_einval);
     tcase_add_test(tc_proto, test_packet_socket_recv_frame);
     tcase_add_test(tc_proto, test_packet_socket_send_frame);
+    tcase_add_test(tc_proto, test_packet_socket_sendto_wrong_family_returns_einval);
+    tcase_add_test(tc_proto, test_packet_socket_setsockopt_rejected);
     tcase_add_test(tc_proto, test_packet_socket_recv_wrong_proto_ignored);
     tcase_add_test(tc_proto, test_packet_socket_recv_other_interface_ignored);
     tcase_add_test(tc_proto, test_raw_socket_recv_protocol_mismatch);
@@ -708,8 +712,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_raw_socket_recv_too_short_drop_returns_einval);
     tcase_add_test(tc_proto, test_raw_socket_recvfrom_null_addrlen_rejected);
     tcase_add_test(tc_proto, test_raw_socket_recv_uses_ip_total_length);
+    tcase_add_test(tc_proto, test_raw_socket_recv_oversize_drops_frame);
     tcase_add_test(tc_proto, test_udp_short_frame_does_not_overread);
     tcase_add_test(tc_proto, test_packet_socket_recvfrom_null_addrlen_rejected);
+    tcase_add_test(tc_proto, test_packet_socket_recv_oversize_drops_frame);
     tcase_add_test(tc_proto, test_raw_socket_close_clears_entry);
     tcase_add_test(tc_proto, test_packet_socket_close_clears_entry);
     tcase_add_test(tc_proto, test_arp_lookup_ex_basic);
