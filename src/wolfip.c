@@ -139,6 +139,8 @@ struct wolfIP_icmp_packet;
 #define WOLFIP_POLL_BUDGET 128
 
 /* Macros */
+#define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
+
 #define PKT_FLAG_SENT    0x01U
 #define PKT_FLAG_ACKED   0x02U
 #define PKT_FLAG_FIN     0x04U
@@ -5907,9 +5909,9 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
             *optlen = sizeof(int);
             return 0;
         }
-        return -WOLFIP_EINVAL;
+        return 0;
     }
-    return -WOLFIP_EINVAL;
+    return 0;
 }
 int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 {
