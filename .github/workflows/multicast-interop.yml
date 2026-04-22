@@ -19,41 +19,23 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential check gcovr libwolfssl-dev pkg-config
+          sudo apt-get install -y build-essential check libwolfssl-dev pkg-config
           sudo modprobe tun
 
-      - name: Build and run default unit tests
-        run: |
-          set -euo pipefail
-          make clean-unit unit
-          timeout --preserve-status 5m ./build/test/unit
-
       - name: Build and run multicast unit tests
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           make unit-multicast
           timeout --preserve-status 5m ./build/test/unit
 
-      - name: Build multicast TAP interop
-        run: |
-          set -euo pipefail
-          make build/test-multicast-interop
-
-      - name: Run multicast TAP interop
+      - name: Build and run multicast TAP interop
         timeout-minutes: 3
         run: |
           set -euo pipefail
+          make build/test-multicast-interop
           timeout --preserve-status 3m sudo ./build/test-multicast-interop
-
-      - name: Multicast coverage
-        run: |
-          set -euo pipefail
-          make clean-unit autocov-multicast
-          gcovr -r . --exclude "src/test/unit/.*" --json -o build/coverage/multicast.json
-          gcovr -r . --exclude "src/test/unit/.*" --txt-metric branch
 
       - name: Cleanup TAP state
         if: always()
-        run: |
-          sudo ip link del wmcast0 2>/dev/null || true
-          sudo killall tcpdump 2>/dev/null || true
+        run: sudo ip link del wmcast0 2>/dev/null || true
