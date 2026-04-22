@@ -1965,6 +1965,7 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 icmp_data_len));
     icmp.ip.ver_ihl = 0x45;
+    icmp.ip.flags_fo = ee16(0x4000U);
     icmp.ip.ttl = 64;
     icmp.ip.proto = WI_IPPROTO_ICMP;
     icmp.ip.id = ipcounter_next(s);
@@ -2036,6 +2037,7 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 icmp_data_len));
     icmp.ip.ver_ihl = 0x45;
+    icmp.ip.flags_fo = ee16(0x4000U);
     icmp.ip.ttl = 64;
     icmp.ip.proto = WI_IPPROTO_ICMP;
     icmp.ip.id = ipcounter_next(s);
@@ -7086,6 +7088,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         ip->dst = tmp;
         ip->ttl = 64;
         ip->id = ipcounter_next(s);
+        ip->flags_fo = ee16(0x4000U);
         ip->csum = 0;
         iphdr_set_checksum(ip);
 #ifdef ETHERNET

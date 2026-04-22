@@ -1758,6 +1758,37 @@ START_TEST(test_icmp_input_echo_request_reply_sent)
 }
 END_TEST
 
+START_TEST(test_icmp_input_echo_reply_sets_df)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    struct wolfIP_icmp_packet *reply;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);
+    icmp.ip.ttl = 1;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.ip.flags_fo = 0;
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    reply = (struct wolfIP_icmp_packet *)last_frame_sent;
+    ck_assert_uint_eq(reply->type, ICMP_ECHO_REPLY);
+    ck_assert_uint_eq(ee16(reply->ip.flags_fo) & 0x4000U, 0x4000U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_bad_checksum_dropped)
 {
     struct wolfIP s;

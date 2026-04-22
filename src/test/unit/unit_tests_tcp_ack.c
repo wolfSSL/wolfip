@@ -2457,6 +2457,32 @@ START_TEST(test_send_ttl_exceeded_non_ethernet_skips_eth_filter)
 }
 END_TEST
 
+START_TEST(test_send_ttl_exceeded_sets_df)
+{
+    struct wolfIP s;
+    uint8_t ip_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
+    struct wolfIP_icmp_ttl_exceeded_packet *reply;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(ip_buf, 0, sizeof(ip_buf));
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->ver_ihl = 0x45;
+    ip->src = ee32(0x0A000002U);
+    ip->dst = ee32(0x0A000001U);
+
+    wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    reply = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
+    ck_assert_uint_eq(ee16(reply->ip.flags_fo) & 0x4000U, 0x4000U);
+}
+END_TEST
+
 #if WOLFIP_ENABLE_FORWARDING
 START_TEST(test_wolfip_forward_ttl_exceeded_short_len_does_not_send)
 {
