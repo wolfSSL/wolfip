@@ -2466,7 +2466,11 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
 
                 memcpy(&next_hop_mtu, &icmp->unused[2], sizeof(next_hop_mtu));
                 next_hop_mtu = ee16(next_hop_mtu);
-                if (next_hop_mtu > (IP_HEADER_LEN + TCP_HEADER_LEN)) {
+                /* RFC 879 / RFC 9293 §3.7.1: IPv4 default MSS is 536; ignore
+                 * any PTB whose next-hop MTU cannot accommodate it.  Rejecting
+                 * (rather than clamping) prevents a spoofed ICMP from dragging
+                 * a SYN-negotiated peer_mss down to 536. */
+                if (next_hop_mtu >= (IP_HEADER_LEN + TCP_HEADER_LEN + TCP_DEFAULT_MSS)) {
                     uint16_t new_mss =
                         (uint16_t)(next_hop_mtu - (IP_HEADER_LEN + TCP_HEADER_LEN));
 
