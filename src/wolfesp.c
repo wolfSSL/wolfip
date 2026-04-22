@@ -1694,6 +1694,11 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     wolfIP_print_esp(esp_sa, ip->data, payload_len, pad_len, ip->proto);
     #endif /* DEBUG_ESP */
 
+    /* update len, set proto to ESP 0x32 (50), recalculate iphdr checksum. */
+    ip->len = ee16(*ip_len);
+    ip->proto = 0x32;
+    ip->csum = 0;
+    iphdr_set_checksum(ip);
     return 0;
 }
 
@@ -1739,11 +1744,6 @@ esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
         return esp_rc;
     }
 
-    /* update len, set proto to ESP 0x32 (50), recalculate iphdr checksum. */
-    esp->len = ee16(ip_final_len);
-    esp->proto = 0x32;
-    esp->csum = 0;
-    iphdr_set_checksum(esp);
     /* send it */
     ll_dev->send(ll_dev, esp, ip_final_len + ETH_HEADER_LEN);
     return 0;
