@@ -6173,13 +6173,18 @@ int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len)
 static int mcast_if_from_addr(struct wolfIP *s, ip4 if_addr, ip4 group,
                               unsigned int *if_idx)
 {
+    struct ipconf *conf;
     int found = 0;
 
     if (!s || !if_idx || !wolfIP_ip_is_multicast(group))
         return -WOLFIP_EINVAL;
     if (if_addr == IPADDR_ANY) {
         *if_idx = wolfIP_route_for_ip(s, group);
-        if (wolfIP_ipconf_at(s, *if_idx))
+        conf = wolfIP_ipconf_at(s, *if_idx);
+        /* Require a configured source IP so igmp_send_report can build a
+         * valid report; otherwise the join would succeed locally but never
+         * be announced on the wire. */
+        if (conf && conf->ip != IPADDR_ANY)
             return 0;
         return -WOLFIP_EINVAL;
     }
@@ -6352,6 +6357,13 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
             if (!addr || optlen < (socklen_t)sizeof(*addr))
                 return -WOLFIP_EINVAL;
             if_addr = ee32(addr->s_addr);
+            /* Linux IP_MULTICAST_IF with INADDR_ANY clears the pinned
+             * interface and reverts to per-destination routing. */
+            if (if_addr == IPADDR_ANY) {
+                ts->sock.udp.mcast_if_set = 0;
+                ts->sock.udp.mcast_if_idx = 0;
+                return 0;
+            }
             ret = mcast_if_from_addr(s, if_addr, IGMP_ALL_HOSTS, &if_idx);
             if (ret < 0)
                 return ret;

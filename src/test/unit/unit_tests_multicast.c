@@ -252,4 +252,130 @@ START_TEST(test_multicast_igmp_query_refreshes_report)
 }
 END_TEST
 
+START_TEST(test_multicast_join_requires_configured_ip)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    ip4 group = 0xE9020101U;
+
+    /* No wolfIP_ipconfig_set on primary: interface has no source IP. */
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    /* Join via IPADDR_ANY must fail when the route-selected interface has no
+     * configured source IP: otherwise the join would be recorded but the
+     * IGMP report could never be built, announcing membership only locally. */
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(s.mcast[0].refs, 0);
+
+    /* Once the interface has a source IP, the same join succeeds and a
+     * report is emitted. */
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 1);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 9], WI_IPPROTO_IGMP);
+}
+END_TEST
+
+START_TEST(test_multicast_if_pins_egress_interface)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_mreq_addr addr;
+    struct wolfIP_mreq_addr got;
+    socklen_t gotlen = sizeof(got);
+    struct wolfIP_sockaddr_in bind_addr;
+    struct wolfIP_sockaddr_in dst;
+    uint8_t primary_mac[6];
+    uint8_t secondary_mac[6];
+    struct wolfIP_ll_dev *ll_primary;
+    struct wolfIP_ll_dev *ll_secondary;
+    ip4 primary_ip = 0x0A000002U;   /* 10.0.0.2/24 */
+    ip4 secondary_ip = 0x0A000102U; /* 10.0.1.2/24 */
+    ip4 group = 0xEF010203U;        /* 239.1.2.3 */
+    const char payload[] = "if";
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    ll_primary = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ll_secondary = wolfIP_getdev_ex(&s, TEST_SECOND_IF);
+    ck_assert_ptr_nonnull(ll_primary);
+    ck_assert_ptr_nonnull(ll_secondary);
+    memcpy(primary_mac, ll_primary->mac, 6);
+    memcpy(secondary_mac, ll_secondary->mac, 6);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(sd)];
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(5002);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+            (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    /* Pin egress to the secondary interface. */
+    memset(&addr, 0, sizeof(addr));
+    addr.s_addr = ee32(secondary_ip);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &addr, sizeof(addr)), 0);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_set, 1);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_idx, TEST_SECOND_IF);
+
+    /* getsockopt reports the address of the pinned interface. */
+    memset(&got, 0, sizeof(got));
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &got, &gotlen), 0);
+    ck_assert_uint_eq(ee32(got.s_addr), secondary_ip);
+
+    /* A multicast sendto must egress on the secondary interface — verify via
+     * the source MAC of the transmitted frame (mock_send is shared across
+     * interfaces but eth_output_add_header uses the egress dev's MAC). */
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(5002);
+    dst.sin_addr.s_addr = ee32(group);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
+            (int)sizeof(payload));
+    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 6, secondary_mac, 6);
+
+    /* Clearing with INADDR_ANY reverts to per-destination routing (Linux
+     * IP_MULTICAST_IF semantics). */
+    memset(&addr, 0, sizeof(addr));
+    addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &addr, sizeof(addr)), 0);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_set, 0);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_idx, 0);
+
+    /* Next multicast sendto goes via the default route — primary interface. */
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
+            (int)sizeof(payload));
+    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 6, primary_mac, 6);
+
+    /* After clearing, getsockopt falls back to the socket's current interface
+     * (which is the primary route for the previous sendto). */
+    gotlen = sizeof(got);
+    memset(&got, 0, sizeof(got));
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &got, &gotlen), 0);
+    ck_assert_uint_eq(ee32(got.s_addr), primary_ip);
+}
+END_TEST
+
 #endif /* IP_MULTICAST */
