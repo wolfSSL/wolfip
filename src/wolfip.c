@@ -8423,7 +8423,12 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
         if ((memcmp(eth->dst, ll->mac, 6) != 0) &&
                 (memcmp(eth->dst, "\xff\xff\xff\xff\xff\xff", 6) != 0)) {
 #ifdef IP_MULTICAST
-            ip4 dst_ip = ee32(ip->dst);
+            ip4 dst_ip;
+            /* Guard the read of ip->dst (bytes 30-33) against short frames
+             * from drivers that don't pad to 60 bytes. */
+            if (len < (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN))
+                return;
+            dst_ip = ee32(ip->dst);
             if (!eth_is_ipv4_multicast_mac(eth->dst) ||
                     !wolfIP_ip_is_multicast(dst_ip) ||
                     (!mcast_is_joined(s, if_idx, dst_ip) &&
@@ -9235,11 +9240,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 #endif
             len = desc->len - ETH_HEADER_LEN;
             ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, WI_IPPROTO_UDP, len);
-#ifdef IP_MULTICAST
-            if (wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop) {
-                udp_try_recv(s, tx_if, udp, desc->len);
-            }
-#endif
             if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, t->S, tx_if, udp, desc->len) != 0)
                 break;
             if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &udp->ip, desc->len) != 0)
@@ -9273,6 +9273,16 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 break;
             if (send_ret < 0)
                 break;
+#ifdef IP_MULTICAST
+            /* Loopback only after a successful wire send. Running udp_try_recv
+             * before the filter/send path caused repeated local deliveries
+             * when a SENDING filter blocked the frame or the driver returned
+             * -EAGAIN: the descriptor stays in the txbuf and every subsequent
+             * wolfIP_poll() re-enters the loop and re-loops the datagram. */
+            if (wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop) {
+                udp_try_recv(s, tx_if, udp, desc->len);
+            }
+#endif
             fifo_pop(&t->sock.udp.txbuf);
             desc = fifo_peek(&t->sock.udp.txbuf);
         }

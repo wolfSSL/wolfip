@@ -378,4 +378,97 @@ START_TEST(test_multicast_if_pins_egress_interface)
 }
 END_TEST
 
+START_TEST(test_multicast_loop_does_not_fire_on_blocked_send)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in bind_addr;
+    struct wolfIP_sockaddr_in dst;
+    struct wolfIP_ip_mreq mreq;
+    uint8_t out[8];
+    int loop = 1;
+    ip4 group = 0xE9010208U;
+    const char payload[] = "xy";
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(5003);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+            (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &loop, sizeof(loop)), 0);
+
+    /* Block the egress UDP path. With the pre-fix code the mcast_loop
+     * udp_try_recv() ran before the filter, so the local RX queue got one
+     * copy per poll even though the frame was never transmitted; with the
+     * fix, a blocked send must not deliver a loopback copy. */
+    filter_block_reason = WOLFIP_FILT_SENDING;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_udp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(5003);
+    dst.sin_addr.s_addr = ee32(group);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
+            (int)sizeof(payload));
+
+    /* Poll twice: with the pre-fix code the descriptor sticks in the txbuf
+     * and each poll re-loops the datagram, so recvfrom would return it. */
+    (void)wolfIP_poll(&s, 1);
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL,
+            NULL), -WOLFIP_EAGAIN);
+
+    /* Clearing the filter lets the next poll send and loop exactly once. */
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_udp_mask(0);
+    (void)wolfIP_poll(&s, 3);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL,
+            NULL), (int)sizeof(payload));
+    /* Only one loopback copy — no leftover. */
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL,
+            NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+START_TEST(test_multicast_recv_rejects_short_frame)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+
+    /* Build a 14-byte frame (Ethernet header only) with a multicast-looking
+     * destination MAC and ETH_TYPE_IP. Without the length guard,
+     * wolfIP_recv_on would read ip->dst at offsets 30-33 — well past the
+     * end of the buffer. Under ASAN this is a heap-buffer-overflow. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(frame + 0, "\x01\x00\x5e\x01\x02\x08", 6);
+    memcpy(frame + 6, "\x02\x00\x00\x00\x00\x01", 6);
+    frame[12] = (ETH_TYPE_IP >> 8) & 0xff;
+    frame[13] = ETH_TYPE_IP & 0xff;
+
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    /* Silently dropped, no response sent. */
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 #endif /* IP_MULTICAST */

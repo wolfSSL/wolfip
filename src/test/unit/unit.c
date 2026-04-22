@@ -236,6 +236,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_multicast_igmp_query_refreshes_report);
     tcase_add_test(tc_utils, test_multicast_join_requires_configured_ip);
     tcase_add_test(tc_utils, test_multicast_if_pins_egress_interface);
+    tcase_add_test(tc_utils, test_multicast_loop_does_not_fire_on_blocked_send);
+    tcase_add_test(tc_utils, test_multicast_recv_rejects_short_frame);
 #endif
     tcase_add_test(tc_utils, test_tcp_no_rst_for_broadcast_dst);
     tcase_add_test(tc_utils, test_tcp_no_rst_for_multicast_dst);
