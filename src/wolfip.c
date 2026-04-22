@@ -2341,11 +2341,10 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
             continue;
         if (r->protocol != 0 && r->protocol != ip->proto)
             continue;
-        if (fifo_space(&r->rxbuf) < payload_len + sizeof(struct pkt_desc))
-            continue;
-        fifo_push(&r->rxbuf, (void *)packet, payload_len);
-        r->last_pkt_ttl = ip->ttl;
-        r->events |= CB_EVENT_READABLE;
+        if (fifo_push(&r->rxbuf, (void *)packet, payload_len) == 0) {
+            r->last_pkt_ttl = ip->ttl;
+            r->events |= CB_EVENT_READABLE;
+        }
     }
 }
 #endif
