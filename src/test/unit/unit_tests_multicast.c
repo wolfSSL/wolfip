@@ -1,0 +1,574 @@
+#ifdef IP_MULTICAST
+
+static void multicast_mreq(struct wolfIP_ip_mreq *mreq, ip4 group, ip4 if_addr)
+{
+    memset(mreq, 0, sizeof(*mreq));
+    mreq->imr_multiaddr.s_addr = ee32(group);
+    mreq->imr_interface.s_addr = ee32(if_addr);
+}
+
+static uint8_t *last_igmp_payload(void)
+{
+    return last_frame_sent + ETH_HEADER_LEN + IP_HEADER_LEN + IP_OPTION_ROUTER_ALERT_LEN;
+}
+
+static void build_multicast_udp(uint8_t *buf, struct wolfIP *s, ip4 src, ip4 dst,
+                                uint16_t sport, uint16_t dport,
+                                const void *payload, uint16_t payload_len)
+{
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)buf;
+    uint8_t mac[6];
+
+    memset(buf, 0, sizeof(struct wolfIP_udp_datagram) + payload_len);
+    mcast_ip_to_eth(dst, mac);
+    memcpy(udp->ip.eth.dst, mac, sizeof(mac));
+    memcpy(udp->ip.eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    udp->ip.eth.type = ee16(ETH_TYPE_IP);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + payload_len);
+    udp->ip.src = ee32(src);
+    udp->ip.dst = ee32(dst);
+    udp->src_port = ee16(sport);
+    udp->dst_port = ee16(dport);
+    udp->len = ee16(UDP_HEADER_LEN + payload_len);
+    memcpy(udp->data, payload, payload_len);
+    (void)s;
+    fix_udp_checksums(udp);
+}
+
+START_TEST(test_multicast_join_and_drop_reports)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    ip4 group = 0xE9010203U;
+    uint8_t *igmp;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_eq(s.mcast[0].group, group);
+    ck_assert_uint_eq(s.mcast[0].refs, 1);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent, "\x01\x00\x5e\x00\x00\x16", 6);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 9], WI_IPPROTO_IGMP);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 8], 1);
+    igmp = last_igmp_payload();
+    ck_assert_uint_eq(igmp[0], IGMP_TYPE_V3_MEMBERSHIP_REPORT);
+    ck_assert_uint_eq(igmp[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+    ck_assert_uint_eq(get_be32(igmp + 12), group);
+
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    igmp = last_igmp_payload();
+    ck_assert_uint_eq(igmp[8], IGMPV3_REC_CHANGE_TO_INCLUDE);
+}
+END_TEST
+
+START_TEST(test_multicast_join_validation_and_shared_refs)
+{
+    struct wolfIP s;
+    int sd1;
+    int sd2;
+    struct wolfIP_ip_mreq mreq;
+    struct wolfIP_ip_mreq bad;
+    ip4 group = 0xE9010204U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    sd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd1, 0);
+    ck_assert_int_gt(sd2, 0);
+
+    multicast_mreq(&bad, 0x0A000001U, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd1, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &bad, sizeof(bad)), -WOLFIP_EINVAL);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd1, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd1, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd2, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 2);
+
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd1, WOLFIP_SOL_IP,
+            WOLFIP_IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 1);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd2), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 0);
+}
+END_TEST
+
+START_TEST(test_multicast_udp_receive_requires_join)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_sockaddr_in from;
+    socklen_t fromlen = sizeof(from);
+    struct wolfIP_ip_mreq mreq;
+    uint8_t out[8];
+    const char payload[] = "hello";
+    uint8_t frame[sizeof(struct wolfIP_udp_datagram) + sizeof(payload)];
+    ip4 group = 0xE9010205U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5000);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), 0);
+
+    build_multicast_udp(frame, &s, 0x0A000001U, group, 4000, 5000,
+                        payload, sizeof(payload));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0,
+            (struct wolfIP_sockaddr *)&from, &fromlen), -WOLFIP_EAGAIN);
+
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0,
+            (struct wolfIP_sockaddr *)&from, &fromlen), (int)sizeof(payload));
+    ck_assert_mem_eq(out, payload, sizeof(payload));
+}
+END_TEST
+
+START_TEST(test_multicast_udp_send_mac_ttl_loop_and_options)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in bind_addr;
+    struct wolfIP_sockaddr_in dst;
+    struct wolfIP_ip_mreq mreq;
+    struct wolfIP_udp_datagram *udp;
+    uint8_t out[8];
+    int ttl = 7;
+    int loop = 1;
+    int got = 0;
+    socklen_t gotlen = sizeof(got);
+    ip4 group = 0xE9010206U;
+    const char payload[] = "mc";
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(5001);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&bind_addr,
+            sizeof(bind_addr)), 0);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &ttl, sizeof(ttl)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &loop, sizeof(loop)), 0);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &got, &gotlen), 0);
+    ck_assert_int_eq(got, ttl);
+
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(5001);
+    dst.sin_addr.s_addr = ee32(group);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)), (int)sizeof(payload));
+    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent, "\x01\x00\x5e\x01\x02\x06", 6);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    ck_assert_uint_eq(udp->ip.ttl, ttl);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL, NULL),
+            (int)sizeof(payload));
+    ck_assert_mem_eq(out, payload, sizeof(payload));
+}
+END_TEST
+
+START_TEST(test_multicast_igmp_query_refreshes_report)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *igmp = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    ip4 group = 0xE9010207U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+}
+END_TEST
+
+START_TEST(test_multicast_join_requires_configured_ip)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    ip4 group = 0xE9020101U;
+
+    /* No wolfIP_ipconfig_set on primary: interface has no source IP. */
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    /* Join via IPADDR_ANY must fail when the route-selected interface has no
+     * configured source IP: otherwise the join would be recorded but the
+     * IGMP report could never be built, announcing membership only locally. */
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(s.mcast[0].refs, 0);
+
+    /* Once the interface has a source IP, the same join succeeds and a
+     * report is emitted. */
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 1);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 9], WI_IPPROTO_IGMP);
+}
+END_TEST
+
+START_TEST(test_multicast_if_pins_egress_interface)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_mreq_addr addr;
+    struct wolfIP_mreq_addr got;
+    socklen_t gotlen = sizeof(got);
+    struct wolfIP_sockaddr_in bind_addr;
+    struct wolfIP_sockaddr_in dst;
+    uint8_t primary_mac[6];
+    uint8_t secondary_mac[6];
+    struct wolfIP_ll_dev *ll_primary;
+    struct wolfIP_ll_dev *ll_secondary;
+    ip4 primary_ip = 0x0A000002U;   /* 10.0.0.2/24 */
+    ip4 secondary_ip = 0x0A000102U; /* 10.0.1.2/24 */
+    ip4 group = 0xEF010203U;        /* 239.1.2.3 */
+    const char payload[] = "if";
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    ll_primary = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ll_secondary = wolfIP_getdev_ex(&s, TEST_SECOND_IF);
+    ck_assert_ptr_nonnull(ll_primary);
+    ck_assert_ptr_nonnull(ll_secondary);
+    memcpy(primary_mac, ll_primary->mac, 6);
+    memcpy(secondary_mac, ll_secondary->mac, 6);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(sd)];
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(5002);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+            (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    /* Pin egress to the secondary interface. */
+    memset(&addr, 0, sizeof(addr));
+    addr.s_addr = ee32(secondary_ip);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &addr, sizeof(addr)), 0);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_set, 1);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_idx, TEST_SECOND_IF);
+
+    /* getsockopt reports the address of the pinned interface. */
+    memset(&got, 0, sizeof(got));
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &got, &gotlen), 0);
+    ck_assert_uint_eq(ee32(got.s_addr), secondary_ip);
+
+    /* A multicast sendto must egress on the secondary interface — verify via
+     * the source MAC of the transmitted frame (mock_send is shared across
+     * interfaces but eth_output_add_header uses the egress dev's MAC). */
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(5002);
+    dst.sin_addr.s_addr = ee32(group);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
+            (int)sizeof(payload));
+    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 6, secondary_mac, 6);
+
+    /* Clearing with INADDR_ANY reverts to per-destination routing (Linux
+     * IP_MULTICAST_IF semantics). */
+    memset(&addr, 0, sizeof(addr));
+    addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &addr, sizeof(addr)), 0);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_set, 0);
+    ck_assert_uint_eq(ts->sock.udp.mcast_if_idx, 0);
+
+    /* Next multicast sendto goes via the default route — primary interface. */
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
+            (int)sizeof(payload));
+    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 6, primary_mac, 6);
+
+    /* After clearing, getsockopt falls back to the socket's current interface
+     * (which is the primary route for the previous sendto). */
+    gotlen = sizeof(got);
+    memset(&got, 0, sizeof(got));
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, &got, &gotlen), 0);
+    ck_assert_uint_eq(ee32(got.s_addr), primary_ip);
+}
+END_TEST
+
+START_TEST(test_multicast_loop_does_not_fire_on_blocked_send)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in bind_addr;
+    struct wolfIP_sockaddr_in dst;
+    struct wolfIP_ip_mreq mreq;
+    uint8_t out[8];
+    int loop = 1;
+    ip4 group = 0xE9010208U;
+    const char payload[] = "xy";
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(5003);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+            (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &loop, sizeof(loop)), 0);
+
+    /* Block the egress UDP path. With the pre-fix code the mcast_loop
+     * udp_try_recv() ran before the filter, so the local RX queue got one
+     * copy per poll even though the frame was never transmitted; with the
+     * fix, a blocked send must not deliver a loopback copy. */
+    filter_block_reason = WOLFIP_FILT_SENDING;
+    wolfIP_filter_set_callback(test_filter_cb_block, NULL);
+    wolfIP_filter_set_udp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(5003);
+    dst.sin_addr.s_addr = ee32(group);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
+            (int)sizeof(payload));
+
+    /* Poll twice: with the pre-fix code the descriptor sticks in the txbuf
+     * and each poll re-loops the datagram, so recvfrom would return it. */
+    (void)wolfIP_poll(&s, 1);
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL,
+            NULL), -WOLFIP_EAGAIN);
+
+    /* Clearing the filter lets the next poll send and loop exactly once. */
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_udp_mask(0);
+    (void)wolfIP_poll(&s, 3);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL,
+            NULL), (int)sizeof(payload));
+    /* Only one loopback copy — no leftover. */
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, out, sizeof(out), 0, NULL,
+            NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+START_TEST(test_multicast_recv_rejects_short_frame)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+
+    /* Build a 14-byte frame (Ethernet header only) with a multicast-looking
+     * destination MAC and ETH_TYPE_IP. Without the length guard,
+     * wolfIP_recv_on would read ip->dst at offsets 30-33 — well past the
+     * end of the buffer. Under ASAN this is a heap-buffer-overflow. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(frame + 0, "\x01\x00\x5e\x01\x02\x08", 6);
+    memcpy(frame + 6, "\x02\x00\x00\x00\x00\x01", 6);
+    frame[12] = (ETH_TYPE_IP >> 8) & 0xff;
+    frame[13] = ETH_TYPE_IP & 0xff;
+
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    /* Silently dropped, no response sent. */
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
+START_TEST(test_multicast_setsockopt_accepts_unaligned_mreq)
+{
+    struct wolfIP s;
+    int sd;
+    /* 1 byte of padding before the mreq so the struct lands at odd alignment
+     * even on strict-alignment toolchains. A direct (const struct *)cast on
+     * this pointer would be an unaligned uint32_t load; UBSAN
+     * -fsanitize=alignment flags that as undefined behaviour. */
+    uint8_t raw[1 + sizeof(struct wolfIP_ip_mreq)];
+    struct wolfIP_ip_mreq mreq_native;
+    uint8_t raw_if[1 + sizeof(struct wolfIP_mreq_addr)];
+    struct wolfIP_mreq_addr if_native;
+    ip4 group = 0xE9010209U;
+    ip4 iface_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, iface_ip, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    /* IP_ADD_MEMBERSHIP via a misaligned mreq. */
+    multicast_mreq(&mreq_native, group, IPADDR_ANY);
+    memset(raw, 0, sizeof(raw));
+    memcpy(raw + 1, &mreq_native, sizeof(mreq_native));
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, raw + 1,
+            (socklen_t)sizeof(mreq_native)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 1);
+
+    /* IP_DROP_MEMBERSHIP via a misaligned mreq. */
+    memset(raw, 0, sizeof(raw));
+    memcpy(raw + 1, &mreq_native, sizeof(mreq_native));
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_DROP_MEMBERSHIP, raw + 1,
+            (socklen_t)sizeof(mreq_native)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 0);
+
+    /* IP_MULTICAST_IF via a misaligned wolfIP_mreq_addr. */
+    if_native.s_addr = ee32(iface_ip);
+    memset(raw_if, 0, sizeof(raw_if));
+    memcpy(raw_if + 1, &if_native, sizeof(if_native));
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, raw_if + 1,
+            (socklen_t)sizeof(if_native)), 0);
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(sd)].sock.udp.mcast_if_set, 1);
+}
+END_TEST
+
+START_TEST(test_multicast_getsockopt_ttl_loop_accepts_uint8)
+{
+    struct wolfIP s;
+    int sd;
+    int ttl_in = 7;
+    int loop_in = 0;
+    uint8_t byte_buf;
+    int int_buf;
+    socklen_t len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &ttl_in, sizeof(ttl_in)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &loop_in, sizeof(loop_in)), 0);
+
+    /* getsockopt with a uint8_t buffer must succeed and write one byte,
+     * mirroring setsockopt which already accepts either size. */
+    byte_buf = 0xff;
+    len = sizeof(byte_buf);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &byte_buf, &len), 0);
+    ck_assert_uint_eq(len, sizeof(byte_buf));
+    ck_assert_uint_eq(byte_buf, 7U);
+
+    byte_buf = 0xff;
+    len = sizeof(byte_buf);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &byte_buf, &len), 0);
+    ck_assert_uint_eq(len, sizeof(byte_buf));
+    ck_assert_uint_eq(byte_buf, 0U);
+
+    /* The larger int path still works and returns sizeof(int). */
+    int_buf = -1;
+    len = sizeof(int_buf);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &int_buf, &len), 0);
+    ck_assert_uint_eq(len, sizeof(int_buf));
+    ck_assert_int_eq(int_buf, 7);
+
+    /* Zero-length buffer is still rejected. */
+    len = 0;
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &byte_buf, &len), -WOLFIP_EINVAL);
+}
+END_TEST
+
+#endif /* IP_MULTICAST */

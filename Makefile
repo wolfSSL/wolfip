@@ -242,6 +242,16 @@ build/test-evloop-tun: $(OBJ) build/test/test_eventloop_tun.o build/port/posix/l
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
+build/test-multicast-interop: CFLAGS+=-DIP_MULTICAST
+build/test-multicast-interop: build/multicast/wolfip.o build/test/test_multicast_interop.o build/port/posix/tap_linux.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+build/multicast/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (multicast)"
+	@$(CC) $(CFLAGS) -DIP_MULTICAST -c $< -o $@
+
 build/test-dns: $(OBJ) build/test/test_dhcp_dns.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
@@ -374,7 +384,8 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_dns_dhcp.c \
 	src/test/unit/unit_tests_tcp_ack.c \
 	src/test/unit/unit_tests_tcp_flow.c \
-	src/test/unit/unit_tests_proto.c
+	src/test/unit/unit_tests_proto.c \
+	src/test/unit/unit_tests_multicast.c
 
 unit: build/test/unit
 
@@ -384,6 +395,9 @@ build/test/unit: $(UNIT_TEST_SRCS)
 	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) -c src/test/unit/unit.c -o build/test/unit.o
 	@echo "[LD] $@"
 	@$(CC) build/test/unit.o -o build/test/unit $(UNIT_LDFLAGS) $(LDFLAGS)
+
+unit-multicast: CFLAGS+=-DIP_MULTICAST
+unit-multicast: clean-unit unit
 
 ESP_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
@@ -445,6 +459,8 @@ unit-leaksan: clean-unit build/test/unit
 COV_DIR:=build/coverage
 COV_UNIT:=$(COV_DIR)/unit
 COV_UNIT_O:=$(COV_DIR)/unit.o
+COV_MCAST_UNIT:=$(COV_DIR)/unit-multicast
+COV_MCAST_UNIT_O:=$(COV_DIR)/unit-multicast.o
 
 $(COV_UNIT_O): $(UNIT_TEST_SRCS)
 	@mkdir -p $(COV_DIR)
@@ -455,6 +471,16 @@ $(COV_UNIT): LDFLAGS+=--coverage $(UNIT_LIBS)
 $(COV_UNIT): $(COV_UNIT_O)
 	@echo "[LD] $@"
 	@$(CC) $(COV_UNIT_O) -o $(COV_UNIT) $(UNIT_LDFLAGS) $(LDFLAGS)
+
+$(COV_MCAST_UNIT_O): $(UNIT_TEST_SRCS)
+	@mkdir -p $(COV_DIR)
+	@echo "[CC] unit.c (multicast coverage)"
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) -DIP_MULTICAST --coverage -c src/test/unit/unit.c -o $(COV_MCAST_UNIT_O)
+
+$(COV_MCAST_UNIT): LDFLAGS+=--coverage $(UNIT_LIBS)
+$(COV_MCAST_UNIT): $(COV_MCAST_UNIT_O)
+	@echo "[LD] $@"
+	@$(CC) $(COV_MCAST_UNIT_O) -o $(COV_MCAST_UNIT) $(UNIT_LDFLAGS) $(LDFLAGS)
 
 cov: unit $(COV_UNIT)
 	@echo "[RUN] unit (coverage)"
@@ -472,6 +498,14 @@ autocov: unit $(COV_UNIT)
 	@echo "[COV] gcovr html"
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/index.html
+
+autocov-multicast: unit-multicast $(COV_MCAST_UNIT)
+	@echo "[RUN] unit multicast (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_MCAST_UNIT)
+	@echo "[COV] gcovr multicast html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/multicast.html
 
 # Install dynamic library to re-link linux applications
 #
@@ -571,7 +605,7 @@ build/test/test-wolfguard-interop: src/test/test_wolfguard_interop.c src/port/po
 clean-test-wolfguard-interop:
 	@rm -f build/test/test-wolfguard-interop build/test/test_wolfguard_interop.o build/test/linux_tun.o
 
-.PHONY: clean all static cppcheck cov autocov unit-asan unit-ubsan unit-leaksan clean-unit \
+.PHONY: clean all static cppcheck cov autocov autocov-multicast unit-multicast unit-asan unit-ubsan unit-leaksan clean-unit \
         unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \

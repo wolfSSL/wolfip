@@ -1,0 +1,41 @@
+name: Multicast interop tests
+
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+
+jobs:
+  multicast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential check libwolfssl-dev pkg-config
+          sudo modprobe tun
+
+      - name: Build and run multicast unit tests
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          make unit-multicast
+          timeout --preserve-status 5m ./build/test/unit
+
+      - name: Build and run multicast TAP interop
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          make build/test-multicast-interop
+          timeout --preserve-status 3m sudo ./build/test-multicast-interop
+
+      - name: Cleanup TAP state
+        if: always()
+        run: sudo ip link del wmcast0 2>/dev/null || true

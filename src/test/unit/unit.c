@@ -5,6 +5,7 @@
 #include "unit_tests_tcp_ack.c"
 #include "unit_tests_tcp_flow.c"
 #include "unit_tests_proto.c"
+#include "unit_tests_multicast.c"
 
 Suite *wolf_suite(void)
 {
@@ -227,6 +228,19 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_no_icmp_unreachable_for_multicast_src);
     tcase_add_test(tc_utils, test_udp_no_icmp_unreachable_for_broadcast_dst);
     tcase_add_test(tc_utils, test_udp_no_icmp_unreachable_for_multicast_dst);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_utils, test_multicast_join_and_drop_reports);
+    tcase_add_test(tc_utils, test_multicast_join_validation_and_shared_refs);
+    tcase_add_test(tc_utils, test_multicast_udp_receive_requires_join);
+    tcase_add_test(tc_utils, test_multicast_udp_send_mac_ttl_loop_and_options);
+    tcase_add_test(tc_utils, test_multicast_igmp_query_refreshes_report);
+    tcase_add_test(tc_utils, test_multicast_join_requires_configured_ip);
+    tcase_add_test(tc_utils, test_multicast_if_pins_egress_interface);
+    tcase_add_test(tc_utils, test_multicast_loop_does_not_fire_on_blocked_send);
+    tcase_add_test(tc_utils, test_multicast_recv_rejects_short_frame);
+    tcase_add_test(tc_utils, test_multicast_setsockopt_accepts_unaligned_mreq);
+    tcase_add_test(tc_utils, test_multicast_getsockopt_ttl_loop_accepts_uint8);
+#endif
     tcase_add_test(tc_utils, test_tcp_no_rst_for_broadcast_dst);
     tcase_add_test(tc_utils, test_tcp_no_rst_for_multicast_dst);
     tcase_add_test(tc_utils, test_dhcp_renewing_transitions_to_rebinding);

@@ -72,6 +72,48 @@ typedef unsigned long size_t;
 #endif
 #endif
 
+#ifdef IP_MULTICAST
+#ifndef WOLFIP_IP_ADD_MEMBERSHIP
+#ifdef IP_ADD_MEMBERSHIP
+#define WOLFIP_IP_ADD_MEMBERSHIP IP_ADD_MEMBERSHIP
+#else
+#define WOLFIP_IP_ADD_MEMBERSHIP 35
+#endif
+#endif
+
+#ifndef WOLFIP_IP_DROP_MEMBERSHIP
+#ifdef IP_DROP_MEMBERSHIP
+#define WOLFIP_IP_DROP_MEMBERSHIP IP_DROP_MEMBERSHIP
+#else
+#define WOLFIP_IP_DROP_MEMBERSHIP 36
+#endif
+#endif
+
+#ifndef WOLFIP_IP_MULTICAST_IF
+#ifdef IP_MULTICAST_IF
+#define WOLFIP_IP_MULTICAST_IF IP_MULTICAST_IF
+#else
+#define WOLFIP_IP_MULTICAST_IF 32
+#endif
+#endif
+
+#ifndef WOLFIP_IP_MULTICAST_TTL
+#ifdef IP_MULTICAST_TTL
+#define WOLFIP_IP_MULTICAST_TTL IP_MULTICAST_TTL
+#else
+#define WOLFIP_IP_MULTICAST_TTL 33
+#endif
+#endif
+
+#ifndef WOLFIP_IP_MULTICAST_LOOP
+#ifdef IP_MULTICAST_LOOP
+#define WOLFIP_IP_MULTICAST_LOOP IP_MULTICAST_LOOP
+#else
+#define WOLFIP_IP_MULTICAST_LOOP 34
+#endif
+#endif
+#endif /* IP_MULTICAST */
+
 /* Types */
 struct wolfIP;
 typedef uint32_t ip4;
@@ -144,6 +186,17 @@ struct ipconf {
     ip4 mask;
     ip4 gw;
 };
+
+#ifdef IP_MULTICAST
+struct wolfIP_mreq_addr {
+    uint32_t s_addr;
+};
+
+struct wolfIP_ip_mreq {
+    struct wolfIP_mreq_addr imr_multiaddr;
+    struct wolfIP_mreq_addr imr_interface;
+};
+#endif
 
 /* Socket interface */
 #define MARK_TCP_SOCKET 0x100 /* Mark a socket as TCP */
