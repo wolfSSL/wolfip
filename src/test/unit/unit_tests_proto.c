@@ -3329,6 +3329,30 @@ START_TEST(test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter)
 }
 END_TEST
 
+START_TEST(test_wolfip_send_port_unreachable_sets_df)
+{
+    struct wolfIP s;
+    uint8_t orig_buf[ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT];
+    struct wolfIP_ip_packet *orig = (struct wolfIP_ip_packet *)orig_buf;
+    struct wolfIP_icmp_dest_unreachable_packet *reply;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    memset(orig_buf, 0, sizeof(orig_buf));
+    orig->ver_ihl = 0x45;
+    orig->src = ee32(0x0A000002U);
+    orig->dst = ee32(0x0A000001U);
+
+    wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, orig);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    reply = (struct wolfIP_icmp_dest_unreachable_packet *)last_frame_sent;
+    ck_assert_uint_eq(ee16(reply->ip.flags_fo) & 0x4000U, 0x4000U);
+}
+END_TEST
+
 START_TEST(test_tcp_adv_win_clamps_and_applies_window_scale)
 {
     struct tsocket ts;

@@ -126,6 +126,7 @@ Suite *wolf_suite(void)
 #endif
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_ignores_missing_link_sender);
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter);
+    tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_sets_df);
     tcase_add_test(tc_utils, test_tcp_adv_win_clamps_and_applies_window_scale);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);
@@ -655,6 +656,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_send_ttl_exceeded_eth_filter_drop);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_no_send);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_non_ethernet_skips_eth_filter);
+    tcase_add_test(tc_proto, test_send_ttl_exceeded_sets_df);
 #if WOLFIP_ENABLE_FORWARDING
     tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_short_len_does_not_send);
 #endif
@@ -772,6 +774,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_socket_send_recv);
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_queues);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_reply_sent);
+    tcase_add_test(tc_proto, test_icmp_input_echo_reply_sets_df);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_bad_checksum_dropped);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_odd_len_reply_checksum);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_dhcp_running_no_reply);
