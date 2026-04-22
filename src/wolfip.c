@@ -6252,6 +6252,30 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd)
     return -WOLFIP_EINVAL;
 }
 
+/* Return non-zero if any socket in arr[0..n] other than self already claims
+ * (local_ip, port). IPADDR_ANY on either side overlaps with any specific
+ * local address, matching POSIX EADDRINUSE semantics. */
+static int bind_port_in_use(const struct tsocket *arr, int n,
+                            const struct tsocket *self,
+                            ip4 new_local_ip, uint16_t new_port)
+{
+    int i;
+    if (new_port == 0)
+        return 0;
+    for (i = 0; i < n; i++) {
+        const struct tsocket *tk = &arr[i];
+        if (tk == self)
+            continue;
+        if (tk->src_port != new_port)
+            continue;
+        if (tk->local_ip != IPADDR_ANY && new_local_ip != IPADDR_ANY &&
+            tk->local_ip != new_local_ip)
+            continue;
+        return 1;
+    }
+    return 0;
+}
+
 int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr,
                      socklen_t addrlen)
 {
@@ -6329,6 +6353,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 else
                     ts->local_ip = IPADDR_ANY;
             }
+            if (bind_port_in_use(s->tcpsockets, MAX_TCPSOCKETS, ts,
+                                 ts->local_ip, new_port)) {
+                ts->local_ip = prev_ip;
+                return -1;
+            }
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
                     ts->local_ip, new_port, IPADDR_ANY, 0) != 0) {
@@ -6364,6 +6393,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 else
                     ts->local_ip = IPADDR_ANY;
             }
+            if (bind_port_in_use(s->udpsockets, MAX_UDPSOCKETS, ts,
+                                 ts->local_ip, new_port)) {
+                ts->local_ip = prev_ip;
+                return -1;
+            }
             ts->src_port = new_port;
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
@@ -6396,6 +6430,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
                     ts->local_ip = primary->ip;
+            }
+            if (bind_port_in_use(s->icmpsockets, MAX_ICMPSOCKETS, ts,
+                                 ts->local_ip, new_id)) {
+                ts->local_ip = prev_ip;
+                return -1;
             }
             ts->src_port = new_id;
             if (wolfIP_filter_notify_socket_event(
