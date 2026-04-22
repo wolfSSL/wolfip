@@ -1,6 +1,7 @@
 CC?=gcc
 CFLAGS:=-Wall -Werror -Wextra -I. -D_GNU_SOURCE
 CFLAGS+=-g -ggdb -Wdeclaration-after-statement
+EXTRA_CFLAGS?=
 CFLAGS+=$(EXTRA_CFLAGS)
 LDFLAGS+=-pthread
 # additional debug flags:
@@ -160,7 +161,8 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/ipfilter-logger build/test-esp build/esp-server
+	build/ipfilter-logger \
+	build/test-esp build/esp-server
 ifeq ($(UNAME_S),Linux)
   EXE+= build/test-evloop-tun
 endif
@@ -253,6 +255,14 @@ build/tcp_netcat_poll: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_netca
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
 build/tcp_netcat_select: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_netcat_select.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+build/raw_ping: $(OBJ) build/port/posix/bsd_socket.o build/test/raw_ping.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+build/packet_ping: $(OBJ) build/port/posix/bsd_socket.o build/test/packet_ping.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 

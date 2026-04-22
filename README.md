@@ -18,6 +18,18 @@ configured to forward traffic between multiple network interfaces.
 - Multi-interface support
 - Optional IPv4-forwarding
 
+## Supported socket types
+
+wolfIP exposes a BSD-like `socket(2)` API for IPv4 sockets:
+
+| Domain | Type | Protocol | Notes |
+|--------|------|----------|-------|
+| `AF_INET` | `SOCK_STREAM` / `IPSTACK_SOCK_STREAM` | TCP | Connection-oriented TCP sockets |
+| `AF_INET` | `SOCK_DGRAM` / `IPSTACK_SOCK_DGRAM` | UDP, or `0` | UDP datagram sockets |
+| `AF_INET` | `SOCK_DGRAM` / `IPSTACK_SOCK_DGRAM` | ICMP | ICMP datagram sockets, used for ping-style traffic |
+| `AF_INET` | `SOCK_RAW` / `IPSTACK_SOCK_RAW` | IP protocol number | IPv4 raw sockets when `WOLFIP_RAWSOCKETS` is enabled |
+| `AF_PACKET` | `SOCK_RAW` / `IPSTACK_SOCK_RAW` | Ethernet protocol number | Link-layer packet sockets when `WOLFIP_PACKET_SOCKETS` is enabled |
+
 ## Protocols and RFCs
 
 | Layer | Protocol | Features | RFC(s) |

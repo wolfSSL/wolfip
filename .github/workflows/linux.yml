@@ -35,7 +35,8 @@ jobs:
       - name: Build linux tests
         run: |
           mkdir -p build/port
-          make
+          make EXTRA_CFLAGS="-DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1"
+          make EXTRA_CFLAGS="-DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1" build/raw_ping build/packet_ping
 
       - name: Run standalone "event loop" test
         timeout-minutes: 5
@@ -101,6 +102,18 @@ jobs:
         run: |
           set -euo pipefail
           timeout --preserve-status 2m sudo LD_PRELOAD=$PWD/libwolfip.so ping -4 -n -c 5 127.0.0.1
+
+      - name: Testing raw sockets with raw_ping
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 2m sudo ./build/raw_ping 10.10.10.1
+
+      - name: Testing packet sockets with packet_ping
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 2m sudo ./build/packet_ping wtcp0 10.10.10.1
 
       - name: Install check
         run: |
