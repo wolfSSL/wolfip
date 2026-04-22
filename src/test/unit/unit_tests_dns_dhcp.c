@@ -2169,6 +2169,66 @@ START_TEST(test_icmp_input_dest_unreach_frag_needed_reduces_tcp_peer_mss)
 }
 END_TEST
 
+START_TEST(test_icmp_input_dest_unreach_frag_needed_below_floor_preserves_peer_mss)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+    uint16_t next_hop_mtu;
+    static const uint16_t below_floor[] = { 0U, 41U, 67U, 68U, 575U };
+    size_t i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    for (i = 0; i < sizeof(below_floor) / sizeof(below_floor[0]); i++) {
+        ts->sock.tcp.peer_mss = 1460U;
+
+        memset(&icmp, 0, sizeof(icmp));
+        icmp.ip.src = ee32(0x0A0000FEU);
+        icmp.ip.dst = ee32(ts->local_ip);
+        icmp.ip.ttl = 64;
+        icmp.ip.proto = WI_IPPROTO_ICMP;
+        icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+        icmp.type = ICMP_DEST_UNREACH;
+        icmp.code = ICMP_FRAG_NEEDED;
+        next_hop_mtu = ee16(below_floor[i]);
+        memcpy(&icmp.unused[2], &next_hop_mtu, sizeof(next_hop_mtu));
+
+        orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+        orig->ip.ver_ihl = 0x45;
+        orig->ip.proto = WI_IPPROTO_TCP;
+        orig->ip.src = ee32(ts->local_ip);
+        orig->ip.dst = ee32(ts->remote_ip);
+        orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+        orig->src_port = ee16(ts->src_port);
+        orig->dst_port = ee16(ts->dst_port);
+
+        icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                    ICMP_DEST_UNREACH_SIZE));
+
+        icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+        ck_assert_uint_eq(ts->sock.tcp.peer_mss, 1460U);
+    }
+}
+END_TEST
+
 START_TEST(test_icmp_input_dest_unreach_port_unreachable_closes_syn_sent_tcp_socket)
 {
     struct wolfIP s;
