@@ -1014,6 +1014,33 @@ START_TEST(test_sock_bind_tcp_filter_blocks)
 }
 END_TEST
 
+START_TEST(test_sock_bind_tcp_port_collision_rejected)
+{
+    struct wolfIP s;
+    int tcp_sd1, tcp_sd2;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd1, 0);
+    tcp_sd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd2, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd1,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd2,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+}
+END_TEST
+
 START_TEST(test_sock_bind_udp_src_port_nonzero)
 {
     struct wolfIP s;

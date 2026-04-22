@@ -157,6 +157,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_bind_invalid_fd);
     tcase_add_test(tc_utils, test_sock_bind_tcp_state_not_closed);
     tcase_add_test(tc_utils, test_sock_bind_tcp_filter_blocks);
+    tcase_add_test(tc_utils, test_sock_bind_tcp_port_collision_rejected);
     tcase_add_test(tc_utils, test_sock_bind_udp_src_port_nonzero);
     tcase_add_test(tc_utils, test_sock_bind_udp_filter_blocks);
     tcase_add_test(tc_utils, test_sock_bind_icmp_success);
