@@ -3974,6 +3974,65 @@ START_TEST(test_ip_recv_drops_multicast_source)
 }
 END_TEST
 
+START_TEST(test_ip_recv_drops_zero_source)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg seg;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(&seg, 0, sizeof(seg));
+    memcpy(seg.ip.eth.dst, ll->mac, 6);
+    memcpy(seg.ip.eth.src, src_mac, 6);
+    seg.ip.eth.type = ee16(ETH_TYPE_IP);
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(IPADDR_ANY);
+    seg.ip.dst = ee32(0x0A000001U);
+    seg.ip.csum = 0;
+    iphdr_set_checksum(&seg.ip);
+    seg.src_port = ee16(40000);
+    seg.dst_port = ee16(1234);
+    seg.seq = ee32(1);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_SYN;
+    seg.win = ee16(65535);
+    memset(&ph, 0, sizeof(ph));
+    ph.ph.src = seg.ip.src;
+    ph.ph.dst = seg.ip.dst;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    seg.csum = ee16(transport_checksum(&ph, &seg.src_port));
+
+    ip_recv(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&seg,
+            sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
 /* Regression: arp_recv must not cache entries with broadcast, multicast,
  * zero, or own-IP sender addresses.  Without validation, an ARP request
  * with a spoofed sender IP poisons the neighbor cache. */
