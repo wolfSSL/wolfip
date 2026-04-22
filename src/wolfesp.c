@@ -1160,6 +1160,9 @@ esp_check_icv_hmac(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
 
     /* compare the first N bits depending on truncation type. */
     rc = esp_const_memcmp(icv, hash, esp_sa->icv_len);
+    if (rc) {
+        rc = -1;
+    }
     return rc;
 }
 
@@ -1649,7 +1652,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     }
 
     if (esp_sa->icv_len) {
-        int       err = 0;
+        int err = 0;
 
         switch (esp_sa->auth) {
         case ESP_AUTH_MD5_RFC2403:
@@ -1664,7 +1667,6 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
                 if (err == 0) {
                     memcpy(icv, hash, esp_sa->icv_len);
                 }
-
             }
             break;
         #if defined(WOLFSSL_AESGCM_STREAM)
