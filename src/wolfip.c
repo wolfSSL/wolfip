@@ -81,6 +81,7 @@ struct wolfIP_icmp_packet;
 #define ICMP_FRAG_NEEDED 4
 
 #define WI_IPPROTO_ICMP 0x01
+#define WI_IPPROTO_IGMP 0x02
 #define WI_IPPROTO_TCP 0x06
 #define WI_IPPROTO_UDP 0x11
 #define IPADDR_ANY 0x00000000
@@ -104,6 +105,17 @@ struct wolfIP_icmp_packet;
 #define IP_HEADER_LEN 20
 #define UDP_HEADER_LEN 8
 #define ICMP_HEADER_LEN 8
+#define IGMPV3_REPORT_DST 0xE0000016U
+#define IGMP_ALL_HOSTS 0xE0000001U
+#define IGMP_TYPE_MEMBERSHIP_QUERY 0x11
+#define IGMP_TYPE_V3_MEMBERSHIP_REPORT 0x22
+#define IGMPV3_REC_MODE_IS_EXCLUDE 2
+#define IGMPV3_REC_CHANGE_TO_INCLUDE 3
+#define IGMP_HEADER_LEN 8
+#define IGMPV3_QUERY_MIN_LEN 12
+#define IGMPV3_REPORT_HEADER_LEN 8
+#define IGMPV3_GROUP_RECORD_BASE_LEN 8
+#define IP_OPTION_ROUTER_ALERT_LEN 4
 #define ARP_HEADER_LEN 28
 
 #ifdef ETHERNET
@@ -127,6 +139,13 @@ struct wolfIP_icmp_packet;
 #define TCP_DEFAULT_MSS 536U
 #define TCP_CTRL_RTO_MAXRTX 6U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
+
+#ifdef IP_MULTICAST
+#ifndef WOLFIP_UDP_MCAST_MEMBERSHIPS
+#define WOLFIP_UDP_MCAST_MEMBERSHIPS 4
+#endif
+#define WOLFIP_MCAST_MEMBERSHIPS (MAX_UDPSOCKETS * WOLFIP_UDP_MCAST_MEMBERSHIPS)
+#endif
 #define TCP_RTO_MIN_MS 1000U
 #define TCP_RTO_MAX_MS 60000U
 #define TCP_RTO_G_MS 1U
@@ -758,6 +777,19 @@ struct PACKED wolfIP_icmp_dest_unreachable_packet {
     uint8_t orig_packet[TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX];
 };
 
+#ifdef IP_MULTICAST
+struct udp_mcast_join {
+    ip4 group;
+    uint8_t if_idx;
+};
+
+struct wolfIP_mcast_membership {
+    ip4 group;
+    uint8_t if_idx;
+    uint8_t refs;
+};
+#endif
+
 static uint16_t icmp_echo_id(const struct wolfIP_icmp_packet *icmp)
 {
     uint16_t net = 0;
@@ -1104,6 +1136,13 @@ struct tcpsocket {
 /* UDP socket */
 struct udpsocket {
     struct fifo rxbuf, txbuf;
+#ifdef IP_MULTICAST
+    struct udp_mcast_join mcast[WOLFIP_UDP_MCAST_MEMBERSHIPS];
+    uint8_t mcast_ttl;
+    uint8_t mcast_loop;
+    uint8_t mcast_if_set;
+    uint8_t mcast_if_idx;
+#endif
 };
 
 struct tsocket {
@@ -1175,6 +1214,10 @@ struct packetsocket {
     void *callback_arg;
 };
 #endif
+#endif
+
+#ifdef IP_MULTICAST
+static void udp_mcast_drop_all(struct tsocket *ts);
 #endif
 static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n);
 static inline int tcp_seq_leq(uint32_t a, uint32_t b);
@@ -1305,6 +1348,9 @@ struct wolfIP {
 #if WOLFIP_PACKET_SOCKETS
     struct packetsocket packetsockets[WOLFIP_MAX_PACKETSOCKETS];
 #endif
+#endif
+#ifdef IP_MULTICAST
+    struct wolfIP_mcast_membership mcast[WOLFIP_MCAST_MEMBERSHIPS];
 #endif
     uint16_t ipcounter;
     uint64_t last_tick;
@@ -1587,6 +1633,96 @@ static inline int wolfIP_ip_is_multicast(ip4 addr)
 {
     return ((addr & 0xF0000000U) == 0xE0000000U);
 }
+
+#ifdef IP_MULTICAST
+static uint16_t ip_checksum_buf(const void *buf, uint16_t len)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    uint32_t sum = 0;
+
+    while (len > 1) {
+        sum += ((uint16_t)p[0] << 8) | p[1];
+        p += 2;
+        len -= 2;
+    }
+    if (len)
+        sum += (uint16_t)p[0] << 8;
+    while (sum >> 16)
+        sum = (sum & 0xffffU) + (sum >> 16);
+    return (uint16_t)~sum;
+}
+
+static void put_be16(uint8_t *p, uint16_t v)
+{
+    uint16_t be = ee16(v);
+    memcpy(p, &be, sizeof(be));
+}
+
+static void put_be32(uint8_t *p, uint32_t v)
+{
+    uint32_t be = ee32(v);
+    memcpy(p, &be, sizeof(be));
+}
+
+static uint32_t get_be32(const uint8_t *p)
+{
+    uint32_t be;
+
+    memcpy(&be, p, sizeof(be));
+    return ee32(be);
+}
+
+static void mcast_ip_to_eth(ip4 group, uint8_t mac[6])
+{
+    mac[0] = 0x01;
+    mac[1] = 0x00;
+    mac[2] = 0x5e;
+    mac[3] = (uint8_t)((group >> 16) & 0x7fU);
+    mac[4] = (uint8_t)((group >> 8) & 0xffU);
+    mac[5] = (uint8_t)(group & 0xffU);
+}
+
+static int eth_is_ipv4_multicast_mac(const uint8_t mac[6])
+{
+    return mac[0] == 0x01 && mac[1] == 0x00 && mac[2] == 0x5e &&
+           (mac[3] & 0x80U) == 0;
+}
+
+static struct wolfIP_mcast_membership *mcast_membership_find(struct wolfIP *s,
+                                                            unsigned int if_idx,
+                                                            ip4 group)
+{
+    unsigned int i;
+
+    if (!s)
+        return NULL;
+    for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+        if (s->mcast[i].group == group && s->mcast[i].if_idx == if_idx &&
+                s->mcast[i].refs != 0)
+            return &s->mcast[i];
+    }
+    return NULL;
+}
+
+static int mcast_is_joined(struct wolfIP *s, unsigned int if_idx, ip4 group)
+{
+    return mcast_membership_find(s, if_idx, group) != NULL;
+}
+
+static int udp_socket_has_mcast(const struct tsocket *t, unsigned int if_idx, ip4 group)
+{
+    unsigned int i;
+
+    if (!t)
+        return 0;
+    for (i = 0; i < WOLFIP_UDP_MCAST_MEMBERSHIPS; i++) {
+        if (t->sock.udp.mcast[i].group == group &&
+                t->sock.udp.mcast[i].if_idx == if_idx)
+            return 1;
+    }
+    return 0;
+}
+#endif
 
 static int wolfIP_ip_is_broadcast(const struct wolfIP *s, ip4 addr)
 {
@@ -2076,6 +2212,10 @@ static struct tsocket *udp_new_socket(struct wolfIP *s)
             t->if_idx = 0;
             fifo_init(&t->sock.udp.rxbuf, t->rxmem, RXBUF_SIZE);
             fifo_init(&t->sock.udp.txbuf, t->txmem, TXBUF_SIZE);
+#ifdef IP_MULTICAST
+            t->sock.udp.mcast_ttl = 1;
+            t->sock.udp.mcast_loop = 1;
+#endif
             if (tx_has_writable_space(t))
                 t->events |= CB_EVENT_WRITABLE;
             return t;
@@ -2128,9 +2268,19 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
         uint32_t expected_len;
-        if (t->src_port == ee16(udp->dst_port) && (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
+        int addr_match =
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip == src_ip))) ) {
+                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip == src_ip)));
+#ifdef IP_MULTICAST
+        if (wolfIP_ip_is_multicast(dst_ip)) {
+            addr_match = udp_socket_has_mcast(t, if_idx, dst_ip) &&
+                         (t->remote_ip == 0 || t->remote_ip == src_ip ||
+                          t->remote_ip == dst_ip);
+        }
+#endif
+        if (t->src_port == ee16(udp->dst_port) &&
+                (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
+                addr_match) {
 
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
@@ -3611,6 +3761,123 @@ static int eth_output_add_header(struct wolfIP *S, unsigned int if_idx,
 }
 #endif
 
+#ifdef IP_MULTICAST
+static int igmp_send_report(struct wolfIP *s, unsigned int if_idx, ip4 group,
+                            uint8_t record_type)
+{
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IP_OPTION_ROUTER_ALERT_LEN +
+                  IGMPV3_REPORT_HEADER_LEN + IGMPV3_GROUP_RECORD_BASE_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *iph = frame + ETH_HEADER_LEN;
+    uint8_t *igmp;
+    struct ipconf *conf;
+    uint16_t ip_hlen = IP_HEADER_LEN + IP_OPTION_ROUTER_ALERT_LEN;
+    uint16_t igmp_len = IGMPV3_REPORT_HEADER_LEN + IGMPV3_GROUP_RECORD_BASE_LEN;
+    uint16_t ip_len = ip_hlen + igmp_len;
+    uint16_t id;
+#ifdef ETHERNET
+    uint8_t mac[6];
+#endif
+
+    if (!s || !wolfIP_ip_is_multicast(group))
+        return -WOLFIP_EINVAL;
+    conf = wolfIP_ipconf_at(s, if_idx);
+    if (!conf || conf->ip == IPADDR_ANY)
+        return -WOLFIP_EINVAL;
+    memset(frame, 0, sizeof(frame));
+
+    iph[0] = 0x46; /* IPv4, 24-byte header with Router Alert option. */
+    iph[1] = 0;
+    put_be16(iph + 2, ip_len);
+    id = ipcounter_next(s);
+    memcpy(iph + 4, &id, sizeof(id));
+    put_be16(iph + 6, 0);
+    iph[8] = 1;
+    iph[9] = WI_IPPROTO_IGMP;
+    put_be32(iph + 12, conf->ip);
+    put_be32(iph + 16, IGMPV3_REPORT_DST);
+    iph[20] = 0x94;
+    iph[21] = IP_OPTION_ROUTER_ALERT_LEN;
+    iph[22] = 0;
+    iph[23] = 0;
+    put_be16(iph + 10, ip_checksum_buf(iph, ip_hlen));
+
+    igmp = iph + ip_hlen;
+    igmp[0] = IGMP_TYPE_V3_MEMBERSHIP_REPORT;
+    igmp[1] = 0;
+    igmp[4] = 0;
+    igmp[5] = 0;
+    igmp[6] = 0;
+    igmp[7] = 1;
+    igmp[8] = record_type;
+    igmp[9] = 0;
+    igmp[10] = 0;
+    igmp[11] = 0;
+    put_be32(igmp + 12, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, igmp_len));
+
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+        mcast_ip_to_eth(IGMPV3_REPORT_DST, mac);
+        eth_output_add_header(s, if_idx, mac, &ip->eth, ETH_TYPE_IP);
+    }
+#endif
+#ifdef WOLFIP_ESP
+    /* Mirror the ESP-encap pattern used elsewhere (icmp_input,
+     * wolfIP_send_ttl_exceeded, wolfIP_poll): if an outbound SA matches the
+     * report destination, esp_send wraps and transmits; otherwise it returns
+     * 1 and we fall through to the plaintext send. In the common case no SA
+     * is configured for 224.0.0.22 so the normal path is unchanged. */
+    if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+        struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+        if (esp_send(ll, ip, ip_len) == 1)
+            return wolfIP_ll_send_frame(s, if_idx, frame, sizeof(frame));
+        return 0;
+    }
+#endif
+    return wolfIP_ll_send_frame(s, if_idx, frame, sizeof(frame));
+}
+
+static void igmp_input(struct wolfIP *s, unsigned int if_idx,
+                       struct wolfIP_ip_packet *ip, uint32_t frame_len)
+{
+    uint16_t ip_len;
+    uint16_t igmp_len;
+    uint8_t *igmp;
+    ip4 group = IPADDR_ANY;
+    unsigned int i;
+
+    if (!s || frame_len < ETH_HEADER_LEN + IP_HEADER_LEN + IGMP_HEADER_LEN)
+        return;
+    ip_len = ee16(ip->len);
+    if (ip_len < IP_HEADER_LEN + IGMP_HEADER_LEN ||
+            frame_len < (uint32_t)(ETH_HEADER_LEN + ip_len))
+        return;
+    igmp_len = ip_len - IP_HEADER_LEN;
+    igmp = ((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN;
+    if (ip_checksum_buf(igmp, igmp_len) != 0)
+        return;
+    if (igmp[0] != IGMP_TYPE_MEMBERSHIP_QUERY)
+        return;
+    /* RFC 2236 §2 (IGMPv2) and RFC 3376 §4.1 (IGMPv3) both place the Group
+     * Address at offset 4 within the message. Read unconditionally so that
+     * IGMPv1/v2 group-specific queries (8-byte messages) are not silently
+     * treated as general queries. */
+    group = get_be32(igmp + 4);
+    if (group != IPADDR_ANY && !wolfIP_ip_is_multicast(group))
+        return;
+
+    for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+        if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)
+            continue;
+        if (group != IPADDR_ANY && group != s->mcast[i].group)
+            continue;
+        (void)igmp_send_report(s, if_idx, s->mcast[i].group,
+                               IGMPV3_REC_MODE_IS_EXCLUDE);
+    }
+}
+#endif
+
 #ifdef  WOLFIP_ESP
 #include "src/wolfesp.c"
 #endif /* WOLFIP_ESP */
@@ -3721,6 +3988,10 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
     ip->len = ee16(len);
     ip->flags_fo = (proto == WI_IPPROTO_TCP) ? ee16(0x4000U) : 0;
     ip->ttl = 64;
+#ifdef IP_MULTICAST
+    if (proto == WI_IPPROTO_UDP && wolfIP_ip_is_multicast(t->remote_ip))
+        ip->ttl = t->sock.udp.mcast_ttl;
+#endif
     ip->proto = proto;
     ip->id = ee16(t->S->ipcounter);
     t->S->ipcounter = (uint16_t)(t->S->ipcounter + 1);
@@ -4908,6 +5179,10 @@ static void close_socket(struct tsocket *ts)
             ts->sock.tcp.tmr_rto = NO_TIMER;
         }
     }
+#ifdef IP_MULTICAST
+    if (ts->proto == WI_IPPROTO_UDP)
+        udp_mcast_drop_all(ts);
+#endif
     memset(ts, 0, sizeof(struct tsocket));
 }
 
@@ -5414,6 +5689,10 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 ts->src_port += 1024;
         }
         if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+#ifdef IP_MULTICAST
+        if (wolfIP_ip_is_multicast(ts->remote_ip) && ts->sock.udp.mcast_if_set)
+            if_idx = ts->sock.udp.mcast_if_idx;
+#endif
         conf = wolfIP_ipconf_at(s, if_idx);
         ts->if_idx = (uint8_t)if_idx;
         if (ts->local_ip == 0) {
@@ -5890,6 +6169,110 @@ int wolfIP_sock_read(struct wolfIP *s, int sockfd, void *buf, size_t len)
     return wolfIP_sock_recvfrom(s, sockfd, buf, len, 0, NULL, 0);
 }
 
+#ifdef IP_MULTICAST
+static int mcast_if_from_addr(struct wolfIP *s, ip4 if_addr, ip4 group,
+                              unsigned int *if_idx)
+{
+    int found = 0;
+
+    if (!s || !if_idx || !wolfIP_ip_is_multicast(group))
+        return -WOLFIP_EINVAL;
+    if (if_addr == IPADDR_ANY) {
+        *if_idx = wolfIP_route_for_ip(s, group);
+        if (wolfIP_ipconf_at(s, *if_idx))
+            return 0;
+        return -WOLFIP_EINVAL;
+    }
+    *if_idx = wolfIP_if_for_local_ip(s, if_addr, &found);
+    return found ? 0 : -WOLFIP_EINVAL;
+}
+
+static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
+                          unsigned int if_idx)
+{
+    unsigned int i;
+    unsigned int j;
+    struct wolfIP_mcast_membership *m = NULL;
+
+    if (!s || !ts || !wolfIP_ip_is_multicast(group) || if_idx >= s->if_count)
+        return -WOLFIP_EINVAL;
+    if (udp_socket_has_mcast(ts, if_idx, group))
+        return -WOLFIP_EINVAL;
+    for (i = 0; i < WOLFIP_UDP_MCAST_MEMBERSHIPS; i++) {
+        if (ts->sock.udp.mcast[i].group == IPADDR_ANY)
+            break;
+    }
+    if (i == WOLFIP_UDP_MCAST_MEMBERSHIPS)
+        return -WOLFIP_ENOMEM;
+
+    m = mcast_membership_find(s, if_idx, group);
+    if (!m) {
+        for (j = 0; j < WOLFIP_MCAST_MEMBERSHIPS; j++) {
+            if (s->mcast[j].refs == 0) {
+                m = &s->mcast[j];
+                m->group = group;
+                m->if_idx = (uint8_t)if_idx;
+                break;
+            }
+        }
+    }
+    if (!m)
+        return -WOLFIP_ENOMEM;
+
+    ts->sock.udp.mcast[i].group = group;
+    ts->sock.udp.mcast[i].if_idx = (uint8_t)if_idx;
+    if (m->refs == 0)
+        (void)igmp_send_report(s, if_idx, group, IGMPV3_REC_MODE_IS_EXCLUDE);
+    if (m->refs != 0xff)
+        m->refs++;
+    return 0;
+}
+
+static int udp_mcast_drop(struct wolfIP *s, struct tsocket *ts, ip4 group,
+                          unsigned int if_idx)
+{
+    unsigned int i;
+    struct wolfIP_mcast_membership *m;
+
+    if (!s || !ts || !wolfIP_ip_is_multicast(group) || if_idx >= s->if_count)
+        return -WOLFIP_EINVAL;
+    for (i = 0; i < WOLFIP_UDP_MCAST_MEMBERSHIPS; i++) {
+        if (ts->sock.udp.mcast[i].group == group &&
+                ts->sock.udp.mcast[i].if_idx == if_idx)
+            break;
+    }
+    if (i == WOLFIP_UDP_MCAST_MEMBERSHIPS)
+        return -WOLFIP_EINVAL;
+    ts->sock.udp.mcast[i].group = IPADDR_ANY;
+    ts->sock.udp.mcast[i].if_idx = 0;
+
+    m = mcast_membership_find(s, if_idx, group);
+    if (m && m->refs > 0) {
+        m->refs--;
+        if (m->refs == 0) {
+            (void)igmp_send_report(s, if_idx, group,
+                                   IGMPV3_REC_CHANGE_TO_INCLUDE);
+            memset(m, 0, sizeof(*m));
+        }
+    }
+    return 0;
+}
+
+static void udp_mcast_drop_all(struct tsocket *ts)
+{
+    unsigned int i;
+
+    if (!ts || !ts->S)
+        return;
+    for (i = 0; i < WOLFIP_UDP_MCAST_MEMBERSHIPS; i++) {
+        if (ts->sock.udp.mcast[i].group != IPADDR_ANY) {
+            (void)udp_mcast_drop(ts->S, ts, ts->sock.udp.mcast[i].group,
+                                 ts->sock.udp.mcast[i].if_idx);
+        }
+    }
+}
+#endif
+
 int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
                            const void *optval, socklen_t optlen)
 {
@@ -5937,6 +6320,80 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         ts->recv_ttl = enable ? 1 : 0;
         return 0;
     }
+#ifdef IP_MULTICAST
+    if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
+        if (optname == WOLFIP_IP_ADD_MEMBERSHIP ||
+                optname == WOLFIP_IP_DROP_MEMBERSHIP) {
+            const struct wolfIP_ip_mreq *mreq =
+                (const struct wolfIP_ip_mreq *)optval;
+            unsigned int if_idx;
+            ip4 group;
+            ip4 if_addr;
+            int ret;
+
+            if (!mreq || optlen < (socklen_t)sizeof(*mreq))
+                return -WOLFIP_EINVAL;
+            group = ee32(mreq->imr_multiaddr.s_addr);
+            if_addr = ee32(mreq->imr_interface.s_addr);
+            ret = mcast_if_from_addr(s, if_addr, group, &if_idx);
+            if (ret < 0)
+                return ret;
+            if (optname == WOLFIP_IP_ADD_MEMBERSHIP)
+                return udp_mcast_join(s, ts, group, if_idx);
+            return udp_mcast_drop(s, ts, group, if_idx);
+        }
+        if (optname == WOLFIP_IP_MULTICAST_IF) {
+            const struct wolfIP_mreq_addr *addr =
+                (const struct wolfIP_mreq_addr *)optval;
+            unsigned int if_idx;
+            ip4 if_addr;
+            int ret;
+
+            if (!addr || optlen < (socklen_t)sizeof(*addr))
+                return -WOLFIP_EINVAL;
+            if_addr = ee32(addr->s_addr);
+            ret = mcast_if_from_addr(s, if_addr, IGMP_ALL_HOSTS, &if_idx);
+            if (ret < 0)
+                return ret;
+            ts->sock.udp.mcast_if_idx = (uint8_t)if_idx;
+            ts->sock.udp.mcast_if_set = 1;
+            return 0;
+        }
+        if (optname == WOLFIP_IP_MULTICAST_TTL) {
+            uint8_t ttl8;
+            int ttl;
+
+            if (!optval || optlen == 0)
+                return -WOLFIP_EINVAL;
+            if (optlen >= (socklen_t)sizeof(int)) {
+                memcpy(&ttl, optval, sizeof(ttl));
+                if (ttl < 0 || ttl > 255)
+                    return -WOLFIP_EINVAL;
+                ttl8 = (uint8_t)ttl;
+            } else {
+                memcpy(&ttl8, optval, sizeof(ttl8));
+            }
+            ts->sock.udp.mcast_ttl = ttl8;
+            return 0;
+        }
+        if (optname == WOLFIP_IP_MULTICAST_LOOP) {
+            uint8_t loop8;
+            int loop;
+
+            if (!optval || optlen == 0)
+                return -WOLFIP_EINVAL;
+            if (optlen >= (socklen_t)sizeof(int)) {
+                memcpy(&loop, optval, sizeof(loop));
+                loop8 = loop ? 1U : 0U;
+            } else {
+                memcpy(&loop8, optval, sizeof(loop8));
+                loop8 = loop8 ? 1U : 0U;
+            }
+            ts->sock.udp.mcast_loop = loop8;
+            return 0;
+        }
+    }
+#endif
     return 0;
 }
 
@@ -6024,6 +6481,37 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         }
         return 0;
     }
+#ifdef IP_MULTICAST
+    if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
+        if (optname == WOLFIP_IP_MULTICAST_TTL ||
+                optname == WOLFIP_IP_MULTICAST_LOOP) {
+            int value;
+
+            if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
+                return -WOLFIP_EINVAL;
+            value = (optname == WOLFIP_IP_MULTICAST_TTL) ?
+                ts->sock.udp.mcast_ttl : ts->sock.udp.mcast_loop;
+            memcpy(optval, &value, sizeof(value));
+            *optlen = sizeof(value);
+            return 0;
+        }
+        if (optname == WOLFIP_IP_MULTICAST_IF) {
+            struct wolfIP_mreq_addr addr;
+            struct ipconf *conf;
+            unsigned int if_idx;
+
+            if (!optval || !optlen || *optlen < (socklen_t)sizeof(addr))
+                return -WOLFIP_EINVAL;
+            if_idx = ts->sock.udp.mcast_if_set ?
+                ts->sock.udp.mcast_if_idx : wolfIP_socket_if_idx(ts);
+            conf = wolfIP_ipconf_at(s, if_idx);
+            addr.s_addr = ee32(conf ? conf->ip : IPADDR_ANY);
+            memcpy(optval, &addr, sizeof(addr));
+            *optlen = sizeof(addr);
+            return 0;
+        }
+    }
+#endif
     return 0;
 }
 int wolfIP_sock_close(struct wolfIP *s, int sockfd)
@@ -7876,6 +8364,11 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         else if (dispatch_ip->proto == 0x01) {
             icmp_input(s, if_idx, dispatch_ip, dispatch_len);
         }
+#ifdef IP_MULTICAST
+        else if (dispatch_ip->proto == WI_IPPROTO_IGMP) {
+            igmp_input(s, if_idx, dispatch_ip, dispatch_len);
+        }
+#endif
     #ifdef DEBUG_IP
         else {
             LOG("info: dropping ip packet: 0x%02x\n", dispatch_ip->proto);
@@ -7915,8 +8408,19 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
 #endif
     if (eth->type == ee16(ETH_TYPE_IP)) {
         struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)eth;
-        if ((memcmp(eth->dst, ll->mac, 6) != 0) && (memcmp(eth->dst, "\xff\xff\xff\xff\xff\xff", 6) != 0)) {
+        if ((memcmp(eth->dst, ll->mac, 6) != 0) &&
+                (memcmp(eth->dst, "\xff\xff\xff\xff\xff\xff", 6) != 0)) {
+#ifdef IP_MULTICAST
+            ip4 dst_ip = ee32(ip->dst);
+            if (!eth_is_ipv4_multicast_mac(eth->dst) ||
+                    !wolfIP_ip_is_multicast(dst_ip) ||
+                    (!mcast_is_joined(s, if_idx, dst_ip) &&
+                     dst_ip != IGMPV3_REPORT_DST && dst_ip != IGMP_ALL_HOSTS)) {
+                return; /* Not for us */
+            }
+#else
             return; /* Not for us */
+#endif
         }
         ip_recv(s, if_idx, ip, len);
     } else if (eth->type == ee16(ETH_TYPE_ARP)) {
@@ -8702,6 +9206,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
+#ifdef IP_MULTICAST
+                if (wolfIP_ip_is_multicast(t->remote_ip)) {
+                    mcast_ip_to_eth(t->remote_ip, t->nexthop_mac);
+                } else
+#endif
                 if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
                             (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
                     /* Send ARP request */
@@ -8714,6 +9223,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 #endif
             len = desc->len - ETH_HEADER_LEN;
             ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, WI_IPPROTO_UDP, len);
+#ifdef IP_MULTICAST
+            if (wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop) {
+                udp_try_recv(s, tx_if, udp, desc->len);
+            }
+#endif
             if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, t->S, tx_if, udp, desc->len) != 0)
                 break;
             if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &udp->ip, desc->len) != 0)

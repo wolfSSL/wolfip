@@ -17,6 +17,7 @@ configured to forward traffic between multiple network interfaces.
   - Pre-allocated buffers for packet processing in static memory
 - Multi-interface support
 - Optional IPv4-forwarding
+- Optional IPv4 UDP multicast with IGMPv3 ASM membership reports
 
 ## Supported socket types
 
@@ -39,8 +40,9 @@ wolfIP exposes a BSD-like `socket(2)` API for IPv4 sockets:
 | **Network** | IPv4 | Datagram delivery, TTL handling | [RFC 791](https://datatracker.ietf.org/doc/html/rfc791) |
 | **Network** | IPv4 Forwarding | Multi-interface routing (optional) | [RFC 1812](https://datatracker.ietf.org/doc/html/rfc1812) |
 | **Network** | ICMP | Echo request/reply, TTL exceeded | [RFC 792](https://datatracker.ietf.org/doc/html/rfc792) |
+| **Network** | IGMPv3 | ASM membership reports for IPv4 multicast (optional) | [RFC 3376](https://datatracker.ietf.org/doc/html/rfc3376) |
 | **Network** | IPsec | ESP Transport mode | [RFC 4303](https://datatracker.ietf.org/doc/html/rfc4303) |
-| **Transport** | UDP | Unicast datagrams, checksum | [RFC 768](https://datatracker.ietf.org/doc/html/rfc768) |
+| **Transport** | UDP | Unicast datagrams, checksum, optional IPv4 multicast | [RFC 768](https://datatracker.ietf.org/doc/html/rfc768) |
 | **Transport** | TCP | Connection management, reliable delivery | [RFC 793](https://datatracker.ietf.org/doc/html/rfc793), [RFC 9293](https://datatracker.ietf.org/doc/html/rfc9293) |
 | **Transport** | TCP | Maximum Segment Size negotiation | [RFC 793](https://datatracker.ietf.org/doc/html/rfc793) |
 | **Transport** | TCP | TCP Timestamps, RTT measurement, PAWS, Window Scaling | [RFC 7323](https://datatracker.ietf.org/doc/html/rfc7323) |
@@ -138,6 +140,32 @@ sudo LD_PRELOAD=$PWD/libwolfip.so ping -I wtcp0 -c5 10.10.10.1
 The `-I wtcp0` flag pins the test to the injected interface and `-c5`
 generates five echo requests.  Successful replies confirm the ICMP
 datagram socket support end-to-end through the tap device.
+
+## Optional UDP Multicast
+
+IPv4 UDP multicast is compiled out by default. Define `IP_MULTICAST` to enable
+BSD-style multicast socket options and IGMPv3 ASM membership reports:
+
+- `WOLFIP_IP_ADD_MEMBERSHIP`
+- `WOLFIP_IP_DROP_MEMBERSHIP`
+- `WOLFIP_IP_MULTICAST_IF`
+- `WOLFIP_IP_MULTICAST_TTL`
+- `WOLFIP_IP_MULTICAST_LOOP`
+
+The implementation supports any-source multicast joins and leaves. Source
+filter APIs such as `MCAST_JOIN_SOURCE_GROUP` are not implemented.
+
+```sh
+make unit-multicast
+./build/test/unit
+
+make build/test-multicast-interop
+sudo ./build/test-multicast-interop
+```
+
+The multicast interop test creates a Linux TAP interface (`wmcast0`) and
+validates both directions: Linux sending to a wolfIP multicast receiver, and
+wolfIP sending to a Linux multicast receiver.
 
 ## FreeRTOS Port
 

@@ -16,7 +16,7 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
   - ICMP (RFC 792) - ping replies only
   - DHCP (RFC 2131) - client only
   - DNS (RFC 1035) - client only
-  - UDP (RFC 768) - unicast only
+  - UDP (RFC 768) - unicast, optional IPv4 multicast with `IP_MULTICAST`
   - TCP (RFC 793) with options (Timestamps, MSS)
 
 ## Core Data Structures
