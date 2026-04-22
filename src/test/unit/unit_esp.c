@@ -937,13 +937,7 @@ static void do_roundtrip_cbc_hmac(uint8_t *enc_key, uint8_t enc_key_len,
     /* --- Wrap --- */
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
-    /* esp_send normally fixes these up; we must do it manually. */
     frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto   = 0x32U; /* IP proto = ESP */
-    ip->len     = ee16(ip_len);
-    ip->csum    = 0U;
-    iphdr_set_checksum(ip);
 
     /* --- Unwrap --- */
     ret = esp_transport_unwrap(ip, &frame_len);
@@ -1047,12 +1041,7 @@ START_TEST(test_roundtrip_des3_sha256)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len   = ee16(ip_len);
-    ip->csum  = 0U;
-    iphdr_set_checksum(ip);
 
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, 0);
@@ -1099,12 +1088,7 @@ START_TEST(test_roundtrip_aes_gcm_rfc4106)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len   = ee16(ip_len);
-    ip->csum  = 0U;
-    iphdr_set_checksum(ip);
 
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, 0);
@@ -1149,12 +1133,7 @@ START_TEST(test_roundtrip_aes_gmac_rfc4543)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len   = ee16(ip_len);
-    ip->csum  = 0U;
-    iphdr_set_checksum(ip);
 
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, 0);
@@ -1204,12 +1183,7 @@ static void do_icv_tamper(void)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len   = ee16(ip_len);
-    ip->csum  = 0U;
-    iphdr_set_checksum(ip);
 
     /* esp_len = ip_len - IP_HEADER_LEN.  The ICV occupies the last
      * ESP_ICVLEN_HMAC_128 (16) bytes of ip->data[0..esp_len-1]. */
@@ -1264,12 +1238,7 @@ START_TEST(test_ciphertext_tamper_cbc_sha256)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len   = ee16(ip_len);
-    ip->csum  = 0U;
-    iphdr_set_checksum(ip);
 
     ip->data[ct_offset] ^= 0x01U; /* single bit flip in ciphertext */
 
@@ -1364,12 +1333,7 @@ START_TEST(test_ip_recv_esp_transport_delivers_udp_payload)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len = ee16(ip_len);
-    ip->csum = 0U;
-    iphdr_set_checksum(ip);
 
     ip_recv(&s, 0, ip, frame_len);
 
@@ -1413,12 +1377,7 @@ START_TEST(test_ip_recv_esp_transport_unwrap_failure_drops_packet)
 
     ret = esp_transport_wrap(ip, &ip_len);
     ck_assert_int_eq(ret, 0);
-
     frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
-    ip->proto = 0x32U;
-    ip->len = ee16(ip_len);
-    ip->csum = 0U;
-    iphdr_set_checksum(ip);
 
     esp_len = frame_len - ETH_HEADER_LEN - IP_HEADER_LEN;
     ip->data[esp_len - 1U] ^= 0xFFU;

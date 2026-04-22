@@ -532,6 +532,80 @@ int main(int argc, char **argv)
         }
     }
 
+    if (!disable_ipsec) {
+        switch (mode) {
+        case 0:
+        #if defined(WOLFSSL_AESGCM_STREAM)
+            err = wolfIP_esp_sa_new_gcm(1, in_sa_gcm, atoip4(HOST_STACK_IP),
+                                        atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4106,
+                                        in_enc_key, sizeof(in_enc_key));
+            if (err) { return err; }
+
+            err = wolfIP_esp_sa_new_gcm(0, out_sa_gcm, atoip4(WOLFIP_IP),
+                                        atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4106,
+                                        out_enc_key, sizeof(out_enc_key));
+            if (err) { return err; }
+        #else
+            printf("error: gcm stream not built in\n");
+            err = -1;
+        #endif /* WOLFSSL_AESGCM_STREAM */
+            break;
+        case 1:
+            err = wolfIP_esp_sa_new_cbc_hmac(1, in_sa_cbc, atoip4(HOST_STACK_IP),
+                                             atoip4(WOLFIP_IP),
+                                             in_enc_key, sizeof(in_enc_key) - 4,
+                                             ESP_AUTH_SHA256_RFC4868,
+                                             in_auth_key, sizeof(in_auth_key),
+                                             ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
+
+            err = wolfIP_esp_sa_new_cbc_hmac(0, out_sa_cbc, atoip4(WOLFIP_IP),
+                                             atoip4(HOST_STACK_IP),
+                                             out_enc_key, sizeof(out_enc_key) - 4,
+                                             ESP_AUTH_SHA256_RFC4868,
+                                             out_auth_key, sizeof(out_auth_key),
+                                             ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
+            break;
+        case 2:
+        #ifndef NO_DES3
+            err = wolfIP_esp_sa_new_des3_hmac(1, in_sa_des3, atoip4(HOST_STACK_IP),
+                                              atoip4(WOLFIP_IP),
+                                              in_enc_key, ESP_AUTH_SHA256_RFC4868,
+                                              in_auth_key, sizeof(in_auth_key),
+                                              ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
+
+            err = wolfIP_esp_sa_new_des3_hmac(0, out_sa_des3, atoip4(WOLFIP_IP),
+                                              atoip4(HOST_STACK_IP),
+                                              out_enc_key, ESP_AUTH_SHA256_RFC4868,
+                                              out_auth_key, sizeof(out_auth_key),
+                                              ESP_ICVLEN_HMAC_128);
+            if (err) { return err; }
+        #else
+            printf("error: des3 not built in\n");
+            err = -1;
+        #endif /* !NO_DES3 */
+            break;
+        case 3:
+            err = wolfIP_esp_sa_new_gcm(1, in_sa_gmac, atoip4(HOST_STACK_IP),
+                                        atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4543,
+                                        in_enc_key, sizeof(in_enc_key));
+            if (err) { return err; }
+
+            err = wolfIP_esp_sa_new_gcm(0, out_sa_gmac, atoip4(WOLFIP_IP),
+                                        atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4543,
+                                        out_enc_key, sizeof(out_enc_key));
+            if (err) { return err; }
+            break;
+
+        default:
+            break;
+        }
+    }
+    if (err) { return err; }
+
+    /* init wolfip now. */
     wolfIP_init_static(&s);
     tapdev = wolfIP_getdev(s);
     if (!tapdev) {
@@ -559,72 +633,6 @@ int main(int argc, char **argv)
             atoip4(HOST_STACK_IP));
     printf("IP: manually configured\n");
     inet_pton(AF_INET, WOLFIP_IP, &srv_ip);
-
-    if (!disable_ipsec) {
-        switch (mode) {
-        #if defined(WOLFSSL_AESGCM_STREAM)
-        case 0:
-            err = wolfIP_esp_sa_new_gcm(1, in_sa_gcm, atoip4(HOST_STACK_IP),
-                                        atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4106,
-                                        in_enc_key, sizeof(in_enc_key));
-            if (err) { return err; }
-
-            err = wolfIP_esp_sa_new_gcm(0, out_sa_gcm, atoip4(WOLFIP_IP),
-                                        atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4106,
-                                        out_enc_key, sizeof(out_enc_key));
-            if (err) { return err; }
-            break;
-        #endif /* WOLFSSL_AESGCM_STREAM */
-        case 1:
-            err = wolfIP_esp_sa_new_cbc_hmac(1, in_sa_cbc, atoip4(HOST_STACK_IP),
-                                             atoip4(WOLFIP_IP),
-                                             in_enc_key, sizeof(in_enc_key) - 4,
-                                             ESP_AUTH_SHA256_RFC4868,
-                                             in_auth_key, sizeof(in_auth_key),
-                                             ESP_ICVLEN_HMAC_128);
-            if (err) { return err; }
-
-            err = wolfIP_esp_sa_new_cbc_hmac(0, out_sa_cbc, atoip4(WOLFIP_IP),
-                                             atoip4(HOST_STACK_IP),
-                                             out_enc_key, sizeof(out_enc_key) - 4,
-                                             ESP_AUTH_SHA256_RFC4868,
-                                             out_auth_key, sizeof(out_auth_key),
-                                             ESP_ICVLEN_HMAC_128);
-            if (err) { return err; }
-            break;
-        #ifndef NO_DES3
-        case 2:
-            err = wolfIP_esp_sa_new_des3_hmac(1, in_sa_des3, atoip4(HOST_STACK_IP),
-                                              atoip4(WOLFIP_IP),
-                                              in_enc_key, ESP_AUTH_SHA256_RFC4868,
-                                              in_auth_key, sizeof(in_auth_key),
-                                              ESP_ICVLEN_HMAC_128);
-            if (err) { return err; }
-
-            err = wolfIP_esp_sa_new_des3_hmac(0, out_sa_des3, atoip4(WOLFIP_IP),
-                                              atoip4(HOST_STACK_IP),
-                                              out_enc_key, ESP_AUTH_SHA256_RFC4868,
-                                              out_auth_key, sizeof(out_auth_key),
-                                              ESP_ICVLEN_HMAC_128);
-            if (err) { return err; }
-            break;
-        #endif /* !NO_DES3 */
-        case 3:
-            err = wolfIP_esp_sa_new_gcm(1, in_sa_gmac, atoip4(HOST_STACK_IP),
-                                        atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4543,
-                                        in_enc_key, sizeof(in_enc_key));
-            if (err) { return err; }
-
-            err = wolfIP_esp_sa_new_gcm(0, out_sa_gmac, atoip4(WOLFIP_IP),
-                                        atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4543,
-                                        out_enc_key, sizeof(out_enc_key));
-            if (err) { return err; }
-            break;
-
-        default:
-            break;
-        }
-    }
 
     /* Server side test */
     test_wolfip_echoserver(s, srv_ip);

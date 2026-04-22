@@ -4,7 +4,8 @@ CFLAGS+=-g -ggdb -Wdeclaration-after-statement
 EXTRA_CFLAGS?=
 CFLAGS+=$(EXTRA_CFLAGS)
 LDFLAGS+=-pthread
-# additional debug flags:
+# debug flags:
+#   CFLAGS+=-DDEBUG
 #   CFLAGS+=-DDEBUG_TAP
 #   CFLAGS+=-DDEBUG_ETH
 #   CFLAGS+=-DDEBUG_IP

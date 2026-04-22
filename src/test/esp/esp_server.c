@@ -80,8 +80,8 @@ int main(int argc, char * argv[])
         }
 
         switch (esp_mode) {
-        #if defined(WOLFSSL_AESGCM_STREAM)
         case 0:
+        #if defined(WOLFSSL_AESGCM_STREAM)
             err = wolfIP_esp_sa_new_gcm(1, in_sa_gcm, atoip4(HOST_STACK_IP),
                                         atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4106,
                                         in_enc_key, sizeof(in_enc_key));
@@ -91,8 +91,11 @@ int main(int argc, char * argv[])
                                         atoip4(HOST_STACK_IP), ESP_ENC_GCM_RFC4106,
                                         out_enc_key, sizeof(out_enc_key));
             if (err) { return err; }
-            break;
+        #else
+            printf("error: gcm stream not built in\n");
+            err = -1;
         #endif /* WOLFSSL_AESGCM_STREAM */
+            break;
         case 1:
             err = wolfIP_esp_sa_new_cbc_hmac(1, in_sa_cbc, atoip4(HOST_STACK_IP),
                                              atoip4(WOLFIP_IP),
@@ -110,8 +113,8 @@ int main(int argc, char * argv[])
                                              ESP_ICVLEN_HMAC_128);
             if (err) { return err; }
             break;
-        #ifndef NO_DES3
         case 2:
+        #ifndef NO_DES3
             err = wolfIP_esp_sa_new_des3_hmac(1, in_sa_des3, atoip4(HOST_STACK_IP),
                                               atoip4(WOLFIP_IP),
                                               in_enc_key, ESP_AUTH_SHA256_RFC4868,
@@ -125,8 +128,11 @@ int main(int argc, char * argv[])
                                               out_auth_key, sizeof(out_auth_key),
                                               ESP_ICVLEN_HMAC_128);
             if (err) { return err; }
-            break;
+        #else
+            printf("error: des3 not built in\n");
+            err = -1;
         #endif /* !NO_DES3 */
+            break;
         case 3:
             err = wolfIP_esp_sa_new_gcm(1, in_sa_gmac, atoip4(HOST_STACK_IP),
                                         atoip4(WOLFIP_IP), ESP_ENC_GCM_RFC4543,
@@ -143,6 +149,7 @@ int main(int argc, char * argv[])
             break;
         }
     }
+    if (err) { return err; }
 
     // Create a socket
     if ((server_fd = socket(AF_INET, type, 0)) < 0) {
