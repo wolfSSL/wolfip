@@ -471,4 +471,104 @@ START_TEST(test_multicast_recv_rejects_short_frame)
 }
 END_TEST
 
+START_TEST(test_multicast_setsockopt_accepts_unaligned_mreq)
+{
+    struct wolfIP s;
+    int sd;
+    /* 1 byte of padding before the mreq so the struct lands at odd alignment
+     * even on strict-alignment toolchains. A direct (const struct *)cast on
+     * this pointer would be an unaligned uint32_t load; UBSAN
+     * -fsanitize=alignment flags that as undefined behaviour. */
+    uint8_t raw[1 + sizeof(struct wolfIP_ip_mreq)];
+    struct wolfIP_ip_mreq mreq_native;
+    uint8_t raw_if[1 + sizeof(struct wolfIP_mreq_addr)];
+    struct wolfIP_mreq_addr if_native;
+    ip4 group = 0xE9010209U;
+    ip4 iface_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, iface_ip, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    /* IP_ADD_MEMBERSHIP via a misaligned mreq. */
+    multicast_mreq(&mreq_native, group, IPADDR_ANY);
+    memset(raw, 0, sizeof(raw));
+    memcpy(raw + 1, &mreq_native, sizeof(mreq_native));
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, raw + 1,
+            (socklen_t)sizeof(mreq_native)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 1);
+
+    /* IP_DROP_MEMBERSHIP via a misaligned mreq. */
+    memset(raw, 0, sizeof(raw));
+    memcpy(raw + 1, &mreq_native, sizeof(mreq_native));
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_DROP_MEMBERSHIP, raw + 1,
+            (socklen_t)sizeof(mreq_native)), 0);
+    ck_assert_uint_eq(s.mcast[0].refs, 0);
+
+    /* IP_MULTICAST_IF via a misaligned wolfIP_mreq_addr. */
+    if_native.s_addr = ee32(iface_ip);
+    memset(raw_if, 0, sizeof(raw_if));
+    memcpy(raw_if + 1, &if_native, sizeof(if_native));
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_IF, raw_if + 1,
+            (socklen_t)sizeof(if_native)), 0);
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(sd)].sock.udp.mcast_if_set, 1);
+}
+END_TEST
+
+START_TEST(test_multicast_getsockopt_ttl_loop_accepts_uint8)
+{
+    struct wolfIP s;
+    int sd;
+    int ttl_in = 7;
+    int loop_in = 0;
+    uint8_t byte_buf;
+    int int_buf;
+    socklen_t len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &ttl_in, sizeof(ttl_in)), 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &loop_in, sizeof(loop_in)), 0);
+
+    /* getsockopt with a uint8_t buffer must succeed and write one byte,
+     * mirroring setsockopt which already accepts either size. */
+    byte_buf = 0xff;
+    len = sizeof(byte_buf);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &byte_buf, &len), 0);
+    ck_assert_uint_eq(len, sizeof(byte_buf));
+    ck_assert_uint_eq(byte_buf, 7U);
+
+    byte_buf = 0xff;
+    len = sizeof(byte_buf);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_LOOP, &byte_buf, &len), 0);
+    ck_assert_uint_eq(len, sizeof(byte_buf));
+    ck_assert_uint_eq(byte_buf, 0U);
+
+    /* The larger int path still works and returns sizeof(int). */
+    int_buf = -1;
+    len = sizeof(int_buf);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &int_buf, &len), 0);
+    ck_assert_uint_eq(len, sizeof(int_buf));
+    ck_assert_int_eq(int_buf, 7);
+
+    /* Zero-length buffer is still rejected. */
+    len = 0;
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_MULTICAST_TTL, &byte_buf, &len), -WOLFIP_EINVAL);
+}
+END_TEST
+
 #endif /* IP_MULTICAST */

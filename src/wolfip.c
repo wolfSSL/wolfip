@@ -6329,17 +6329,20 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
         if (optname == WOLFIP_IP_ADD_MEMBERSHIP ||
                 optname == WOLFIP_IP_DROP_MEMBERSHIP) {
-            const struct wolfIP_ip_mreq *mreq =
-                (const struct wolfIP_ip_mreq *)optval;
+            struct wolfIP_ip_mreq mreq;
             unsigned int if_idx;
             ip4 group;
             ip4 if_addr;
             int ret;
 
-            if (!mreq || optlen < (socklen_t)sizeof(*mreq))
+            /* Copy into an aligned local to avoid unaligned 32-bit loads on
+             * strict-alignment targets when the caller's optval buffer is
+             * not naturally aligned. */
+            if (!optval || optlen < (socklen_t)sizeof(mreq))
                 return -WOLFIP_EINVAL;
-            group = ee32(mreq->imr_multiaddr.s_addr);
-            if_addr = ee32(mreq->imr_interface.s_addr);
+            memcpy(&mreq, optval, sizeof(mreq));
+            group = ee32(mreq.imr_multiaddr.s_addr);
+            if_addr = ee32(mreq.imr_interface.s_addr);
             ret = mcast_if_from_addr(s, if_addr, group, &if_idx);
             if (ret < 0)
                 return ret;
@@ -6348,15 +6351,15 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
             return udp_mcast_drop(s, ts, group, if_idx);
         }
         if (optname == WOLFIP_IP_MULTICAST_IF) {
-            const struct wolfIP_mreq_addr *addr =
-                (const struct wolfIP_mreq_addr *)optval;
+            struct wolfIP_mreq_addr addr;
             unsigned int if_idx;
             ip4 if_addr;
             int ret;
 
-            if (!addr || optlen < (socklen_t)sizeof(*addr))
+            if (!optval || optlen < (socklen_t)sizeof(addr))
                 return -WOLFIP_EINVAL;
-            if_addr = ee32(addr->s_addr);
+            memcpy(&addr, optval, sizeof(addr));
+            if_addr = ee32(addr.s_addr);
             /* Linux IP_MULTICAST_IF with INADDR_ANY clears the pinned
              * interface and reverts to per-destination routing. */
             if (if_addr == IPADDR_ANY) {
@@ -6499,12 +6502,22 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
                 optname == WOLFIP_IP_MULTICAST_LOOP) {
             int value;
 
-            if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
+            if (!optval || !optlen || *optlen < (socklen_t)sizeof(uint8_t))
                 return -WOLFIP_EINVAL;
             value = (optname == WOLFIP_IP_MULTICAST_TTL) ?
                 ts->sock.udp.mcast_ttl : ts->sock.udp.mcast_loop;
-            memcpy(optval, &value, sizeof(value));
-            *optlen = sizeof(value);
+            /* Linux get_ip_sockopt writes IP_MULTICAST_TTL/LOOP as int when
+             * the caller provided room for one and as a single byte when the
+             * buffer is exactly sizeof(uint8_t) — keeps get/set symmetric
+             * with setsockopt, which accepts either width. */
+            if (*optlen >= (socklen_t)sizeof(value)) {
+                memcpy(optval, &value, sizeof(value));
+                *optlen = sizeof(value);
+            } else {
+                uint8_t value8 = (uint8_t)value;
+                memcpy(optval, &value8, sizeof(value8));
+                *optlen = sizeof(value8);
+            }
             return 0;
         }
         if (optname == WOLFIP_IP_MULTICAST_IF) {
