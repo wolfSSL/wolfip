@@ -2541,11 +2541,19 @@ struct tcp_parsed_opts {
     uint32_t ts_val, ts_ecr;
 };
 
+/* RFC 9293 3.1: the low nibble of the Data Offset byte is Rsrvd and MUST be
+ * ignored by receivers. Mask it off before translating the 4-bit word count
+ * into bytes. */
+static inline uint32_t tcp_data_offset_bytes(uint8_t hlen)
+{
+    return (uint32_t)((hlen & 0xF0U) >> 2);
+}
+
 static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
         struct tcp_parsed_opts *po)
 {
     const uint8_t *opt = tcp->data;
-    int claimed_opt_len = (tcp->hlen >> 2) - TCP_HEADER_LEN;
+    int claimed_opt_len = (int)tcp_data_offset_bytes(tcp->hlen) - TCP_HEADER_LEN;
     int available_bytes = (int)frame_len - (int)sizeof(struct wolfIP_tcp_seg);
     int opt_len;
     const uint8_t *opt_end;
@@ -2966,7 +2974,7 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
         return;
 
     ip_len = ee16(in->ip.len);
-    tcp_hlen = (uint32_t)(in->hlen >> 2);
+    tcp_hlen = tcp_data_offset_bytes(in->hlen);
     if (tcp_hlen < TCP_HEADER_LEN)
         return;
     if (ip_len < (uint16_t)(IP_HEADER_LEN + tcp_hlen))
@@ -4035,7 +4043,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     }
 
     tcp_process_sack(t, tcp,
-            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + (tcp->hlen >> 2)));
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen)));
     desc = fifo_peek(&t->sock.tcp.txbuf);
     while ((desc) && (desc->flags & PKT_FLAG_SENT)) {
         struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
@@ -4123,7 +4131,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     if (ack_count > 0) {
         struct pkt_desc *fresh_desc = NULL;
         uint32_t ack_ip_len = ee16(tcp->ip.len);
-        uint32_t ack_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
+        uint32_t ack_hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
         uint32_t ack_frame_len = 0;
         /* This ACK ackwnowledged some data. */
         desc = fifo_peek(&t->sock.tcp.txbuf);
@@ -4304,14 +4312,14 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             t->if_idx = (uint8_t)if_idx;
             matched = 1;
             /* Validate minimum TCP header length (data offset). */
-            if ((tcp->hlen >> 2) < TCP_HEADER_LEN) {
+            if (tcp_data_offset_bytes(tcp->hlen) < TCP_HEADER_LEN) {
                 return; /* malformed: TCP header below minimum length */
             }
             /* Validate TCP header length fits in IP payload */
-            if (iplen < (uint32_t)(IP_HEADER_LEN + (tcp->hlen >> 2))) {
+            if (iplen < (uint32_t)(IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen))) {
                 return; /* malformed: TCP header exceeds IP length */
             }
-            tcplen = iplen - (IP_HEADER_LEN + (tcp->hlen >> 2));
+            tcplen = iplen - (IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen));
             if (t->sock.tcp.state == TCP_LISTEN) {
                 /* RFC 9293 3.10.7.2: reject ACK-bearing segments before SYN handling. */
                 if (tcp->flags & TCP_FLAG_RST)
