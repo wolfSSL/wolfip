@@ -625,6 +625,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);
     tcase_add_test(tc_utils, test_tcp_input_syn_with_sack_option_enables_sack);
     tcase_add_test(tc_utils, test_tcp_input_ignores_reserved_bits_in_hlen);
+    tcase_add_test(tc_utils, test_tcp_recv_ignores_reserved_bits_in_hlen);
     tcase_add_test(tc_utils, test_tcp_input_syn_with_sack_option_respects_local_sack_offer);
     tcase_add_test(tc_utils, test_tcp_input_iplen_too_big);
     tcase_add_test(tc_utils, test_tcp_checksum_valid_passes);

@@ -3065,6 +3065,49 @@ START_TEST(test_tcp_recv_queues_payload_and_advances_ack)
 }
 END_TEST
 
+START_TEST(test_tcp_recv_ignores_reserved_bits_in_hlen)
+{
+    /* RFC 9293 3.1: the low nibble of the Data Offset byte is Rsrvd and MUST
+     * be ignored. tcp_recv must therefore base its payload pointer and length
+     * on the masked (high-nibble) header length, otherwise a peer that sets
+     * reserved bits would have its delivered bytes shifted by 4*Rsrvd octets. */
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[8] = { 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h' };
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + sizeof(payload)];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    uint32_t seq = 50;
+    uint8_t out[sizeof(payload) + 4];
+    int ret;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = seq;
+    ts->sock.tcp.bytes_in_flight = 1;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, seq);
+
+    memset(seg, 0, sizeof(seg_buf));
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + sizeof(payload));
+    /* No options (hdr is the bare 20 bytes), but flip every reserved bit on. */
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN << 2) | 0x0F);
+    seg->seq = ee32(seq);
+    seg->flags = (TCP_FLAG_ACK | TCP_FLAG_PSH);
+    memcpy(seg->data, payload, sizeof(payload));
+
+    tcp_recv(ts, seg);
+
+    ck_assert_uint_eq(ts->sock.tcp.ack, seq + sizeof(payload));
+    memset(out, 0, sizeof(out));
+    ret = queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out));
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(out, payload, sizeof(payload));
+}
+END_TEST
+
 START_TEST(test_tcp_recv_wrong_state_does_nothing)
 {
     struct wolfIP s;
