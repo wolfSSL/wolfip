@@ -2320,8 +2320,8 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
                 next_hop_mtu = ee16(next_hop_mtu);
                 /* RFC 879 / RFC 9293 §3.7.1: IPv4 default MSS is 536; ignore
                  * any PTB whose next-hop MTU cannot accommodate it.  Rejecting
-                 * (rather than clamping) prevents a spoofed ICMP from dragging
-                 * a SYN-negotiated peer_mss down to 536. */
+                 * (rather than clamping) sub-576 MTUs prevents a spoofed ICMP
+                 * from dragging a SYN-negotiated peer_mss below 536. */
                 if (next_hop_mtu >= (IP_HEADER_LEN + TCP_HEADER_LEN + TCP_DEFAULT_MSS)) {
                     uint16_t new_mss =
                         (uint16_t)(next_hop_mtu - (IP_HEADER_LEN + TCP_HEADER_LEN));
@@ -3465,9 +3465,12 @@ static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
 /* Add a segment to the rx buffer for the application to consume */
 static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
 {
-    uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+    /* RFC 9293 3.1: mask the reserved nibble before deriving header length so a
+     * peer that sets reserved bits cannot shift our payload pointer/length. */
+    uint32_t hdr_len = tcp_data_offset_bytes(seg->hlen);
+    uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + hdr_len);
     uint32_t seq = ee32(seg->seq);
-    const uint8_t *payload = (uint8_t *)seg->ip.data + (seg->hlen >> 2);
+    const uint8_t *payload = (uint8_t *)seg->ip.data + hdr_len;
     if ((t->sock.tcp.state != TCP_ESTABLISHED) &&
         (t->sock.tcp.state != TCP_CLOSE_WAIT) &&
         (t->sock.tcp.state != TCP_FIN_WAIT_1) &&
