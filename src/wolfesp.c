@@ -817,6 +817,13 @@ esp_des3_rfc2451_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     enc_payload = esp_enc_payload(esp_data, iv_len);
     iv = esp_enc_iv(esp_data);
 
+    /* Generate random iv block for cbc method. */
+    ret = wc_RNG_GenerateBlock(&wc_rng, iv, iv_len);
+    if (ret) {
+        ESP_LOG("error: wc_RNG_GenerateBlock: %d\n", ret);
+        goto des3_enc_out;
+    }
+
     ret = wc_Des3Init(&des3_enc, NULL, INVALID_DEVID);
     if (ret != 0) {
         ESP_LOG("error: wc_Des3Init: %d\n", ret);
