@@ -8129,7 +8129,12 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
                 if (idx >= 0) {
                     if (memcmp(s->arp.neighbors[idx].mac, sender_mac, 6) == 0)
                         s->arp.neighbors[idx].ts = s->last_tick;
-                } else {
+                } else if (arp_pending_match_and_clear(s, if_idx, sip)) {
+                    /* Only learn from an unsolicited request when we have an
+                     * outstanding ARP request for this peer; otherwise a
+                     * same-LAN attacker can flood requests from distinct
+                     * sender IP/MAC pairs to exhaust the neighbor table and
+                     * lock out legitimate replies until ARP_AGING_TIMEOUT_MS. */
                     arp_store_neighbor(s, if_idx, sip, sender_mac);
                 }
             }

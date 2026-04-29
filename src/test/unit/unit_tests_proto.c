@@ -2673,6 +2673,11 @@ START_TEST(test_arp_request_handling) {
     memcpy(arp_req.sma, req_mac, 6);
     arp_req.tip = ee32(device_ip);
 
+    /* Model a solicited learn: stack has an outstanding ARP request for
+     * req_ip, so the request handler is allowed to populate the cache. */
+    s.last_tick = 1000;
+    arp_pending_record(&s, TEST_PRIMARY_IF, req_ip);
+
     /* Call arp_recv with the ARP request */
     arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
     wolfIP_poll(&s, 1000);

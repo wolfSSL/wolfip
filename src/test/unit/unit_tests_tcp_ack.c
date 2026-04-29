@@ -2235,6 +2235,9 @@ START_TEST(test_arp_recv_request_does_not_store_self_neighbor)
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_mask(0);
 
+    s.last_tick = 1000;
+    arp_pending_record(&s, TEST_PRIMARY_IF, sender_ip);
+
     memset(&arp_req, 0, sizeof(arp_req));
     arp_req.htype = ee16(1);
     arp_req.ptype = ee16(0x0800);
@@ -2261,6 +2264,89 @@ START_TEST(test_arp_recv_request_does_not_store_self_neighbor)
 
     ck_assert_int_eq(sender_count, 1);
     ck_assert_int_eq(self_count, 0);
+}
+END_TEST
+
+/* Regression: a same-LAN attacker that floods the ARP cache by sending
+ * MAX_NEIGHBORS ARP requests from distinct sender IP/MAC pairs targeting our
+ * IP must not lock out legitimate ARP replies for outstanding requests.
+ * arp_store_neighbor's silent-drop-when-full behaviour, combined with
+ * unconditional sender caching from the request branch of arp_recv, lets a
+ * flood deny resolution of any new peer until ARP_AGING_TIMEOUT_MS elapses. */
+START_TEST(test_arp_request_flood_does_not_lock_out_legit_reply)
+{
+    struct wolfIP s;
+    struct arp_packet arp_pkt;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    const ip4 our_ip = 0x0A000001U;
+    const ip4 legit_ip = 0x0A0000FEU;
+    const uint8_t legit_mac[6] = {0x02, 0xCA, 0xFE, 0xBA, 0xBE, 0x01};
+    uint8_t mac_out[6];
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, our_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+    s.last_tick = 1000;
+
+    /* Attacker floods MAX_NEIGHBORS ARP requests from distinct sender
+     * IP/MAC pairs, all targeting our IP. Each one passes the
+     * broadcast/multicast/zero/own-IP filter and so reaches
+     * arp_store_neighbor unconditionally. */
+    for (i = 0; i < MAX_NEIGHBORS; i++) {
+        uint8_t fake_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00,
+                               (uint8_t)(0x10 + i)};
+        ip4 fake_ip = (ip4)(0x0A000010U + (uint32_t)i);
+
+        memset(&arp_pkt, 0, sizeof(arp_pkt));
+        memcpy(arp_pkt.eth.dst, ll->mac, 6);
+        memcpy(arp_pkt.eth.src, fake_mac, 6);
+        arp_pkt.eth.type = ee16(ETH_TYPE_ARP);
+        arp_pkt.htype = ee16(1);
+        arp_pkt.ptype = ee16(0x0800);
+        arp_pkt.hlen = 6;
+        arp_pkt.plen = 4;
+        arp_pkt.opcode = ee16(ARP_REQUEST);
+        memcpy(arp_pkt.sma, fake_mac, 6);
+        arp_pkt.sip = ee32(fake_ip);
+        memset(arp_pkt.tma, 0, 6);
+        arp_pkt.tip = ee32(conf->ip);
+
+        s.last_tick += 1;
+        arp_recv(&s, TEST_PRIMARY_IF, &arp_pkt, sizeof(arp_pkt));
+    }
+
+    /* Stack issues a legitimate ARP request for legit_ip and then receives
+     * the matching reply. Caching this reply must succeed even with the
+     * neighbor table full of attacker-driven entries. */
+    s.last_tick += 1;
+    arp_pending_record(&s, TEST_PRIMARY_IF, legit_ip);
+
+    memset(&arp_pkt, 0, sizeof(arp_pkt));
+    memcpy(arp_pkt.eth.dst, ll->mac, 6);
+    memcpy(arp_pkt.eth.src, legit_mac, 6);
+    arp_pkt.eth.type = ee16(ETH_TYPE_ARP);
+    arp_pkt.htype = ee16(1);
+    arp_pkt.ptype = ee16(0x0800);
+    arp_pkt.hlen = 6;
+    arp_pkt.plen = 4;
+    arp_pkt.opcode = ee16(ARP_REPLY);
+    memcpy(arp_pkt.sma, legit_mac, 6);
+    arp_pkt.sip = ee32(legit_ip);
+    memcpy(arp_pkt.tma, ll->mac, 6);
+    arp_pkt.tip = ee32(conf->ip);
+
+    s.last_tick += 1;
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_pkt, sizeof(arp_pkt));
+
+    ck_assert_int_eq(arp_lookup(&s, TEST_PRIMARY_IF, legit_ip, mac_out), 0);
+    ck_assert_mem_eq(mac_out, legit_mac, 6);
 }
 END_TEST
 
@@ -2690,7 +2776,6 @@ START_TEST(test_arp_recv_filter_drop)
 
     arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));
     ck_assert_uint_eq(last_frame_sent_size, 0);
-    ck_assert_int_ne(s.arp.neighbors[0].ip, IPADDR_ANY);
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_eth_mask(0);
