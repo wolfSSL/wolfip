@@ -1634,6 +1634,14 @@ static inline int wolfIP_ip_is_multicast(ip4 addr)
     return ((addr & 0xF0000000U) == 0xE0000000U);
 }
 
+static uint32_t get_be32(const uint8_t *p)
+{
+    uint32_t be;
+
+    memcpy(&be, p, sizeof(be));
+    return ee32(be);
+}
+
 #ifdef IP_MULTICAST
 static uint16_t ip_checksum_buf(const void *buf, uint16_t len)
 {
@@ -1662,14 +1670,6 @@ static void put_be32(uint8_t *p, uint32_t v)
 {
     uint32_t be = ee32(v);
     memcpy(p, &be, sizeof(be));
-}
-
-static uint32_t get_be32(const uint8_t *p)
-{
-    uint32_t be;
-
-    memcpy(&be, p, sizeof(be));
-    return ee32(be);
 }
 
 static void mcast_ip_to_eth(ip4 group, uint8_t mac[6])
@@ -8919,10 +8919,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                         dns_abort_query(s);
                         return;
                     }
-                    ip = (buf[pos + 3] & 0xFF) |
-                            ((buf[pos + 2] & 0xFF) << 8) |
-                            ((buf[pos + 1] & 0xFF) << 16) |
-                            ((buf[pos + 0] & 0xFF) << 24);
+                    ip = get_be32((const uint8_t *)buf + pos);
                     if (s->dns_lookup_cb)
                         s->dns_lookup_cb(ip);
                     dns_abort_query(s);
