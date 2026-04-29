@@ -4804,6 +4804,14 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         tcp_send_ack(t);
                     }
                 }
+            } else if (t->sock.tcp.state == TCP_TIME_WAIT) {
+                /* RFC 9293 §3.10.7.4 step 9: in TIME-WAIT, the only legal
+                 * response to a peer segment (notably a retransmitted FIN
+                 * caused by our final ACK being lost) is to re-ACK so the
+                 * peer can complete its close. RST and SYN are filtered out
+                 * earlier in tcp_input. */
+                tcp_send_ack(t);
+                continue;
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
                 /* RFC 9293 s3.10.7.2: segment acceptability applies
                  * to all synchronized states including LAST_ACK. */

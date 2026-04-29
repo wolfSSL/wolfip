@@ -333,6 +333,80 @@ START_TEST(test_tcp_input_fin_wait_2_fin_payload_ack_mismatch_no_transition)
 }
 END_TEST
 
+START_TEST(test_tcp_input_time_wait_retransmitted_fin_acks)
+{
+    /* RFC 9293 §3.10.7.4 step 9: a TCP in TIME-WAIT must ACK retransmitted
+     * FINs from the peer (and restart the 2 MSL timer) so the peer can complete
+     * its close. wolfIP's tcp_input dispatch chain has no TIME_WAIT branch, so
+     * a matched-but-unhandled retransmitted FIN is silently dropped; leaving
+     * the peer to retransmit until its own retry limit and abort. This test
+     * pins the contract: a retransmitted FIN arriving in TIME_WAIT produces an
+     * outgoing ACK acknowledging the FIN. */
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg fin_retx;
+    struct wolfIP_tcp_seg *queued;
+    struct pkt_desc *desc;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_TIME_WAIT;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    /* Peer FIN had seq=100; we already advanced rcv_nxt past it. */
+    ts->sock.tcp.ack = 101;
+    ts->sock.tcp.seq = 200;
+    ts->sock.tcp.snd_una = 200;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+
+    memset(&fin_retx, 0, sizeof(fin_retx));
+    fin_retx.ip.ver_ihl = 0x45;
+    fin_retx.ip.ttl = 64;
+    fin_retx.ip.proto = WI_IPPROTO_TCP;
+    fin_retx.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    fin_retx.ip.src = ee32(remote_ip);
+    fin_retx.ip.dst = ee32(local_ip);
+    fin_retx.dst_port = ee16(ts->src_port);
+    fin_retx.src_port = ee16(ts->dst_port);
+    fin_retx.seq = ee32(100);
+    fin_retx.ack = ee32(ts->sock.tcp.seq);
+    fin_retx.hlen = TCP_HEADER_LEN << 2;
+    fin_retx.flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
+    fin_retx.win = ee16(65535);
+    fix_tcp_checksums(&fin_retx);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &fin_retx,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    /* Socket must remain in TIME_WAIT; only the close timer should govern
+     * its exit, never an unhandled retransmit. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+
+    /* An ACK must have been queued for transmission. tcp_send_ack pushes
+     * onto the socket's TX FIFO; the main loop drains it later, so we
+     * inspect the FIFO directly here. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    queued = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(queued->flags & TCP_FLAG_ACK, TCP_FLAG_ACK);
+    ck_assert_uint_eq(queued->flags & TCP_FLAG_RST, 0U);
+    ck_assert_uint_eq(ee32(queued->ack), ts->sock.tcp.ack);
+}
+END_TEST
+
 START_TEST(test_socket_from_fd_invalid)
 {
     struct wolfIP s;
