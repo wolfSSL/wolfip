@@ -5187,6 +5187,71 @@ START_TEST(test_dns_callback_truncated_response_aborts_query)
 }
 END_TEST
 
+START_TEST(test_regression_dns_callback_high_bit_octet_ip_no_ub)
+{
+    /* The dns_callback() A-record reassembly used to compute
+     *     ip = (buf[pos+3] & 0xFF) | ... | ((buf[pos+0] & 0xFF) << 24);
+     * with buf typed as char (signed by default). For the high-bit
+     * case (top octet >= 0x80) the int-typed (... & 0xFF) << 24
+     * produces a value that is not representable in int, which is
+     * undefined behavior per ISO C11 6.5.7p4. Under -fsanitize=undefined
+     * (make unit-ubsan) that shift trips a runtime error; this test
+     * pins the contract that high-bit IPs both (a) do not invoke UB
+     * and (b) are delivered to dns_lookup_cb byte-for-byte intact. */
+    struct wolfIP s;
+    uint8_t response[128];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    const uint8_t ip_bytes[4] = {0xC8, 0x0A, 0x14, 0x1E}; /* 200.10.20.30 */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    s.dns_query_type = DNS_QUERY_TYPE_A;
+    s.dns_id = 0x1234;
+    s.dns_lookup_cb = test_dns_lookup_cb;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(s.dns_id);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = sizeof(struct dns_header);
+    response[pos++] = 7; memcpy(&response[pos], "example", 7); pos += 7;
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(1);
+    pos += sizeof(struct dns_question);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type = ee16(DNS_A);
+    rr->class = ee16(1);
+    rr->ttl = ee32(60);
+    rr->rdlength = ee16(4);
+    pos += sizeof(struct dns_rr);
+    memcpy(&response[pos], ip_bytes, sizeof(ip_bytes));
+    pos += sizeof(ip_bytes);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0xC80A141EU);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
+}
+END_TEST
+
 START_TEST(test_dns_callback_bad_name)
 {
     struct wolfIP s;
