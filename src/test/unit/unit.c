@@ -667,6 +667,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_lookup_expired_entry_rejected);
     tcase_add_test(tc_proto, test_arp_reply_updates_expired_entry);
     tcase_add_test(tc_proto, test_wolfip_recv_ex_multi_interface_arp_reply);
+    tcase_add_test(tc_proto, test_wolfip_recv_ex_runt_eth_frame_drops_before_filter);
     tcase_add_test(tc_proto, test_forward_prepare_null_args);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_includes_full_ip_header_with_options);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_filter_drop);
