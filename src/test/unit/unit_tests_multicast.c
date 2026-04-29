@@ -252,6 +252,47 @@ START_TEST(test_multicast_igmp_query_refreshes_report)
 }
 END_TEST
 
+START_TEST(test_multicast_igmp_query_bad_checksum_dropped)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *igmp = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    ip4 group = 0xE9010207U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    igmp[2] ^= 0x01;
+    fix_ip_checksum(ip);
+
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
 START_TEST(test_multicast_join_requires_configured_ip)
 {
     struct wolfIP s;
