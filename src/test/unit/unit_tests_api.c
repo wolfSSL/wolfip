@@ -3836,6 +3836,64 @@ START_TEST(test_syn_sent_bare_rst_dropped)
 }
 END_TEST
 
+/* Regression: per RFC 9293 §3.10.7.3, an RST+ACK in SYN_SENT is acceptable
+ * only when SND.UNA < SEG.ACK <= SND.NXT.  After connect(), snd_una == seq
+ * (the ISN) and SND.NXT == seq+1, so the only valid seg_ack is isn+1.
+ * Pin both bounds so deletion of the upper-bound clause or < <-> <= mutations
+ * on either bound are caught. */
+START_TEST(test_syn_sent_rst_ack_seg_ack_bounds)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint32_t isn;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+    isn = ts->sock.tcp.seq;
+
+    /* seg_ack == snd_una (lower-bound equality): must be dropped */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       1000, isn,
+                       TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* seg_ack == snd_nxt + 1 (above SND.NXT): must be dropped */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       1000, isn + 2,
+                       TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* seg_ack == snd_nxt (only valid value): must close the socket */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       1000, isn + 1,
+                       TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ts->proto, 0);
+}
+END_TEST
+
 /* Regression: in SYN_RCVD, a RST with a sequence number outside the receive
  * window must be silently dropped per RFC 9293 §3.10.7.  The SYN_RCVD branch
  * bypassed the window check entirely, accepting any RST. */
