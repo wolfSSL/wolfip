@@ -641,6 +641,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_2_ack_with_payload_receives);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_2_fin_with_payload_queues);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_2_fin_payload_ack_mismatch_no_transition);
+    tcase_add_test(tc_utils, test_tcp_input_time_wait_retransmitted_fin_acks);
     tcase_add_test(tc_utils, test_tcp_sock_close_state_transitions);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_with_payload_returns);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_out_of_order_no_transition);
