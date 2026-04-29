@@ -4741,6 +4741,60 @@ START_TEST(test_regression_udp_inflated_udp_len)
 }
 END_TEST
 
+START_TEST(test_regression_udp_len_exceeds_ip_len_dropped)
+{
+    /* Pin RFC 768 + RFC 791: UDP's declared length must lie within the IP
+     * packet's declared length (udp.len <= ip.len - IP_HEADER_LEN). When the
+     * Ethernet frame is padded to the 60-byte minimum, an attacker can declare
+     * ip.len = 28 (no UDP payload), udp.len = 16 (claims 8 bytes), csum = 0
+     * (skipped). The frame_len-bounded checks all pass (frame_len(60) >=
+     * ETH+ip.len(42); udp.len(16) <= frame_len-ETH-IP(26)), but those 8 bytes
+     * lie *beyond* the IP packet's declared end. Without the ip.len-bounded
+     * cross-check, the FIFO accepts the frame and recvfrom delivers data that
+     * was never inside the IP datagram. */
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[60 - ETH_HEADER_LEN]; /* udp_try_recv operates after eth */
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)buf;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 1234;
+    ts->local_ip = local_ip;
+
+    /* Fill the post-IP region with attacker-chosen bytes; the test asserts
+     * none of these reach the FIFO. */
+    memset(buf, 0xAB, sizeof(buf));
+    memset(buf, 0, sizeof(struct wolfIP_udp_datagram));
+    udp->ip.src     = ee32(0x0A000002U);
+    udp->ip.dst     = ee32(local_ip);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.proto   = WI_IPPROTO_UDP;
+    udp->ip.ttl     = 64;
+    /* IP says: 20 (header) + 8 (UDP header) + 0 (no payload). */
+    udp->ip.len  = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    udp->src_port = ee16(9999);
+    udp->dst_port = ee16(1234);
+    /* UDP claims: 8 (header) + 8 (payload); overruns the IP packet. */
+    udp->len = ee16(UDP_HEADER_LEN + 8);
+    udp->csum = 0; /* skipped per RFC 768, so no checksum guard fires */
+    /* L2 frame padded to the 60-byte Ethernet minimum. */
+    frame_len = 60;
+
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp, frame_len);
+    /* The FIFO must be empty: a UDP datagram that overruns its IP packet's
+     * declared length is malformed and must not surface to recvfrom. */
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+}
+END_TEST
+
 START_TEST(test_regression_udp_len_below_header_discards_and_unblocks)
 {
     struct wolfIP s;

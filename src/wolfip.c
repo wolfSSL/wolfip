@@ -2250,6 +2250,15 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     if (ee16(udp->len) > frame_len - ETH_HEADER_LEN - IP_HEADER_LEN)
         return;
 
+    /* RFC 768 / RFC 791: UDP's declared length must lie within the IP
+     * packet's declared length. Without this guard, an L2-padded frame
+     * (e.g. 60-byte Ethernet minimum) carrying ip.len < udp.len + IP_HEADER_LEN
+     * passes every frame_len-bounded check and surfaces bytes from outside
+     * the IP datagram to recvfrom. */
+    if (ee16(udp->ip.len) < IP_HEADER_LEN ||
+            ee16(udp->len) > (uint16_t)(ee16(udp->ip.len) - IP_HEADER_LEN))
+        return;
+
     /* validate UDP checksum per RFC 1122 (only if non-zero) */
     if (udp->csum != 0) {
         union transport_pseudo_header ph;
