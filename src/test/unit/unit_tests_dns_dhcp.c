@@ -4807,6 +4807,7 @@ START_TEST(test_udp_try_recv_filter_drop)
 
     memset(&udp, 0, sizeof(udp));
     udp.ip.dst = ee32(local_ip);
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
     udp.dst_port = ee16(1234);
     udp.len = ee16(UDP_HEADER_LEN + 4);
     udp_try_recv(&s, TEST_PRIMARY_IF, &udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
@@ -4838,6 +4839,7 @@ START_TEST(test_udp_try_recv_conf_null)
 
     memset(udp_buf, 0, sizeof(udp_buf));
     udp->ip.dst = ee32(dst_ip);
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
     udp->dst_port = ee16(1234);
     udp->len = ee16(UDP_HEADER_LEN + 4);
     udp_try_recv(&s, TEST_PRIMARY_IF, udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
@@ -4864,6 +4866,7 @@ START_TEST(test_udp_try_recv_remote_ip_matches_local_ip)
 
     memset(&udp, 0, sizeof(udp));
     udp.ip.dst = ee32(local_ip);
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
     udp.dst_port = ee16(1234);
     udp.len = ee16(UDP_HEADER_LEN + 4);
     udp_try_recv(&s, TEST_PRIMARY_IF, &udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
@@ -4891,6 +4894,7 @@ START_TEST(test_udp_try_recv_dhcp_running_local_zero)
 
     memset(udp_buf, 0, sizeof(udp_buf));
     udp->ip.dst = ee32(local_ip);
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
     udp->dst_port = ee16(1234);
     udp->len = ee16(UDP_HEADER_LEN + 4);
     udp_try_recv(&s, TEST_PRIMARY_IF, udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
@@ -4916,6 +4920,7 @@ START_TEST(test_udp_try_recv_short_expected_len)
 
     memset(&udp, 0, sizeof(udp));
     udp.ip.dst = ee32(local_ip);
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 10);
     udp.dst_port = ee16(1234);
     udp.len = ee16(UDP_HEADER_LEN + 10);
     udp_try_recv(&s, TEST_PRIMARY_IF, &udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
