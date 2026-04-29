@@ -220,6 +220,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_accepted_socket_destroyed_on_synrcvd_rto_expiry);
     tcase_add_test(tc_utils, test_tcp_send_syn_options_aligned_small_mtu);
     tcase_add_test(tc_utils, test_syn_sent_bare_rst_dropped);
+    tcase_add_test(tc_utils, test_syn_sent_rst_ack_seg_ack_bounds);
     tcase_add_test(tc_utils, test_syn_rcvd_rst_bad_seq_dropped);
     tcase_add_test(tc_utils, test_ip_recv_drops_broadcast_source);
     tcase_add_test(tc_utils, test_ip_recv_drops_multicast_source);
