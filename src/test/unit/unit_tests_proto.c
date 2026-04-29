@@ -3580,6 +3580,42 @@ START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
 }
 END_TEST
 
+/* Regression: wolfIP_recv_on must reject buffers shorter than ETH_HEADER_LEN
+ * before any read of eth->dst/eth->src/eth->type.  Without the guard, the
+ * eth-receiving filter callback (and the unicast/broadcast memcmp + eth->type
+ * comparison) read past the end of the caller-supplied buffer.  The public
+ * wolfIP_recv_ex contract documents no minimum length, so a driver port that
+ * forwards a runt frame trips an OOB read on s's working buffer. */
+START_TEST(test_wolfip_recv_ex_runt_eth_frame_drops_before_filter)
+{
+    struct wolfIP s;
+    uint8_t *runt = malloc(ETH_HEADER_LEN - 1);
+    ck_assert_ptr_nonnull(runt);
+    memset(runt, 0, ETH_HEADER_LEN - 1);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_eth_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_RECEIVING));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, runt, 0);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, runt, 1);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, runt, ETH_HEADER_LEN - 1);
+
+    ck_assert_int_eq(filter_cb_calls, 0);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_eth_mask(0);
+    free(runt);
+}
+END_TEST
+
 START_TEST(test_wolfip_forwarding_basic)
 {
     struct wolfIP s;

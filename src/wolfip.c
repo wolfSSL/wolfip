@@ -8492,6 +8492,8 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
         ip_recv(s, if_idx, ip, len);
         return;
     }
+    if (len < (uint32_t)ETH_HEADER_LEN)
+        return;
     eth = (struct wolfIP_eth_frame *)buf;
     #ifdef DEBUG_ETH
     wolfIP_print_eth(eth, len);
