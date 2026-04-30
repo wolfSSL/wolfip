@@ -35,11 +35,11 @@
 #ifndef LINK_MTU_MIN
 #define LINK_MTU_MIN 64U
 #endif
+#define WOLFIP_LOOPBACK_IP 0x7F000001U
+#define WOLFIP_LOOPBACK_MASK 0xFF000000U
 #if WOLFIP_ENABLE_LOOPBACK
 #define WOLFIP_LOOPBACK_IF_IDX 0U
 #define WOLFIP_PRIMARY_IF_IDX 1U
-#define WOLFIP_LOOPBACK_IP 0x7F000001U
-#define WOLFIP_LOOPBACK_MASK 0xFF000000U
 static inline int wolfIP_is_loopback_if(unsigned int if_idx)
 {
     return if_idx == WOLFIP_LOOPBACK_IF_IDX;
