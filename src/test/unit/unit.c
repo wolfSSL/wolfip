@@ -146,6 +146,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_filter_socket_event_proto_variants);
     tcase_add_test(tc_utils, test_filter_setters_and_get_mask);
     tcase_add_test(tc_utils, test_sock_socket_errors);
+    tcase_add_test(tc_utils, test_regression_sock_socket_null_wolfip_returns_einval);
     tcase_add_test(tc_utils, test_sock_socket_udp_protocol_zero);
     tcase_add_test(tc_utils, test_sock_socket_full_tables);
     tcase_add_test(tc_utils, test_filter_mask_for_proto_variants);
