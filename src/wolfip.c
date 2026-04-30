@@ -8359,6 +8359,39 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             }
         }
         if (!is_local) {
+            ip4 src = ee32(ip->src);
+            int rpf_drop = 0;
+
+            /* Martian source: 127.0.0.0/8 must not arrive on a non-loopback
+             * interface (and must never be forwarded). */
+            if ((src & WOLFIP_LOOPBACK_MASK) ==
+                    (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK) &&
+                    !wolfIP_is_loopback_if(if_idx)) {
+                rpf_drop = 1;
+            }
+            /* Martian source: 169.254.0.0/16 link-local is not routable. */
+            if (!rpf_drop && (src & 0xFFFF0000U) == 0xA9FE0000U) {
+                rpf_drop = 1;
+            }
+            /* Strict RPF: a source that belongs to some other configured
+             * interface's local subnet must not arrive on this one. */
+            if (!rpf_drop) {
+                for (i = 0; i < s->if_count; i++) {
+                    struct ipconf *conf = &s->ipconf[i];
+                    if (i == if_idx)
+                        continue;
+                    if (!conf || conf->ip == IPADDR_ANY)
+                        continue;
+                    if (ip_is_local_conf(conf, src)) {
+                        rpf_drop = 1;
+                        break;
+                    }
+                }
+            }
+            if (rpf_drop)
+                return;
+
+            {
             int out_if = wolfIP_forward_interface(s, if_idx, dest);
             if (out_if >= 0) {
                 uint8_t mac[6];
@@ -8380,6 +8413,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 iphdr_set_checksum(ip);
                 wolfIP_forward_packet(s, out_if, ip, len, broadcast ? NULL : mac, broadcast);
                 return;
+            }
             }
         }
     }

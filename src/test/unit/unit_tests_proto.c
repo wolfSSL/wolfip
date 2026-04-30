@@ -3762,6 +3762,57 @@ START_TEST(test_loopback_dest_not_forwarded)
 }
 END_TEST
 
+START_TEST(test_regression_forwarding_rpf_drops_spoofed_source)
+{
+    static const ip4 spoofed_sources[] = {
+        0x7F000001U, /* 127.0.0.1; loopback */
+        0xA9FE0001U, /* 169.254.0.1; link-local */
+        0xC0A80132U  /* 192.168.1.50; in TEST_SECOND_IF's subnet, wrong ingress */
+    };
+    unsigned int i;
+    uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    uint8_t next_hop_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    uint32_t dest_ip = 0xC0A80164U; /* 192.168.1.100; on TEST_SECOND_IF */
+
+    for (i = 0; i < sizeof(spoofed_sources) / sizeof(spoofed_sources[0]); i++) {
+        struct wolfIP s;
+        uint8_t frame_buf[64];
+        struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+
+        wolfIP_init(&s);
+        mock_link_init(&s);
+        mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
+        wolfIP_ipconfig_set(&s, 0xC0A80001U, 0xFFFFFF00U, 0);
+        wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0);
+        s.arp.neighbors[0].ip = dest_ip;
+        s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
+        memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
+
+        memset(frame_buf, 0, sizeof(frame_buf));
+        memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+        memcpy(frame->eth.src, src_mac, 6);
+        frame->eth.type = ee16(ETH_TYPE_IP);
+        frame->ver_ihl = 0x45;
+        frame->ttl = 64;
+        frame->proto = WI_IPPROTO_UDP;
+        frame->len = ee16(IP_HEADER_LEN);
+        frame->src = ee32(spoofed_sources[i]);
+        frame->dst = ee32(dest_ip);
+        frame->csum = 0;
+        iphdr_set_checksum(frame);
+
+        memset(last_frame_sent, 0, sizeof(last_frame_sent));
+        last_frame_sent_size = 0;
+
+        wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                       ETH_HEADER_LEN + IP_HEADER_LEN);
+
+        ck_assert_uint_eq(last_frame_sent_size, 0);
+    }
+}
+END_TEST
+
 /* wolfSSL IO glue tests */
 START_TEST(test_wolfssl_io_ctx_registers_callbacks)
 {
