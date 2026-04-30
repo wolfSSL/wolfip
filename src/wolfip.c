@@ -5291,6 +5291,8 @@ int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 #if WOLFIP_RAWSOCKETS || WOLFIP_PACKET_SOCKETS
     int base_type = type;
 #endif
+    if (!s)
+        return -WOLFIP_EINVAL;
     if (domain != AF_INET)
         goto packet_try;
     if (type == IPSTACK_SOCK_STREAM) {

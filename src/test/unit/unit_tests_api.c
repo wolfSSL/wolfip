@@ -465,6 +465,23 @@ START_TEST(test_sock_socket_errors)
     ck_assert_int_eq(wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_TCP), -1);
 }
 END_TEST
+
+START_TEST(test_regression_sock_socket_null_wolfip_returns_einval)
+{
+    ck_assert_int_eq(wolfIP_sock_socket(NULL, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP),
+            -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_socket(NULL, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP),
+            -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_socket(NULL, AF_INET, IPSTACK_SOCK_DGRAM, 0),
+            -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_socket(NULL, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP),
+            -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_socket(NULL, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP),
+            -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_socket(NULL, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP)),
+            -WOLFIP_EINVAL);
+}
+END_TEST
 START_TEST(test_udp_sendto_and_recvfrom)
 {
     struct wolfIP s;
