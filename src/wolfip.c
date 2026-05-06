@@ -8409,8 +8409,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 int broadcast = 0;
 
                 if (ip->ttl <= 1) {
-                    /* Need at least Ethernet header + 28 bytes of original packet. */
-                    if (len < (uint32_t)(ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT))
+                    /* wolfIP_send_ttl_exceeded copies orig_ihl + 8 bytes from
+                     * offset ETH_HEADER_LEN, so the frame must hold the full
+                     * IP header plus 8 transport bytes; the ip_hlen >= 20
+                     * floor at line 8313 keeps this >= the historical
+                     * ETH_HEADER_LEN + 28 minimum for IHL=5 frames. */
+                    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + 8))
                         return;
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
