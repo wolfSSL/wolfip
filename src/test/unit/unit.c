@@ -681,6 +681,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_send_ttl_exceeded_sets_df);
 #if WOLFIP_ENABLE_FORWARDING
     tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_short_len_does_not_send);
+    tcase_add_test(tc_proto, test_regression_forward_ttl_exceeded_short_len_with_options_no_send);
 #endif
     tcase_add_test(tc_proto, test_arp_request_filter_drop);
     tcase_add_test(tc_proto, test_arp_request_invalid_interface);
