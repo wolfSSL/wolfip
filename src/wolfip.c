@@ -8330,14 +8330,23 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         if (src == IPADDR_ANY && !DHCP_IS_RUNNING(s))
             return;
     }
-#if WOLFIP_ENABLE_LOOPBACK
+    /* RFC 5735 §4 / RFC 6890: 127/8 is host loopback and must not appear
+     * on the wire. Drop frames arriving on a non-loopback interface whose
+     * source or destination is in 127/8; the symmetric source check is
+     * what stops an off-link attacker from forging ip.src=127.0.0.1 to
+     * impersonate locally-originated traffic to higher-layer code. */
     if (!wolfIP_is_loopback_if(if_idx)) {
         ip4 dest = ee32(ip->dst);
-        if ((dest & WOLFIP_LOOPBACK_MASK) == (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
+        ip4 src = ee32(ip->src);
+        if ((dest & WOLFIP_LOOPBACK_MASK) ==
+                (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
+            return;
+        }
+        if ((src & WOLFIP_LOOPBACK_MASK) ==
+                (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
             return;
         }
     }
-#endif
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_RECEIVING, s, if_idx, ip, len) != 0)
         return;
 #if WOLFIP_RAWSOCKETS
