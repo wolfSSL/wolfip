@@ -793,6 +793,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_loopback_dest_not_forwarded);
     tcase_add_test(tc_proto, test_regression_forwarding_rpf_drops_spoofed_source);
     tcase_add_test(tc_proto, test_regression_loopback_source_dropped_on_non_loopback_iface);
+    tcase_add_test(tc_proto, test_regression_icmp_echo_request_non_local_dst_no_reply);
     tcase_add_test(tc_proto, test_tcp_listen_rejects_wrong_interface);
     tcase_add_test(tc_proto, test_tcp_listen_accepts_bound_interface);
     tcase_add_test(tc_proto, test_tcp_listen_accepts_any_interface);

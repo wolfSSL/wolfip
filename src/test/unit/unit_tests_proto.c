@@ -3874,6 +3874,57 @@ START_TEST(test_regression_loopback_source_dropped_on_non_loopback_iface)
 }
 END_TEST
 
+START_TEST(test_regression_icmp_echo_request_non_local_dst_no_reply)
+{
+    /* RFC 1122 section 3.2.2.6: ICMP echo replies are only for requests destined to
+     * the responding host. Without a destination check in icmp_input, an
+     * L2-adjacent attacker can frame eth.dst = wolfIP's MAC, ip.src = victim_A,
+     * ip.dst = victim_B (neither owned by wolfIP, neither broadcast nor
+     * multicast). wolfIP would swap src/dst and emit an echo reply with
+     * ip.src = victim_B back at the original eth.src; turning the stack into
+     * a small reflector with attacker-controllable source IP. tcp_input and
+     * udp_try_recv already enforce destination-matching; this pins the
+     * equivalent for the ICMP echo path. */
+    struct wolfIP s;
+    uint8_t frame_buf[sizeof(struct wolfIP_icmp_packet)];
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)frame_buf;
+    static const uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    static const uint32_t local_ip   = 0x0A000001U; /* 10.0.0.1 */
+    static const uint32_t spoofed_src = 0xC0000201U; /* 192.0.2.1 (TEST-NET-1) */
+    static const uint32_t spoofed_dst = 0xC6336401U; /* 198.51.100.1 (TEST-NET-2) */
+    uint32_t frame_len =
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(icmp->ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(icmp->ip.eth.src, src_mac, 6);
+    icmp->ip.eth.type = ee16(ETH_TYPE_IP);
+    icmp->ip.ver_ihl = 0x45;
+    icmp->ip.ttl = 64;
+    icmp->ip.proto = WI_IPPROTO_ICMP;
+    icmp->ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp->ip.src = ee32(spoofed_src);
+    icmp->ip.dst = ee32(spoofed_dst);
+    icmp->ip.csum = 0;
+    iphdr_set_checksum(&icmp->ip);
+    icmp->type = ICMP_ECHO_REQUEST;
+    icmp->code = 0;
+    icmp->csum = 0;
+    icmp->csum = ee16(icmp_checksum(icmp, ICMP_HEADER_LEN));
+
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame_buf, frame_len);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 /* wolfSSL IO glue tests */
 START_TEST(test_wolfssl_io_ctx_registers_callbacks)
 {
