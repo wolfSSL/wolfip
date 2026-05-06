@@ -1738,6 +1738,7 @@ START_TEST(test_icmp_input_echo_request_reply_sent)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
@@ -1768,6 +1769,7 @@ START_TEST(test_icmp_input_echo_reply_sets_df)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
@@ -1834,6 +1836,7 @@ START_TEST(test_icmp_input_echo_request_odd_len_reply_checksum)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
@@ -1985,6 +1988,7 @@ START_TEST(test_icmp_input_echo_request_filter_drop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     filter_block_reason = WOLFIP_FILT_SENDING;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_icmp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
@@ -2015,6 +2019,7 @@ START_TEST(test_icmp_input_echo_request_ip_filter_drop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     filter_block_reason = WOLFIP_FILT_SENDING;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_ip_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
@@ -2045,6 +2050,7 @@ START_TEST(test_icmp_input_echo_request_eth_filter_drop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     filter_block_reason = WOLFIP_FILT_SENDING;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_eth_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));

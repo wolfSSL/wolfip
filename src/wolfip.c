@@ -7107,7 +7107,16 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         ip4 dst = ee32(ip->dst);
+        int dst_match = 0;
         if (wolfIP_ip_is_broadcast(s, dst) || wolfIP_ip_is_multicast(dst))
+            return;
+        /* RFC 1122 §3.2.2.6: only reply to echo requests destined to one of
+         * our configured local IPs. Without this, an L2-adjacent attacker
+         * can address a frame to our MAC with arbitrary ip.src/ip.dst and
+         * have us emit an echo reply with attacker-chosen ip.src — the
+         * destination-matching mirrors what tcp_input and udp_try_recv do. */
+        (void)wolfIP_if_for_local_ip(s, dst, &dst_match);
+        if (!dst_match)
             return;
         icmp->type = ICMP_ECHO_REPLY;
         /* Recompute full ICMP checksum for portability */
