@@ -7107,7 +7107,16 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     }
     if (!DHCP_IS_RUNNING(s) && (icmp->type == ICMP_ECHO_REQUEST)) {
         ip4 dst = ee32(ip->dst);
+        int dst_match = 0;
         if (wolfIP_ip_is_broadcast(s, dst) || wolfIP_ip_is_multicast(dst))
+            return;
+        /* RFC 1122 §3.2.2.6: only reply to echo requests destined to one of
+         * our configured local IPs. Without this, an L2-adjacent attacker
+         * can address a frame to our MAC with arbitrary ip.src/ip.dst and
+         * have us emit an echo reply with attacker-chosen ip.src — the
+         * destination-matching mirrors what tcp_input and udp_try_recv do. */
+        (void)wolfIP_if_for_local_ip(s, dst, &dst_match);
+        if (!dst_match)
             return;
         icmp->type = ICMP_ECHO_REPLY;
         /* Recompute full ICMP checksum for portability */
@@ -8330,14 +8339,23 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         if (src == IPADDR_ANY && !DHCP_IS_RUNNING(s))
             return;
     }
-#if WOLFIP_ENABLE_LOOPBACK
+    /* RFC 5735 §4 / RFC 6890: 127/8 is host loopback and must not appear
+     * on the wire. Drop frames arriving on a non-loopback interface whose
+     * source or destination is in 127/8; the symmetric source check is
+     * what stops an off-link attacker from forging ip.src=127.0.0.1 to
+     * impersonate locally-originated traffic to higher-layer code. */
     if (!wolfIP_is_loopback_if(if_idx)) {
         ip4 dest = ee32(ip->dst);
-        if ((dest & WOLFIP_LOOPBACK_MASK) == (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
+        ip4 src = ee32(ip->src);
+        if ((dest & WOLFIP_LOOPBACK_MASK) ==
+                (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
+            return;
+        }
+        if ((src & WOLFIP_LOOPBACK_MASK) ==
+                (WOLFIP_LOOPBACK_IP & WOLFIP_LOOPBACK_MASK)) {
             return;
         }
     }
-#endif
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_RECEIVING, s, if_idx, ip, len) != 0)
         return;
 #if WOLFIP_RAWSOCKETS
@@ -8400,8 +8418,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 int broadcast = 0;
 
                 if (ip->ttl <= 1) {
-                    /* Need at least Ethernet header + 28 bytes of original packet. */
-                    if (len < (uint32_t)(ETH_HEADER_LEN + TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT))
+                    /* wolfIP_send_ttl_exceeded copies orig_ihl + 8 bytes from
+                     * offset ETH_HEADER_LEN, so the frame must hold the full
+                     * IP header plus 8 transport bytes; the ip_hlen >= 20
+                     * floor at line 8313 keeps this >= the historical
+                     * ETH_HEADER_LEN + 28 minimum for IHL=5 frames. */
+                    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + 8))
                         return;
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;

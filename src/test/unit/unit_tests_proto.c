@@ -3764,8 +3764,11 @@ END_TEST
 
 START_TEST(test_regression_forwarding_rpf_drops_spoofed_source)
 {
+    /* 127/8 is intentionally absent here, since ip_recv drops it earlier via the
+     * martian-source guard pinned by
+     * test_regression_loopback_source_dropped_on_non_loopback_iface, so it
+     * never reaches the forwarding-RPF path this test is meant to pin. */
     static const ip4 spoofed_sources[] = {
-        0x7F000001U, /* 127.0.0.1; loopback */
         0xA9FE0001U, /* 169.254.0.1; link-local */
         0xC0A80132U  /* 192.168.1.50; in TEST_SECOND_IF's subnet, wrong ingress */
     };
@@ -3810,6 +3813,115 @@ START_TEST(test_regression_forwarding_rpf_drops_spoofed_source)
 
         ck_assert_uint_eq(last_frame_sent_size, 0);
     }
+}
+END_TEST
+
+START_TEST(test_regression_loopback_source_dropped_on_non_loopback_iface)
+{
+    static const ip4 spoofed_loopback_sources[] = {
+        0x7F000001U, /* 127.0.0.1 */
+        0x7F0000FEU, /* 127.0.0.254 */
+        0x7FFFFFFEU  /* 127.255.255.254 (high end of 127/8) */
+    };
+    static const uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    static const uint32_t local_ip = 0x0A000001U; /* 10.0.0.1 */
+    static const uint16_t local_port = 1234;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(spoofed_loopback_sources) /
+                    sizeof(spoofed_loopback_sources[0]); i++) {
+        struct wolfIP s;
+        struct tsocket *ts;
+        uint8_t frame_buf[sizeof(struct wolfIP_udp_datagram)];
+        struct wolfIP_udp_datagram *udp =
+                (struct wolfIP_udp_datagram *)frame_buf;
+        uint32_t frame_len =
+                (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+
+        wolfIP_init(&s);
+        mock_link_init(&s);
+        s.dhcp_state = DHCP_OFF;
+        wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+        ts = udp_new_socket(&s);
+        ck_assert_ptr_nonnull(ts);
+        ts->src_port = local_port;
+        ts->local_ip = local_ip;
+
+        memset(frame_buf, 0, sizeof(frame_buf));
+        memcpy(udp->ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+        memcpy(udp->ip.eth.src, src_mac, 6);
+        udp->ip.eth.type = ee16(ETH_TYPE_IP);
+        udp->ip.ver_ihl = 0x45;
+        udp->ip.ttl = 64;
+        udp->ip.proto = WI_IPPROTO_UDP;
+        udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+        udp->ip.src = ee32(spoofed_loopback_sources[i]);
+        udp->ip.dst = ee32(local_ip);
+        udp->ip.csum = 0;
+        iphdr_set_checksum(&udp->ip);
+        udp->src_port = ee16(9999);
+        udp->dst_port = ee16(local_port);
+        udp->len = ee16(UDP_HEADER_LEN);
+        udp->csum = 0; /* RFC 768: zero csum skips verification */
+
+        wolfIP_recv_ex(&s, TEST_PRIMARY_IF, udp, frame_len);
+
+        /* The spoofed-loopback datagram
+         * must not surface to recvfrom. */
+        ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+    }
+}
+END_TEST
+
+START_TEST(test_regression_icmp_echo_request_non_local_dst_no_reply)
+{
+    /* RFC 1122 section 3.2.2.6: ICMP echo replies are only for requests destined to
+     * the responding host. Without a destination check in icmp_input, an
+     * L2-adjacent attacker can frame eth.dst = wolfIP's MAC, ip.src = victim_A,
+     * ip.dst = victim_B (neither owned by wolfIP, neither broadcast nor
+     * multicast). wolfIP would swap src/dst and emit an echo reply with
+     * ip.src = victim_B back at the original eth.src; turning the stack into
+     * a small reflector with attacker-controllable source IP. tcp_input and
+     * udp_try_recv already enforce destination-matching; this pins the
+     * equivalent for the ICMP echo path. */
+    struct wolfIP s;
+    uint8_t frame_buf[sizeof(struct wolfIP_icmp_packet)];
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)frame_buf;
+    static const uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    static const uint32_t local_ip   = 0x0A000001U; /* 10.0.0.1 */
+    static const uint32_t spoofed_src = 0xC0000201U; /* 192.0.2.1 (TEST-NET-1) */
+    static const uint32_t spoofed_dst = 0xC6336401U; /* 198.51.100.1 (TEST-NET-2) */
+    uint32_t frame_len =
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(icmp->ip.eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(icmp->ip.eth.src, src_mac, 6);
+    icmp->ip.eth.type = ee16(ETH_TYPE_IP);
+    icmp->ip.ver_ihl = 0x45;
+    icmp->ip.ttl = 64;
+    icmp->ip.proto = WI_IPPROTO_ICMP;
+    icmp->ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp->ip.src = ee32(spoofed_src);
+    icmp->ip.dst = ee32(spoofed_dst);
+    icmp->ip.csum = 0;
+    iphdr_set_checksum(&icmp->ip);
+    icmp->type = ICMP_ECHO_REQUEST;
+    icmp->code = 0;
+    icmp->csum = 0;
+    icmp->csum = ee16(icmp_checksum(icmp, ICMP_HEADER_LEN));
+
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame_buf, frame_len);
+
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
 }
 END_TEST
 

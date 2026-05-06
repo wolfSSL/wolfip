@@ -681,6 +681,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_send_ttl_exceeded_sets_df);
 #if WOLFIP_ENABLE_FORWARDING
     tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_short_len_does_not_send);
+    tcase_add_test(tc_proto, test_regression_forward_ttl_exceeded_short_len_with_options_no_send);
 #endif
     tcase_add_test(tc_proto, test_arp_request_filter_drop);
     tcase_add_test(tc_proto, test_arp_request_invalid_interface);
@@ -791,6 +792,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_forward_packet_eth_filter_drop);
     tcase_add_test(tc_proto, test_loopback_dest_not_forwarded);
     tcase_add_test(tc_proto, test_regression_forwarding_rpf_drops_spoofed_source);
+    tcase_add_test(tc_proto, test_regression_loopback_source_dropped_on_non_loopback_iface);
+    tcase_add_test(tc_proto, test_regression_icmp_echo_request_non_local_dst_no_reply);
     tcase_add_test(tc_proto, test_tcp_listen_rejects_wrong_interface);
     tcase_add_test(tc_proto, test_tcp_listen_accepts_bound_interface);
     tcase_add_test(tc_proto, test_tcp_listen_accepts_any_interface);
@@ -814,6 +817,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_frag_needed_below_floor_preserves_peer_mss);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_closes_syn_sent_tcp_socket);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_keep_established_tcp_socket);
+    tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_src_ip_ignored);
+    tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_dst_ip_ignored);
+    tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_src_port_ignored);
+    tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_dst_port_ignored);
     tcase_add_test(tc_proto, test_udp_sendto_and_recvfrom);
     tcase_add_test(tc_proto, test_udp_sendto_respects_mtu_api);
     tcase_add_test(tc_proto, test_udp_recvfrom_sets_remote_ip);

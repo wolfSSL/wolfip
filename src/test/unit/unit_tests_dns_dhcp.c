@@ -1738,6 +1738,7 @@ START_TEST(test_icmp_input_echo_request_reply_sent)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
@@ -1768,6 +1769,7 @@ START_TEST(test_icmp_input_echo_reply_sets_df)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
@@ -1834,6 +1836,7 @@ START_TEST(test_icmp_input_echo_request_odd_len_reply_checksum)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     wolfIP_filter_set_callback(NULL, NULL);
     last_frame_sent_size = 0;
 
@@ -1985,6 +1988,7 @@ START_TEST(test_icmp_input_echo_request_filter_drop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     filter_block_reason = WOLFIP_FILT_SENDING;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_icmp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
@@ -2015,6 +2019,7 @@ START_TEST(test_icmp_input_echo_request_ip_filter_drop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     filter_block_reason = WOLFIP_FILT_SENDING;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_ip_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
@@ -2045,6 +2050,7 @@ START_TEST(test_icmp_input_echo_request_eth_filter_drop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     filter_block_reason = WOLFIP_FILT_SENDING;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_eth_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
@@ -2367,6 +2373,210 @@ START_TEST(test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_keep_
 
     ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+}
+END_TEST
+
+START_TEST(test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_src_ip_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_PORT_UNREACH;
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(0x0A000099U);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16(ts->dst_port);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+START_TEST(test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_dst_ip_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_PORT_UNREACH;
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(0x0A0000AAU);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16(ts->dst_port);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+START_TEST(test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_src_port_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_PORT_UNREACH;
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16((uint16_t)(ts->src_port + 1U));
+    orig->dst_port = ee16(ts->dst_port);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+START_TEST(test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_dst_port_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_PORT_UNREACH;
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16((uint16_t)(ts->dst_port + 1U));
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
 }
 END_TEST
 

@@ -2598,6 +2598,41 @@ START_TEST(test_wolfip_forward_ttl_exceeded_short_len_does_not_send)
     ck_assert_uint_eq(last_frame_sent_size, 0U);
 }
 END_TEST
+
+START_TEST(test_regression_forward_ttl_exceeded_short_len_with_options_no_send)
+{
+    struct wolfIP s;
+    /* IHL=10 (40-byte IP header), no transport bytes after it. */
+    uint8_t ip_buf[ETH_HEADER_LEN + 40];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
+    ip4 primary_ip = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(ip_buf, 0, sizeof(ip_buf));
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->ver_ihl = 0x4A;          /* IHL=10, 40-byte header */
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_UDP;
+    ip->len = ee16(40);          /* IP datagram length: header only */
+    ip->src = ee32(0x0A000099U); /* primary's subnet, passes RPF */
+    ip->dst = ee32(0xC0A80199U); /* secondary's subnet, triggers forwarding */
+    /* Fill the 20 option bytes (IP header offsets 20..39) with NOPs so the
+     * checksum covers a well-formed options area. */
+    memset(((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN, 0x01, 20);
+    fix_ip_checksum_with_hlen(ip, 40);
+
+    /* sizeof(ip_buf) == ETH_HEADER_LEN + ip_hlen, exactly 8 bytes short of
+     * what wolfIP_send_ttl_exceeded would read. */
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
 #endif
 
 START_TEST(test_arp_request_filter_drop)
