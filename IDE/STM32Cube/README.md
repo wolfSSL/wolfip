@@ -16,7 +16,7 @@ This guide explains how to use wolfIP on any STM32 microcontroller with Ethernet
 
 ### Step 1: Install the wolfIP Pack
 
-1. Download the pack from [wolfSSL](https://www.wolfssl.com/files/ide/I-CUBE-wolfIP.pack)
+1. Download the pack from [wolfSSL](https://www.wolfssl.com/files/ide/wolfSSL.I-CUBE-wolfIP.1.0.0.pack)
 2. In STM32CubeMX: **Help → Manage Embedded Software Packages → From Local**
 3. Select `I-CUBE-wolfIP.pack` and accept the license
 
