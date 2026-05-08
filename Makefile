@@ -89,6 +89,10 @@ endif
 TAP_OBJ:=$(NETDEV_OBJ)
 TAP_PIE_OBJ:=$(NETDEV_PIE_OBJ)
 
+WOLFIP_TFTP_SRC:=$(wildcard src/tftp/*.c)
+WOLFIP_TFTP_OBJ:=$(patsubst src/%.c,build/%.o,$(WOLFIP_TFTP_SRC))
+WOLFIP_TFTP_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(WOLFIP_TFTP_SRC))
+
 ifeq ($(UNAME_S),Darwin)
   BEGIN_GROUP:=
   END_GROUP:=
@@ -135,12 +139,15 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --error-exitcode=1 --xml --xml-version=2
 
 OBJ=build/wolfip.o \
+	$(WOLFIP_TFTP_OBJ) \
 	$(TAP_OBJ)
 
 IPFILTER_OBJ=build/ipfilter/wolfip.o \
+	$(WOLFIP_TFTP_OBJ) \
 	$(TAP_OBJ)
 
 ESP_OBJ=build/esp/wolfip.o \
+	$(WOLFIP_TFTP_OBJ) \
 	$(TAP_OBJ)
 
 HAVE_WOLFSSL:=$(shell printf "#include <wolfssl/options.h>\nint main(void){return 0;}\n" | $(CC) $(CFLAGS) -x c - -c -o /dev/null 2>/dev/null && echo 1)
@@ -185,6 +192,7 @@ libtcpip.a: $(OBJ)
 
 libwolfip.so:CFLAGS+=-fPIC
 libwolfip.so:  build/pie/port/posix/bsd_socket.o build/pie/wolfip.o \
+	$(WOLFIP_TFTP_PIE_OBJ) \
 	$(TAP_PIE_OBJ)
 	@mkdir -p `dirname $@` || true
 	@echo "[LD] $@"
@@ -321,7 +329,7 @@ build/esp-server: $(ESP_OBJ) build/port/posix/bsd_socket.o build/test/esp_server
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(ESP_CFLAGS) $(LDFLAGS) -o $@ $(BEGIN_GROUP) $(^) -lwolfssl $(END_GROUP)
 
-build/test-wolfssl-forwarding: build/test/test_wolfssl_forwarding.o build/test/wolfip_forwarding.o $(TAP_OBJ) build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
+build/test-wolfssl-forwarding: build/test/test_wolfssl_forwarding.o build/test/wolfip_forwarding.o $(WOLFIP_TFTP_OBJ) $(TAP_OBJ) build/port/wolfssl_io.o build/certs/server_key.o build/certs/ca_cert.o build/certs/server_cert.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
 
@@ -333,7 +341,7 @@ build/test/wolfip_forwarding.o: src/wolfip.c
 	@$(CC) $(CFLAGS) -DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1 -c $< -o $@
 
 build/test/test_ttl_expired.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
-build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwarding.o
+build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwarding.o $(WOLFIP_TFTP_OBJ)
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
@@ -386,7 +394,8 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_tcp_ack.c \
 	src/test/unit/unit_tests_tcp_flow.c \
 	src/test/unit/unit_tests_proto.c \
-	src/test/unit/unit_tests_multicast.c
+	src/test/unit/unit_tests_multicast.c \
+	src/test/unit/unit_tests_tftp.c
 
 unit: build/test/unit
 
@@ -486,19 +495,29 @@ $(COV_MCAST_UNIT): $(COV_MCAST_UNIT_O)
 cov: unit $(COV_UNIT)
 	@echo "[RUN] unit (coverage)"
 	@rm -f $(COV_DIR)/*.gcda
+	@rm -f $(COV_DIR)/unit-multicast $(COV_DIR)/unit-multicast.o \
+		$(COV_DIR)/unit-multicast.gcno $(COV_DIR)/unit-multicast.gcda
 	@$(COV_UNIT)
 	@echo "[COV] gcovr html"
 	@mkdir -p build/coverage
-	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/index.html
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/index.html
 	@$(OPEN_CMD) build/coverage/index.html
 
 autocov: unit $(COV_UNIT)
 	@echo "[RUN] unit (coverage)"
 	@rm -f $(COV_DIR)/*.gcda
+	@rm -f $(COV_DIR)/unit-multicast $(COV_DIR)/unit-multicast.o \
+		$(COV_DIR)/unit-multicast.gcno $(COV_DIR)/unit-multicast.gcda
 	@$(COV_UNIT)
 	@echo "[COV] gcovr html"
 	@mkdir -p build/coverage
-	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/index.html
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/index.html
 
 autocov-multicast: unit-multicast $(COV_MCAST_UNIT)
 	@echo "[RUN] unit multicast (coverage)"
@@ -506,7 +525,10 @@ autocov-multicast: unit-multicast $(COV_MCAST_UNIT)
 	@$(COV_MCAST_UNIT)
 	@echo "[COV] gcovr multicast html"
 	@mkdir -p build/coverage
-	@gcovr -r . --exclude "src/test/unit/.*" --html-details -o build/coverage/multicast.html
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/multicast.html
 
 # Install dynamic library to re-link linux applications
 #

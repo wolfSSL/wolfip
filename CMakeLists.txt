@@ -51,12 +51,17 @@ endif()
 string(TOLOWER "${CMAKE_SYSTEM_NAME}" CMAKE_SYSTEM_NAME_LC)
 
 set(WOLFIP_TAP_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/port/posix/tap_${CMAKE_SYSTEM_NAME_LC}.c")
+file(GLOB WOLFIP_TFTP_SRCS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/tftp/*.c")
 
 if (NOT EXISTS "${WOLFIP_TAP_SRC}")
     message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
 endif()
 
-set(WOLFIP_SRCS src/wolfip.c ${WOLFIP_TAP_SRC})
+set(WOLFIP_SRCS
+    src/wolfip.c
+    ${WOLFIP_TFTP_SRCS}
+    ${WOLFIP_TAP_SRC})
 
 set(CERT_SRCS
     ${CMAKE_BINARY_DIR}/certs/server_cert.c
@@ -187,7 +192,7 @@ add_executable(test-ttl-expired ${EXCLUDE_TEST_BINARY}
 target_compile_definitions(test-ttl-expired PRIVATE -DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1)
 add_test(NAME ttl-expired COMMAND test-ttl-expired)
 
-if (NOT Check_FOUND)
+if (Check_FOUND)
     add_executable(unit ${EXCLUDE_TEST_BINARY}
         src/test/unit/unit.c
         )

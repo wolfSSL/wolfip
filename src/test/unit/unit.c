@@ -6,6 +6,7 @@
 #include "unit_tests_tcp_flow.c"
 #include "unit_tests_proto.c"
 #include "unit_tests_multicast.c"
+#include "unit_tests_tftp.c"
 
 Suite *wolf_suite(void)
 {
@@ -870,6 +871,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_dns_id_never_zero);
     tcase_add_test(tc_proto, test_tcp_input_listen_synack_sends_rst_and_stays_listen);
     tcase_add_test(tc_proto, test_tcp_input_listen_accept_final_ack_does_not_send_rst);
+    add_tftp_tests(tc_proto);
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);

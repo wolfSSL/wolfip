@@ -16,8 +16,24 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
   - ICMP (RFC 792) - ping replies only
   - DHCP (RFC 2131) - client only
   - DNS (RFC 1035) - client only
+  - TFTP (RFC 1350, RFC 2347, RFC 2348, RFC 2349, RFC 7440) via the reusable `src/tftp/` module
   - UDP (RFC 768) - unicast, optional IPv4 multicast with `IP_MULTICAST`
   - TCP (RFC 793) with options (Timestamps, MSS)
+
+## Build Integration
+
+The top-level build systems register reusable module sources from `src/tftp/`
+automatically:
+
+- `Makefile` adds any `src/tftp/*.c` files to the shared library, static library,
+  and top-level executable link sets.
+- `CMakeLists.txt` globs `src/tftp/*.c` with `CONFIGURE_DEPENDS` so the same
+  sources are compiled into the main `wolfip` and `tcpip` targets.
+
+The TFTP module is callback-driven and allocation-free. Callers provide the UDP
+send hook plus open/read/write/close callbacks for storage, and may additionally
+provide streaming hash-update and final verification callbacks for firmware
+download flows.
 
 ## Core Data Structures
 

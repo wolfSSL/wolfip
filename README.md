@@ -18,6 +18,7 @@ configured to forward traffic between multiple network interfaces.
 - Multi-interface support
 - Optional IPv4-forwarding
 - Optional IPv4 UDP multicast with IGMPv3 ASM membership reports
+- Reusable allocation-free TFTP module under `src/tftp/`
 
 ## Supported socket types
 
@@ -53,6 +54,7 @@ wolfIP exposes a BSD-like `socket(2)` API for IPv4 sockets:
 | **Application** | DHCP | Client only (DORA) | [RFC 2131](https://datatracker.ietf.org/doc/html/rfc2131) |
 | **Application** | DNS | A and PTR record queries (client) | [RFC 1035](https://datatracker.ietf.org/doc/html/rfc1035) |
 | **Application** | HTTP/HTTPS | Server with wolfSSL TLS support | [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) |
+| **Application** | TFTP | Client/server octet-mode transfers with callback-driven storage and verification | [RFC 1350](https://datatracker.ietf.org/doc/html/rfc1350), [RFC 2347](https://datatracker.ietf.org/doc/html/rfc2347), [RFC 2348](https://datatracker.ietf.org/doc/html/rfc2348), [RFC 2349](https://datatracker.ietf.org/doc/html/rfc2349), [RFC 7440](https://datatracker.ietf.org/doc/html/rfc7440) |
 | **VPN** | wolfGuard | FIPS-compliant WireGuard (P-256, AES-256-GCM, SHA-256) | [Wolfguard](https://www.github.com/wolfssl/wireguard) |
 
 ## wolfGuard (FIPS WireGuard)
@@ -179,6 +181,14 @@ This port follows the same model as the POSIX wrapper:
 - One background task loops on `wolfIP_poll()`
 - Socket wrappers serialize stack access with a mutex
 - Blocking operations wait on callback-driven wakeups (instead of busy polling)
+
+## Source Layout
+
+- `src/wolfip.c`: core TCP/IP stack
+- `src/http/`: optional HTTP/HTTPS server pieces
+- `src/tftp/`: reusable TFTP module sources, auto-registered by the top-level `Makefile` and `CMakeLists.txt` when present
+- `src/port/`: platform and OS adaptation layers
+- `src/test/`: integration and unit tests
 
 ## Copyright and License
 
