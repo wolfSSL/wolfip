@@ -4815,3 +4815,85 @@ START_TEST(test_ip_recv_drops_ssrr_source_routed_packet)
     ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
 }
 END_TEST
+
+START_TEST(test_ip_recv_drops_source_routed_packet_overlong_first_option_hides_lsrr)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t pkt[ETH_HEADER_LEN + 24 + TCP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    uint16_t *tcp_csum_field;
+    static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    memset(pkt, 0, sizeof(pkt));
+
+    ip = (struct wolfIP_ip_packet *)pkt;
+    memcpy(ip->eth.dst, ll->mac, 6);
+    memcpy(ip->eth.src, src_mac, 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+
+    /* IHL=6 to 4 bytes of IP options. */
+    ip->ver_ihl = 0x46;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_TCP;
+    ip->len = ee16(24 + TCP_HEADER_LEN);
+    ip->src = ee32(0x0A0000A1U);
+    ip->dst = ee32(0x0A000001U);
+
+    {
+        uint8_t *opts = pkt + ETH_HEADER_LEN + IP_HEADER_LEN;
+        opts[0] = 0x07;  /* Record Route */
+        opts[1] = 5;     /* overlong: greater than remaining 4-byte budget */
+        opts[2] = 0x83;  /* LSRR hidden inside the apparent RR payload */
+        opts[3] = 0x00;  /* End of Options */
+    }
+    ip->csum = 0;
+    iphdr_set_checksum(ip);
+
+    {
+        uint8_t *tcp = pkt + ETH_HEADER_LEN + 24;
+        tcp[0] = (uint8_t)(40000 >> 8);
+        tcp[1] = (uint8_t)(40000 & 0xFF);
+        tcp[2] = (uint8_t)(1234 >> 8);
+        tcp[3] = (uint8_t)(1234 & 0xFF);
+        tcp[4] = 0; tcp[5] = 0; tcp[6] = 0; tcp[7] = 1;
+        tcp[12] = TCP_HEADER_LEN << 2;
+        tcp[13] = TCP_FLAG_SYN;
+        tcp[14] = 0xFF; tcp[15] = 0xFF;
+        tcp_csum_field = (uint16_t *)(tcp + 16);
+        *tcp_csum_field = 0;
+        memset(&ph, 0, sizeof(ph));
+        ph.ph.src = ip->src;
+        ph.ph.dst = ip->dst;
+        ph.ph.proto = WI_IPPROTO_TCP;
+        ph.ph.len = ee16(TCP_HEADER_LEN);
+        *tcp_csum_field = ee16(transport_checksum(&ph, tcp));
+    }
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, sizeof(pkt));
+
+    /* Listener must stay in LISTEN: the hidden LSRR must be detected so the
+     * packet is dropped before tcp_input is invoked. With the buggy parser
+     * the SYN reaches the listener and flips it to TCP_SYN_RCVD. */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST

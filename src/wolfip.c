@@ -8434,6 +8434,8 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 return;
             if (opt + 1 >= opt_end || opt[1] < 2)
                 break;
+            if (opt[1] > (uint8_t)(opt_end - opt))
+                return;
             opt += opt[1];
         }
     }
