@@ -257,6 +257,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_established_fin_without_ack_dropped);
     tcase_add_test(tc_utils, test_ip_recv_drops_source_routed_packet);
     tcase_add_test(tc_utils, test_ip_recv_drops_ssrr_source_routed_packet);
+    tcase_add_test(tc_utils, test_ip_recv_drops_source_routed_packet_overlong_first_option_hides_lsrr);
     tcase_add_test(tc_utils, test_sock_sendto_error_paths);
     tcase_add_test(tc_utils, test_sock_sendto_null_buf_or_len_zero);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_not_established);
