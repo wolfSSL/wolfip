@@ -87,12 +87,12 @@ index 00000000..2e755e50
 +Each command should return the same payload.
 diff --git a/samples/net/sockets/wolfip_tap_echo/boards/native_sim.conf b/samples/net/sockets/wolfip_tap_echo/boards/native_sim.conf
 new file mode 100644
-index 00000000..cafb0379
+index 00000000..fe5796a3
 --- /dev/null
 +++ b/samples/net/sockets/wolfip_tap_echo/boards/native_sim.conf
 @@ -0,0 +1,3 @@
 +CONFIG_ETH_NATIVE_TAP_RANDOM_MAC=n
-+CONFIG_ETH_NATIVE_TAP_MAC_ADDR="00:00:5e:00:53:61"
++CONFIG_ETH_NATIVE_TAP_MAC_ADDR="02:00:5e:00:53:61"
 +CONFIG_ETH_NATIVE_TAP_DRV_NAME="zeth"
 diff --git a/samples/net/sockets/wolfip_tap_echo/prj.conf b/samples/net/sockets/wolfip_tap_echo/prj.conf
 new file mode 100644
