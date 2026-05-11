@@ -482,6 +482,48 @@ START_TEST(test_regression_sock_socket_null_wolfip_returns_einval)
             -WOLFIP_EINVAL);
 }
 END_TEST
+
+START_TEST(test_regression_sock_entrypoints_null_wolfip_returns_einval)
+{
+    int tcp_fd = (int)MARK_TCP_SOCKET;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t slen = (socklen_t)sizeof(sin);
+    uint8_t buf[1] = { 0 };
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = 0; /* IPADDR_ANY, keeps bind on the deref path */
+
+    ck_assert_int_eq(
+        wolfIP_sock_connect(NULL, tcp_fd, (struct wolfIP_sockaddr *)&sin, slen),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_accept(NULL, tcp_fd, NULL, NULL),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_sendto(NULL, tcp_fd, buf, sizeof(buf), 0, NULL, 0),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_recvfrom(NULL, tcp_fd, buf, sizeof(buf), 0, NULL, NULL),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_close(NULL, tcp_fd),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_getsockname(NULL, tcp_fd, (struct wolfIP_sockaddr *)&sin, &slen),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_bind(NULL, tcp_fd, (struct wolfIP_sockaddr *)&sin, slen),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_listen(NULL, tcp_fd, 0),
+        -WOLFIP_EINVAL);
+    ck_assert_int_eq(
+        wolfIP_sock_getpeername(NULL, tcp_fd, (struct wolfIP_sockaddr *)&sin, &slen),
+        -WOLFIP_EINVAL);
+}
+END_TEST
 START_TEST(test_udp_sendto_and_recvfrom)
 {
     struct wolfIP s;

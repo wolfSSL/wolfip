@@ -5368,6 +5368,8 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     unsigned int if_idx;
     if ((!addr)|| (sockfd < 0))
         return -WOLFIP_EINVAL;
+    if (!s)
+        return -WOLFIP_EINVAL;
     sin = (const struct wolfIP_sockaddr_in *)addr;
     if (IS_SOCKET_UDP(sockfd)) {
         struct ipconf *conf;
@@ -5547,6 +5549,9 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
 
+    if (!s)
+        return -WOLFIP_EINVAL;
+
     if (addrlen)
         *addrlen = sizeof(struct wolfIP_sockaddr_in);
 
@@ -5651,6 +5656,9 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
     (void)flags;
 
     if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+
+    if (!s)
         return -WOLFIP_EINVAL;
 
     if ((!buf) || (len == 0))
@@ -6024,6 +6032,9 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
     (void)flags;
 
     if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+
+    if (!s)
         return -WOLFIP_EINVAL;
 
     if (IS_SOCKET_TCP(sockfd)) {
@@ -6611,6 +6622,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 {
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
+    if (!s)
+        return -WOLFIP_EINVAL;
     if (IS_SOCKET_TCP(sockfd)) {
         struct tsocket *ts;
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
@@ -6700,6 +6713,9 @@ int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
     struct wolfIP_sockaddr_in *sin;
 
     if ((!addr) || (sockfd < 0))
+        return -WOLFIP_EINVAL;
+
+    if (!s)
         return -WOLFIP_EINVAL;
 
     sin = (struct wolfIP_sockaddr_in *)addr;
@@ -6874,6 +6890,9 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
 #endif
 
     if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+
+    if (!s)
         return -WOLFIP_EINVAL;
 
 #if WOLFIP_PACKET_SOCKETS
@@ -7054,6 +7073,8 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
     (void)backlog;
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
+    if (!s)
+        return -WOLFIP_EINVAL;
     if (IS_SOCKET_TCP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
@@ -7080,6 +7101,8 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
     struct tsocket *ts;
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
     if (sockfd < 0)
+        return -WOLFIP_EINVAL;
+    if (!s)
         return -WOLFIP_EINVAL;
     if (IS_SOCKET_TCP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
