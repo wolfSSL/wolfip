@@ -665,7 +665,7 @@ static void fill_bind_addr(struct wolfIP_sockaddr_in *addr, uint16_t port)
 
 ### 8.1 Original lwIP raw/classic server
 
-This is the common bare-metal lwIP callback style: create a TCP PCB, bind, listen, register an accept callback, register a receive callback on each accepted PCB, call `tcp_recved()` after consuming data, and send with `tcp_write()` plus `tcp_output()`. lwIP’s TCP raw API documentation describes this flow: create with `tcp_new()`, bind with `tcp_bind()`, listen with `tcp_listen()`, accept with `tcp_accept()`, receive through `tcp_recv()`, report consumed bytes with `tcp_recved()`, and send with `tcp_write()` / `tcp_output()`. ([Nongnu][3])
+This is the common bare-metal lwIP callback style: create a TCP PCB, bind, listen, register an accept callback, register a receive callback on each accepted PCB, call `tcp_recved()` after consuming data, and send with `tcp_write()` plus `tcp_output()`. The usual flow is `tcp_new()`, `tcp_bind()`, `tcp_listen()`, `tcp_accept()`, `tcp_recv()`, `tcp_recved()`, `tcp_write()`, and `tcp_output()`.
 
 ```c
 #include "lwip/tcp.h"
@@ -755,6 +755,8 @@ The wolfIP version uses one listening socket plus accepted sockets. It registers
 static struct wolfIP *g_ip;
 static int g_listen_fd = -1;
 
+static void echo_socket_cb(int fd, uint16_t events, void *arg);
+
 static void close_client(int fd)
 {
     (void)wolfIP_sock_close(g_ip, fd);
@@ -781,9 +783,12 @@ static void service_client_readable(int fd)
 
                 if (wr == -WOLFIP_EAGAIN) {
                     /*
-                     * TX buffer is full. The callback will be called again
-                     * when CB_EVENT_WRITABLE is raised.
+                     * This minimal example does not keep a per-client
+                     * pending-send queue. If TX space runs out before the
+                     * echo is fully queued, close the client instead of
+                     * silently dropping the remainder.
                      */
+                    close_client(fd);
                     return;
                 }
 
@@ -837,7 +842,7 @@ static void accept_ready_clients(void)
     }
 }
 
-void echo_socket_cb(int fd, uint16_t events, void *arg)
+static void echo_socket_cb(int fd, uint16_t events, void *arg)
 {
     (void)arg;
 
@@ -943,7 +948,7 @@ Migration notes:
 
 ### 9.1 Original lwIP ALTCP-style server
 
-lwIP ALTCP is an abstraction layer over the TCP callback API. It is designed so an application can be written against `altcp_*` calls and then use plain TCP, TLS, proxy-connect, or another layer underneath. The official ALTCP documentation says the interface mimics the TCP callback API, replaces `struct tcp_pcb` with `struct altcp_pcb`, and prefixes functions with `altcp_`; it also notes that `altcp_new()` uses an allocator object while TLS or pure-TCP allocation depends on the selected allocator/layer. ([Nongnu][4])
+lwIP ALTCP is an abstraction layer over the TCP callback API. It is designed so an application can be written against `altcp_*` calls and then use plain TCP, TLS, proxy-connect, or another layer underneath. The interface mirrors the TCP callback API, replaces `struct tcp_pcb` with `struct altcp_pcb`, prefixes functions with `altcp_`, and uses an allocator object so the selected transport layer can decide what kind of PCB to create.
 
 A plain TCP ALTCP echo server may look like this:
 
@@ -1022,7 +1027,7 @@ void lwip_altcp_echo_server_init(void)
 }
 ```
 
-The ALTCP function set includes `altcp_bind()`, `altcp_listen()`, `altcp_accept()`, `altcp_recv()`, `altcp_write()`, `altcp_output()`, and `altcp_close()`, mirroring the raw TCP API. ([Nongnu][5])
+The ALTCP function set includes `altcp_bind()`, `altcp_listen()`, `altcp_accept()`, `altcp_recv()`, `altcp_write()`, `altcp_output()`, and `altcp_close()`, mirroring the raw TCP API.
 
 ### 9.2 wolfIP version
 
@@ -1483,5 +1488,3 @@ Lock while calling wolfIP. Unlock before waiting on a semaphore. This prevents d
 | Abort               | `tcp_abort()`                     | `altcp_abort()`                           | `wolfIP_sock_close()` plus cleanup                       |
 | Main progress       | Ethernet input + lwIP timers      | Ethernet input + lwIP timers              | `wolfIP_poll()`                                          |
 | TLS layering        | Usually ALTCP TLS                 | ALTCP TLS                                 | wolfSSL over wolfIP socket                               |
-
-
