@@ -8,6 +8,15 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
  * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
 struct tftp_test_ctx {
@@ -211,9 +220,24 @@ START_TEST(test_tftp_helpers_and_builders)
     struct wolftftp_negotiated neg;
     struct wolftftp_parsed_data data;
 
+    uint32_t parsed = 0xDEADBEEFU;
+
     ck_assert_int_eq(wolftftp_stricmp_local("octet", "OCTET"), 0);
-    ck_assert_uint_eq(wolftftp_parse_u32("42", 100), 42);
-    ck_assert_uint_eq(wolftftp_parse_u32("999", 10), 0);
+    ck_assert_int_eq(wolftftp_parse_u32("42", 100, &parsed), 0);
+    ck_assert_uint_eq(parsed, 42U);
+    parsed = 0xDEADBEEFU;
+    ck_assert_int_eq(wolftftp_parse_u32("999", 10, &parsed), -1);
+    ck_assert_uint_eq(parsed, 0xDEADBEEFU);
+    /* Valid zero is distinguishable from invalid input. */
+    parsed = 0xDEADBEEFU;
+    ck_assert_int_eq(wolftftp_parse_u32("0", 100, &parsed), 0);
+    ck_assert_uint_eq(parsed, 0U);
+    parsed = 0xDEADBEEFU;
+    ck_assert_int_eq(wolftftp_parse_u32("abc", 100, &parsed), -1);
+    ck_assert_uint_eq(parsed, 0xDEADBEEFU);
+    ck_assert_int_eq(wolftftp_parse_u32(NULL, 100, &parsed), -1);
+    ck_assert_int_eq(wolftftp_parse_u32("", 100, &parsed), -1);
+    ck_assert_int_eq(wolftftp_parse_u32("12", 100, NULL), -1);
     ck_assert_int_eq(wolftftp_copy_string(NULL, 0, "x"), -WOLFIP_EINVAL);
 
     ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
@@ -633,6 +657,319 @@ START_TEST(test_tftp_server_request_errors_and_timeouts)
 }
 END_TEST
 
+START_TEST(test_tftp_server_session_reaped_after_completion)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote;
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    unsigned int n;
+    unsigned int i;
+
+    /* Run more transfers than the static session pool can hold; if
+     * wolftftp_server_finish failed to free the slot, the second batch
+     * of allocs would fall through to the "no slots" error path and
+     * leave open_calls at WOLFTFTP_SERVER_MAX_SESSIONS. */
+    n = WOLFTFTP_SERVER_MAX_SESSIONS * 2U + 1U;
+    tftp_test_ctx_reset(&ctx);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+
+    for (i = 0; i < n; i++) {
+        remote = tftp_remote(0x0A000100U + i, (uint16_t)(7000U + i));
+        ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_WRQ,
+            "fw.bin", &cfg, 4, &opts, &req_len), 0);
+        ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+            pkt, req_len), 0);
+        memcpy(pkt + 4, "end", 3);
+        ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
+            &remote, pkt,
+            (uint16_t)wolftftp_build_data(pkt, sizeof(pkt), 1, pkt + 4, 3)), 0);
+        ck_assert_uint_eq(server.sessions[0].state, WOLFTFTP_SESSION_FREE);
+    }
+    ck_assert_int_eq(ctx.open_calls, (int)n);
+    ck_assert_int_eq(ctx.close_calls, (int)n);
+}
+END_TEST
+
+START_TEST(test_tftp_client_honors_caller_server_port)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_client client;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    /* User supplies a non-default server port (e.g. 1069). The RRQ
+     * must go to that port and TID locking must still happen on the
+     * first response, even though the configured port is not 69. */
+    struct wolftftp_endpoint srv = tftp_remote(0x0A000020U, 1069);
+    struct wolftftp_endpoint tid = tftp_remote(srv.ip, 5005);
+    struct wolftftp_endpoint bad_tid = tftp_remote(srv.ip, 5006);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    int len;
+
+    tftp_test_ctx_reset(&ctx);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_client_init(&client, &transport, &io, &cfg);
+
+    ck_assert_int_eq(wolftftp_client_start_rrq(&client, &srv, "fw.bin"), 0);
+    ck_assert_uint_eq(client.server.port, 1069U);
+    ck_assert_uint_eq(client.tid_locked, 0U);
+    ck_assert_uint_eq(ctx.sent_remote[0].port, 1069U);
+
+    memcpy(pkt + 4, "0123456789abcdef", 16);
+    len = wolftftp_build_data(pkt, sizeof(pkt), 1, pkt + 4, 16);
+    ck_assert_int_eq(wolftftp_client_receive(&client, cfg.local_port,
+        &tid, pkt, (uint16_t)len), 0);
+    ck_assert_uint_eq(client.server.port, 5005U);
+    ck_assert_uint_eq(client.tid_locked, 1U);
+
+    /* Once locked, a packet from the original non-default port is no
+     * longer accepted (it is now an unknown TID). */
+    ck_assert_int_eq(wolftftp_client_receive(&client, cfg.local_port,
+        &srv, pkt, (uint16_t)len), WOLFTFTP_ERR_TID);
+    ck_assert_int_eq(wolftftp_client_receive(&client, cfg.local_port,
+        &bad_tid, pkt, (uint16_t)len), WOLFTFTP_ERR_TID);
+}
+END_TEST
+
+START_TEST(test_tftp_client_default_port_when_zero)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_client client;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint srv = tftp_remote(0x0A000021U, 0);
+
+    tftp_test_ctx_reset(&ctx);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_client_init(&client, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_client_start_rrq(&client, &srv, "fw.bin"), 0);
+    ck_assert_uint_eq(client.server.port, WOLFTFTP_PORT);
+    ck_assert_uint_eq(ctx.sent_remote[0].port, WOLFTFTP_PORT);
+}
+END_TEST
+
+START_TEST(test_tftp_parse_tsize_rejects_non_numeric)
+{
+    uint8_t pkt[64];
+    struct wolftftp_parsed_req req;
+    struct wolftftp_negotiated neg;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+
+    /* tsize="abc": must be rejected as unsupported, not silently
+     * treated as tsize=0. Same check for OACK. */
+    memset(pkt, 0, sizeof(pkt));
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_RRQ);
+    memcpy(pkt + 2, "fw\0octet\0tsize\0abc\0", 19);
+    ck_assert_int_eq(wolftftp_parse_request(pkt, 19, &req),
+        WOLFTFTP_ERR_UNSUPPORTED);
+
+    memset(pkt, 0, sizeof(pkt));
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_OACK);
+    memcpy(pkt + 2, "tsize\0abc\0", 10);
+    wolftftp_neg_defaults(&neg, &cfg);
+    ck_assert_int_eq(wolftftp_parse_oack(pkt, 12, &neg),
+        WOLFTFTP_ERR_UNSUPPORTED);
+
+    /* tsize=0 is still valid and parses to 0. */
+    memset(pkt, 0, sizeof(pkt));
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_OACK);
+    memcpy(pkt + 2, "tsize\0" "0\0", 8);
+    wolftftp_neg_defaults(&neg, &cfg);
+    ck_assert_int_eq(wolftftp_parse_oack(pkt, 10, &neg), 0);
+    ck_assert_uint_eq(neg.have_tsize, 1U);
+    ck_assert_uint_eq(neg.tsize, 0U);
+}
+END_TEST
+
+START_TEST(test_tftp_build_request_fits_max_options)
+{
+    /* All four options enabled plus a near-max filename must still
+     * fit in the buffer used by the client for retransmits. */
+    uint8_t buf[WOLFTFTP_REQ_BUF_MAX];
+    struct wolftftp_transfer_cfg cfg;
+    char name[WOLFTFTP_MAX_FILENAME];
+    uint8_t requested = 0;
+    uint16_t out_len = 0;
+    size_t i;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.blksize = WOLFTFTP_MAX_BLKSIZE;
+    cfg.timeout_s = 255;
+    cfg.windowsize = WOLFTFTP_MAX_WINDOWSIZE;
+    cfg.max_image_size = 0xFFFFFFFFU;
+    for (i = 0; i + 1 < sizeof(name); i++)
+        name[i] = 'a';
+    name[sizeof(name) - 1] = '\0';
+
+    ck_assert_int_eq(wolftftp_build_request(buf, sizeof(buf), WOLFTFTP_OP_RRQ,
+        name, &cfg, 0xFFFFFFFFU, &requested, &out_len), 0);
+    ck_assert_uint_eq(requested,
+        (uint8_t)(WOLFTFTP_OPT_BLKSIZE | WOLFTFTP_OPT_TIMEOUT |
+                  WOLFTFTP_OPT_WINDOWSIZE | WOLFTFTP_OPT_TSIZE));
+    ck_assert_uint_le(out_len, sizeof(buf));
+}
+END_TEST
+
+START_TEST(test_tftp_server_rrq_retransmit_replays_window)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    /* Server uses defaults (no options), with a windowsize of 2 so we
+     * actually get a multi-block window we can compare across the
+     * retransmit boundary. */
+    struct wolftftp_transfer_cfg cfg;
+    struct wolftftp_transfer_cfg req_cfg;
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote = tftp_remote(0x0A000030U, 4001);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    uint16_t blksize = 8U;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.blksize = blksize;
+    cfg.timeout_s = 1;
+    cfg.windowsize = 2;
+    cfg.max_retries = 5;
+
+    /* Request side wants all defaults so no options are negotiated;
+     * the server immediately sends the first window of data. */
+    memset(&req_cfg, 0, sizeof(req_cfg));
+    req_cfg.blksize = WOLFTFTP_DEFAULT_BLKSIZE;
+    req_cfg.timeout_s = WOLFTFTP_DEFAULT_TIMEOUT_S;
+    req_cfg.windowsize = 1;
+
+    tftp_test_ctx_reset(&ctx);
+    /* Fill the source with several full blocks of distinguishable data
+     * so we can spot any accidental advance past the unacked window. */
+    memset(ctx.read_data, 'A', blksize);
+    memset(ctx.read_data + blksize, 'B', blksize);
+    memset(ctx.read_data + 2 * blksize, 'C', blksize);
+    memset(ctx.read_data + 3 * blksize, 'D', blksize);
+    ctx.read_len[0] = blksize;
+    ctx.read_len[1] = blksize;
+    /* Replay (block 1, block 2) again on retransmit. */
+    ctx.read_len[2] = blksize;
+    ctx.read_len[3] = blksize;
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
+        "fw.bin", &req_cfg, 0, &opts, &req_len), 0);
+    ck_assert_uint_eq(opts, 0U);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+    /* No-option RRQ skips the OACK; first window of 2 blocks is sent. */
+    ck_assert_int_eq(ctx.send_calls, 2);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0] + 2), 1U);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[1] + 2), 2U);
+
+    /* Force a timeout; this triggers the RRQ retransmit branch in
+     * wolftftp_server_poll. Before the fix it would send blocks 3 and
+     * 4 (advancing past the unacked window); after the fix it must
+     * replay blocks 1 and 2. */
+    ck_assert_int_eq(wolftftp_server_poll(&server, 1U), 0);
+    ck_assert_int_eq(wolftftp_server_poll(&server, 5000U), 0);
+    ck_assert_int_eq(ctx.send_calls, 4);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[2] + 2), 1U);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[3] + 2), 2U);
+    ck_assert_mem_eq(ctx.sent[2] + 4, ctx.sent[0] + 4, blksize);
+    ck_assert_mem_eq(ctx.sent[3] + 4, ctx.sent[1] + 4, blksize);
+    /* Session state must remain anchored at the (still-unacked) start
+     * of the replayed window. */
+    ck_assert_uint_eq(server.sessions[0].window_start_block, 1U);
+    ck_assert_uint_eq(server.sessions[0].window_start_offset, 0U);
+}
+END_TEST
+
+START_TEST(test_tftp_client_poll_deadline_is_wrap_safe)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_client client;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint srv = tftp_remote(0x0A000040U, 0);
+    uint32_t base = 0xFFFFF000U; /* near uint32_t wrap */
+
+    cfg.timeout_s = 2; /* deadline = base + 2000, which wraps past 0 */
+
+    tftp_test_ctx_reset(&ctx);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_client_init(&client, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_client_start_rrq(&client, &srv, "fw.bin"), 0);
+    ck_assert_int_eq(ctx.send_calls, 1);
+
+    /* Arm the deadline at base; the next tick computes
+     * deadline = base + 2000 which wraps to a small value. */
+    ck_assert_int_eq(wolftftp_client_poll(&client, base), 0);
+    ck_assert_uint_ne(client.deadline_ms, 0U);
+    /* "After 1000ms" — wrap is still in the future — must not retry. */
+    ck_assert_int_eq(wolftftp_client_poll(&client, base + 1000U), 0);
+    ck_assert_int_eq(ctx.send_calls, 1);
+    /* After deadline, retry fires even though now < deadline numerically
+     * would have been true with the old unsigned compare. */
+    ck_assert_int_eq(wolftftp_client_poll(&client, base + 2500U), 0);
+    ck_assert_int_eq(ctx.send_calls, 2);
+}
+END_TEST
+
+START_TEST(test_tftp_server_poll_deadline_is_wrap_safe)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote = tftp_remote(0x0A000041U, 4100);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    uint32_t base = 0xFFFFF000U;
+
+    cfg.timeout_s = 2;
+
+    tftp_test_ctx_reset(&ctx);
+    memcpy(ctx.read_data, "abcdefg", 7);
+    ctx.read_len[0] = 7;
+    ctx.read_last[0] = 1;
+    /* Replay buffer for the retransmit path: */
+    ctx.read_len[1] = 7;
+    ctx.read_last[1] = 1;
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
+        "fw.bin", &cfg, 0, &opts, &req_len), 0);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+    ck_assert_int_eq(ctx.send_calls, 1);
+
+    ck_assert_int_eq(wolftftp_server_poll(&server, base), 0);
+    ck_assert_uint_ne(server.sessions[0].deadline_ms, 0U);
+    /* Before wrap-adjusted deadline: must not retransmit. */
+    ck_assert_int_eq(wolftftp_server_poll(&server, base + 1000U), 0);
+    ck_assert_int_eq(ctx.send_calls, 1);
+    /* After deadline (with arithmetic wrap): must retransmit. */
+    ck_assert_int_eq(wolftftp_server_poll(&server, base + 2500U), 0);
+    ck_assert_int_eq(ctx.send_calls, 2);
+}
+END_TEST
+
 static void add_tftp_tests(TCase *tc_proto)
 {
     tcase_add_test(tc_proto, test_tftp_helpers_and_builders);
@@ -644,4 +981,12 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_server_rrq_success_and_poll);
     tcase_add_test(tc_proto, test_tftp_server_wrq_success_and_failures);
     tcase_add_test(tc_proto, test_tftp_server_request_errors_and_timeouts);
+    tcase_add_test(tc_proto, test_tftp_server_session_reaped_after_completion);
+    tcase_add_test(tc_proto, test_tftp_client_honors_caller_server_port);
+    tcase_add_test(tc_proto, test_tftp_client_default_port_when_zero);
+    tcase_add_test(tc_proto, test_tftp_parse_tsize_rejects_non_numeric);
+    tcase_add_test(tc_proto, test_tftp_build_request_fits_max_options);
+    tcase_add_test(tc_proto, test_tftp_server_rrq_retransmit_replays_window);
+    tcase_add_test(tc_proto, test_tftp_client_poll_deadline_is_wrap_safe);
+    tcase_add_test(tc_proto, test_tftp_server_poll_deadline_is_wrap_safe);
 }

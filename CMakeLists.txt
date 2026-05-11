@@ -51,8 +51,17 @@ endif()
 string(TOLOWER "${CMAKE_SYSTEM_NAME}" CMAKE_SYSTEM_NAME_LC)
 
 set(WOLFIP_TAP_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/port/posix/tap_${CMAKE_SYSTEM_NAME_LC}.c")
-file(GLOB WOLFIP_TFTP_SRCS CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/tftp/*.c")
+
+# Optional TFTP client/server module. Default off to match config.h
+# (WOLFIP_ENABLE_TFTP == 0); turn on with -DWOLFIP_ENABLE_TFTP=ON.
+option(WOLFIP_ENABLE_TFTP "Build and link the wolfIP TFTP client/server" OFF)
+if (WOLFIP_ENABLE_TFTP)
+    file(GLOB WOLFIP_TFTP_SRCS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/tftp/*.c")
+    add_compile_definitions(WOLFIP_ENABLE_TFTP=1)
+else()
+    set(WOLFIP_TFTP_SRCS )
+endif()
 
 if (NOT EXISTS "${WOLFIP_TAP_SRC}")
     message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")

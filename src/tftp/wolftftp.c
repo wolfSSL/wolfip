@@ -1,3 +1,23 @@
+/* wolftftp.c
+ *
+ * Copyright (C) 2026 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #include "wolftftp.h"
 
 #include <ctype.h>
@@ -70,21 +90,23 @@ static void wolftftp_write_u16(uint8_t *buf, uint16_t value)
     buf[1] = (uint8_t)(value & 0xFFU);
 }
 
-static uint32_t wolftftp_parse_u32(const char *value, uint32_t max_value)
+static int wolftftp_parse_u32(const char *value, uint32_t max_value,
+    uint32_t *out)
 {
-    uint32_t out = 0;
+    uint32_t v = 0;
 
-    if (value == NULL || *value == '\0')
-        return 0;
+    if (value == NULL || out == NULL || *value == '\0')
+        return -1;
     while (*value != '\0') {
         if (*value < '0' || *value > '9')
-            return 0;
-        out = (out * 10U) + (uint32_t)(*value - '0');
-        if (out > max_value)
-            return 0;
+            return -1;
+        v = (v * 10U) + (uint32_t)(*value - '0');
+        if (v > max_value)
+            return -1;
         value++;
     }
-    return out;
+    *out = v;
+    return 0;
 }
 
 static int wolftftp_copy_string(char *dst, size_t dst_len, const char *src)
@@ -155,7 +177,6 @@ static void wolftftp_client_finish(struct wolftftp_client *client, int status)
 static void wolftftp_server_finish(struct wolftftp_server *server,
     struct wolftftp_server_session *session, int status)
 {
-    (void)server;
     if (session == NULL)
         return;
     session->last_status = status;
@@ -168,8 +189,10 @@ static void wolftftp_server_finish(struct wolftftp_server *server,
     if (server != NULL && server->io.close != NULL && session->handle != NULL)
         server->io.close(server->io.arg, session->handle, status);
     session->handle = NULL;
-    if (status != 0)
-        memset(session, 0, sizeof(*session));
+    /* Reap the slot in both success and failure paths so that further
+     * transfers can be accepted; we have no public API that observes
+     * COMPLETE state. */
+    memset(session, 0, sizeof(*session));
 }
 
 static int wolftftp_append_opt(uint8_t *buf, uint16_t *off, uint16_t max_len,
@@ -289,24 +312,24 @@ static int wolftftp_parse_request(const uint8_t *buf, uint16_t len,
         if (slen == 0 || (const uint8_t *)(value + slen) > buf + len)
             return WOLFTFTP_ERR_PACKET;
         if (wolftftp_stricmp_local(key, "blksize") == 0) {
-            number = wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE);
-            if (number < 8U)
+            if (wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE, &number) != 0 ||
+                    number < 8U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             req->blksize = (uint16_t)number;
             req->opts |= WOLFTFTP_OPT_BLKSIZE;
         } else if (wolftftp_stricmp_local(key, "timeout") == 0) {
-            number = wolftftp_parse_u32(value, 255U);
-            if (number == 0U)
+            if (wolftftp_parse_u32(value, 255U, &number) != 0 || number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             req->timeout_s = (uint16_t)number;
             req->opts |= WOLFTFTP_OPT_TIMEOUT;
         } else if (wolftftp_stricmp_local(key, "tsize") == 0) {
-            number = wolftftp_parse_u32(value, 0xFFFFFFFFUL);
+            if (wolftftp_parse_u32(value, 0xFFFFFFFFUL, &number) != 0)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             req->tsize = number;
             req->opts |= WOLFTFTP_OPT_TSIZE;
         } else if (wolftftp_stricmp_local(key, "windowsize") == 0) {
-            number = wolftftp_parse_u32(value, WOLFTFTP_MAX_WINDOWSIZE);
-            if (number == 0U)
+            if (wolftftp_parse_u32(value, WOLFTFTP_MAX_WINDOWSIZE, &number) != 0 ||
+                    number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             req->windowsize = (uint16_t)number;
             req->opts |= WOLFTFTP_OPT_WINDOWSIZE;
@@ -417,22 +440,22 @@ static int wolftftp_parse_oack(const uint8_t *buf, uint16_t len,
         if (slen == 0 || (const uint8_t *)(value + slen) > buf + len)
             return WOLFTFTP_ERR_PACKET;
         if (wolftftp_stricmp_local(key, "blksize") == 0) {
-            number = wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE);
-            if (number < 8U)
+            if (wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE, &number) != 0 ||
+                    number < 8U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->blksize = (uint16_t)number;
         } else if (wolftftp_stricmp_local(key, "timeout") == 0) {
-            number = wolftftp_parse_u32(value, 255U);
-            if (number == 0U)
+            if (wolftftp_parse_u32(value, 255U, &number) != 0 || number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->timeout_s = (uint16_t)number;
         } else if (wolftftp_stricmp_local(key, "tsize") == 0) {
-            number = wolftftp_parse_u32(value, 0xFFFFFFFFUL);
+            if (wolftftp_parse_u32(value, 0xFFFFFFFFUL, &number) != 0)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             neg->tsize = number;
             neg->have_tsize = 1;
         } else if (wolftftp_stricmp_local(key, "windowsize") == 0) {
-            number = wolftftp_parse_u32(value, WOLFTFTP_MAX_WINDOWSIZE);
-            if (number == 0U)
+            if (wolftftp_parse_u32(value, WOLFTFTP_MAX_WINDOWSIZE, &number) != 0 ||
+                    number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->windowsize = (uint16_t)number;
         } else {
@@ -466,7 +489,11 @@ static int wolftftp_packet_opcode(const uint8_t *buf, uint16_t len)
 static uint32_t wolftftp_deadline(const struct wolftftp_negotiated *neg,
     uint32_t now_ms)
 {
-    return now_ms + ((uint32_t)neg->timeout_s * 1000U);
+    uint32_t d = now_ms + ((uint32_t)neg->timeout_s * 1000U);
+    /* 0 is reserved as the "not armed" sentinel; nudge past it. */
+    if (d == 0U)
+        d = 1U;
+    return d;
 }
 
 static int wolftftp_send_client_error(struct wolftftp_client *client,
@@ -536,7 +563,9 @@ int wolftftp_client_start_rrq(struct wolftftp_client *client,
     if (ret != 0)
         return ret;
     client->server = *server;
-    client->server.port = WOLFTFTP_PORT;
+    if (client->server.port == 0U)
+        client->server.port = WOLFTFTP_PORT;
+    client->tid_locked = 0;
     client->expected_block = 1;
     client->last_acked_block = 0;
     client->window_count = 0;
@@ -660,7 +689,7 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
         return WOLFTFTP_ERR_STATE;
     if (remote->ip != client->server.ip)
         return 0;
-    if (client->server.port != WOLFTFTP_PORT && remote->port != client->server.port) {
+    if (client->tid_locked != 0U && remote->port != client->server.port) {
         (void)wolftftp_send_client_error(client, remote, WOLFTFTP_EBADTID,
             "unknown tid");
         return WOLFTFTP_ERR_TID;
@@ -668,12 +697,8 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
 
     opcode = wolftftp_packet_opcode(buf, len);
     if (opcode == WOLFTFTP_OP_OACK) {
-        if (client->server.port != WOLFTFTP_PORT && remote->port != client->server.port) {
-            (void)wolftftp_send_client_error(client, remote, WOLFTFTP_EBADTID,
-                "unknown tid");
-            return WOLFTFTP_ERR_TID;
-        }
         client->server.port = remote->port;
+        client->tid_locked = 1;
         wolftftp_neg_defaults(&neg, &client->cfg);
         ret = wolftftp_parse_oack(buf, len, &neg);
         if (ret != 0) {
@@ -708,9 +733,10 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
     if (opcode != WOLFTFTP_OP_DATA)
         return WOLFTFTP_ERR_PACKET;
 
-    if (client->server.port == WOLFTFTP_PORT)
+    if (client->tid_locked == 0U) {
         client->server.port = remote->port;
-    else if (remote->port != client->server.port) {
+        client->tid_locked = 1;
+    } else if (remote->port != client->server.port) {
         (void)wolftftp_send_client_error(client, remote, WOLFTFTP_EBADTID,
             "unknown tid");
         return WOLFTFTP_ERR_TID;
@@ -743,7 +769,8 @@ int wolftftp_client_poll(struct wolftftp_client *client, uint32_t now_ms)
         client->deadline_ms = wolftftp_deadline(&client->neg, now_ms);
         return 0;
     }
-    if (client->deadline_ms != 0U && now_ms < client->deadline_ms)
+    if (client->deadline_ms != 0U &&
+            (int32_t)(now_ms - client->deadline_ms) < 0)
         return 0;
     if (client->retries >= client->cfg.max_retries) {
         wolftftp_client_finish(client, WOLFTFTP_ERR_TIMEOUT);
@@ -832,6 +859,12 @@ static int wolftftp_server_send_window(struct wolftftp_server *server,
 
     if (server->io.read == NULL)
         return WOLFTFTP_ERR_IO;
+    /* Snapshot the pre-send state so a retransmit can replay the same
+     * window instead of advancing into already-sent-but-unacked blocks. */
+    session->window_start_offset = session->next_offset;
+    session->window_start_total = session->total_size;
+    session->window_start_block = session->next_block;
+    session->window_start_final = session->final_seen;
     for (i = 0; i < session->neg.windowsize; i++) {
         out_len = 0;
         is_last = 0;
@@ -1090,11 +1123,10 @@ int wolftftp_server_poll(struct wolftftp_server *server, uint32_t now_ms)
                 session->state == WOLFTFTP_SESSION_COMPLETE)
             continue;
         if (session->deadline_ms == 0U) {
-            session->deadline_ms = now_ms +
-                ((uint32_t)session->neg.timeout_s * 1000U);
+            session->deadline_ms = wolftftp_deadline(&session->neg, now_ms);
             continue;
         }
-        if (session->deadline_ms != 0U && now_ms < session->deadline_ms)
+        if ((int32_t)(now_ms - session->deadline_ms) < 0)
             continue;
         if (session->retries >= server->cfg.max_retries) {
             wolftftp_server_finish(server, session, WOLFTFTP_ERR_TIMEOUT);
@@ -1111,10 +1143,16 @@ int wolftftp_server_poll(struct wolftftp_server *server, uint32_t now_ms)
                 (void)wolftftp_server_send_last(server, session, pkt, (uint16_t)ret);
             }
         } else {
+            /* Replay the last unacked window verbatim instead of
+             * sending fresh blocks. */
+            session->next_offset = session->window_start_offset;
+            session->total_size = session->window_start_total;
+            session->next_block = session->window_start_block;
+            session->final_seen = session->window_start_final;
             (void)wolftftp_server_send_window(server, session);
         }
         session->retries++;
-        session->deadline_ms = now_ms + ((uint32_t)session->neg.timeout_s * 1000U);
+        session->deadline_ms = wolftftp_deadline(&session->neg, now_ms);
     }
     return 0;
 }

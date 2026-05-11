@@ -1,3 +1,23 @@
+/* wolftftp.h
+ *
+ * Copyright (C) 2026 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
 #ifndef WOLFTFTP_H
 #define WOLFTFTP_H
 
@@ -44,6 +64,13 @@
 #ifndef WOLFTFTP_SERVER_PORT_BASE
 #define WOLFTFTP_SERVER_PORT_BASE 20000U
 #endif
+
+/* Worst-case RRQ/WRQ on the wire:
+ *   opcode(2) + filename(MAX_FILENAME, null-terminated) + "octet\0"(6)
+ *   + blksize/value(13) + timeout/value(12) + windowsize/value(13)
+ *   + tsize/value(17) = 63 + MAX_FILENAME. The constant below adds a
+ *   generous margin so future options do not silently truncate. */
+#define WOLFTFTP_REQ_BUF_MAX (WOLFTFTP_MAX_FILENAME + 128U)
 
 #define WOLFTFTP_ERR_IO          (-1000)
 #define WOLFTFTP_ERR_STATE       (-1001)
@@ -149,7 +176,7 @@ struct wolftftp_client {
     struct wolftftp_negotiated neg;
     struct wolftftp_endpoint server;
     void *handle;
-    uint8_t last_tx[4 + (2 * 16) + WOLFTFTP_MAX_FILENAME];
+    uint8_t last_tx[WOLFTFTP_REQ_BUF_MAX];
     uint16_t last_tx_len;
     uint32_t next_offset;
     uint32_t total_size;
@@ -164,6 +191,7 @@ struct wolftftp_client {
     uint8_t requested_opts;
     uint8_t final_seen;
     uint8_t request_sent;
+    uint8_t tid_locked;
     char filename[WOLFTFTP_MAX_FILENAME];
 };
 
@@ -175,6 +203,13 @@ struct wolftftp_server_session {
     uint32_t total_size;
     uint32_t file_size;
     uint32_t deadline_ms;
+    /* Snapshot of next_offset/total_size/next_block at the start of the
+     * last RRQ window send, used to replay the window on a retransmit
+     * instead of advancing into unacknowledged territory. */
+    uint32_t window_start_offset;
+    uint32_t window_start_total;
+    uint16_t window_start_block;
+    uint8_t  window_start_final;
     uint16_t local_port;
     uint16_t next_block;
     uint16_t last_acked_block;

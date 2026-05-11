@@ -89,9 +89,20 @@ endif
 TAP_OBJ:=$(NETDEV_OBJ)
 TAP_PIE_OBJ:=$(NETDEV_PIE_OBJ)
 
+# Optional TFTP module. Default to off to match config.h
+# (WOLFIP_ENABLE_TFTP == 0); set WOLFIP_ENABLE_TFTP=1 on the command
+# line to compile and link the TFTP client/server objects.
+WOLFIP_ENABLE_TFTP ?= 0
+ifeq ($(WOLFIP_ENABLE_TFTP),1)
 WOLFIP_TFTP_SRC:=$(wildcard src/tftp/*.c)
 WOLFIP_TFTP_OBJ:=$(patsubst src/%.c,build/%.o,$(WOLFIP_TFTP_SRC))
 WOLFIP_TFTP_PIE_OBJ:=$(patsubst src/%.c,build/pie/%.o,$(WOLFIP_TFTP_SRC))
+CFLAGS+=-DWOLFIP_ENABLE_TFTP=1
+else
+WOLFIP_TFTP_SRC:=
+WOLFIP_TFTP_OBJ:=
+WOLFIP_TFTP_PIE_OBJ:=
+endif
 
 ifeq ($(UNAME_S),Darwin)
   BEGIN_GROUP:=
