@@ -5224,6 +5224,59 @@ START_TEST(test_udp_sock_connect_sets_connected_flag)
 }
 END_TEST
 
+/* Regression: wolfIP_sock_connect() must NOT leave the UDP socket
+ * half-connected when validation (e.g. bound_local_ip not bound to
+ * any current interface) fails. Otherwise the peer RX filter would
+ * activate against the failed-connect peer and drop legitimate
+ * datagrams arriving on an unconnected socket. */
+START_TEST(test_udp_sock_connect_failed_validation_leaves_socket_unconnected)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in bind_addr;
+    struct wolfIP_sockaddr_in remote;
+    struct tsocket *ts;
+    int fd;
+    int rc;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t bogus_ip = 0xC0A80001U; /* 192.168.0.1, not configured */
+    uint32_t peer_ip  = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(fd)];
+
+    /* Pin a bound_local_ip that is *not* configured on any interface
+     * so the bound_match check inside connect() must fail. */
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(1234);
+    bind_addr.sin_addr.s_addr = ee32(bogus_ip);
+    /* Force bound_local_ip without going through bind() (which would
+     * reject the unknown address); we want to specifically exercise
+     * the post-bind connect() validation path. */
+    ts->bound_local_ip = bogus_ip;
+    ts->src_port = 1234;
+
+    memset(&remote, 0, sizeof(remote));
+    remote.sin_family = AF_INET;
+    remote.sin_port = ee16(6969);
+    remote.sin_addr.s_addr = ee32(peer_ip);
+    rc = wolfIP_sock_connect(&s, fd, (struct wolfIP_sockaddr *)&remote,
+        sizeof(remote));
+    ck_assert_int_eq(rc, -WOLFIP_EINVAL);
+    /* None of the persistent state should reflect the attempted peer. */
+    ck_assert_uint_eq(ts->sock.udp.connected, 0U);
+    ck_assert_uint_eq(ts->dst_port, 0U);
+    ck_assert_uint_eq(ts->remote_ip, 0U);
+
+    wolfIP_sock_close(&s, fd);
+}
+END_TEST
+
 START_TEST(test_udp_try_recv_dhcp_running_local_zero)
 {
     struct wolfIP s;

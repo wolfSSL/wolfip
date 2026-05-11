@@ -67,13 +67,28 @@
 #define TFTP_INTEROP_CLIENT_PORT   6989
 
 #define TFTP_INTEROP_REMOTE_NAME   "wolfip_tftp_fixture.bin"
-#define TFTP_INTEROP_LOCAL_DIR     "/tmp/wolfip-tftp-root"
-#define TFTP_INTEROP_FIXTURE_PATH  TFTP_INTEROP_LOCAL_DIR "/" TFTP_INTEROP_REMOTE_NAME
-#define TFTP_INTEROP_DOWNLOAD_PATH "/tmp/wolfip-tftp-download.bin"
-#define TFTP_INTEROP_HOST_GET_PATH "/tmp/wolfip-tftp-host-get.bin"
-#define TFTP_INTEROP_PIDFILE       "/tmp/wolfip-tftpd-hpa.pid"
-#define TFTP_INTEROP_TFTPD_LOG     "/tmp/wolfip-tftpd-hpa.log"
-#define TFTP_INTEROP_TFTP_LOG      "/tmp/wolfip-tftp-client.log"
+
+/* All filesystem paths used by this test live under a fresh
+ * mkdtemp() directory (mode 0700, owned by the running user) so that
+ * a hostile local user on a multi-tenant box cannot precreate a
+ * symlink at one of the test's well-known paths and redirect the
+ * (root-running) test's writes elsewhere. The previous fixed-path
+ * layout (`/tmp/wolfip-tftp-*`) was a TOCTOU / symlink-attack
+ * vector — fixed only paths now are the diagnostics pcap and the
+ * Makefile-side artifact uploader's expectations, both kept under
+ * /tmp and re-emitted by name from the temp root before tearing it
+ * down. */
+static char tftp_workdir[64];
+static char tftp_local_dir[96];
+static char tftp_fixture_path[160];
+static char tftp_download_path[160];
+static char tftp_host_get_path[160];
+static char tftp_tftpd_log[160];
+static char tftp_tftp_log[160];
+
+#define TFTP_INTEROP_DIAG_PCAP "/tmp/wolfip-tftp.pcap"
+#define TFTP_INTEROP_DIAG_TFTPD "/tmp/wolfip-tftpd-hpa.log"
+#define TFTP_INTEROP_DIAG_TFTP "/tmp/wolfip-tftp-client.log"
 
 /* Picked so it is NOT an exact multiple of WOLFTFTP_DEFAULT_BLKSIZE
  * (512): the last DATA block must be smaller than blksize so the
@@ -126,14 +141,32 @@ done:
     return rc;
 }
 
+/* Open a file beneath the test workdir for writing. O_NOFOLLOW
+ * refuses to traverse a symlink at the leaf (so a precreated link
+ * can't redirect our writes to / etc / shadow when the test runs as
+ * root); O_EXCL refuses to overwrite an existing entry. The workdir
+ * itself is mode 0700, so a hostile user shouldn't be able to plant
+ * anything in it to begin with — these flags are belt-and-braces. */
+static int open_workdir_file_for_write(const char *path)
+{
+    return open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+}
+
 static int write_fixture(const char *path)
 {
     FILE *fp;
+    int fd;
     unsigned int i;
 
-    fp = fopen(path, "wb");
-    if (fp == NULL)
+    (void)unlink(path);
+    fd = open_workdir_file_for_write(path);
+    if (fd < 0)
         return -1;
+    fp = fdopen(fd, "wb");
+    if (fp == NULL) {
+        close(fd);
+        return -1;
+    }
     for (i = 0; i < TFTP_INTEROP_FIXTURE_SIZE; i++) {
         unsigned char b = (unsigned char)((i * 31U + 7U) & 0xFFU);
         if (fputc(b, fp) == EOF) {
@@ -142,8 +175,66 @@ static int write_fixture(const char *path)
         }
     }
     fclose(fp);
-    (void)chmod(path, 0666);
     return 0;
+}
+
+/* Build the per-run workdir layout under a freshly-created mkdtemp
+ * directory. Returns 0 on success, -1 on failure with errno set. The
+ * directory is mode 0700 by mkdtemp's contract. */
+static int tftp_workdir_setup(void)
+{
+    snprintf(tftp_workdir, sizeof(tftp_workdir),
+        "/tmp/wolfip-tftp-XXXXXX");
+    if (mkdtemp(tftp_workdir) == NULL)
+        return -1;
+    /* in.tftpd chroots into the TFTP root and serves files relative
+     * to it. Create a "root/" subdir inside the workdir so the chroot
+     * target is owned by us and predictable. */
+    snprintf(tftp_local_dir, sizeof(tftp_local_dir),
+        "%s/root", tftp_workdir);
+    if (mkdir(tftp_local_dir, 0700) != 0)
+        return -1;
+    snprintf(tftp_fixture_path, sizeof(tftp_fixture_path),
+        "%s/%s", tftp_local_dir, TFTP_INTEROP_REMOTE_NAME);
+    snprintf(tftp_download_path, sizeof(tftp_download_path),
+        "%s/download.bin", tftp_workdir);
+    snprintf(tftp_host_get_path, sizeof(tftp_host_get_path),
+        "%s/host-get.bin", tftp_workdir);
+    snprintf(tftp_tftpd_log, sizeof(tftp_tftpd_log),
+        "%s/tftpd.log", tftp_workdir);
+    snprintf(tftp_tftp_log, sizeof(tftp_tftp_log),
+        "%s/tftp-client.log", tftp_workdir);
+    return 0;
+}
+
+static void tftp_workdir_publish_diagnostics(void)
+{
+    char cmd[256];
+    /* Copy the diagnostic artifacts to fixed /tmp paths the CI
+     * artifact uploader expects. These targets are short-lived and
+     * only created on the failure path, so a symlink-attack window
+     * here is minimal — but use --no-target-directory to refuse to
+     * overwrite anything we did not create ourselves. */
+    if (tftp_workdir[0] == '\0')
+        return;
+    snprintf(cmd, sizeof(cmd),
+        "cp -f -- %s/tftpd.log " TFTP_INTEROP_DIAG_TFTPD
+        " 2>/dev/null || true", tftp_workdir);
+    (void)system(cmd);
+    snprintf(cmd, sizeof(cmd),
+        "cp -f -- %s/tftp-client.log " TFTP_INTEROP_DIAG_TFTP
+        " 2>/dev/null || true", tftp_workdir);
+    (void)system(cmd);
+}
+
+static void tftp_workdir_teardown(void)
+{
+    char cmd[160];
+    if (tftp_workdir[0] == '\0')
+        return;
+    snprintf(cmd, sizeof(cmd), "rm -rf -- %s", tftp_workdir);
+    (void)system(cmd);
+    tftp_workdir[0] = '\0';
 }
 
 static int file_present(const char *path)
@@ -315,7 +406,6 @@ static void tftpd_stop(void)
         waitpid(tftpd_pid, NULL, 0);
         tftpd_pid = -1;
     }
-    unlink(TFTP_INTEROP_PIDFILE);
 }
 
 static int tftpd_start(void)
@@ -334,8 +424,12 @@ static int tftpd_start(void)
         /* Child: become in.tftpd. tftpd-hpa otherwise logs via syslog,
          * which the test runner can't see — redirect stderr (where -v
          * prints) so any rejection is visible after the run. */
-        log_fd = open(TFTP_INTEROP_TFTPD_LOG,
-            O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        /* Log file lives in the mkdtemp workdir (mode 0700). Use
+         * O_NOFOLLOW to refuse to follow any symlink at the leaf,
+         * and O_TRUNC over O_EXCL because we may rerun within the
+         * same workdir if the test is invoked twice. */
+        log_fd = open(tftp_tftpd_log,
+            O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
         if (log_fd >= 0) {
             dup2(log_fd, STDOUT_FILENO);
             dup2(log_fd, STDERR_FILENO);
@@ -348,7 +442,7 @@ static int tftpd_start(void)
             "-vvv",
             "-u", "root",
             "-a", addrport,
-            "-s", TFTP_INTEROP_LOCAL_DIR,
+            "-s", tftp_local_dir,
             (char *)NULL);
         perror("execl in.tftpd");
         _exit(127);
@@ -360,7 +454,7 @@ static int tftpd_start(void)
     if (waitpid(pid, NULL, WNOHANG) != 0) {
         tftpd_pid = -1;
         fprintf(stderr, "[client] in.tftpd exited early — see %s\n",
-            TFTP_INTEROP_TFTPD_LOG);
+            tftp_tftpd_log);
         return -1;
     }
     /* tftpd-hpa logs everything to syslog (so the captured stderr will
@@ -488,14 +582,14 @@ static int run_client_test(struct wolfIP *s)
         return TFTP_EXIT_SKIP;
     }
 
-    (void)mkdir(TFTP_INTEROP_LOCAL_DIR, 0777);
-    (void)chmod(TFTP_INTEROP_LOCAL_DIR, 0777);
-    if (write_fixture(TFTP_INTEROP_FIXTURE_PATH) != 0) {
+    /* tftp_local_dir is created once by tftp_workdir_setup() with
+     * mode 0700; we only need to (re)create the fixture file. */
+    if (write_fixture(tftp_fixture_path) != 0) {
         fprintf(stderr, "[client] cannot create fixture %s\n",
-            TFTP_INTEROP_FIXTURE_PATH);
+            tftp_fixture_path);
         return TFTP_EXIT_FAIL;
     }
-    (void)unlink(TFTP_INTEROP_DOWNLOAD_PATH);
+    (void)unlink(tftp_download_path);
 
     if (tftpd_start() != 0) {
         fprintf(stderr, "[client] failed to launch in.tftpd\n");
@@ -520,7 +614,7 @@ static int run_client_test(struct wolfIP *s)
     }
 
     memset(&file_ctx, 0, sizeof(file_ctx));
-    file_ctx.path = TFTP_INTEROP_DOWNLOAD_PATH;
+    file_ctx.path = tftp_download_path;
     memset(&glue, 0, sizeof(glue));
     glue.s = s;
     glue.sock = sock;
@@ -569,10 +663,10 @@ static int run_client_test(struct wolfIP *s)
     if (client.state != WOLFTFTP_CLIENT_COMPLETE) {
         fprintf(stderr, "[client] transfer did not complete (state=%d, "
             "status=%d)\n", client.state, client.last_status);
-        dump_log_file("in.tftpd", TFTP_INTEROP_TFTPD_LOG);
+        dump_log_file("in.tftpd", tftp_tftpd_log);
         return TFTP_EXIT_FAIL;
     }
-    if (!file_equal(TFTP_INTEROP_FIXTURE_PATH, TFTP_INTEROP_DOWNLOAD_PATH)) {
+    if (!file_equal(tftp_fixture_path, tftp_download_path)) {
         fprintf(stderr, "[client] downloaded contents diverge from fixture\n");
         return TFTP_EXIT_FAIL;
     }
@@ -616,10 +710,9 @@ static int run_server_test(struct wolfIP *s)
         return TFTP_EXIT_SKIP;
     }
 
-    (void)mkdir(TFTP_INTEROP_LOCAL_DIR, 0777);
-    if (write_fixture(TFTP_INTEROP_FIXTURE_PATH) != 0)
+    if (write_fixture(tftp_fixture_path) != 0)
         return TFTP_EXIT_FAIL;
-    (void)unlink(TFTP_INTEROP_HOST_GET_PATH);
+    (void)unlink(tftp_host_get_path);
 
     listen_sock = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
     transfer_sock = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
@@ -644,7 +737,7 @@ static int run_server_test(struct wolfIP *s)
     }
 
     memset(&file_ctx, 0, sizeof(file_ctx));
-    file_ctx.path = TFTP_INTEROP_FIXTURE_PATH;
+    file_ctx.path = tftp_fixture_path;
     memset(&glue, 0, sizeof(glue));
     glue.s = s;
     glue.listen_sock = listen_sock;
@@ -673,7 +766,7 @@ static int run_server_test(struct wolfIP *s)
     server_close_status = 0;
 
     /* Linux tftp-hpa client is driven via -c get: it issues an RRQ
-     * for the fixture and saves it to TFTP_INTEROP_HOST_GET_PATH. */
+     * for the fixture and saves it to tftp_host_get_path. */
     tftp_pid = fork();
     if (tftp_pid < 0) {
         return TFTP_EXIT_FAIL;
@@ -687,8 +780,8 @@ static int run_server_test(struct wolfIP *s)
         int log_fd;
 
         snprintf(port, sizeof(port), "%d", TFTP_INTEROP_PORT);
-        log_fd = open(TFTP_INTEROP_TFTP_LOG,
-            O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        log_fd = open(tftp_tftp_log,
+            O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
         if (log_fd >= 0) {
             dup2(log_fd, STDOUT_FILENO);
             dup2(log_fd, STDERR_FILENO);
@@ -698,7 +791,7 @@ static int run_server_test(struct wolfIP *s)
             "-m", "binary",
             "-v",
             "-c", "get", TFTP_INTEROP_REMOTE_NAME,
-            TFTP_INTEROP_HOST_GET_PATH,
+            tftp_host_get_path,
             (char *)NULL);
         _exit(127);
     }
@@ -733,19 +826,19 @@ static int run_server_test(struct wolfIP *s)
 
     if (server_close_calls == 0) {
         fprintf(stderr, "[server] wolfIP server session never closed\n");
-        dump_log_file("tftp client", TFTP_INTEROP_TFTP_LOG);
+        dump_log_file("tftp client", tftp_tftp_log);
         return TFTP_EXIT_FAIL;
     }
     if (server_close_status != 0) {
         fprintf(stderr, "[server] session close status %d\n",
             server_close_status);
-        dump_log_file("tftp client", TFTP_INTEROP_TFTP_LOG);
+        dump_log_file("tftp client", tftp_tftp_log);
         return TFTP_EXIT_FAIL;
     }
-    rc = file_equal(TFTP_INTEROP_FIXTURE_PATH, TFTP_INTEROP_HOST_GET_PATH);
+    rc = file_equal(tftp_fixture_path, tftp_host_get_path);
     if (!rc) {
         fprintf(stderr, "[server] host-side download diverges from fixture\n");
-        dump_log_file("tftp client", TFTP_INTEROP_TFTP_LOG);
+        dump_log_file("tftp client", tftp_tftp_log);
         return TFTP_EXIT_FAIL;
     }
     printf("[server] tftp-hpa client successfully fetched %u bytes from "
@@ -803,8 +896,15 @@ int main(int argc, char **argv)
         return TFTP_EXIT_SKIP;
     }
 
-    if (setup_stack(&s, &dev) != 0)
+    if (tftp_workdir_setup() != 0) {
+        perror("test_tftp_interop: mkdtemp");
         return TFTP_EXIT_FAIL;
+    }
+
+    if (setup_stack(&s, &dev) != 0) {
+        tftp_workdir_teardown();
+        return TFTP_EXIT_FAIL;
+    }
     (void)dev;
 
     /* Give ARP a chance to resolve the host before the first transfer. */
@@ -826,12 +926,17 @@ int main(int argc, char **argv)
     usleep(200 * 1000); /* let tcpdump flush */
 
     if (rc_client == TFTP_EXIT_FAIL || rc_server == TFTP_EXIT_FAIL) {
+        /* Republish the workdir-private logs at the well-known paths
+         * the CI artifact uploader expects, then tear the workdir
+         * down. The pcap was always written at the well-known path
+         * because tcpdump runs out-of-process. */
+        tftp_workdir_publish_diagnostics();
         fprintf(stderr,
-            "Diagnostics: /tmp/wolfip-tftp.pcap, "
-            "/tmp/wolfip-tftpd-hpa.log, /tmp/wolfip-tftp-client.log\n");
+            "Diagnostics: " TFTP_INTEROP_DIAG_PCAP ", "
+            TFTP_INTEROP_DIAG_TFTPD ", " TFTP_INTEROP_DIAG_TFTP "\n");
         fprintf(stderr, "----- wire summary (tcpdump -nn -r) -----\n");
         fflush(stderr);
-        (void)system("tcpdump -nn -tt -r /tmp/wolfip-tftp.pcap 2>&1 "
+        (void)system("tcpdump -nn -tt -r " TFTP_INTEROP_DIAG_PCAP " 2>&1 "
             "| sed 's/^/  /' >&2");
         fprintf(stderr, "----- end wire summary -----\n");
         if (file_present("/usr/bin/journalctl")) {
@@ -841,8 +946,10 @@ int main(int argc, char **argv)
                 "| sed 's/^/  /' >&2");
             fprintf(stderr, "----- end syslog -----\n");
         }
+        tftp_workdir_teardown();
         return TFTP_EXIT_FAIL;
     }
+    tftp_workdir_teardown();
     if (rc_client == TFTP_EXIT_SKIP && rc_server == TFTP_EXIT_SKIP)
         return TFTP_EXIT_SKIP;
     return TFTP_EXIT_SUCCESS;

@@ -309,7 +309,11 @@ static int wolftftp_parse_request(const uint8_t *buf, uint16_t len,
         value = key + slen + 1U;
         slen = wolftftp_strnlen_local(value,
             (size_t)(buf + len - (const uint8_t *)value));
-        if (slen == 0 || (const uint8_t *)(value + slen) > buf + len)
+        /* Same `>=` check as the key side: when strnlen_local saturates
+         * to max_len there is no NUL inside the buffer, so passing the
+         * unterminated value through to parse_u32 / stricmp would walk
+         * past buf+len. */
+        if (slen == 0 || (const uint8_t *)(value + slen) >= buf + len)
             return WOLFTFTP_ERR_PACKET;
         if (wolftftp_stricmp_local(key, "blksize") == 0) {
             if (wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE, &number) != 0 ||
@@ -437,7 +441,11 @@ static int wolftftp_parse_oack(const uint8_t *buf, uint16_t len,
         value = key + slen + 1U;
         slen = wolftftp_strnlen_local(value,
             (size_t)(buf + len - (const uint8_t *)value));
-        if (slen == 0 || (const uint8_t *)(value + slen) > buf + len)
+        /* Same `>=` check as the key side: when strnlen_local saturates
+         * to max_len there is no NUL inside the buffer, so passing the
+         * unterminated value through to parse_u32 / stricmp would walk
+         * past buf+len. */
+        if (slen == 0 || (const uint8_t *)(value + slen) >= buf + len)
             return WOLFTFTP_ERR_PACKET;
         if (wolftftp_stricmp_local(key, "blksize") == 0) {
             if (wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE, &number) != 0 ||
@@ -963,6 +971,10 @@ static int wolftftp_server_start_request(struct wolftftp_server *server,
             return ret;
         }
         session->options_sent = 1;
+        /* Remember which options the OACK actually carried so the
+         * timeout retransmit can rebuild the same OACK byte-for-byte
+         * if it gets lost in flight. */
+        session->oack_opts = req->opts;
         ret = wolftftp_server_send_last(server, session, pkt, (uint16_t)ret);
         if (ret == 0)
             session->deadline_ms = 0;
@@ -992,6 +1004,11 @@ static int wolftftp_server_accept_wrq_data(struct wolftftp_server *server,
     int ret;
 
     if (data->block == session->next_block) {
+        /* First DATA block on a WRQ-with-options is the implicit ACK
+         * of the OACK; clear options_sent so the timeout path stops
+         * trying to replay the OACK now that we have entered the
+         * data phase. */
+        session->options_sent = 0;
         if (server->cfg.max_image_size != 0U &&
                 (session->total_size + data->data_len) > server->cfg.max_image_size) {
             (void)wolftftp_send_server_error(server, session->local_port,
@@ -1121,7 +1138,7 @@ int wolftftp_server_receive(struct wolftftp_server *server, uint16_t local_port,
 int wolftftp_server_poll(struct wolftftp_server *server, uint32_t now_ms)
 {
     unsigned int i;
-    uint8_t pkt[8];
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
     int ret;
 
     if (server == NULL)
@@ -1141,13 +1158,21 @@ int wolftftp_server_poll(struct wolftftp_server *server, uint32_t now_ms)
             wolftftp_server_finish(server, session, WOLFTFTP_ERR_TIMEOUT);
             continue;
         }
-        if (session->is_write != 0U) {
-            ret = wolftftp_build_ack(pkt, session->last_acked_block);
-            if (ret >= 0) {
-                (void)wolftftp_server_send_last(server, session, pkt, (uint16_t)ret);
+        if (session->options_sent != 0U) {
+            /* OACK was the last packet on the wire and has not been
+             * acked. RFC 2347: when option negotiation was used the
+             * server MUST replay the OACK on timeout — not a bare
+             * ACK(0) / ACK(last_acked_block), which the client would
+             * either ignore or treat as a fatal "illegal operation"
+             * and abort with EBADOP. */
+            ret = wolftftp_build_oack(pkt, sizeof(pkt), &session->neg,
+                session->oack_opts);
+            if (ret > 0) {
+                (void)wolftftp_server_send_last(server, session, pkt,
+                    (uint16_t)ret);
             }
-        } else if (session->options_sent != 0U) {
-            ret = wolftftp_build_ack(pkt, 0);
+        } else if (session->is_write != 0U) {
+            ret = wolftftp_build_ack(pkt, session->last_acked_block);
             if (ret >= 0) {
                 (void)wolftftp_server_send_last(server, session, pkt, (uint16_t)ret);
             }

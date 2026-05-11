@@ -284,6 +284,8 @@ START_TEST(test_tftp_parse_request_error_paths)
 {
     uint8_t pkt[64];
     struct wolftftp_parsed_req req;
+    struct wolftftp_negotiated neg;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
 
     memset(pkt, 0, sizeof(pkt));
     wolftftp_write_u16(pkt, WOLFTFTP_OP_RRQ);
@@ -303,6 +305,28 @@ START_TEST(test_tftp_parse_request_error_paths)
     ck_assert_int_eq(wolftftp_parse_request(pkt, 19, &req),
         WOLFTFTP_ERR_PACKET);
     ck_assert_int_eq(wolftftp_parse_request(pkt, 3, &req),
+        WOLFTFTP_ERR_PACKET);
+
+    /* Option value not NUL-terminated within the datagram. The bytes
+     * after the would-be-NUL are intentionally non-zero so that any
+     * regression to a value-side `>` (instead of `>=`) bounds check
+     * would let parse_u32 walk into them. The whole frame must be
+     * rejected as malformed without reading past buf+len. */
+    memset(pkt, 0xFF, sizeof(pkt));
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_RRQ);
+    memcpy(pkt + 2, "fw\0octet\0blksize\0", 17);
+    memcpy(pkt + 19, "512", 3); /* deliberately no trailing NUL */
+    ck_assert_int_eq(wolftftp_parse_request(pkt, 22, &req),
+        WOLFTFTP_ERR_PACKET);
+
+    /* Same shape on the OACK side: the value runs right up to len
+     * with no NUL. Must be rejected. */
+    memset(pkt, 0xFF, sizeof(pkt));
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_OACK);
+    memcpy(pkt + 2, "blksize\0", 8);
+    memcpy(pkt + 10, "512", 3);
+    wolftftp_neg_defaults(&neg, &cfg);
+    ck_assert_int_eq(wolftftp_parse_oack(pkt, 13, &neg),
         WOLFTFTP_ERR_PACKET);
 }
 END_TEST
@@ -767,11 +791,14 @@ START_TEST(test_tftp_parse_tsize_rejects_non_numeric)
     struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
 
     /* tsize="abc": must be rejected as unsupported, not silently
-     * treated as tsize=0. Same check for OACK. */
+     * treated as tsize=0. Same check for OACK. Note: pass len so the
+     * trailing NUL of "abc" lies INSIDE buf+len, otherwise the test
+     * would be probing the (now-fixed) OOB read instead of the
+     * non-numeric rejection path. */
     memset(pkt, 0, sizeof(pkt));
     wolftftp_write_u16(pkt, WOLFTFTP_OP_RRQ);
     memcpy(pkt + 2, "fw\0octet\0tsize\0abc\0", 19);
-    ck_assert_int_eq(wolftftp_parse_request(pkt, 19, &req),
+    ck_assert_int_eq(wolftftp_parse_request(pkt, 21, &req),
         WOLFTFTP_ERR_UNSUPPORTED);
 
     memset(pkt, 0, sizeof(pkt));
@@ -1053,6 +1080,101 @@ START_TEST(test_tftp_server_poll_deadline_is_wrap_safe)
 }
 END_TEST
 
+/* RFC 2347: when option negotiation was used the server MUST replay
+ * the OACK on timeout, not a bare ACK(0) or ACK(last_acked_block).
+ * Exercise both RRQ-with-options and WRQ-with-options paths and
+ * compare the retransmitted bytes to the original OACK. */
+START_TEST(test_tftp_server_timeout_replays_oack_after_option_negotiation)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote;
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    uint16_t original_len;
+
+    /* ---- RRQ + options ---- */
+    tftp_test_ctx_reset(&ctx);
+    memcpy(ctx.read_data, "wxyz", 4);
+    ctx.read_len[0] = 4;
+    /* Reader claims EOF; data_len < blksize so no extra 0-byte block. */
+    remote = tftp_remote(0x0A000060U, 5050);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
+        "fw.bin", &cfg, 0, &opts, &req_len), 0);
+    ck_assert(opts != 0U);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+    /* First send is the OACK, not a DATA — sanity. */
+    ck_assert_int_eq(ctx.send_calls, 1);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0]), WOLFTFTP_OP_OACK);
+    original_len = ctx.sent_len[0];
+    ck_assert_uint_eq(server.sessions[0].options_sent, 1U);
+    ck_assert(server.sessions[0].oack_opts != 0U);
+
+    /* Arm + trip the timeout. The retransmit must be a byte-for-byte
+     * copy of the OACK, never ACK(0). */
+    ck_assert_int_eq(wolftftp_server_poll(&server, 0U), 0);
+    ck_assert_int_eq(wolftftp_server_poll(&server,
+        (uint32_t)(cfg.timeout_s * 1000U + 1U)), 0);
+    ck_assert_int_eq(ctx.send_calls, 2);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[1]), WOLFTFTP_OP_OACK);
+    ck_assert_uint_eq(ctx.sent_len[1], original_len);
+    ck_assert_mem_eq(ctx.sent[1], ctx.sent[0], original_len);
+
+    /* ACK(0) clears options_sent; the next timeout must NOT replay
+     * the OACK any more — it should retransmit the data window. */
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_ACK);
+    wolftftp_write_u16(pkt + 2, 0);
+    ck_assert_int_eq(wolftftp_server_receive(&server,
+        server.sessions[0].local_port, &remote, pkt, 4), 0);
+    ck_assert_uint_eq(server.sessions[0].options_sent, 0U);
+    /* The ACK(0) triggered the first DATA send. */
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[ctx.send_calls - 1]),
+        WOLFTFTP_OP_DATA);
+
+    /* ---- WRQ + options ---- */
+    tftp_test_ctx_reset(&ctx);
+    remote = tftp_remote(0x0A000061U, 5060);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_WRQ,
+        "fw.bin", &cfg, 4, &opts, &req_len), 0);
+    ck_assert(opts != 0U);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+    ck_assert_int_eq(ctx.send_calls, 1);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0]), WOLFTFTP_OP_OACK);
+    original_len = ctx.sent_len[0];
+
+    /* Timeout: must replay the OACK rather than ACK(0). */
+    ck_assert_int_eq(wolftftp_server_poll(&server, 0U), 0);
+    ck_assert_int_eq(wolftftp_server_poll(&server,
+        (uint32_t)(cfg.timeout_s * 1000U + 1U)), 0);
+    ck_assert_int_eq(ctx.send_calls, 2);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[1]), WOLFTFTP_OP_OACK);
+    ck_assert_uint_eq(ctx.sent_len[1], original_len);
+    ck_assert_mem_eq(ctx.sent[1], ctx.sent[0], original_len);
+
+    /* First DATA from client implicitly ACKs the OACK. options_sent
+     * must clear so further timeouts retransmit ACK(last) instead. */
+    memcpy(pkt + 4, "abcd", 4);
+    {
+        int data_len = wolftftp_build_data(pkt, sizeof(pkt), 1, pkt + 4, 4);
+        ck_assert_int_eq(wolftftp_server_receive(&server,
+            server.sessions[0].local_port, &remote, pkt, (uint16_t)data_len), 0);
+    }
+    ck_assert_uint_eq(server.sessions[0].options_sent, 0U);
+}
+END_TEST
+
 static void add_tftp_tests(TCase *tc_proto)
 {
     tcase_add_test(tc_proto, test_tftp_helpers_and_builders);
@@ -1074,4 +1196,6 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_server_poll_deadline_is_wrap_safe);
     tcase_add_test(tc_proto,
         test_tftp_server_rrq_sends_zero_byte_terminator_on_exact_multiple);
+    tcase_add_test(tc_proto,
+        test_tftp_server_timeout_replays_oack_after_option_negotiation);
 }

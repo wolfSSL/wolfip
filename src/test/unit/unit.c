@@ -395,6 +395,8 @@ Suite *wolf_suite(void)
         test_udp_try_recv_unconnected_accepts_any_peer_port);
     tcase_add_test(tc_utils, test_udp_try_recv_connected_filters_peer_port);
     tcase_add_test(tc_utils, test_udp_sock_connect_sets_connected_flag);
+    tcase_add_test(tc_utils,
+        test_udp_sock_connect_failed_validation_leaves_socket_unconnected);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_port_sends_icmp_unreachable);
     tcase_add_test(tc_utils, test_udp_try_recv_unmatched_nonlocal_dst_does_not_send_icmp);
     tcase_add_test(tc_utils, test_udp_try_recv_full_fifo_drop_does_not_set_readable_or_send_icmp);

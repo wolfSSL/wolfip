@@ -226,6 +226,12 @@ struct wolftftp_server_session {
     uint16_t retries;
     uint8_t is_write;
     uint8_t options_sent;
+    /* Bitmask of options that were actually negotiated and emitted in
+     * the pending OACK. We keep it around so a lost OACK can be
+     * replayed verbatim from the timeout path, instead of falling
+     * back to ACK(0) which is not protocol-correct after option
+     * negotiation (RFC 2347). */
+    uint8_t oack_opts;
     uint8_t final_seen;
     int last_status;
     enum wolftftp_session_state state;
