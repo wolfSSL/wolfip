@@ -789,6 +789,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ip_recv_forward_ttl_exceeded);
     tcase_add_test(tc_proto, test_ip_recv_udp_with_ip_options_delivers_payload);
     tcase_add_test(tc_proto, test_ip_recv_fragmented_udp_dropped);
+    tcase_add_test(tc_proto, test_ip_recv_fragmented_udp_dropped_offset_only);
     tcase_add_test(tc_proto, test_ip_recv_forward_arp_queue_and_flush);
     tcase_add_test(tc_proto, test_arp_flush_pending_ttl_expired);
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
