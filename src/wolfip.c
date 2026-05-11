@@ -8416,9 +8416,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 #if WOLFIP_RAWSOCKETS
     raw_try_recv(s, if_idx, ip, len);
 #endif
-    /* RFC 7126 §3.8: drop source-routed (LSRR/SSRR) packets before either
-     * forwarding or local-delivery dispatch so an attacker-set source route
-     * cannot ride the WOLFIP_ENABLE_FORWARDING path through wolfIP. */
+    /* RFC 7126 section 3.8: drop source-routed (LSRR/SSRR) packets before either
+     * forwarding or local-delivery dispatch.
+     * */
     if (ip_hlen > IP_HEADER_LEN) {
         uint8_t *opt = ((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN;
         uint8_t *opt_end = opt + (ip_hlen - IP_HEADER_LEN);
