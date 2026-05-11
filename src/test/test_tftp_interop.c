@@ -175,6 +175,13 @@ static int write_fixture(const char *path)
         }
     }
     fclose(fp);
+    /* tftpd-hpa's validate_access() refuses to serve a file unless
+     * S_IROTH is set on it — the rationale being that UDP has no
+     * authentication, so files have to be explicitly marked
+     * "okay to serve". The privacy of the fixture is already covered
+     * by the 0700 mkdtemp workdir wrapping it, so no other user can
+     * traverse down to this file. */
+    (void)chmod(path, 0644);
     return 0;
 }
 
