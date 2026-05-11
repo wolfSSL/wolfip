@@ -1256,6 +1256,7 @@ static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int 
 #if WOLFIP_ENABLE_FORWARDING
 static int wolfIP_route_match_prefix(ip4 addr, ip4 prefix, uint8_t prefix_len);
 static uint32_t wolfIP_prefix_mask(uint8_t prefix_len);
+static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len);
 #endif
 static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
                                         unsigned int *if_idx, ip4 *nexthop);
@@ -1708,6 +1709,31 @@ static uint32_t wolfIP_prefix_mask(uint8_t prefix_len)
     return 0xFFFFFFFFU << (32U - prefix_len);
 }
 
+static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len)
+{
+    uint8_t len = 0U;
+    uint32_t seen_zero = 0U;
+    unsigned int bit;
+
+    if (!prefix_len)
+        return -WOLFIP_EINVAL;
+
+    for (bit = 0U; bit < 32U; bit++) {
+        uint32_t test = 0x80000000U >> bit;
+
+        if ((mask & test) != 0U) {
+            if (seen_zero != 0U)
+                return -WOLFIP_EINVAL;
+            len++;
+        } else {
+            seen_zero = 1U;
+        }
+    }
+
+    *prefix_len = len;
+    return 0;
+}
+
 static int wolfIP_route_match_prefix(ip4 addr, ip4 prefix, uint8_t prefix_len)
 {
     uint32_t mask = wolfIP_prefix_mask(prefix_len);
@@ -1927,7 +1953,8 @@ static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
         if (!ip_is_local_conf(conf, dest))
             continue;
 
-        prefix_len = (uint8_t)__builtin_popcount(conf->mask);
+        if (wolfIP_mask_prefix_len(conf->mask, &prefix_len) < 0)
+            continue;
         if (!found || prefix_len > best_prefix) {
             best_if = i;
             best_nexthop = dest;
@@ -10303,14 +10330,10 @@ unsigned int wolfIP_route_count(struct wolfIP *s)
     if (!s)
         return 0U;
 
-#if WOLFIP_ENABLE_FORWARDING
     for (i = 0; i < WOLFIP_MAX_ROUTES; i++) {
         if (s->routes[i].used)
             count++;
     }
-#else
-    (void)i;
-#endif
 
     return count;
 }

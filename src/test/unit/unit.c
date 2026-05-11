@@ -831,6 +831,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_route_for_ip_variants);
     tcase_add_test(tc_proto, test_route_for_ip_dest_matches_iface_ip);
     tcase_add_test(tc_proto, test_route_for_ip_matches_exact_ip_when_mask_is_zero);
+    tcase_add_test(tc_proto, test_route_for_ip_skips_noncontiguous_connected_mask);
     tcase_add_test(tc_proto, test_route_for_ip_no_primary_index);
     tcase_add_test(tc_proto, test_route_for_ip_null_stack);
     tcase_add_test(tc_proto, test_route_for_ip_gw_and_nonloop_fallback);
