@@ -1607,6 +1607,112 @@ START_TEST(test_udp_checksum_zero_accepted)
 }
 END_TEST
 
+START_TEST(test_regression_udp_recv_sets_last_pkt_ttl)
+{
+    struct wolfIP s;
+    int udp_sd;
+    int enable = 1;
+    int recv_ttl = 0;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_udp_datagram udp;
+    struct wolfIP_ll_dev *ll;
+    static const uint8_t test_ttl = 42;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, udp_sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_RECVTTL, &enable, sizeof(enable)), 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    memset(&udp, 0, sizeof(udp));
+    memcpy(udp.ip.eth.dst, ll->mac, 6);
+    udp.ip.eth.type = ee16(ETH_TYPE_IP);
+    udp.ip.ver_ihl = 0x45;
+    udp.ip.ttl = test_ttl;
+    udp.ip.proto = WI_IPPROTO_UDP;
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    udp.ip.src = ee32(0x0A000002U);
+    udp.ip.dst = ee32(0x0A000001U);
+    udp.src_port = ee16(5678);
+    udp.dst_port = ee16(1234);
+    udp.len = ee16(UDP_HEADER_LEN);
+    fix_udp_checksums(&udp);
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, &udp,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN));
+
+    ck_assert_uint_gt(fifo_len(&s.udpsockets[SOCKET_UNMARK(udp_sd)].sock.udp.rxbuf),
+            0U);
+    ck_assert_int_eq(wolfIP_sock_get_recv_ttl(&s, udp_sd, &recv_ttl), 1);
+    ck_assert_int_eq(recv_ttl, (int)test_ttl);
+}
+END_TEST
+
+START_TEST(test_regression_tcp_input_sets_last_pkt_ttl)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    int recv_ttl = 0;
+    int sd;
+    static const uint8_t test_ttl = 33;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->recv_ttl = 1;
+
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = test_ttl;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.seq = ee32(100);
+    seg.ack = ee32(50);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(ts->last_pkt_ttl, test_ttl);
+
+    sd = (int)((ts - s.tcpsockets) | MARK_TCP_SOCKET);
+    ck_assert_int_eq(wolfIP_sock_get_recv_ttl(&s, sd, &recv_ttl), 1);
+    ck_assert_int_eq(recv_ttl, (int)test_ttl);
+}
+END_TEST
+
 START_TEST(test_udp_connected_rejects_wrong_source_ip)
 {
     struct wolfIP s;

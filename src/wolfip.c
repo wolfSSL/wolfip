@@ -2319,6 +2319,7 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
              * drop silently instead of misreporting the port as closed. */
             matched = 1;
             if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
+                t->last_pkt_ttl = udp->ip.ttl;
                 t->events |= CB_EVENT_READABLE;
             }
         }
@@ -4607,6 +4608,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
             }
             t->if_idx = (uint8_t)if_idx;
+            t->last_pkt_ttl = tcp->ip.ttl;
             matched = 1;
             /* Validate minimum TCP header length (data offset). */
             if (tcp_data_offset_bytes(tcp->hlen) < TCP_HEADER_LEN) {

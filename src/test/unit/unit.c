@@ -644,6 +644,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_checksum_valid_passes);
     tcase_add_test(tc_utils, test_udp_checksum_invalid_rejected);
     tcase_add_test(tc_utils, test_udp_checksum_zero_accepted);
+    tcase_add_test(tc_utils, test_regression_udp_recv_sets_last_pkt_ttl);
+    tcase_add_test(tc_utils, test_regression_tcp_input_sets_last_pkt_ttl);
     tcase_add_test(tc_utils, test_udp_connected_rejects_wrong_source_ip);
     tcase_add_test(tc_utils, test_ip_checksum_invalid_rejected);
     tcase_add_test(tc_utils, test_ip_checksum_valid_passes);
