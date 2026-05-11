@@ -893,6 +893,183 @@ mqttclient -h <device-ip> -p 8883 -t -A /tmp/wolfip_cert.pem \
 | `../certs.h` | Embedded ECC P-256 cert/key (shared with TLS/HTTPS) |
 | `user_settings.h` | wolfMQTT broker compile-time config |
 
+## TFTP Client
+
+When built with `ENABLE_TFTP=1`, the device runs a one-shot wolfIP TFTP
+RRQ (GET) client at boot. After the network comes up, the client fetches
+a single file from a host-side TFTP server and stages the bytes directly
+into the wolfBoot update partition. On success the wolfBoot update flag
+is written to the trailer of the update partition; the next reset hands
+control to wolfBoot, which can verify the staged image and swap it in.
+
+`ENABLE_TFTP=1` is **TZEN=0 only** in this release. The build errors out
+if `TZEN=1` is also set.
+
+### Building TFTP Mode
+
+```bash
+cd src/port/stm32h563
+make clean
+make ENABLE_TFTP=1
+```
+
+The Makefile pulls in `../../tftp/wolftftp.c` from wolfIP's TFTP module
+and `tftp_client_demo.c` from this port, and sets
+`-DWOLFIP_ENABLE_TFTP=1`. No external dependencies (no wolfSSL,
+wolfSSH, wolfMQTT). The demo can be combined with the other services -
+e.g. `make ENABLE_TFTP=1 ENABLE_HTTPS=1 ENABLE_SSH=1`.
+
+### Configuration
+
+The defaults in `config.h` and the Makefile target a host on the
+`192.168.12.0/24` static-fallback subnet. Override them on the command
+line via `EXTRA_CFLAGS`:
+
+```bash
+make ENABLE_TFTP=1 \
+    EXTRA_CFLAGS='-DTFTP_SERVER_IP=\"10.0.4.24\" -DTFTP_FETCH_FILENAME=\"app_v2_signed.bin\"'
+```
+
+| Setting | Default | Where |
+|---------|---------|-------|
+| `TFTP_SERVER_IP` | `"192.168.12.10"` | `config.h` |
+| `TFTP_FETCH_FILENAME` | `"app_v2_signed.bin"` | `config.h` |
+| `WOLFBOOT_PARTITION_UPDATE_ADDRESS` | `0x08100000` | `Makefile` (matches `stm32h5-no-tz.config`) |
+| `WOLFBOOT_PARTITION_SIZE` | `0xA0000` (640 KB) | `Makefile` |
+| `WOLFBOOT_SECTOR_SIZE` | `0x4000` (16 KB) | `Makefile` |
+| TFTP client local UDP port | `20100` | `tftp_client_demo.c` |
+| TFTP block size | `1428` | `tftp_client_demo.c` |
+| TFTP window size | `8` | `tftp_client_demo.c` |
+
+Override the partition layout on the command line if your wolfBoot is
+configured differently:
+
+```bash
+make ENABLE_TFTP=1 WOLFBOOT_PARTITION_UPDATE_ADDRESS=0x08080000 \
+    WOLFBOOT_PARTITION_SIZE=0x70000
+```
+
+### Host Setup (`tftpd-hpa`)
+
+```bash
+sudo apt-get install tftpd-hpa
+echo "TFTP test fixture" | sudo tee /srv/tftp/app_v2_signed.bin
+sudo systemctl restart tftpd-hpa
+
+# Sanity check from another host on the same LAN:
+tftp <host-ip> -c get app_v2_signed.bin
+```
+
+`/etc/default/tftpd-hpa` (default Ubuntu/Debian install) listens on
+`:69` and serves `/srv/tftp`. The TFTP daemon accepts files mode `0666`
+by default; restart it after dropping a new fixture.
+
+### Expected Serial Output (TFTP Mode)
+
+```
+DHCP configuration received:
+  IP: 10.0.4.116
+  Mask: 255.255.255.0
+  GW: 10.0.4.1
+Creating TCP socket on port 7...
+Initializing TFTP client demo...
+  TFTP server: 10.0.4.24
+  TFTP file: test.txt
+TFTP: RRQ sent
+Entering main loop. Ready for connections!
+  TCP Echo: port 7
+TFTP: open update partition (erase on demand)
+TFTP: programmed bytes=44
+TFTP: update flag set, reset to apply
+TFTP: close status=0
+```
+
+`programmed bytes=N` matches the file's size on the host. `close
+status=0` means success. Negative values map to `WOLFTFTP_ERR_*` codes
+in `../../tftp/wolftftp.h` (`-1000` IO, `-1001` STATE, `-1002` PACKET,
+`-1003` TIMEOUT, `-1004` SIZE, `-1005` VERIFY, `-1006` UNSUPPORTED,
+`-1007` TID).
+
+### Verifying the Staged Image
+
+Halt the target and dump the update partition to confirm the bytes
+match the host file:
+
+```bash
+$OPENOCD -s $OPENOCD_SCRIPTS -f interface/stlink-dap.cfg \
+    -c "adapter serial $H5_SN" \
+    -f target/stm32h5x.cfg \
+    -c "init; halt" \
+    -c "dump_image /tmp/h5_update_head.bin 0x08100000 64" \
+    -c "dump_image /tmp/h5_update_tail.bin 0x0819FF00 256" \
+    -c "resume; shutdown"
+
+# Compare:
+xxd /srv/tftp/app_v2_signed.bin | head
+xxd /tmp/h5_update_head.bin
+
+# The last byte of the partition (0x0819FFFF) is the wolfBoot update
+# trigger - it should read 0x70 (IMG_STATE_UPDATING):
+tail -c 1 /tmp/h5_update_tail.bin | xxd
+```
+
+### How It Works
+
+The demo uses the wolfIP UDP socket API directly (no BSD wrapper) and
+plugs the TFTP state machine's `transport` callback into
+`wolfIP_sock_sendto()`. The main loop drains the UDP socket with
+`wolfIP_sock_recvfrom()`, hands incoming datagrams to
+`wolftftp_client_receive()`, and lets `wolftftp_client_poll()` drive
+retransmits and timeouts.
+
+The `io.write` callback in `tftp_client_demo.c` buffers each incoming
+DATA block into a 16-byte staging qword. When the staging buffer fills
+up, the demo:
+
+1. Lazily erases the 8 KB page that holds the destination address (if
+   it has not already been erased on this transfer).
+2. Programs the 16-byte quad-word at the destination address. STM32H5
+   flash programs in 128-bit (16-byte) quanta with per-qword ECC; each
+   qword can only be programmed once between erases.
+
+On successful transfer completion the demo writes
+`IMG_STATE_UPDATING` (`0x70`) to the very last byte of the update
+partition (`WOLFBOOT_PARTITION_UPDATE_ADDRESS + WOLFBOOT_PARTITION_SIZE
+- 1`). That single byte is the wolfBoot update trigger; on the next
+reset wolfBoot reads the trailer and swaps in the staged image.
+
+### Limitations / Out of Scope
+
+- **wolfBoot is not bundled in the demo's flash image.** The current
+  `target.ld` places the application at `0x08000000`, so when the
+  unmodified demo boots there is no wolfBoot bootloader to consume the
+  update flag. The TFTP staging side is correct and hardware-verified;
+  the round-trip "fetch -> reset -> v2 boots" requires shifting the
+  app linker script to `0x08060000`, installing a wolfBoot built from
+  `config/examples/stm32h5-no-tz.config`, and re-packing `factory.bin`
+  as `wolfboot_padded.bin + signed app`. That packaging is out of scope
+  for the `ENABLE_TFTP=1` flag.
+- **TZEN=1 is not supported.** The flash HAL uses the non-secure
+  register view (`FLASH_NS_*` at `0x40022000`). A TrustZone-aware
+  version would need the secure aliases plus
+  `hal_tz_claim_nonsecure_area()` bracketing each program/erase.
+- **Client only, RRQ only.** No WRQ (PUT), and no on-target TFTP
+  server.
+- **No authentication or integrity check on the wire.** TFTP is
+  unauthenticated by design. The staged image is verified by wolfBoot
+  on the next boot via its signature check; that catches a tampered
+  or corrupted image but does not protect the partition until the next
+  reset window.
+
+### TFTP Files
+
+| File | Description |
+|------|-------------|
+| `tftp_client_demo.c` | UDP glue + STM32H5 flash HAL + wolfBoot trigger |
+| `tftp_client_demo.h` | `_start`/`_poll`/`_status` API |
+| `../../tftp/wolftftp.c` | Library: TFTP state machine (RFC 1350 + RFC 2347 options) |
+| `../../tftp/wolftftp.h` | Library: public API (`wolftftp_client_*`, `wolftftp_server_*`) |
+
 ## Files
 
 | File | Description |
@@ -915,6 +1092,8 @@ mqttclient -h <device-ip> -p 8883 -t -A /tmp/wolfip_cert.pem \
 | `ssh_server.c/h` | SSH shell server (SSH builds only) |
 | `ssh_keys.h` | Embedded SSH host key (SSH builds only) |
 | `mqtt_client.c/h` | MQTT client state machine (MQTT builds only) |
+| `tftp_client_demo.c/h` | TFTP client demo + inline H5 flash HAL (TFTP builds only) |
+| `../../tftp/wolftftp.c` | wolfIP TFTP library (TFTP builds only) |
 | `../wolfssl_io.c` | wolfSSL I/O callbacks for wolfIP (TLS builds only) |
 | `../wolfssh_io.c` | wolfSSH I/O callbacks for wolfIP (SSH builds only) |
 | `../wolfmqtt_io.c` | wolfMQTT I/O callbacks for wolfIP (MQTT builds only) |
