@@ -790,7 +790,7 @@ index a18a963e..01ea8a8b 100644
  		 cmd_net_ipv4, 1, 0);
 +#endif /* CONFIG_NET_IPV4 || CONFIG_WOLFIP */
 diff --git a/subsys/net/lib/shell/ping.c b/subsys/net/lib/shell/ping.c
-index a3d98961..9984b994 100644
+index a3d98961..11855779 100644
 --- a/subsys/net/lib/shell/ping.c
 +++ b/subsys/net/lib/shell/ping.c
 @@ -11,15 +11,274 @@ LOG_MODULE_DECLARE(net_shell);
@@ -1033,7 +1033,8 @@ index a3d98961..9984b994 100644
 +		shell_fprintf(ctx->sh, SHELL_NORMAL, "");
 +	}
 +}
-+
+ 
+-#if defined(CONFIG_NET_IP)
 +static void wolfip_ping_cleanup(struct ping_context_wolfip *ctx)
 +{
 +	k_work_cancel_delayable(&ctx->work);
@@ -1061,8 +1062,7 @@ index a3d98961..9984b994 100644
 +}
 +
 +#else /* !CONFIG_WOLFIP — native Zephyr path */
- 
--#if defined(CONFIG_NET_IP)
++
 +/* ------------------------------------------------------------------ */
 +/* Native Zephyr ping backend (net_icmp_* APIs)                        */
 +/* ------------------------------------------------------------------ */
@@ -1087,7 +1087,7 @@ index a3d98961..9984b994 100644
  static void ping_cleanup(struct ping_context *ctx)
  {
  	(void)net_icmp_cleanup_ctx(&ctx->icmp);
-@@ -366,17 +629,108 @@ out:
+@@ -366,17 +629,99 @@ out:
  	return iface;
  }
  
@@ -1148,20 +1148,11 @@ index a3d98961..9984b994 100644
 +	memset(&wolfip_ping_ctx, 0, sizeof(wolfip_ping_ctx));
 +	wolfip_ping_ctx.fd = -1;
 +
-+	/*
-+	 * Open an ICMP socket via the wolfIP BSD socket offload.
-+	 * NOTE: wolfip_is_supported_family() in wolfip_zephyr.c currently
-+	 * only allows proto == 0 / IPPROTO_TCP / IPPROTO_UDP.  IPPROTO_ICMP
-+	 * is not yet whitelisted there, so this socket() call will fail with
-+	 * EAFNOSUPPORT until wolfip_is_supported_family is updated to also
-+	 * accept IPPROTO_ICMP for SOCK_DGRAM.
-+	 */
++	/* Open an ICMP socket via the wolfIP BSD socket offload. */
 +	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
 +
 +	if (fd < 0) {
-+		shell_error(sh, "wolfIP ICMP socket: %d (errno %d) — "
-+			    "IPPROTO_ICMP not yet allowed in "
-+			    "wolfip_is_supported_family()", fd, errno);
++		shell_error(sh, "wolfIP ICMP socket failed: errno=%d", errno);
 +		return -ENOTSUP;
 +	}
 +
@@ -1199,10 +1190,10 @@ index a3d98961..9984b994 100644
  
  	int count = 3;
 diff --git a/subsys/net/lib/shell/route.c b/subsys/net/lib/shell/route.c
-index 45ac0284..02aefc3a 100644
+index 45ac0284..3de741d5 100644
 --- a/subsys/net/lib/shell/route.c
 +++ b/subsys/net/lib/shell/route.c
-@@ -12,6 +12,18 @@ LOG_MODULE_DECLARE(net_shell);
+@@ -12,6 +12,13 @@ LOG_MODULE_DECLARE(net_shell);
  
  #include "../ip/route.h"
  
@@ -1210,18 +1201,13 @@ index 45ac0284..02aefc3a 100644
 +#include <zephyr/net/wolfip.h>
 +#include <zephyr/sys/byteorder.h>
 +#include <stdlib.h>
-+struct wolfIP_route_info {
-+	uint32_t prefix;
-+	uint32_t gateway;
-+	uint8_t prefix_len;
-+	uint8_t if_idx;
-+};
++/* struct wolfIP_route_info is declared in <zephyr/net/wolfip.h>. */
 +#endif /* CONFIG_WOLFIP */
 +
  #if defined(CONFIG_NET_ROUTE) && defined(CONFIG_NET_NATIVE)
  static void route_cb(struct net_route_entry *entry, void *user_data)
  {
-@@ -112,6 +124,90 @@ static void route_mcast_cb(struct net_route_entry_mcast *entry,
+@@ -112,6 +119,90 @@ static void route_mcast_cb(struct net_route_entry_mcast *entry,
  
  static int cmd_net_ip6_route_add(const struct shell *sh, size_t argc, char *argv[])
  {
@@ -1312,7 +1298,7 @@ index 45ac0284..02aefc3a 100644
  #if defined(CONFIG_NET_NATIVE_IPV6) && (CONFIG_NET_ROUTE)
  	struct net_if *iface = NULL;
  	int idx;
-@@ -164,6 +260,79 @@ static int cmd_net_ip6_route_add(const struct shell *sh, size_t argc, char *argv
+@@ -164,6 +255,79 @@ static int cmd_net_ip6_route_add(const struct shell *sh, size_t argc, char *argv
  
  static int cmd_net_ip6_route_del(const struct shell *sh, size_t argc, char *argv[])
  {
@@ -1392,7 +1378,7 @@ index 45ac0284..02aefc3a 100644
  #if defined(CONFIG_NET_NATIVE_IPV6) && (CONFIG_NET_ROUTE)
  	struct net_if *iface = NULL;
  	int idx;
-@@ -226,7 +395,37 @@ static int cmd_net_route(const struct shell *sh, size_t argc, char *argv[])
+@@ -226,7 +390,37 @@ static int cmd_net_route(const struct shell *sh, size_t argc, char *argv[])
  #if defined(CONFIG_NET_ROUTE_MCAST)
  	net_route_mcast_foreach(route_mcast_cb, NULL, &user_data);
  #endif

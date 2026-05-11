@@ -11,10 +11,10 @@ patch alone gives you a buildable but inactive wolfIP runtime.
 
 diff --git a/include/zephyr/net/wolfip.h b/include/zephyr/net/wolfip.h
 new file mode 100644
-index 00000000..6c365e9f
+index 00000000..8d3866a8
 --- /dev/null
 +++ b/include/zephyr/net/wolfip.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,81 @@
 +#ifndef ZEPHYR_INCLUDE_NET_WOLFIP_H_
 +#define ZEPHYR_INCLUDE_NET_WOLFIP_H_
 +
@@ -60,7 +60,16 @@ index 00000000..6c365e9f
 +#ifndef WOLFIP_H
 +typedef uint32_t ip4;
 +struct wolfIP;
-+struct wolfIP_route_info;
++/* Mirror of struct wolfIP_route_info from <wolfip.h>. Defined here so
++ * Zephyr-side consumers don't need to include the wolfIP source-tree
++ * header. The wolfIP-side definition is the source of truth; if either
++ * field set changes, this struct must change in lockstep. */
++struct wolfIP_route_info {
++	ip4 prefix;
++	ip4 gateway;
++	uint8_t prefix_len;
++	uint8_t if_idx;
++};
 +#endif
 +
 +/* wolfip_zephyr accessor functions (implemented in wolfip_zephyr.c) */
