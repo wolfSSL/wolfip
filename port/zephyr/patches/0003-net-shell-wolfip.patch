@@ -1,0 +1,1950 @@
+Subject: [PATCH 3/4] net shell — wolfIP-aware command rewrites
+
+Amends the NET_SHELL_*_SUPPORTED umbrellas to also evaluate true when
+WOLFIP is enabled, and adds wolfIP-aware variants alongside the
+existing native-Zephyr code in each shell command file:
+  iface.c, ipv4.c, arp.c, ping.c, route.c, dhcpv4.c,
+  tcp.c, udp.c, conn.c, stats.c
+Existing CONFIG_NET_NATIVE_* paths are preserved as backwards-compat
+siblings. Depends on patch 0001 (public header + wolfip_ctrl_* API).
+
+---
+
+diff --git a/subsys/net/lib/shell/Kconfig b/subsys/net/lib/shell/Kconfig
+index 5d5e3bdb..e1150c79 100644
+--- a/subsys/net/lib/shell/Kconfig
++++ b/subsys/net/lib/shell/Kconfig
+@@ -38,7 +38,7 @@ config NET_SHELL_CAPTURE_SUPPORTED
+ config NET_SHELL_DHCPV4_SUPPORTED
+ 	bool "DHCPv4 start / stop"
+ 	default y
+-	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || NET_DHCPV4_SERVER || NET_DHCPV4
++	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || NET_DHCPV4_SERVER || NET_DHCPV4 || WOLFIP
+ 
+ config NET_SHELL_DHCPV6_SUPPORTED
+ 	bool "DHCPv6 start / stop"
+@@ -83,7 +83,7 @@ config NET_SHELL_CONNECTION_MANAGER_SUPPORTED
+ config NET_SHELL_IPV4_SUPPORTED
+ 	bool "IPv4 config"
+ 	default y
+-	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_NATIVE_IPV4 && NET_IPV4)
++	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_NATIVE_IPV4 && NET_IPV4) || WOLFIP
+ 
+ config NET_SHELL_IPV6_SUPPORTED
+ 	bool "IPv6 config"
+@@ -93,7 +93,7 @@ config NET_SHELL_IPV6_SUPPORTED
+ config NET_SHELL_IP_SUPPORTED
+ 	bool "Generic IP utilities"
+ 	default y
+-	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || NET_IP
++	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || NET_IP || WOLFIP
+ 
+ config NET_SHELL_PKT_ALLOC_SUPPORTED
+ 	bool "Packet allocation monitoring"
+@@ -123,7 +123,7 @@ config NET_SHELL_POWER_MANAGEMENT_SUPPORTED
+ config NET_SHELL_ROUTE_SUPPORTED
+ 	bool "IP routing config"
+ 	default y
+-	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_ROUTE && NET_NATIVE)
++	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_ROUTE && NET_NATIVE) || WOLFIP
+ 
+ config NET_SHELL_SOCKETS_SERVICE_SUPPORTED
+ 	bool "Socket service status"
+@@ -138,12 +138,12 @@ config NET_SHELL_STATISTICS_SUPPORTED
+ config NET_SHELL_TCP_SUPPORTED
+ 	bool "Send / receive TCP data"
+ 	default y
+-	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_NATIVE_TCP && NET_TCP)
++	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_NATIVE_TCP && NET_TCP) || WOLFIP
+ 
+ config NET_SHELL_UDP_SUPPORTED
+ 	bool "Send / receive UDP data"
+ 	default y
+-	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_NATIVE_UDP && NET_UDP)
++	depends on NET_SHELL_SHOW_DISABLED_COMMANDS || (NET_NATIVE_UDP && NET_UDP) || WOLFIP
+ 
+ config NET_SHELL_VIRTUAL_SUPPORTED
+ 	bool "Virtual network interface management"
+diff --git a/subsys/net/lib/shell/arp.c b/subsys/net/lib/shell/arp.c
+index 1070977b..8d818173 100644
+--- a/subsys/net/lib/shell/arp.c
++++ b/subsys/net/lib/shell/arp.c
+@@ -15,6 +15,13 @@ LOG_MODULE_DECLARE(net_shell);
+ #include <zephyr/net/net_if.h>
+ #endif
+ 
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/net/wolfip.h>
++#include <zephyr/net/net_if.h>
++#include <zephyr/sys/byteorder.h>
++#include <stdlib.h>
++#endif
++
+ #if defined(CONFIG_NET_ARP) && defined(CONFIG_NET_NATIVE)
+ static void arp_cb(struct arp_entry *entry, void *user_data)
+ {
+@@ -33,9 +40,9 @@ static void arp_cb(struct arp_entry *entry, void *user_data)
+ 
+ 	(*count)++;
+ }
+-#endif /* CONFIG_NET_ARP */
++#endif /* CONFIG_NET_ARP && CONFIG_NET_NATIVE */
+ 
+-#if !defined(CONFIG_NET_ARP)
++#if !defined(CONFIG_NET_ARP) && !defined(CONFIG_WOLFIP)
+ static void print_arp_error(const struct shell *sh)
+ {
+ 	PR_INFO("Set %s to enable %s support.\n",
+@@ -64,7 +71,12 @@ static int cmd_net_arp(const struct shell *sh, size_t argc, char *argv[])
+ 			PR("ARP cache is empty.\n");
+ 		}
+ 	}
++#elif defined(CONFIG_WOLFIP)
++	ARG_UNUSED(argv);
++	PR("ARP table: managed by wolfIP — iteration not exposed.\n"
++	   "Use 'net arp lookup <iface_idx> <ip>' to resolve a single entry.\n");
+ #else
++	ARG_UNUSED(argv);
+ 	print_arp_error(sh);
+ #endif
+ 
+@@ -79,6 +91,8 @@ static int cmd_net_arp_flush(const struct shell *sh, size_t argc, char *argv[])
+ #if defined(CONFIG_NET_ARP)
+ 	PR("Flushing ARP cache.\n");
+ 	net_arp_clear_cache(NULL);
++#elif defined(CONFIG_WOLFIP)
++	PR("Not supported (wolfIP)\n");
+ #else
+ 	print_arp_error(sh);
+ #endif
+@@ -143,6 +157,52 @@ static int cmd_net_arp_add(const struct shell *sh, size_t argc, char *argv[])
+ }
+ #endif /* CONFIG_NET_ARP && CONFIG_NET_NATIVE */
+ 
++#if defined(CONFIG_WOLFIP)
++static int cmd_net_arp_add(const struct shell *sh, size_t argc, char *argv[])
++{
++	ARG_UNUSED(argc);
++	ARG_UNUSED(argv);
++
++	PR("Not supported (wolfIP): static ARP entries are not exposed.\n");
++	return 0;
++}
++
++static int cmd_net_arp_lookup(const struct shell *sh, size_t argc, char *argv[])
++{
++	struct in_addr a;
++	unsigned int if_idx;
++	ip4 v;
++	uint8_t mac[6];
++	int ret;
++
++	if (argc < 3) {
++		PR_WARNING("Usage: net arp lookup <iface_idx> <IPv4>\n");
++		return -ENOEXEC;
++	}
++
++	if_idx = (unsigned int)atoi(argv[1]);
++
++	ret = net_addr_pton(AF_INET, argv[2], &a);
++	if (ret < 0) {
++		PR_WARNING("Invalid IPv4 address: %s\n", argv[2]);
++		return -ENOEXEC;
++	}
++
++	v = sys_be32_to_cpu(a.s_addr);
++
++	ret = wolfip_ctrl_arp_lookup(if_idx, v, mac);
++	if (ret < 0) {
++		PR("no ARP entry\n");
++	} else {
++		PR("%s -> %02x:%02x:%02x:%02x:%02x:%02x\n",
++		   argv[2],
++		   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
++	}
++
++	return 0;
++}
++#endif /* CONFIG_WOLFIP */
++
+ SHELL_STATIC_SUBCMD_SET_CREATE(
+ 	net_cmd_arp,
+ 	SHELL_CMD(flush, NULL, SHELL_HELP("Remove all entries from ARP cache", ""),
+@@ -150,6 +210,14 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
+ #if defined(CONFIG_NET_ARP) && defined(CONFIG_NET_NATIVE)
+ 	SHELL_CMD(add, NULL, SHELL_HELP("Add a static ARP entry", "[<iface_index>] <IPv4> <MAC>"),
+ 		  cmd_net_arp_add),
++#endif
++#if defined(CONFIG_WOLFIP)
++	SHELL_CMD(add, NULL,
++		  SHELL_HELP("Add a static ARP entry (not supported with wolfIP)", ""),
++		  cmd_net_arp_add),
++	SHELL_CMD(lookup, NULL,
++		  SHELL_HELP("Look up an ARP entry via wolfIP", "<iface_idx> <IPv4>"),
++		  cmd_net_arp_lookup),
+ #endif
+ 	SHELL_SUBCMD_SET_END);
+ 
+diff --git a/subsys/net/lib/shell/conn.c b/subsys/net/lib/shell/conn.c
+index bd0a5b28..2f97ea6a 100644
+--- a/subsys/net/lib/shell/conn.c
++++ b/subsys/net/lib/shell/conn.c
+@@ -15,7 +15,9 @@ LOG_MODULE_DECLARE(net_shell);
+ #include <zephyr/sys/slist.h>
+ #endif
+ 
+-#if defined(CONFIG_NET_OFFLOAD) || defined(CONFIG_NET_NATIVE)
++#if (defined(CONFIG_NET_OFFLOAD) || defined(CONFIG_NET_NATIVE)) && \
++    (defined(CONFIG_NET_TCP) || defined(CONFIG_NET_UDP) || \
++     defined(CONFIG_NET_SOCKETS_PACKET) || defined(CONFIG_NET_SOCKETS_CAN))
+ static void context_cb(struct net_context *context, void *user_data)
+ {
+ #if defined(CONFIG_NET_IPV6) && !defined(CONFIG_NET_IPV4)
+@@ -49,8 +51,10 @@ static void context_cb(struct net_context *context, void *user_data)
+ 
+ 	(*count)++;
+ }
+-#endif /* CONFIG_NET_OFFLOAD || CONFIG_NET_NATIVE */
++#endif /* (CONFIG_NET_OFFLOAD || CONFIG_NET_NATIVE) && (TCP || UDP || PACKET || CAN) */
+ 
++#if defined(CONFIG_NET_TCP) || defined(CONFIG_NET_UDP) || \
++    defined(CONFIG_NET_SOCKETS_PACKET) || defined(CONFIG_NET_SOCKETS_CAN)
+ static void conn_handler_cb(struct net_conn *conn, void *user_data)
+ {
+ #if defined(CONFIG_NET_IPV6) && !defined(CONFIG_NET_IPV4)
+@@ -103,6 +107,7 @@ static void conn_handler_cb(struct net_conn *conn, void *user_data)
+ 
+ 	(*count)++;
+ }
++#endif /* CONFIG_NET_TCP || CONFIG_NET_UDP || CONFIG_NET_SOCKETS_PACKET || CONFIG_NET_SOCKETS_CAN */
+ 
+ #if CONFIG_NET_TCP_LOG_LEVEL >= LOG_LEVEL_DBG
+ struct tcp_detail_info {
+@@ -216,11 +221,13 @@ static int cmd_net_conn(const struct shell *sh, size_t argc, char *argv[])
+ 	struct net_shell_user_data user_data;
+ 	int count = 0;
+ 
+-	PR("     Context   \tIface  Flags            Local             Remote\n");
+-
+ 	user_data.sh = sh;
+ 	user_data.user_data = &count;
+ 
++#if defined(CONFIG_NET_TCP) || defined(CONFIG_NET_UDP) || \
++    defined(CONFIG_NET_SOCKETS_PACKET) || defined(CONFIG_NET_SOCKETS_CAN)
++	PR("     Context   \tIface  Flags            Local             Remote\n");
++
+ 	net_context_foreach(context_cb, &user_data);
+ 
+ 	if (count == 0) {
+@@ -236,6 +243,9 @@ static int cmd_net_conn(const struct shell *sh, size_t argc, char *argv[])
+ 	if (count == 0) {
+ 		PR("No connection handlers found.\n");
+ 	}
++#else
++	PR("Native network connections: not built.\n");
++#endif /* CONFIG_NET_TCP || CONFIG_NET_UDP || CONFIG_NET_SOCKETS_PACKET || CONFIG_NET_SOCKETS_CAN */
+ 
+ #if defined(CONFIG_NET_TCP)
+ 	PR("\nTCP        Context   Src port Dst port   "
+diff --git a/subsys/net/lib/shell/dhcpv4.c b/subsys/net/lib/shell/dhcpv4.c
+index 10c915c7..d4231994 100644
+--- a/subsys/net/lib/shell/dhcpv4.c
++++ b/subsys/net/lib/shell/dhcpv4.c
+@@ -8,9 +8,16 @@
+ LOG_MODULE_DECLARE(net_shell);
+ 
+ #include <stdint.h>
++#if !defined(CONFIG_WOLFIP)
+ #include <zephyr/net/dhcpv4_server.h>
++#endif
+ #include <zephyr/net/socket.h>
+ 
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/net/wolfip.h>
++#include <stdlib.h>
++#endif
++
+ #include "net_shell_private.h"
+ 
+ static int cmd_net_dhcpv4_server_start(const struct shell *sh, size_t argc, char *argv[])
+@@ -45,6 +52,8 @@ static int cmd_net_dhcpv4_server_start(const struct shell *sh, size_t argc, char
+ 	} else {
+ 		PR("DHCPv4 server started on interface %d\n", idx);
+ 	}
++#elif defined(CONFIG_WOLFIP)
++	PR_INFO("wolfIP: DHCPv4 server not supported\n");
+ #else /* CONFIG_NET_DHCPV4_SERVER */
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_DHCPV4_SERVER", "DHCPv4 server");
+@@ -78,6 +87,8 @@ static int cmd_net_dhcpv4_server_stop(const struct shell *sh, size_t argc, char
+ 	} else {
+ 		PR("DHCPv4 server stopped on interface %d\n", idx);
+ 	}
++#elif defined(CONFIG_WOLFIP)
++	PR_INFO("wolfIP: DHCPv4 server not supported\n");
+ #else /* CONFIG_NET_DHCPV4_SERVER */
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_DHCPV4_SERVER", "DHCPv4 server");
+@@ -180,6 +191,8 @@ static int cmd_net_dhcpv4_server_status(const struct shell *sh, size_t argc, cha
+ 	} else if (count == 0) {
+ 		PR("DHCPv4 server - no addresses assigned\n");
+ 	}
++#elif defined(CONFIG_WOLFIP)
++	PR_INFO("wolfIP: DHCPv4 server not supported\n");
+ #else /* CONFIG_NET_DHCPV4_SERVER */
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_DHCPV4_SERVER", "DHCPv4 server");
+@@ -211,6 +224,35 @@ static int cmd_net_dhcpv4_client_start(const struct shell *sh, size_t argc, char
+ 
+ 	net_dhcpv4_restart(iface);
+ 
++#elif defined(CONFIG_WOLFIP)
++	struct net_if *iface;
++	unsigned int if_idx;
++	int idx, ret;
++
++	if (argc < 2) {
++		PR_ERROR("Correct usage: net dhcpv4 client %s <index>\n", "start");
++		return -EINVAL;
++	}
++
++	idx = atoi(argv[1]);
++	iface = net_if_get_by_index(idx);
++	if (!iface) {
++		PR_WARNING("No such interface in index %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	ret = wolfip_zephyr_get_if_idx(iface, &if_idx);
++	if (ret < 0) {
++		PR_ERROR("Failed to get wolfIP interface index: %d\n", ret);
++		return -ENOEXEC;
++	}
++
++	ret = wolfip_ctrl_dhcp_start(if_idx);
++	if (ret < 0) {
++		PR_ERROR("DHCPv4 start failed: %d\n", ret);
++	} else {
++		PR("DHCPv4 client started on iface %d\n", idx);
++	}
+ #else /* CONFIG_NET_DHCPV4 */
+ 	PR_INFO("Set %s to enable %s support.\n", "CONFIG_NET_DHCPV4", "DHCPv4");
+ #endif /* CONFIG_NET_DHCPV4 */
+@@ -241,12 +283,51 @@ static int cmd_net_dhcpv4_client_stop(const struct shell *sh, size_t argc, char
+ 
+ 	net_dhcpv4_stop(iface);
+ 
++#elif defined(CONFIG_WOLFIP)
++	PR_INFO("wolfIP: DHCPv4 client stop not supported (no API)\n");
+ #else /* CONFIG_NET_DHCPV4 */
+ 	PR_INFO("Set %s to enable %s support.\n", "CONFIG_NET_DHCPV4", "DHCPv4");
+ #endif /* CONFIG_NET_DHCPV4 */
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_WOLFIP)
++static int cmd_net_dhcpv4_client_status(const struct shell *sh, size_t argc, char *argv[])
++{
++	struct net_if *iface;
++	unsigned int if_idx;
++	int idx, ret;
++
++	if (argc < 2) {
++		PR_ERROR("Correct usage: net dhcpv4 client status <index>\n");
++		return -EINVAL;
++	}
++
++	idx = atoi(argv[1]);
++	iface = net_if_get_by_index(idx);
++	if (!iface) {
++		PR_WARNING("No such interface in index %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	ret = wolfip_zephyr_get_if_idx(iface, &if_idx);
++	if (ret < 0) {
++		PR_ERROR("Failed to get wolfIP interface index: %d\n", ret);
++		return -ENOEXEC;
++	}
++
++	if (wolfip_ctrl_dhcp_is_bound(if_idx)) {
++		PR("DHCPv4 client on iface %d: bound\n", idx);
++	} else if (wolfip_ctrl_dhcp_is_running(if_idx)) {
++		PR("DHCPv4 client on iface %d: running\n", idx);
++	} else {
++		PR("DHCPv4 client on iface %d: idle\n", idx);
++	}
++
++	return 0;
++}
++#endif /* CONFIG_WOLFIP */
++
+ SHELL_STATIC_SUBCMD_SET_CREATE(net_cmd_dhcpv4_server,
+ 	SHELL_CMD_ARG(start, NULL,
+ 		      SHELL_HELP("Start the DHCPv4 server operation on the interface",
+@@ -273,6 +354,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(net_cmd_dhcpv4_client,
+ 		      SHELL_HELP("Stop the DHCPv4 client operation on the interface",
+ 				 "<index>"),
+ 		      cmd_net_dhcpv4_client_stop, 2, 0),
++#if defined(CONFIG_WOLFIP)
++	SHELL_CMD_ARG(status, NULL,
++		      SHELL_HELP("Print the DHCPv4 client status on the interface",
++				 "<index>"),
++		      cmd_net_dhcpv4_client_status, 2, 0),
++#endif /* CONFIG_WOLFIP */
+ 	SHELL_SUBCMD_SET_END
+ );
+ 
+diff --git a/subsys/net/lib/shell/iface.c b/subsys/net/lib/shell/iface.c
+index 649e8062..4d3a5ae7 100644
+--- a/subsys/net/lib/shell/iface.c
++++ b/subsys/net/lib/shell/iface.c
+@@ -28,6 +28,11 @@ LOG_MODULE_DECLARE(net_shell);
+ 
+ #include "net_shell_private.h"
+ 
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/net/wolfip.h>
++#include <zephyr/sys/byteorder.h>
++#endif
++
+ #define UNICAST_MASK GENMASK(7, 1)
+ #define LOCAL_BIT BIT(1)
+ 
+@@ -597,7 +602,41 @@ skip_ipv4:
+ 		PR("IPv4 gateway : %s\n",
+ 		   net_sprint_ipv4_addr(&ipv4->gw));
+ 	}
+-#endif /* CONFIG_NET_IPV4 */
++#elif defined(CONFIG_WOLFIP)
++	{
++		unsigned int if_idx;
++		ip4 wip = 0, wmask = 0, wgw = 0;
++		char buf[NET_IPV4_ADDR_LEN];
++		struct in_addr addr;
++
++		if (wolfip_zephyr_get_if_idx(iface, &if_idx) < 0) {
++			goto skip_ipv4;
++		}
++
++		wolfip_ctrl_get_addr(if_idx, &wip, &wmask, &wgw);
++
++		if (wip == 0) {
++			PR("IPv4 (wolfIP): unconfigured\n");
++			goto skip_ipv4;
++		}
++
++		PR("IPv4 (wolfIP):\n");
++
++		addr.s_addr = sys_cpu_to_be32(wip);
++		net_addr_ntop(AF_INET, &addr, buf, sizeof(buf));
++		PR("\tAddress: %s\n", buf);
++
++		addr.s_addr = sys_cpu_to_be32(wmask);
++		net_addr_ntop(AF_INET, &addr, buf, sizeof(buf));
++		PR("\tNetmask: %s\n", buf);
++
++		addr.s_addr = sys_cpu_to_be32(wgw);
++		net_addr_ntop(AF_INET, &addr, buf, sizeof(buf));
++		PR("\tGateway: %s\n", buf);
++
++skip_ipv4:;
++	}
++#endif /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 
+ #if defined(CONFIG_NET_DHCPV4)
+ 	if (net_if_flag_is_set(iface, NET_IF_IPV4)) {
+@@ -619,7 +658,20 @@ skip_ipv4:
+ 		PR("DHCPv4 state      : %s\n",
+ 		   net_dhcpv4_state_name(iface->config.dhcpv4.state));
+ 	}
+-#endif /* CONFIG_NET_DHCPV4 */
++#elif defined(CONFIG_WOLFIP)
++	{
++		unsigned int if_idx;
++		int running, bound;
++
++		if (wolfip_zephyr_get_if_idx(iface, &if_idx) >= 0) {
++			running = wolfip_ctrl_dhcp_is_running(if_idx);
++			bound   = wolfip_ctrl_dhcp_is_bound(if_idx);
++			PR("DHCPv4 (wolfIP): %s%s\n",
++			   running ? "running " : "idle",
++			   bound   ? "/ bound" : "");
++		}
++	}
++#endif /* CONFIG_NET_DHCPV4 / CONFIG_WOLFIP */
+ }
+ 
+ static int cmd_net_set_mac(const struct shell *sh, size_t argc, char *argv[])
+diff --git a/subsys/net/lib/shell/ipv4.c b/subsys/net/lib/shell/ipv4.c
+index a18a963e..01ea8a8b 100644
+--- a/subsys/net/lib/shell/ipv4.c
++++ b/subsys/net/lib/shell/ipv4.c
+@@ -9,6 +9,11 @@
+ LOG_MODULE_DECLARE(net_shell);
+ 
+ #include <zephyr/net/igmp.h>
++#include <zephyr/sys/byteorder.h>
++
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/net/wolfip.h>
++#endif
+ 
+ #include "net_shell_private.h"
+ #include "../ip/ipv4.h"
+@@ -66,10 +71,48 @@ static void ip_address_info_cb(struct net_if *iface, void *user_data)
+ 		   net_sprint_ipv4_addr(&ipv4->mcast[i].address.in6_addr));
+ 	}
+ }
+-#endif /* CONFIG_NET_IPV4 */
++#elif defined(CONFIG_WOLFIP)
++static void ip_address_info_cb(struct net_if *iface, void *user_data)
++{
++	struct net_shell_user_data *data = user_data;
++	const struct shell *sh = data->sh;
++	unsigned int if_idx;
++	ip4 ip, mask, gw;
++	struct net_in_addr a;
++	char ip_str[NET_IPV4_ADDR_LEN];
++	char mask_str[NET_IPV4_ADDR_LEN];
++	char gw_str[NET_IPV4_ADDR_LEN];
++
++	if (wolfip_zephyr_get_if_idx(iface, &if_idx) < 0) {
++		return;
++	}
++
++	if (wolfip_ctrl_get_addr(if_idx, &ip, &mask, &gw) < 0) {
++		PR("iface %u: error reading address\n", if_idx);
++		return;
++	}
++
++	if (ip == 0) {
++		PR("iface %u: unconfigured\n", if_idx);
++		return;
++	}
++
++	a.s_addr = sys_cpu_to_be32(ip);
++	net_addr_ntop(NET_AF_INET, &a, ip_str, sizeof(ip_str));
++
++	a.s_addr = sys_cpu_to_be32(mask);
++	net_addr_ntop(NET_AF_INET, &a, mask_str, sizeof(mask_str));
++
++	a.s_addr = sys_cpu_to_be32(gw);
++	net_addr_ntop(NET_AF_INET, &a, gw_str, sizeof(gw_str));
++
++	PR("iface %u: %s/%s gw %s\n", if_idx, ip_str, mask_str, gw_str);
++}
++#endif /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 
+ static int cmd_net_ipv4(const struct shell *sh, size_t argc, char *argv[])
+ {
++#if defined(CONFIG_NET_IPV4)
+ 	PR("IPv4 support                              : %s\n",
+ 	   IS_ENABLED(CONFIG_NET_IPV4) ?
+ 	   "enabled" : "disabled");
+@@ -88,27 +131,43 @@ static int cmd_net_ipv4(const struct shell *sh, size_t argc, char *argv[])
+ 	   IS_ENABLED(CONFIG_NET_IPV4_PMTU) ? "enabled" : "disabled");
+ #endif /* CONFIG_NET_NATIVE_IPV4 */
+ 
+-#if defined(CONFIG_NET_IPV4)
++	{
++		struct net_shell_user_data user_data;
++
++		PR("Max number of IPv4 network interfaces "
++		   "in the system          : %d\n",
++		   CONFIG_NET_IF_MAX_IPV4_COUNT);
++		PR("Max number of unicast IPv4 addresses "
++		   "per network interface   : %d\n",
++		   CONFIG_NET_IF_UNICAST_IPV4_ADDR_COUNT);
++		PR("Max number of multicast IPv4 addresses "
++		   "per network interface : %d\n",
++		   CONFIG_NET_IF_MCAST_IPV4_ADDR_COUNT);
++
++		user_data.sh = sh;
++		user_data.user_data = NULL;
++
++		/* Print information about address lifetime */
++		net_if_foreach(ip_address_info_cb, &user_data);
++	}
++
++	return 0;
++#elif defined(CONFIG_WOLFIP)
+ 	struct net_shell_user_data user_data;
+ 
+-	PR("Max number of IPv4 network interfaces "
+-	   "in the system          : %d\n",
+-	   CONFIG_NET_IF_MAX_IPV4_COUNT);
+-	PR("Max number of unicast IPv4 addresses "
+-	   "per network interface   : %d\n",
+-	   CONFIG_NET_IF_UNICAST_IPV4_ADDR_COUNT);
+-	PR("Max number of multicast IPv4 addresses "
+-	   "per network interface : %d\n",
+-	   CONFIG_NET_IF_MCAST_IPV4_ADDR_COUNT);
++	PR("IPv4 support (wolfIP): yes\n");
++	PR("Max interfaces: %d\n", CONFIG_WOLFIP_MAX_INTERFACES);
+ 
+ 	user_data.sh = sh;
+ 	user_data.user_data = NULL;
+ 
+-	/* Print information about address lifetime */
+ 	net_if_foreach(ip_address_info_cb, &user_data);
+-#endif /* CONFIG_NET_IPV4 */
+ 
+ 	return 0;
++#else
++	PR("IPv4 support                              : disabled\n");
++	return -ENOEXEC;
++#endif
+ }
+ 
+ static int cmd_net_ip_add(const struct shell *sh, size_t argc, char *argv[])
+@@ -172,9 +231,74 @@ static int cmd_net_ip_add(const struct shell *sh, size_t argc, char *argv[])
+ 		net_if_ipv4_set_netmask_by_addr(iface, &addr, &netmask);
+ 	}
+ 
+-#else /* CONFIG_NET_IPV4 */
++#elif defined(CONFIG_WOLFIP)
++	struct net_if *iface;
++	int idx;
++	struct net_in_addr a;
++	unsigned int if_idx;
++	ip4 ip, mask, gw, cur_ip, cur_mask, cur_gw;
++
++	if (argc < 3) {
++		PR_ERROR("Correct usage: net ipv4 add <index> <address> [<netmask>]\n");
++		return -EINVAL;
++	}
++
++	idx = get_iface_idx(sh, argv[1]);
++	if (idx < 0) {
++		return -ENOEXEC;
++	}
++
++	iface = net_if_get_by_index(idx);
++	if (!iface) {
++		PR_WARNING("No such interface in index %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	/* wolfIP has no IGMP/multicast join API */
++	if (argc >= 3 && strcmp(argv[2], "join") == 0) {
++		PR_ERROR("wolfIP: multicast join not supported\n");
++		return -ENOTSUP;
++	}
++
++	if (net_addr_pton(NET_AF_INET, argv[2], &a)) {
++		PR_ERROR("Invalid address: %s\n", argv[2]);
++		return -EINVAL;
++	}
++	ip = sys_be32_to_cpu(a.s_addr);
++
++	/* Default mask to 255.255.255.0 if not supplied */
++	if (argc >= 4) {
++		if (net_addr_pton(NET_AF_INET, argv[3], &a)) {
++			PR_ERROR("Invalid netmask: %s\n", argv[3]);
++			return -EINVAL;
++		}
++		mask = sys_be32_to_cpu(a.s_addr);
++	} else {
++		mask = 0xFFFFFF00U;
++	}
++
++	if (wolfip_zephyr_get_if_idx(iface, &if_idx) < 0) {
++		PR_ERROR("Cannot get wolfIP interface index for iface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	/* Preserve existing gateway */
++	cur_gw = 0;
++	if (wolfip_ctrl_get_addr(if_idx, &cur_ip, &cur_mask, &cur_gw) < 0) {
++		cur_gw = 0;
++	}
++	gw = cur_gw;
++
++	if (wolfip_ctrl_set_addr(if_idx, ip, mask, gw) < 0) {
++		PR_ERROR("Cannot set address on interface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	PR("Address set on interface %d\n", idx);
++
++#else /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 	PR_INFO("Set %s to enable %s support.\n", "CONFIG_NET_IPV4", "IPv4");
+-#endif /* CONFIG_NET_IPV4 */
++#endif /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 	return 0;
+ }
+ 
+@@ -221,9 +345,43 @@ static int cmd_net_ip_del(const struct shell *sh, size_t argc, char *argv[])
+ 			return -ENOEXEC;
+ 		}
+ 	}
+-#else /* CONFIG_NET_IPV4 */
++#elif defined(CONFIG_WOLFIP)
++	struct net_if *iface;
++	int idx;
++	unsigned int if_idx;
++
++	if (argc != 3) {
++		PR_ERROR("Correct usage: net ipv4 del <index> <address>\n");
++		return -EINVAL;
++	}
++
++	idx = get_iface_idx(sh, argv[1]);
++	if (idx < 0) {
++		return -ENOEXEC;
++	}
++
++	iface = net_if_get_by_index(idx);
++	if (!iface) {
++		PR_WARNING("No such interface in index %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	if (wolfip_zephyr_get_if_idx(iface, &if_idx) < 0) {
++		PR_ERROR("Cannot get wolfIP interface index for iface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	/* wolfIP stores one address per iface; clearing means zeroing all */
++	if (wolfip_ctrl_set_addr(if_idx, 0, 0, 0) < 0) {
++		PR_ERROR("Failed to clear address on interface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	PR("Address cleared on interface %d\n", idx);
++
++#else /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 	PR_INFO("Set %s to enable %s support.\n", "CONFIG_NET_IPV4", "IPv4");
+-#endif /* CONFIG_NET_IPV4 */
++#endif /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 	return 0;
+ }
+ 
+@@ -257,12 +415,60 @@ static int cmd_net_ip_gateway(const struct shell *sh, size_t argc, char *argv[])
+ 
+ 	net_if_ipv4_set_gw(iface, &addr);
+ 
+-#else /* CONFIG_NET_IPV4 */
++#elif defined(CONFIG_WOLFIP)
++	struct net_if *iface;
++	int idx;
++	struct net_in_addr a;
++	unsigned int if_idx;
++	ip4 cur_ip, cur_mask, cur_gw, new_gw;
++
++	if (argc != 3) {
++		PR_ERROR("Correct usage: net ipv4 gateway <index> <gateway_ip>\n");
++		return -ENOEXEC;
++	}
++
++	idx = get_iface_idx(sh, argv[1]);
++	if (idx < 0) {
++		return -ENOEXEC;
++	}
++
++	iface = net_if_get_by_index(idx);
++	if (!iface) {
++		PR_WARNING("No such interface in index %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	if (net_addr_pton(NET_AF_INET, argv[2], &a)) {
++		PR_ERROR("Invalid address: %s\n", argv[2]);
++		return -EINVAL;
++	}
++	new_gw = sys_be32_to_cpu(a.s_addr);
++
++	if (wolfip_zephyr_get_if_idx(iface, &if_idx) < 0) {
++		PR_ERROR("Cannot get wolfIP interface index for iface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	/* Read current ip/mask so we don't clobber them */
++	if (wolfip_ctrl_get_addr(if_idx, &cur_ip, &cur_mask, &cur_gw) < 0) {
++		PR_ERROR("Cannot read current address for interface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	if (wolfip_ctrl_set_addr(if_idx, cur_ip, cur_mask, new_gw) < 0) {
++		PR_ERROR("Cannot set gateway on interface %d\n", idx);
++		return -ENOEXEC;
++	}
++
++	PR("Gateway set on interface %d\n", idx);
++
++#else /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 	PR_INFO("Set %s to enable %s support.\n", "CONFIG_NET_IPV4", "IPv4");
+-#endif /* CONFIG_NET_IPV4 */
++#endif /* CONFIG_NET_IPV4 / CONFIG_WOLFIP */
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_NET_IPV4) || defined(CONFIG_WOLFIP)
+ SHELL_STATIC_SUBCMD_SET_CREATE(net_cmd_ip,
+ 	SHELL_CMD(add, NULL,
+ 		  SHELL_HELP("Adds the address to the interface",
+@@ -283,3 +489,4 @@ SHELL_SUBCMD_ADD((net), ipv4, &net_cmd_ip,
+ 		 "Print information about IPv4 specific information and "
+ 		 "configuration.",
+ 		 cmd_net_ipv4, 1, 0);
++#endif /* CONFIG_NET_IPV4 || CONFIG_WOLFIP */
+diff --git a/subsys/net/lib/shell/ping.c b/subsys/net/lib/shell/ping.c
+index a3d98961..9984b994 100644
+--- a/subsys/net/lib/shell/ping.c
++++ b/subsys/net/lib/shell/ping.c
+@@ -11,15 +11,274 @@ LOG_MODULE_DECLARE(net_shell);
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <zephyr/random/random.h>
++
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/posix/sys/socket.h>
++#include <zephyr/posix/arpa/inet.h>
++#include <zephyr/posix/unistd.h>
++#include <errno.h>
++#else
+ #include <zephyr/net/icmp.h>
++#endif
+ 
+ #include "net_shell_private.h"
+ 
++#if !defined(CONFIG_WOLFIP)
+ #include "../ip/icmpv6.h"
+ #include "../ip/icmpv4.h"
+ #include "../ip/route.h"
++#endif
++
++#if defined(CONFIG_NET_IP) || defined(CONFIG_WOLFIP)
++
++/* ------------------------------------------------------------------ */
++/* wolfIP ICMP ping backend                                             */
++/* ------------------------------------------------------------------ */
++#if defined(CONFIG_WOLFIP)
++
++/* Minimal ICMP echo header built and parsed inline. */
++struct icmp_echo_hdr {
++	uint8_t  type;
++	uint8_t  code;
++	uint16_t chksum;
++	uint16_t id;
++	uint16_t seq;
++};
++
++#define ICMP_ECHO_REQUEST 8
++#define ICMP_ECHO_REPLY   0
++#define WOLFIP_PING_PAYLOAD_SIZE 32
++
++static uint16_t icmp_checksum(const void *data, size_t len)
++{
++	const uint16_t *p = data;
++	uint32_t sum = 0;
++
++	while (len > 1) {
++		sum += *p++;
++		len -= 2;
++	}
++
++	if (len == 1) {
++		uint16_t last = 0;
++
++		memcpy(&last, p, 1);
++		sum += last;
++	}
++
++	while (sum >> 16) {
++		sum = (sum & 0xFFFF) + (sum >> 16);
++	}
++
++	return (uint16_t)(~sum);
++}
++
++struct ping_context_wolfip {
++	int fd;
++	struct k_work_delayable work;
++	struct k_work_delayable recv_work;
++	uint32_t count;
++	uint32_t interval;
++	uint32_t sent;
++	uint32_t received;
++	uint16_t id;
++	uint16_t seq;
++	struct sockaddr_in dest;
++	const struct shell *sh;
++	/* recv retry bookkeeping */
++	int recv_retries;
++};
++
++static struct ping_context_wolfip wolfip_ping_ctx;
++
++static void wolfip_ping_recv_work(struct k_work *w);
++
++static void wolfip_ping_work(struct k_work *w)
++{
++	struct k_work_delayable *dwork = k_work_delayable_from_work(w);
++	struct ping_context_wolfip *ctx =
++		CONTAINER_OF(dwork, struct ping_context_wolfip, work);
++	const struct shell *sh = ctx->sh;
++	uint8_t pkt[sizeof(struct icmp_echo_hdr) + WOLFIP_PING_PAYLOAD_SIZE];
++	struct icmp_echo_hdr *hdr = (struct icmp_echo_hdr *)pkt;
++	ssize_t ret;
++
++	if (ctx->fd < 0) {
++		return;
++	}
++
++	if (ctx->sent >= ctx->count) {
++		/* All pings sent; wait for last reply via recv_work. */
++		return;
++	}
++
++	ctx->seq++;
++	ctx->sent++;
++
++	memset(pkt, 0, sizeof(pkt));
++	hdr->type   = ICMP_ECHO_REQUEST;
++	hdr->code   = 0;
++	hdr->chksum = 0;
++	hdr->id     = htons(ctx->id);
++	hdr->seq    = htons(ctx->seq);
++
++	/* Fill payload with a recognisable pattern. */
++	for (int i = 0; i < WOLFIP_PING_PAYLOAD_SIZE; i++) {
++		pkt[sizeof(struct icmp_echo_hdr) + i] = (uint8_t)('a' + (i % 26));
++	}
++
++	hdr->chksum = icmp_checksum(pkt, sizeof(pkt));
++
++	ret = sendto(ctx->fd, pkt, sizeof(pkt), 0,
++		     (const struct sockaddr *)&ctx->dest,
++		     sizeof(ctx->dest));
++	if (ret < 0) {
++		PR_WARNING("ping: sendto failed: %d\n", errno);
++	}
++
++	/* Schedule receive polling; recv_work will reschedule itself up to
++	 * a few times if the reply hasn't arrived yet.
++	 */
++	ctx->recv_retries = 20; /* 20 * 50ms = 1 s per ping */
++	k_work_reschedule(&ctx->recv_work, K_MSEC(50));
++
++	/* Schedule next TX. */
++	if (ctx->sent < ctx->count) {
++		k_work_reschedule(&ctx->work, K_MSEC(ctx->interval));
++	}
++}
++
++static void wolfip_ping_recv_work(struct k_work *w)
++{
++	struct k_work_delayable *dwork = k_work_delayable_from_work(w);
++	struct ping_context_wolfip *ctx =
++		CONTAINER_OF(dwork, struct ping_context_wolfip, recv_work);
++	const struct shell *sh = ctx->sh;
++	uint8_t buf[128];
++	struct sockaddr_in from;
++	socklen_t fromlen = sizeof(from);
++	ssize_t n;
++	char addr_str[NET_IPV4_ADDR_LEN];
++
++	if (ctx->fd < 0) {
++		return;
++	}
++
++	n = recvfrom(ctx->fd, buf, sizeof(buf), MSG_DONTWAIT,
++		     (struct sockaddr *)&from, &fromlen);
++	if (n < 0) {
++		if (errno == EAGAIN || errno == EWOULDBLOCK) {
++			/* Reply not yet available. */
++			ctx->recv_retries--;
++			if (ctx->recv_retries > 0) {
++				k_work_reschedule(&ctx->recv_work, K_MSEC(50));
++			} else {
++				PR_WARNING("ping: timeout waiting for reply seq=%u\n",
++					   ctx->seq);
++				/* Check if we are done. */
++				if (ctx->sent >= ctx->count) {
++					PR_INFO("Ping complete: sent=%u received=%u\n",
++						ctx->sent, ctx->received);
++					zsock_close(ctx->fd);
++					ctx->fd = -1;
++					shell_set_bypass(ctx->sh, NULL, NULL);
++					shell_fprintf(ctx->sh, SHELL_NORMAL, "");
++				}
++			}
++			return;
++		}
++		PR_WARNING("ping: recvfrom error: %d\n", errno);
++		return;
++	}
++
++	if (n < (ssize_t)sizeof(struct icmp_echo_hdr)) {
++		/* Truncated — try again. */
++		ctx->recv_retries--;
++		if (ctx->recv_retries > 0) {
++			k_work_reschedule(&ctx->recv_work, K_MSEC(50));
++		}
++		return;
++	}
++
++	/*
++	 * wolfIP's ICMP socket delivers only the ICMP payload (no IP header
++	 * prepended), so buf[0] is the ICMP type byte directly.
++	 */
++	struct icmp_echo_hdr *hdr = (struct icmp_echo_hdr *)buf;
++
++	if (hdr->type != ICMP_ECHO_REPLY) {
++		/* Not an echo reply; keep waiting. */
++		ctx->recv_retries--;
++		if (ctx->recv_retries > 0) {
++			k_work_reschedule(&ctx->recv_work, K_MSEC(50));
++		}
++		return;
++	}
++
++	/* wolfIP rewrites the ICMP echo id field to its per-socket value
++	 * (used for demuxing replies). The id we set on TX never makes it
++	 * onto the wire, so we can't compare against ctx->id here. Trust
++	 * wolfIP's per-socket demux (replies for this fd land here only)
++	 * and accept any seq we've already sent.
++	 */
++	uint16_t reply_seq = ntohs(hdr->seq);
++	if (reply_seq == 0 || reply_seq > ctx->seq) {
++		/* Out-of-band or future seq; skip. */
++		ctx->recv_retries--;
++		if (ctx->recv_retries > 0) {
++			k_work_reschedule(&ctx->recv_work, K_MSEC(50));
++		}
++		return;
++	}
++
++	ctx->received++;
++
++	net_addr_ntop(AF_INET, &from.sin_addr, addr_str, sizeof(addr_str));
++
++	PR_SHELL(sh, "%zd bytes from %s: icmp_seq=%u\n",
++		 n, addr_str, ntohs(hdr->seq));
++
++	if (ctx->sent >= ctx->count && ctx->received >= ctx->count) {
++		PR_INFO("Ping complete: sent=%u received=%u\n",
++			ctx->sent, ctx->received);
++		zsock_close(ctx->fd);
++		ctx->fd = -1;
++		shell_set_bypass(ctx->sh, NULL, NULL);
++		shell_fprintf(ctx->sh, SHELL_NORMAL, "");
++	}
++}
++
++static void wolfip_ping_cleanup(struct ping_context_wolfip *ctx)
++{
++	k_work_cancel_delayable(&ctx->work);
++	k_work_cancel_delayable(&ctx->recv_work);
++	if (ctx->fd >= 0) {
++		zsock_close(ctx->fd);
++		ctx->fd = -1;
++	}
++	shell_set_bypass(ctx->sh, NULL, NULL);
++}
++
++#define ASCII_CTRL_C 0x03
++
++static void ping_bypass(const struct shell *sh, uint8_t *data, size_t len, void *user_data)
++{
++	ARG_UNUSED(sh);
++	ARG_UNUSED(user_data);
++
++	for (size_t i = 0; i < len; i++) {
++		if (data[i] == ASCII_CTRL_C) {
++			wolfip_ping_cleanup(&wolfip_ping_ctx);
++			break;
++		}
++	}
++}
++
++#else /* !CONFIG_WOLFIP — native Zephyr path */
+ 
+-#if defined(CONFIG_NET_IP)
++/* ------------------------------------------------------------------ */
++/* Native Zephyr ping backend (net_icmp_* APIs)                        */
++/* ------------------------------------------------------------------ */
+ 
+ static struct ping_context {
+ 	struct k_work_delayable work;
+@@ -212,6 +471,8 @@ static enum net_verdict handle_ipv4_echo_reply(struct net_icmp_ctx *ctx,
+ }
+ #endif /* CONFIG_NET_IPV4 */
+ 
++#endif /* !CONFIG_WOLFIP */
++
+ static int parse_arg(size_t *i, size_t argc, char *argv[])
+ {
+ 	int res;
+@@ -243,6 +504,8 @@ static int parse_arg(size_t *i, size_t argc, char *argv[])
+ 	return res;
+ }
+ 
++#if !defined(CONFIG_WOLFIP)
++
+ static void ping_cleanup(struct ping_context *ctx)
+ {
+ 	(void)net_icmp_cleanup_ctx(&ctx->icmp);
+@@ -366,17 +629,108 @@ out:
+ 	return iface;
+ }
+ 
+-#endif /* CONFIG_NET_IP */
++#endif /* !CONFIG_WOLFIP */
++
++#endif /* CONFIG_NET_IP || CONFIG_WOLFIP */
+ 
+ static int cmd_net_ping(const struct shell *sh, size_t argc, char *argv[])
+ {
+-#if !defined(CONFIG_NET_IPV4) && !defined(CONFIG_NET_IPV6)
++#if defined(CONFIG_WOLFIP)
++	/* ------------------------------------------------------------ */
++	/* wolfIP path: BSD socket ICMP backend (IPv4 only)              */
++	/* ------------------------------------------------------------ */
++	char *host = NULL;
++	int count = 3;
++	int interval = 1000;
++	struct in_addr addr4;
++
++	for (size_t i = 1; i < argc; ++i) {
++		if (*argv[i] != '-') {
++			host = argv[i];
++			continue;
++		}
++
++		switch (argv[i][1]) {
++		case 'c':
++			count = parse_arg(&i, argc, argv);
++			if (count < 0) {
++				PR_WARNING("Parse error: %s\n", argv[i]);
++				return -ENOEXEC;
++			}
++			break;
++		case 'i':
++			interval = parse_arg(&i, argc, argv);
++			if (interval < 0) {
++				PR_WARNING("Parse error: %s\n", argv[i]);
++				return -ENOEXEC;
++			}
++			break;
++		default:
++			PR_WARNING("Unrecognized argument: %s\n", argv[i]);
++			return -ENOEXEC;
++		}
++	}
++
++	if (!host) {
++		PR_WARNING("Target host missing\n");
++		return -ENOEXEC;
++	}
++
++	if (net_addr_pton(AF_INET, host, &addr4) != 0) {
++		PR_WARNING("Invalid IPv4 address: %s\n", host);
++		return -ENOEXEC;
++	}
++
++	memset(&wolfip_ping_ctx, 0, sizeof(wolfip_ping_ctx));
++	wolfip_ping_ctx.fd = -1;
++
++	/*
++	 * Open an ICMP socket via the wolfIP BSD socket offload.
++	 * NOTE: wolfip_is_supported_family() in wolfip_zephyr.c currently
++	 * only allows proto == 0 / IPPROTO_TCP / IPPROTO_UDP.  IPPROTO_ICMP
++	 * is not yet whitelisted there, so this socket() call will fail with
++	 * EAFNOSUPPORT until wolfip_is_supported_family is updated to also
++	 * accept IPPROTO_ICMP for SOCK_DGRAM.
++	 */
++	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
++
++	if (fd < 0) {
++		shell_error(sh, "wolfIP ICMP socket: %d (errno %d) — "
++			    "IPPROTO_ICMP not yet allowed in "
++			    "wolfip_is_supported_family()", fd, errno);
++		return -ENOTSUP;
++	}
++
++	wolfip_ping_ctx.fd       = fd;
++	wolfip_ping_ctx.sh       = sh;
++	wolfip_ping_ctx.count    = (uint32_t)count;
++	wolfip_ping_ctx.interval = (uint32_t)interval;
++	wolfip_ping_ctx.id       = (uint16_t)sys_rand32_get();
++
++	wolfip_ping_ctx.dest.sin_family = AF_INET;
++	wolfip_ping_ctx.dest.sin_addr   = addr4;
++	wolfip_ping_ctx.dest.sin_port   = 0;
++
++	k_work_init_delayable(&wolfip_ping_ctx.work, wolfip_ping_work);
++	k_work_init_delayable(&wolfip_ping_ctx.recv_work, wolfip_ping_recv_work);
++
++	PR("PING %s\n", host);
++
++	shell_set_bypass(sh, ping_bypass, NULL);
++	k_work_reschedule(&wolfip_ping_ctx.work, K_NO_WAIT);
++
++	return 0;
++
++#elif !defined(CONFIG_NET_IPV4) && !defined(CONFIG_NET_IPV6)
+ 	ARG_UNUSED(sh);
+ 	ARG_UNUSED(argc);
+ 	ARG_UNUSED(argv);
+ 
+ 	return -EOPNOTSUPP;
+ #else
++	/* ------------------------------------------------------------ */
++	/* Native Zephyr path                                            */
++	/* ------------------------------------------------------------ */
+ 	char *host = NULL;
+ 
+ 	int count = 3;
+diff --git a/subsys/net/lib/shell/route.c b/subsys/net/lib/shell/route.c
+index 45ac0284..02aefc3a 100644
+--- a/subsys/net/lib/shell/route.c
++++ b/subsys/net/lib/shell/route.c
+@@ -12,6 +12,18 @@ LOG_MODULE_DECLARE(net_shell);
+ 
+ #include "../ip/route.h"
+ 
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/net/wolfip.h>
++#include <zephyr/sys/byteorder.h>
++#include <stdlib.h>
++struct wolfIP_route_info {
++	uint32_t prefix;
++	uint32_t gateway;
++	uint8_t prefix_len;
++	uint8_t if_idx;
++};
++#endif /* CONFIG_WOLFIP */
++
+ #if defined(CONFIG_NET_ROUTE) && defined(CONFIG_NET_NATIVE)
+ static void route_cb(struct net_route_entry *entry, void *user_data)
+ {
+@@ -112,6 +124,90 @@ static void route_mcast_cb(struct net_route_entry_mcast *entry,
+ 
+ static int cmd_net_ip6_route_add(const struct shell *sh, size_t argc, char *argv[])
+ {
++#if defined(CONFIG_WOLFIP)
++	struct in_addr a4 = {0};
++
++	/* Detect IPv4 prefix — if so, dispatch to wolfIP */
++	if (argc >= 3) {
++		char prefix_str[NET_IPV4_ADDR_LEN];
++		char *slash;
++
++		/* copy prefix arg so we can strip optional /plen */
++		strncpy(prefix_str, argv[2], sizeof(prefix_str) - 1);
++		prefix_str[sizeof(prefix_str) - 1] = '\0';
++		slash = strchr(prefix_str, '/');
++		if (slash) {
++			*slash = '\0';
++		}
++
++		if (net_addr_pton(AF_INET, prefix_str, &a4) == 0) {
++			/* IPv4 path via wolfIP */
++			struct net_if *iface = NULL;
++			int zidx;
++			unsigned int wif_idx;
++			uint8_t plen = 32;
++			struct in_addr gw4 = {0};
++			uint32_t prefix_v;
++			uint32_t gw_v;
++
++			if (argc != 4) {
++				PR_ERROR("Correct usage: net route add <index>"
++					 " <prefix>[/<plen>] <gateway>\n");
++				return -EINVAL;
++			}
++
++			zidx = get_iface_idx(sh, argv[1]);
++			if (zidx < 0) {
++				return -ENOEXEC;
++			}
++
++			iface = net_if_get_by_index(zidx);
++			if (!iface) {
++				PR_WARNING("No such interface in index %d\n",
++					   zidx);
++				return -ENOEXEC;
++			}
++
++			if (wolfip_zephyr_get_if_idx(iface, &wif_idx) < 0) {
++				PR_ERROR("Interface %d is not a wolfIP interface\n",
++					 zidx);
++				return -ENOEXEC;
++			}
++
++			/* Re-parse prefix from original argv[2] with /plen */
++			strncpy(prefix_str, argv[2], sizeof(prefix_str) - 1);
++			prefix_str[sizeof(prefix_str) - 1] = '\0';
++			slash = strchr(prefix_str, '/');
++			if (slash) {
++				*slash = '\0';
++				plen = (uint8_t)atoi(slash + 1);
++			}
++
++			if (net_addr_pton(AF_INET, prefix_str, &a4) != 0) {
++				PR_ERROR("Invalid prefix: %s\n", prefix_str);
++				return -EINVAL;
++			}
++			prefix_v = sys_be32_to_cpu(a4.s_addr);
++
++			if (net_addr_pton(AF_INET, argv[3], &gw4) != 0) {
++				PR_ERROR("Invalid gateway: %s\n", argv[3]);
++				return -EINVAL;
++			}
++			gw_v = sys_be32_to_cpu(gw4.s_addr);
++
++			if (wolfip_ctrl_route_add(wif_idx, prefix_v, plen,
++						  gw_v) < 0) {
++				PR_ERROR("Failed to add IPv4 route\n");
++				return -ENOEXEC;
++			}
++
++			PR("Route %s/%u via %s added\n", prefix_str, plen,
++			   argv[3]);
++			return 0;
++		}
++	}
++#endif /* CONFIG_WOLFIP */
++
+ #if defined(CONFIG_NET_NATIVE_IPV6) && (CONFIG_NET_ROUTE)
+ 	struct net_if *iface = NULL;
+ 	int idx;
+@@ -164,6 +260,79 @@ static int cmd_net_ip6_route_add(const struct shell *sh, size_t argc, char *argv
+ 
+ static int cmd_net_ip6_route_del(const struct shell *sh, size_t argc, char *argv[])
+ {
++#if defined(CONFIG_WOLFIP)
++	struct in_addr a4 = {0};
++
++	/* Detect IPv4 prefix — if so, dispatch to wolfIP */
++	if (argc >= 3) {
++		char prefix_str[NET_IPV4_ADDR_LEN];
++		char *slash;
++
++		strncpy(prefix_str, argv[2], sizeof(prefix_str) - 1);
++		prefix_str[sizeof(prefix_str) - 1] = '\0';
++		slash = strchr(prefix_str, '/');
++		if (slash) {
++			*slash = '\0';
++		}
++
++		if (net_addr_pton(AF_INET, prefix_str, &a4) == 0) {
++			/* IPv4 path via wolfIP */
++			struct net_if *iface = NULL;
++			int zidx;
++			unsigned int wif_idx;
++			uint8_t plen = 32;
++			uint32_t prefix_v;
++
++			if (argc != 3) {
++				PR_ERROR("Correct usage: net route del <index>"
++					 " <prefix>[/<plen>]\n");
++				return -EINVAL;
++			}
++
++			zidx = get_iface_idx(sh, argv[1]);
++			if (zidx < 0) {
++				return -ENOEXEC;
++			}
++
++			iface = net_if_get_by_index(zidx);
++			if (!iface) {
++				PR_WARNING("No such interface in index %d\n",
++					   zidx);
++				return -ENOEXEC;
++			}
++
++			if (wolfip_zephyr_get_if_idx(iface, &wif_idx) < 0) {
++				PR_ERROR("Interface %d is not a wolfIP interface\n",
++					 zidx);
++				return -ENOEXEC;
++			}
++
++			/* Re-parse with /plen from original argv[2] */
++			strncpy(prefix_str, argv[2], sizeof(prefix_str) - 1);
++			prefix_str[sizeof(prefix_str) - 1] = '\0';
++			slash = strchr(prefix_str, '/');
++			if (slash) {
++				*slash = '\0';
++				plen = (uint8_t)atoi(slash + 1);
++			}
++
++			if (net_addr_pton(AF_INET, prefix_str, &a4) != 0) {
++				PR_ERROR("Invalid prefix: %s\n", prefix_str);
++				return -EINVAL;
++			}
++			prefix_v = sys_be32_to_cpu(a4.s_addr);
++
++			if (wolfip_ctrl_route_del(wif_idx, prefix_v, plen) < 0) {
++				PR_ERROR("Failed to delete IPv4 route\n");
++				return -ENOEXEC;
++			}
++
++			PR("Route %s/%u deleted\n", prefix_str, plen);
++			return 0;
++		}
++	}
++#endif /* CONFIG_WOLFIP */
++
+ #if defined(CONFIG_NET_NATIVE_IPV6) && (CONFIG_NET_ROUTE)
+ 	struct net_if *iface = NULL;
+ 	int idx;
+@@ -226,7 +395,37 @@ static int cmd_net_route(const struct shell *sh, size_t argc, char *argv[])
+ #if defined(CONFIG_NET_ROUTE_MCAST)
+ 	net_route_mcast_foreach(route_mcast_cb, NULL, &user_data);
+ #endif
+-#endif
++#endif /* CONFIG_NET_NATIVE */
++
++#if defined(CONFIG_WOLFIP)
++	PR("\nIPv4 routes (wolfIP):\n");
++	unsigned int rc = wolfip_ctrl_route_count();
++
++	if (rc == 0) {
++		PR("\tno routes\n");
++	} else {
++		for (unsigned int i = 0; i < rc; i++) {
++			struct wolfIP_route_info info;
++			char prefix_buf[NET_IPV4_ADDR_LEN];
++			char gw_buf[NET_IPV4_ADDR_LEN];
++			struct in_addr a;
++
++			if (wolfip_ctrl_route_get(i, &info) < 0) {
++				continue;
++			}
++
++			a.s_addr = sys_cpu_to_be32(info.prefix);
++			net_addr_ntop(AF_INET, &a, prefix_buf,
++				      sizeof(prefix_buf));
++			a.s_addr = sys_cpu_to_be32(info.gateway);
++			net_addr_ntop(AF_INET, &a, gw_buf, sizeof(gw_buf));
++			PR("\t%s/%u via %s iface %u\n",
++			   prefix_buf, info.prefix_len, gw_buf,
++			   (unsigned int)info.if_idx);
++		}
++	}
++#endif /* CONFIG_WOLFIP */
++
+ 	return 0;
+ }
+ 
+diff --git a/subsys/net/lib/shell/stats.c b/subsys/net/lib/shell/stats.c
+index 06aa1c4f..4884c56f 100644
+--- a/subsys/net/lib/shell/stats.c
++++ b/subsys/net/lib/shell/stats.c
+@@ -554,12 +554,12 @@ static void net_shell_print_statistics(struct net_if *iface, void *user_data)
+ 	   GET_STAT(iface, ip_errors.chkerr),
+ 	   GET_STAT(iface, ip_errors.protoerr));
+ 
+-#if defined(CONFIG_NET_STATISTICS_IPV4_PMTU)
++#if defined(CONFIG_NET_STATISTICS_IPV4_PMTU) && defined(CONFIG_NET_NATIVE_IPV4)
+ 	PR("IPv4 PMTU recv %u\tsent\t%u\tdrop\t%u\n",
+ 	   GET_STAT(iface, ipv4_pmtu.recv),
+ 	   GET_STAT(iface, ipv4_pmtu.sent),
+ 	   GET_STAT(iface, ipv4_pmtu.drop));
+-#endif /* CONFIG_NET_STATISTICS_IPV4_PMTU */
++#endif /* CONFIG_NET_STATISTICS_IPV4_PMTU && CONFIG_NET_NATIVE_IPV4 */
+ 
+ #if defined(CONFIG_NET_STATISTICS_ICMP) && defined(CONFIG_NET_NATIVE_IPV4)
+ 	PR("ICMP recv      %u\tsent\t%u\tdrop\t%u\n",
+@@ -570,12 +570,12 @@ static void net_shell_print_statistics(struct net_if *iface, void *user_data)
+ 	   GET_STAT(iface, icmp.typeerr),
+ 	   GET_STAT(iface, icmp.chkerr));
+ #endif
+-#if defined(CONFIG_NET_STATISTICS_IGMP)
++#if defined(CONFIG_NET_STATISTICS_IGMP) && defined(CONFIG_NET_NATIVE_IPV4)
+ 	PR("IGMP recv      %u\tsent\t%u\tdrop\t%u\n",
+ 	   GET_STAT(iface, ipv4_igmp.recv),
+ 	   GET_STAT(iface, ipv4_igmp.sent),
+ 	   GET_STAT(iface, ipv4_igmp.drop));
+-#endif /* CONFIG_NET_STATISTICS_IGMP */
++#endif /* CONFIG_NET_STATISTICS_IGMP && CONFIG_NET_NATIVE_IPV4 */
+ #if defined(CONFIG_NET_STATISTICS_UDP) && defined(CONFIG_NET_NATIVE_UDP)
+ 	PR("UDP recv       %u\tsent\t%u\tdrop\t%u\n",
+ 	   GET_STAT(iface, udp.recv),
+@@ -680,6 +680,10 @@ static void net_shell_print_statistics(struct net_if *iface, void *user_data)
+ 	}
+ #endif /* CONFIG_NET_STATISTICS_PPP && CONFIG_NET_STATISTICS_USER_API */
+ 
++#if defined(CONFIG_WOLFIP)
++	PR("\nwolfIP statistics: not exposed.\n");
++#endif /* CONFIG_WOLFIP */
++
+ 	print_net_pm_stats(sh, iface);
+ }
+ 
+diff --git a/subsys/net/lib/shell/tcp.c b/subsys/net/lib/shell/tcp.c
+index 4738cdf7..b2f29782 100644
+--- a/subsys/net/lib/shell/tcp.c
++++ b/subsys/net/lib/shell/tcp.c
+@@ -10,6 +10,14 @@ LOG_MODULE_DECLARE(net_shell);
+ 
+ #include <stdlib.h>
+ 
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/posix/sys/socket.h>
++#include <zephyr/posix/arpa/inet.h>
++#include <zephyr/posix/unistd.h>
++#include <errno.h>
++#include <string.h>
++#endif
++
+ #include "net_shell_private.h"
+ 
+ #if defined(CONFIG_NET_TCP) && defined(CONFIG_NET_NATIVE_TCP)
+@@ -253,7 +261,14 @@ static void tcp_recv_cb(struct net_context *context, struct net_pkt *pkt,
+ 
+ 	net_pkt_unref(pkt);
+ }
+-#endif
++#endif /* CONFIG_NET_TCP && CONFIG_NET_NATIVE_TCP */
++
++#if defined(CONFIG_WOLFIP)
++static struct {
++	int fd;
++	char peer_buf[48];
++} wolfip_tcp_state = { .fd = -1 };
++#endif /* CONFIG_WOLFIP */
+ 
+ static int cmd_net_tcp_connect(const struct shell *sh, size_t argc, char *argv[])
+ {
+@@ -288,10 +303,61 @@ static int cmd_net_tcp_connect(const struct shell *sh, size_t argc, char *argv[]
+ 	}
+ 
+ 	tcp_connect(sh, ip, port, &tcp_ctx);
++#elif defined(CONFIG_WOLFIP)
++	/* tcp connect <ip> <port> — wolfIP POSIX socket path */
++	struct sockaddr_in dest;
++	uint16_t port;
++	int fd;
++	int ret;
++
++	if (wolfip_tcp_state.fd >= 0) {
++		PR_WARNING("Already connected — close first\n");
++		return -ENOEXEC;
++	}
++
++	if (argv[1] == NULL) {
++		PR_WARNING("Peer IP address missing.\n");
++		return -ENOEXEC;
++	}
++
++	if (argv[2] == NULL) {
++		PR_WARNING("Peer port missing.\n");
++		return -ENOEXEC;
++	}
++
++	port = (uint16_t)strtoul(argv[2], NULL, 10);
++
++	memset(&dest, 0, sizeof(dest));
++	dest.sin_family = AF_INET;
++	dest.sin_port = htons(port);
++
++	ret = net_addr_pton(AF_INET, argv[1], &dest.sin_addr);
++	if (ret < 0) {
++		PR_WARNING("Invalid IPv4 address: %s\n", argv[1]);
++		return -ENOEXEC;
++	}
++
++	fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++	if (fd < 0) {
++		PR_WARNING("Failed to create socket (errno %d)\n", errno);
++		return -ENOEXEC;
++	}
++
++	ret = connect(fd, (struct sockaddr *)&dest, sizeof(dest));
++	if (ret < 0) {
++		PR_WARNING("Connect failed (errno %d)\n", errno);
++		close(fd);
++		return -ENOEXEC;
++	}
++
++	wolfip_tcp_state.fd = fd;
++	snprintf(wolfip_tcp_state.peer_buf, sizeof(wolfip_tcp_state.peer_buf),
++		 "%s:%u", argv[1], port);
++	PR("Connected to %s:%u (fd %d)\n", argv[1], (unsigned int)port, fd);
+ #else
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_TCP and CONFIG_NET_NATIVE", "TCP");
+-#endif /* CONFIG_NET_NATIVE_TCP */
++#endif /* CONFIG_NET_NATIVE_TCP / CONFIG_WOLFIP */
+ 
+ 	return 0;
+ }
+@@ -323,10 +389,31 @@ static int cmd_net_tcp_send(const struct shell *sh, size_t argc, char *argv[])
+ 		return -ENOEXEC;
+ 	}
+ 
++#elif defined(CONFIG_WOLFIP)
++	/* tcp send <data> — wolfIP POSIX socket path */
++	ssize_t n;
++
++	if (wolfip_tcp_state.fd < 0) {
++		PR_WARNING("Not connected\n");
++		return -ENOEXEC;
++	}
++
++	if (argv[1] == NULL) {
++		PR_WARNING("No data to send.\n");
++		return -ENOEXEC;
++	}
++
++	n = send(wolfip_tcp_state.fd, argv[1], strlen(argv[1]), 0);
++	if (n < 0) {
++		PR_WARNING("send failed (errno %d)\n", errno);
++		return -ENOEXEC;
++	}
++
++	PR("Sent %zd bytes\n", n);
+ #else
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_TCP and CONFIG_NET_NATIVE", "TCP");
+-#endif /* CONFIG_NET_NATIVE_TCP */
++#endif /* CONFIG_NET_NATIVE_TCP / CONFIG_WOLFIP */
+ 
+ 	return 0;
+ }
+@@ -351,10 +438,33 @@ static int cmd_net_tcp_recv(const struct shell *sh, size_t argc, char *argv[])
+ 		return -ENOEXEC;
+ 	}
+ 
++#elif defined(CONFIG_WOLFIP)
++	/* tcp recv — wolfIP POSIX socket path */
++	char buf[256];
++	ssize_t n;
++
++	if (wolfip_tcp_state.fd < 0) {
++		PR_WARNING("Not connected\n");
++		return -ENOEXEC;
++	}
++
++	n = recv(wolfip_tcp_state.fd, buf, sizeof(buf) - 1, MSG_DONTWAIT);
++	if (n > 0) {
++		buf[n] = '\0';
++		PR("Received %zd bytes: %s\n", n, buf);
++	} else if (n == 0) {
++		PR("Peer closed connection\n");
++		close(wolfip_tcp_state.fd);
++		wolfip_tcp_state.fd = -1;
++	} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
++		PR("No data available\n");
++	} else {
++		PR_WARNING("recv failed: %d\n", errno);
++	}
+ #else
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_TCP and CONFIG_NET_NATIVE", "TCP");
+-#endif /* CONFIG_NET_NATIVE_TCP */
++#endif /* CONFIG_NET_NATIVE_TCP / CONFIG_WOLFIP */
+ 
+ 	return 0;
+ }
+@@ -378,10 +488,20 @@ static int cmd_net_tcp_close(const struct shell *sh, size_t argc, char *argv[])
+ 
+ 	PR("Connection closed.\n");
+ 	tcp_ctx = NULL;
++#elif defined(CONFIG_WOLFIP)
++	/* tcp close — wolfIP POSIX socket path */
++	if (wolfip_tcp_state.fd < 0) {
++		PR_WARNING("Not connected\n");
++		return -ENOEXEC;
++	}
++
++	close(wolfip_tcp_state.fd);
++	wolfip_tcp_state.fd = -1;
++	PR("Closed\n");
+ #else
+ 	PR_INFO("Set %s to enable %s support.\n",
+ 		"CONFIG_NET_TCP and CONFIG_NET_NATIVE", "TCP");
+-#endif /* CONFIG_NET_TCP */
++#endif /* CONFIG_NET_TCP / CONFIG_WOLFIP */
+ 
+ 	return 0;
+ }
+diff --git a/subsys/net/lib/shell/udp.c b/subsys/net/lib/shell/udp.c
+index c29fe1ce..da37a02c 100644
+--- a/subsys/net/lib/shell/udp.c
++++ b/subsys/net/lib/shell/udp.c
+@@ -49,17 +49,24 @@ static void udp_sent(struct net_context *context, int status, void *user_data)
+ 	PR_SHELL(udp_shell, "Message sent\n");
+ 	k_sem_give(&udp_send_wait);
+ }
+-#endif
++#endif /* CONFIG_NET_UDP && CONFIG_NET_NATIVE_UDP */
++
++#if defined(CONFIG_WOLFIP)
++#include <zephyr/posix/sys/socket.h>
++#include <zephyr/posix/arpa/inet.h>
++#include <zephyr/posix/unistd.h>
++#include <errno.h>
++#include <string.h>
++
++static struct {
++	int fd;
++	char local_buf[48];
++} wolfip_udp_state = { .fd = -1 };
++#endif /* CONFIG_WOLFIP */
+ 
+ static int cmd_net_udp_bind(const struct shell *sh, size_t argc, char *argv[])
+ {
+-#if !defined(CONFIG_NET_UDP) || !defined(CONFIG_NET_NATIVE_UDP)
+-	ARG_UNUSED(sh);
+-	ARG_UNUSED(argc);
+-	ARG_UNUSED(argv);
+-
+-	return -EOPNOTSUPP;
+-#else
++#if defined(CONFIG_NET_UDP) && defined(CONFIG_NET_NATIVE_UDP)
+ 	char *addr_str = NULL;
+ 	char *endptr = NULL;
+ 	uint16_t port;
+@@ -149,18 +156,74 @@ release_ctx:
+ 	}
+ 
+ 	return 0;
+-#endif
+-}
+ 
+-static int cmd_net_udp_close(const struct shell *sh, size_t argc, char *argv[])
+-{
+-#if !defined(CONFIG_NET_UDP) || !defined(CONFIG_NET_NATIVE_UDP)
++#elif defined(CONFIG_WOLFIP)
++	char *endptr = NULL;
++	uint16_t port;
++	int fd;
++	struct sockaddr_in addr;
++
++	ARG_UNUSED(argc);
++
++	if (argc < 3) {
++		PR_WARNING("Not enough arguments given for udp bind command\n");
++		return -EINVAL;
++	}
++
++	if (wolfip_udp_state.fd >= 0) {
++		PR_WARNING("Socket already bound; close first\n");
++		return -EALREADY;
++	}
++
++	port = (uint16_t)strtol(argv[2], &endptr, 0);
++	if (endptr == argv[2]) {
++		PR_WARNING("Invalid port number\n");
++		return -EINVAL;
++	}
++
++	fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++	if (fd < 0) {
++		PR_WARNING("Cannot create UDP socket (errno %d)\n", errno);
++		return -errno;
++	}
++
++	memset(&addr, 0, sizeof(addr));
++	addr.sin_family = AF_INET;
++	addr.sin_port = htons(port);
++
++	if (strcmp(argv[1], "any") == 0 || strcmp(argv[1], "0.0.0.0") == 0) {
++		addr.sin_addr.s_addr = INADDR_ANY;
++	} else {
++		if (net_addr_pton(AF_INET, argv[1], &addr.sin_addr) < 0) {
++			PR_WARNING("Cannot parse address \"%s\"\n", argv[1]);
++			close(fd);
++			return -EINVAL;
++		}
++	}
++
++	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++		PR_WARNING("bind() failed (errno %d)\n", errno);
++		close(fd);
++		return -errno;
++	}
++
++	wolfip_udp_state.fd = fd;
++	PR("Bound to %s:%u (fd %d)\n", argv[1], (unsigned int)port, fd);
++
++	return 0;
++
++#else
+ 	ARG_UNUSED(sh);
+ 	ARG_UNUSED(argc);
+ 	ARG_UNUSED(argv);
+ 
+ 	return -EOPNOTSUPP;
+-#else
++#endif
++}
++
++static int cmd_net_udp_close(const struct shell *sh, size_t argc, char *argv[])
++{
++#if defined(CONFIG_NET_UDP) && defined(CONFIG_NET_NATIVE_UDP)
+ 	int ret;
+ 
+ 	if (!udp_ctx || !net_context_is_used(udp_ctx)) {
+@@ -174,18 +237,34 @@ static int cmd_net_udp_close(const struct shell *sh, size_t argc, char *argv[])
+ 	}
+ 
+ 	return 0;
+-#endif
+-}
+ 
+-static int cmd_net_udp_send(const struct shell *sh, size_t argc, char *argv[])
+-{
+-#if !defined(CONFIG_NET_UDP) || !defined(CONFIG_NET_NATIVE_UDP)
++#elif defined(CONFIG_WOLFIP)
++	ARG_UNUSED(argc);
++	ARG_UNUSED(argv);
++
++	if (wolfip_udp_state.fd < 0) {
++		PR_WARNING("Not bound\n");
++		return -EINVAL;
++	}
++
++	close(wolfip_udp_state.fd);
++	wolfip_udp_state.fd = -1;
++	PR("Closed\n");
++
++	return 0;
++
++#else
+ 	ARG_UNUSED(sh);
+ 	ARG_UNUSED(argc);
+ 	ARG_UNUSED(argv);
+ 
+ 	return -EOPNOTSUPP;
+-#else
++#endif
++}
++
++static int cmd_net_udp_send(const struct shell *sh, size_t argc, char *argv[])
++{
++#if defined(CONFIG_NET_UDP) && defined(CONFIG_NET_NATIVE_UDP)
+ 	char *host = NULL;
+ 	char *endptr = NULL;
+ 	uint16_t port;
+@@ -281,6 +360,100 @@ release_ctx:
+ 	}
+ 
+ 	return 0;
++
++#elif defined(CONFIG_WOLFIP)
++	char *endptr = NULL;
++	uint16_t port;
++	struct sockaddr_in dest;
++	ssize_t n;
++
++	ARG_UNUSED(sh);
++
++	if (argc < 4) {
++		PR_WARNING("Not enough arguments given for udp send command\n");
++		return -EINVAL;
++	}
++
++	if (wolfip_udp_state.fd < 0) {
++		PR_WARNING("Not bound; run 'net udp bind' first\n");
++		return -EINVAL;
++	}
++
++	port = (uint16_t)strtol(argv[2], &endptr, 0);
++	if (endptr == argv[2]) {
++		PR_WARNING("Invalid port number\n");
++		return -EINVAL;
++	}
++
++	memset(&dest, 0, sizeof(dest));
++	dest.sin_family = AF_INET;
++	dest.sin_port = htons(port);
++
++	if (net_addr_pton(AF_INET, argv[1], &dest.sin_addr) < 0) {
++		PR_WARNING("Cannot parse address \"%s\"\n", argv[1]);
++		return -EINVAL;
++	}
++
++	n = sendto(wolfip_udp_state.fd, argv[3], strlen(argv[3]), 0,
++		   (struct sockaddr *)&dest, sizeof(dest));
++	if (n < 0) {
++		PR_WARNING("sendto() failed (errno %d)\n", errno);
++		return -errno;
++	}
++
++	PR("Sent %zd bytes to %s:%u\n", n, argv[1], (unsigned int)port);
++
++	return 0;
++
++#else
++	ARG_UNUSED(sh);
++	ARG_UNUSED(argc);
++	ARG_UNUSED(argv);
++
++	return -EOPNOTSUPP;
++#endif
++}
++
++static int cmd_net_udp_recv(const struct shell *sh, size_t argc, char *argv[])
++{
++#if defined(CONFIG_WOLFIP)
++	char buf[256];
++	struct sockaddr_in from;
++	socklen_t fromlen = sizeof(from);
++	ssize_t n;
++	char from_str[NET_IPV4_ADDR_LEN];
++
++	ARG_UNUSED(sh);
++	ARG_UNUSED(argc);
++	ARG_UNUSED(argv);
++
++	if (wolfip_udp_state.fd < 0) {
++		PR_WARNING("Not bound\n");
++		return -EINVAL;
++	}
++
++	n = recvfrom(wolfip_udp_state.fd, buf, sizeof(buf) - 1, MSG_DONTWAIT,
++		     (struct sockaddr *)&from, &fromlen);
++	if (n > 0) {
++		buf[n] = '\0';
++		net_addr_ntop(AF_INET, &from.sin_addr, from_str, sizeof(from_str));
++		PR("%zd bytes from %s:%u: %s\n", n, from_str,
++		   (unsigned int)ntohs(from.sin_port), buf);
++	} else if (n < 0 && errno == EAGAIN) {
++		PR("No datagram pending\n");
++	} else {
++		PR_WARNING("recvfrom failed: %d\n", errno);
++		return -errno;
++	}
++
++	return 0;
++
++#else
++	ARG_UNUSED(sh);
++	ARG_UNUSED(argc);
++	ARG_UNUSED(argv);
++
++	return -EOPNOTSUPP;
+ #endif
+ }
+ 
+@@ -293,6 +466,7 @@ static int cmd_net_udp(const struct shell *sh, size_t argc, char *argv[])
+ 	return 0;
+ }
+ 
++#if defined(CONFIG_NET_UDP) || defined(CONFIG_WOLFIP)
+ SHELL_STATIC_SUBCMD_SET_CREATE(net_cmd_udp,
+ 	SHELL_CMD(bind, NULL,
+ 		  SHELL_HELP("Binds to UDP local port", "<addr> <port>"),
+@@ -304,9 +478,15 @@ SHELL_STATIC_SUBCMD_SET_CREATE(net_cmd_udp,
+ 		  SHELL_HELP("Sends UDP packet to a network host",
+ 			     "<host> <port> <payload>"),
+ 		  cmd_net_udp_send),
++#if defined(CONFIG_WOLFIP)
++	SHELL_CMD(recv, NULL,
++		  SHELL_HELP("Receives a pending UDP datagram (non-blocking)", ""),
++		  cmd_net_udp_recv),
++#endif
+ 	SHELL_SUBCMD_SET_END
+ );
+ 
+ SHELL_SUBCMD_ADD((net), udp, &net_cmd_udp,
+ 		 "Send/recv UDP packet",
+ 		 cmd_net_udp, 1, 0);
++#endif /* CONFIG_NET_UDP || CONFIG_WOLFIP */
