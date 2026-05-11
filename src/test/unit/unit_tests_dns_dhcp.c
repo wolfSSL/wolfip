@@ -5101,7 +5101,12 @@ START_TEST(test_udp_try_recv_unconnected_accepts_any_peer_port)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_udp_datagram udp;
+    /* Back the datagram with a real buffer that fits the full
+     * ETH+IP+UDP+payload frame; the delivery path memcpys frame_len
+     * bytes into the socket's rxbuf and would otherwise read past a
+     * bare struct wolfIP_udp_datagram. */
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
     uint32_t local_ip = 0x0A000001U;
     uint32_t peer_ip  = 0x0A000002U;
 
@@ -5120,14 +5125,14 @@ START_TEST(test_udp_try_recv_unconnected_accepts_any_peer_port)
     ck_assert_uint_eq(ts->sock.udp.connected, 0U);
 
     /* Peer replies from a *different* source port (TFTP TID change). */
-    memset(&udp, 0, sizeof(udp));
-    udp.ip.src = ee32(peer_ip);
-    udp.ip.dst = ee32(local_ip);
-    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
-    udp.src_port = ee16(57722);
-    udp.dst_port = ee16(6989);
-    udp.len = ee16(UDP_HEADER_LEN + 4);
-    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.src = ee32(peer_ip);
+    udp->ip.dst = ee32(local_ip);
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->src_port = ee16(57722);
+    udp->dst_port = ee16(6989);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
         (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
@@ -5142,7 +5147,10 @@ START_TEST(test_udp_try_recv_connected_filters_peer_port)
 {
     struct wolfIP s;
     struct tsocket *ts;
-    struct wolfIP_udp_datagram udp;
+    /* Sized to hold the full frame so the accepted-peer assertion at
+     * the end does not memcpy past the stack buffer. */
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
     uint32_t local_ip = 0x0A000001U;
     uint32_t peer_ip  = 0x0A000002U;
 
@@ -5159,20 +5167,20 @@ START_TEST(test_udp_try_recv_connected_filters_peer_port)
     ts->sock.udp.connected = 1;
 
     /* Same peer IP but a foreign source port (53000) must be rejected. */
-    memset(&udp, 0, sizeof(udp));
-    udp.ip.src = ee32(peer_ip);
-    udp.ip.dst = ee32(local_ip);
-    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
-    udp.src_port = ee16(53000);
-    udp.dst_port = ee16(6989);
-    udp.len = ee16(UDP_HEADER_LEN + 4);
-    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.src = ee32(peer_ip);
+    udp->ip.dst = ee32(local_ip);
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->src_port = ee16(53000);
+    udp->dst_port = ee16(6989);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
         (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
 
     /* The connected peer (peer_ip:6969) must still be accepted. */
-    udp.src_port = ee16(6969);
-    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+    udp->src_port = ee16(6969);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
         (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
