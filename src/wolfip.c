@@ -2009,19 +2009,6 @@ static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
     return if_idx;
 }
 
-static inline ip4 wolfIP_select_nexthop(const struct ipconf *conf, ip4 dest)
-{
-    if (dest == 0xFFFFFFFFU)
-        return dest;
-    if (!conf)
-        return dest;
-    if (ip_is_local_conf(conf, dest))
-        return dest;
-    if (conf->gw != IPADDR_ANY)
-        return conf->gw;
-    return dest;
-}
-
 static ip4 wolfIP_select_nexthop_ex(struct wolfIP *s, unsigned int *if_idx, ip4 dest)
 {
     unsigned int resolved_if = if_idx ? *if_idx : 0U;
