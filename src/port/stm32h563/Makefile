@@ -74,10 +74,25 @@ WOLFSSL_SP_NO_ASM ?= 0
 WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
 WOLFSSH_ROOT ?= $(ROOT)/../wolfssh
 WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
+# wolfBoot tree, used for TZEN=1 to sign the NS image and to provide
+# the secure stub binary that gets concatenated into factory.bin.
+# Override on the command line for local clones, e.g.:
+#   make TZEN=1 WOLFBOOT_ROOT=$(HOME)/GitHub/wolfboot-alt3 ...
+WOLFBOOT_ROOT ?= $(ROOT)/../wolfboot
 FREERTOS_PORT_DIR := $(FREERTOS_PATH)/portable/GCC/ARM_CM33_NTZ/non_secure
 
-# Base compiler flags
-CFLAGS := -mcpu=cortex-m33 -mthumb -mcmse -Os -ffreestanding -fdata-sections -ffunction-sections
+# wolfBoot boot-partition layout (must match wolfBoot's stm32h5-tz.config).
+# WOLFBOOT_BOOT_OFFSET is the offset (from 0x08000000) of the boot
+# partition; we pad wolfboot.bin up to this offset before appending the
+# signed NS image to produce factory.bin.
+WOLFBOOT_BOOT_OFFSET ?= 0x60000
+WOLFBOOT_SIGN_KEY ?= $(WOLFBOOT_ROOT)/wolfboot_signing_private_key.der
+
+# Base compiler flags. -mcmse is intentionally NOT set: the NS app does
+# not declare or call any NSC entry stubs (no cmse_nonsecure_entry
+# functions). Adding -mcmse without those would be benign but
+# unnecessary and pulls in the secure-mode support runtime.
+CFLAGS := -mcpu=cortex-m33 -mthumb -Os -ffreestanding -fdata-sections -ffunction-sections
 CFLAGS += -g -ggdb -Wall -Wextra -Werror
 CFLAGS += -I. -I$(ROOT) -I$(ROOT)/src -I$(ROOT)/src/port -I$(ROOT)/src/port/stm32
 CFLAGS += -DSTM32H5
@@ -410,6 +425,40 @@ app.elf: $(OBJS) $(LDSCRIPT)
 app.bin: app.elf
 	$(OBJCOPY) -O binary $< $@
 
+# -----------------------------------------------------------------------------
+# TZEN=1: sign the NS image with wolfBoot keytools and combine with
+# wolfboot.bin to produce factory.bin (single artifact for OpenOCD).
+# -----------------------------------------------------------------------------
+
+# Image header size MUST match the IMAGE_HEADER_SIZE that wolfBoot was
+# built with (config/examples/stm32h5-tz.config sets 1024). Sign reads
+# it from the env; the default for ECC256 is only 256 bytes, which
+# would put the vector table at 0x08060100 instead of 0x08060400.
+WOLFBOOT_IMAGE_HEADER_SIZE ?= 1024
+
+# Signed NS image: wolfBoot's sign tool prepends a 1024-byte image
+# header; the resulting app_v1_signed.bin loads at 0x08060000 and the
+# vector table lands at 0x08060400 (which target_tzen.ld assumes).
+app_v1_signed.bin: app.bin $(WOLFBOOT_SIGN_KEY)
+	IMAGE_HEADER_SIZE=$(WOLFBOOT_IMAGE_HEADER_SIZE) \
+	    $(WOLFBOOT_ROOT)/tools/keytools/sign --ecc256 --sha256 \
+	    app.bin $(WOLFBOOT_SIGN_KEY) 1
+
+signed: app_v1_signed.bin
+
+# Combined factory image: wolfBoot stub padded out to the boot
+# partition offset, followed by the signed NS image. Flash with
+# `program factory.bin 0x08000000` in one step.
+factory.bin: app_v1_signed.bin $(WOLFBOOT_ROOT)/wolfboot.bin
+	$(OBJCOPY) -I binary -O binary --pad-to=$(WOLFBOOT_BOOT_OFFSET) \
+	    --gap-fill=0xFF $(WOLFBOOT_ROOT)/wolfboot.bin wolfboot_padded.bin
+	cat wolfboot_padded.bin app_v1_signed.bin > factory.bin
+	@echo "factory.bin: $$(stat -c%s factory.bin) bytes"
+	@echo "  wolfBoot:    $$(stat -c%s $(WOLFBOOT_ROOT)/wolfboot.bin) bytes (padded to $(WOLFBOOT_BOOT_OFFSET))"
+	@echo "  signed app:  $$(stat -c%s app_v1_signed.bin) bytes"
+
+factory: factory.bin
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -419,6 +468,7 @@ $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
 
 clean:
 	rm -f *.o app.elf app.bin
+	rm -f app_v1_signed.bin factory.bin wolfboot_padded.bin
 	rm -f $(ROOT)/src/*.o
 	rm -f $(ROOT)/src/port/*.o
 	rm -f $(ROOT)/src/port/stm32/*.o

@@ -9,9 +9,9 @@ on:
 jobs:
   stm32h563_m33mu_ssh_tzen:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     container:
-      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:latest
       options: --privileged
 
     steps:
@@ -24,7 +24,7 @@ jobs:
           apt-get install -y sudo dnsmasq iproute2 netcat-openbsd git \
             openssh-client sshpass
 
-      - name: Fetch wolfSSL/wolfSSH
+      - name: Fetch wolfSSL/wolfSSH/wolfBoot
         run: |
           set -euo pipefail
           if [ ! -d ../wolfssl ]; then
@@ -33,18 +33,30 @@ jobs:
           if [ ! -d ../wolfssh ]; then
             git clone --depth 1 --branch master https://github.com/wolfSSL/wolfssh.git ../wolfssh
           fi
+          if [ ! -d ../wolfboot ]; then
+            git clone --depth 1 --branch stm32tz https://github.com/dgarske/wolfboot.git ../wolfboot
+            git -C ../wolfboot submodule update --init --single-branch
+          fi
 
-      - name: Build STM32H563 SSH (TZEN on)
+      - name: Build wolfBoot (stm32h5-tz)
+        run: |
+          set -euo pipefail
+          cd ../wolfboot
+          cp config/examples/stm32h5-tz.config .config
+          make wolfboot.bin
+
+      - name: Build STM32H563 SSH NS app (TZEN on) and sign
         run: |
           set -euo pipefail
           make -C src/port/stm32h563 clean TZEN=1 ENABLE_SSH=1
-          make -C src/port/stm32h563 TZEN=1 ENABLE_SSH=1 \
+          make -C src/port/stm32h563 TZEN=1 ENABLE_SSH=1 signed \
+            WOLFBOOT_ROOT="$GITHUB_WORKSPACE/../wolfboot" \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
           strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
           grep -Fq "Initializing SSH server" /tmp/wolfip-app.strings
 
       - name: Run m33mu + DHCP + SSH test
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           set -euo pipefail
 
@@ -74,8 +86,14 @@ jobs:
           CONF
           sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
-          sudo m33mu src/port/stm32h563/app.bin \
-            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 180 --quit-on-faults \
+          # wolfBoot does a full software ECC256 verify of the 300 KB
+          # signed NS image, which takes ~10 minutes inside m33mu before
+          # it BLXNSes into wolfIP. Allow up to 25 minutes total runtime
+          # and ~20 minutes for the DHCP lease to appear.
+          sudo m33mu \
+            ../wolfboot/wolfboot.bin \
+            src/port/stm32h563/app_v1_signed.bin:0x60000 \
+            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 1500 --quit-on-faults \
             2>&1 | tee /tmp/m33mu.log &
           sleep 1
           m33mu_pid="$(pgrep -n -x m33mu || true)"
@@ -84,7 +102,7 @@ jobs:
           fi
 
           ip=""
-          for _ in $(seq 1 90); do
+          for _ in $(seq 1 1200); do
             if [ -s /tmp/dnsmasq.leases ]; then
               ip="$(tail -n1 /tmp/dnsmasq.leases | cut -d' ' -f3)"
             fi
@@ -102,7 +120,7 @@ jobs:
           echo "Leased IP: ${ip}"
 
           ok=0
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 240); do
             if ! pgrep -x m33mu >/dev/null 2>&1; then
               echo "m33mu exited before SSH check."
               tail -n 200 /tmp/m33mu.log || true
