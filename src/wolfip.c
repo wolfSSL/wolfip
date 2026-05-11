@@ -1253,10 +1253,10 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int if_idx);
+static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len);
 #if WOLFIP_ENABLE_FORWARDING
 static int wolfIP_route_match_prefix(ip4 addr, ip4 prefix, uint8_t prefix_len);
 static uint32_t wolfIP_prefix_mask(uint8_t prefix_len);
-static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len);
 #endif
 static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
                                         unsigned int *if_idx, ip4 *nexthop);
@@ -1699,16 +1699,6 @@ static inline struct ipconf *wolfIP_primary_ipconf(struct wolfIP *s)
     return wolfIP_ipconf_at(s, WOLFIP_PRIMARY_IF_IDX);
 }
 
-#if WOLFIP_ENABLE_FORWARDING
-static uint32_t wolfIP_prefix_mask(uint8_t prefix_len)
-{
-    if (prefix_len == 0U)
-        return 0U;
-    if (prefix_len >= 32U)
-        return 0xFFFFFFFFU;
-    return 0xFFFFFFFFU << (32U - prefix_len);
-}
-
 static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len)
 {
     uint8_t len = 0U;
@@ -1732,6 +1722,16 @@ static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len)
 
     *prefix_len = len;
     return 0;
+}
+
+#if WOLFIP_ENABLE_FORWARDING
+static uint32_t wolfIP_prefix_mask(uint8_t prefix_len)
+{
+    if (prefix_len == 0U)
+        return 0U;
+    if (prefix_len >= 32U)
+        return 0xFFFFFFFFU;
+    return 0xFFFFFFFFU << (32U - prefix_len);
 }
 
 static int wolfIP_route_match_prefix(ip4 addr, ip4 prefix, uint8_t prefix_len)
