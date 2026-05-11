@@ -8393,6 +8393,27 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 #if WOLFIP_RAWSOCKETS
     raw_try_recv(s, if_idx, ip, len);
 #endif
+    /* RFC 7126 §3.8: drop source-routed (LSRR/SSRR) packets before either
+     * forwarding or local-delivery dispatch so an attacker-set source route
+     * cannot ride the WOLFIP_ENABLE_FORWARDING path through wolfIP. */
+    if (ip_hlen > IP_HEADER_LEN) {
+        uint8_t *opt = ((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN;
+        uint8_t *opt_end = opt + (ip_hlen - IP_HEADER_LEN);
+        while (opt < opt_end) {
+            uint8_t type = *opt;
+            if (type == 0)   /* End of Options */
+                break;
+            if (type == 1) { /* NOP */
+                opt++;
+                continue;
+            }
+            if (type == 0x83 || type == 0x89) /* LSRR or SSRR */
+                return;
+            if (opt + 1 >= opt_end || opt[1] < 2)
+                break;
+            opt += opt[1];
+        }
+    }
     #if WOLFIP_ENABLE_FORWARDING
     if (version == 4 && ip_hlen >= IP_HEADER_LEN) {
         ip4 dest = ee32(ip->dst);
@@ -8503,26 +8524,6 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         if (ip_hlen > IP_HEADER_LEN) {
             uint32_t opt_len = ip_hlen - IP_HEADER_LEN;
             uint16_t total_ip_len = ee16(ip->len);
-
-            /* RFC 7126 §3.8: drop source-routed packets. */
-            {
-                uint8_t *opt = ((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN;
-                uint8_t *opt_end = opt + opt_len;
-                while (opt < opt_end) {
-                    uint8_t type = *opt;
-                    if (type == 0)   /* End of Options */
-                        break;
-                    if (type == 1) { /* NOP */
-                        opt++;
-                        continue;
-                    }
-                    if (type == 0x83 || type == 0x89) /* LSRR or SSRR */
-                        return;
-                    if (opt + 1 >= opt_end || opt[1] < 2)
-                        break;
-                    opt += opt[1];
-                }
-            }
 
             if (len > LINK_MTU)
                 return;
