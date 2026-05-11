@@ -1834,18 +1834,37 @@ static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
         return 0;
     }
 
+    /* Score connected (on-link) subnets and static routes together under
+     * one longest-prefix-match. The connected subnet must not short-
+     * circuit, otherwise a more-specific static route on a different
+     * iface (e.g. 10.1.2.0/24 -> if 2) can never override a less-
+     * specific connected subnet (e.g. 10.0.0.0/8 -> if 1). */
     for (i = 0; i < s->if_count; i++) {
         const struct ipconf *conf = wolfIP_ipconf_at(s, i);
+        uint8_t prefix_len;
 
         if (!conf || conf->ip == IPADDR_ANY)
             continue;
 
-        if (conf->ip == dest || ip_is_local_conf(conf, dest)) {
+        /* Exact local-IP match always wins immediately (delivery to self). */
+        if (conf->ip == dest) {
             if (if_idx)
                 *if_idx = i;
             if (nexthop)
                 *nexthop = dest;
             return 0;
+        }
+
+        if (!ip_is_local_conf(conf, dest))
+            continue;
+
+        prefix_len = (uint8_t)__builtin_popcount(conf->mask);
+        if (!found || prefix_len > best_prefix) {
+            best_if = i;
+            best_nexthop = dest;
+            best_prefix = prefix_len;
+            best_order = 0U;
+            found = 1;
         }
     }
 

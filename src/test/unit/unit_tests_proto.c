@@ -3622,6 +3622,33 @@ START_TEST(test_wolfip_route_table_connected_subnet_beats_broader_static_route)
 END_TEST
 #endif
 
+START_TEST(test_wolfip_dns_server_get_returns_value_and_validates_args)
+{
+    struct wolfIP s;
+    ip4 dns = 0xDEADBEEFU;
+
+    wolfIP_init(&s);
+
+    /* NULL stack -> EINVAL, output is untouched. */
+    ck_assert_int_eq(wolfIP_dns_server_get(NULL, &dns), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(dns, 0xDEADBEEFU);
+
+    /* NULL out pointer -> EINVAL. */
+    ck_assert_int_eq(wolfIP_dns_server_get(&s, NULL), -WOLFIP_EINVAL);
+
+    /* Fresh stack: DNS server is zero by default. */
+    dns = 0xDEADBEEFU;
+    ck_assert_int_eq(wolfIP_dns_server_get(&s, &dns), 0);
+    ck_assert_uint_eq(dns, 0U);
+
+    /* After a value has been stashed (DHCP would do this), the getter
+     * faithfully returns it. */
+    s.dns_server = 0x08080808U;
+    ck_assert_int_eq(wolfIP_dns_server_get(&s, &dns), 0);
+    ck_assert_uint_eq(dns, 0x08080808U);
+}
+END_TEST
+
 START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
 {
     struct wolfIP s;
