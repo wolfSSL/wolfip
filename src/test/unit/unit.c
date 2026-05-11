@@ -132,6 +132,12 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
+#if WOLFIP_ENABLE_FORWARDING
+    tcase_add_test(tc_utils, test_wolfip_route_table_longest_prefix_match);
+    tcase_add_test(tc_utils, test_wolfip_route_table_default_route_delete_and_fallback);
+    tcase_add_test(tc_utils, test_wolfip_route_table_update_replaces_gateway_without_duplication);
+    tcase_add_test(tc_utils, test_wolfip_route_table_connected_subnet_beats_broader_static_route);
+#endif
     tcase_add_test(tc_utils, test_wolfip_poll_executes_timers_and_callbacks);
     tcase_add_test(tc_utils, test_wolfip_poll_drains_all_expired_timers_in_one_pass);
     tcase_add_test(tc_utils, test_wolfip_poll_preserves_tcp_events_raised_during_callback);
