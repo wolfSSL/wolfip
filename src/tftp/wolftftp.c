@@ -883,12 +883,21 @@ static int wolftftp_server_send_window(struct wolftftp_server *server,
         session->next_offset += data_len;
         session->total_size += data_len;
         session->window_count++;
-        if (is_last != 0 || data_len < session->neg.blksize) {
+        session->next_block++;
+        if (data_len < session->neg.blksize) {
+            /* A short (possibly 0-byte) DATA is the EOF marker per
+             * RFC 1350. */
             session->final_seen = 1;
-            session->next_block++;
             break;
         }
-        session->next_block++;
+        if (is_last != 0) {
+            /* Reader claims no more bytes but the last read filled an
+             * entire block; we still owe the peer an explicit 0-byte
+             * DATA so EOF is unambiguous. Break the window now so the
+             * next ACK triggers another send_window that picks up the
+             * trailing short/empty read and finalizes the transfer. */
+            break;
+        }
     }
     session->state = WOLFTFTP_SESSION_SEND_WAIT_ACK;
     return 0;

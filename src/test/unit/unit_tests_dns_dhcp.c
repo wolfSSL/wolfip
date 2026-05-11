@@ -5073,6 +5073,13 @@ START_TEST(test_udp_try_recv_remote_ip_matches_local_ip)
     ts->src_port = 1234;
     ts->local_ip = local_ip;
     ts->remote_ip = local_ip;
+    /* The intent here is "verify the peer filter on a connected UDP
+     * socket". Since the POSIX-correct delivery path only enforces
+     * remote_ip/dst_port match when the socket has been connected,
+     * flip the flag manually (mirroring what wolfIP_sock_connect does)
+     * so the assertion below keeps testing the filter and not the
+     * unconnected (any-peer) path. */
+    ts->sock.udp.connected = 1;
 
     memset(&udp, 0, sizeof(udp));
     udp.ip.dst = ee32(local_ip);
@@ -5081,6 +5088,131 @@ START_TEST(test_udp_try_recv_remote_ip_matches_local_ip)
     udp.len = ee16(UDP_HEADER_LEN + 4);
     udp_try_recv(&s, TEST_PRIMARY_IF, &udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+}
+END_TEST
+
+/* Regression: an unconnected UDP socket must accept datagrams from
+ * any source, even after sendto() set the socket's dst_port to
+ * something specific. Prior wolfIP behaviour conflated "destination
+ * of last send" with "RX filter" and rejected the reply with ICMP
+ * port-unreachable when the peer answered from a different port —
+ * which is exactly what RFC 1350 TFTP does on the first DATA/OACK. */
+START_TEST(test_udp_try_recv_unconnected_accepts_any_peer_port)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_udp_datagram udp;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t peer_ip  = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 6989;
+    ts->local_ip = local_ip;
+    /* Mirror what sendto(peer_ip:6969) leaves behind: dst_port and
+     * remote_ip set, but the socket is NOT connected. */
+    ts->dst_port = 6969;
+    ts->remote_ip = peer_ip;
+    ck_assert_uint_eq(ts->sock.udp.connected, 0U);
+
+    /* Peer replies from a *different* source port (TFTP TID change). */
+    memset(&udp, 0, sizeof(udp));
+    udp.ip.src = ee32(peer_ip);
+    udp.ip.dst = ee32(local_ip);
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp.src_port = ee16(57722);
+    udp.dst_port = ee16(6989);
+    udp.len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+        (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+}
+END_TEST
+
+/* Companion regression: a CONNECTED UDP socket must continue to filter
+ * out datagrams from any peer other than the one it was connected to.
+ * If this contract regresses, applications that use connect() for UDP
+ * (e.g. DNS clients tied to a single resolver) would start delivering
+ * forged responses from arbitrary sources. */
+START_TEST(test_udp_try_recv_connected_filters_peer_port)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_udp_datagram udp;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t peer_ip  = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 6989;
+    ts->local_ip = local_ip;
+    ts->dst_port = 6969;
+    ts->remote_ip = peer_ip;
+    ts->sock.udp.connected = 1;
+
+    /* Same peer IP but a foreign source port (53000) must be rejected. */
+    memset(&udp, 0, sizeof(udp));
+    udp.ip.src = ee32(peer_ip);
+    udp.ip.dst = ee32(local_ip);
+    udp.ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp.src_port = ee16(53000);
+    udp.dst_port = ee16(6989);
+    udp.len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+        (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    /* The connected peer (peer_ip:6969) must still be accepted. */
+    udp.src_port = ee16(6969);
+    udp_try_recv(&s, TEST_PRIMARY_IF, &udp,
+        (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+}
+END_TEST
+
+/* Regression: wolfIP_sock_connect() must flip the UDP socket into the
+ * "connected" state so the RX filter starts honouring dst_port /
+ * remote_ip. Pin the public-API path so a future refactor that forgot
+ * to flip the flag would surface here. */
+START_TEST(test_udp_sock_connect_sets_connected_flag)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in remote;
+    struct tsocket *ts;
+    int fd;
+    int rc;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t peer_ip  = 0x0A000002U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(fd)];
+    ck_assert_uint_eq(ts->sock.udp.connected, 0U);
+
+    memset(&remote, 0, sizeof(remote));
+    remote.sin_family = AF_INET;
+    remote.sin_port = ee16(6969);
+    remote.sin_addr.s_addr = ee32(peer_ip);
+    rc = wolfIP_sock_connect(&s, fd, (struct wolfIP_sockaddr *)&remote,
+        sizeof(remote));
+    ck_assert_int_eq(rc, 0);
+    ck_assert_uint_eq(ts->sock.udp.connected, 1U);
+    ck_assert_uint_eq(ts->dst_port, 6969U);
+    ck_assert_uint_eq(ts->remote_ip, peer_ip);
+
+    wolfIP_sock_close(&s, fd);
 }
 END_TEST
 

@@ -145,6 +145,15 @@ typedef int (*wolftftp_udp_send_cb)(void *arg, uint16_t local_port,
     const struct wolftftp_endpoint *remote, const uint8_t *buf, uint16_t len);
 typedef int (*wolftftp_open_cb)(void *arg, const char *name, int is_write,
     uint32_t *size_hint, void **handle);
+/* wolftftp_read_cb:
+ *   Out-params:
+ *     *out_len: number of bytes copied into buf (<= max_len).
+ *     *is_last: hint that no further reads will produce more data. The
+ *               server may still call read once more to obtain the
+ *               trailing 0-byte block required by RFC 1350 when the
+ *               final useful read happened to fill an entire blksize.
+ *               Callbacks that simply return *out_len == 0 at EOF do
+ *               not need to set this flag. */
 typedef int (*wolftftp_read_cb)(void *arg, void *handle, uint32_t offset,
     uint8_t *buf, uint16_t max_len, uint16_t *out_len, int *is_last);
 typedef int (*wolftftp_write_cb)(void *arg, void *handle, uint32_t offset,

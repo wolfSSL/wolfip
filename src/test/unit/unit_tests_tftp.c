@@ -928,6 +928,89 @@ START_TEST(test_tftp_client_poll_deadline_is_wrap_safe)
 }
 END_TEST
 
+START_TEST(test_tftp_server_rrq_sends_zero_byte_terminator_on_exact_multiple)
+{
+    /* RFC 1350: when the file length is an exact multiple of blksize
+     * the server must still send a trailing 0-byte DATA block so the
+     * peer can recognise EOF. Pin this behaviour with a 2 * blksize
+     * read source. */
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg;
+    struct wolftftp_transfer_cfg req_cfg;
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote = tftp_remote(0x0A000050U, 4200);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    uint16_t blksize = 8U;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.blksize = blksize;
+    cfg.timeout_s = 1;
+    cfg.windowsize = 1;
+    cfg.max_retries = 3;
+
+    memset(&req_cfg, 0, sizeof(req_cfg));
+    req_cfg.blksize = WOLFTFTP_DEFAULT_BLKSIZE;
+    req_cfg.timeout_s = WOLFTFTP_DEFAULT_TIMEOUT_S;
+    req_cfg.windowsize = 1;
+
+    tftp_test_ctx_reset(&ctx);
+    memset(ctx.read_data, 'A', blksize);
+    memset(ctx.read_data + blksize, 'B', blksize);
+    /* Two full blocks of data; reader hints is_last after each because
+     * fread-like callbacks don't know the file is an exact multiple. */
+    ctx.read_len[0] = blksize; ctx.read_last[0] = 0;
+    ctx.read_len[1] = blksize; ctx.read_last[1] = 1;
+    /* A real callback would return 0 bytes past EOF. */
+    ctx.read_len[2] = 0;       ctx.read_last[2] = 1;
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
+        "fw.bin", &req_cfg, 0, &opts, &req_len), 0);
+    ck_assert_uint_eq(opts, 0U);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+    /* First DATA: block 1, full blksize. */
+    ck_assert_int_eq(ctx.send_calls, 1);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0]), WOLFTFTP_OP_DATA);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0] + 2), 1U);
+    ck_assert_uint_eq(ctx.sent_len[0], 4U + blksize);
+
+    /* ACK 1 → expect block 2, also full blksize. */
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_ACK);
+    wolftftp_write_u16(pkt + 2, 1);
+    ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
+        &remote, pkt, 4), 0);
+    ck_assert_int_eq(ctx.send_calls, 2);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[1] + 2), 2U);
+    ck_assert_uint_eq(ctx.sent_len[1], 4U + blksize);
+
+    /* ACK 2 → expect the explicit 0-byte block 3 (the EOF marker),
+     * not session completion. */
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_ACK);
+    wolftftp_write_u16(pkt + 2, 2);
+    ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
+        &remote, pkt, 4), 0);
+    ck_assert_int_eq(ctx.send_calls, 3);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[2] + 2), 3U);
+    ck_assert_uint_eq(ctx.sent_len[2], 4U); /* opcode + block, no data */
+    ck_assert_int_eq(ctx.close_calls, 0);
+
+    /* Final ACK closes the session. */
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_ACK);
+    wolftftp_write_u16(pkt + 2, 3);
+    ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
+        &remote, pkt, 4), 0);
+    ck_assert_int_eq(ctx.close_calls, 1);
+    ck_assert_int_eq(ctx.close_status, 0);
+}
+END_TEST
+
 START_TEST(test_tftp_server_poll_deadline_is_wrap_safe)
 {
     struct tftp_test_ctx ctx;
@@ -989,4 +1072,6 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_server_rrq_retransmit_replays_window);
     tcase_add_test(tc_proto, test_tftp_client_poll_deadline_is_wrap_safe);
     tcase_add_test(tc_proto, test_tftp_server_poll_deadline_is_wrap_safe);
+    tcase_add_test(tc_proto,
+        test_tftp_server_rrq_sends_zero_byte_terminator_on_exact_multiple);
 }

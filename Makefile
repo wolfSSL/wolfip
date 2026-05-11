@@ -276,6 +276,39 @@ build/test-dns: $(OBJ) build/test/test_dhcp_dns.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
+# Bidirectional TFTP interop test against tftpd-hpa / tftp-hpa.
+# Forces WOLFIP_ENABLE_TFTP=1 and uses a single-session server so the
+# default UDP socket pool can hold both the listen and the transfer
+# socket without raising MAX_UDPSOCKETS.
+build/tftp-interop/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (tftp-interop)"
+	@$(CC) $(CFLAGS) -DWOLFIP_ENABLE_TFTP=1 -c $< -o $@
+
+build/tftp-interop/wolftftp.o: src/tftp/wolftftp.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (tftp-interop)"
+	@$(CC) $(CFLAGS) -DWOLFIP_ENABLE_TFTP=1 -DWOLFTFTP_SERVER_MAX_SESSIONS=1 \
+		-c $< -o $@
+
+build/test/test_tftp_interop.o: src/test/test_tftp_interop.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_ENABLE_TFTP=1 -DWOLFTFTP_SERVER_MAX_SESSIONS=1 \
+		-c $< -o $@
+
+build/test-tftp-interop: build/tftp-interop/wolfip.o \
+		build/tftp-interop/wolftftp.o $(TAP_OBJ) \
+		build/test/test_tftp_interop.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: tftp-interop-test
+tftp-interop-test: build/test-tftp-interop
+	@echo "[RUN] $< (requires root, tftpd-hpa and tftp-hpa)"
+	@sudo -n true >/dev/null 2>&1 || { echo "tftp-interop-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-tftp-interop all
+
 build/tcpecho: $(OBJ) build/port/posix/bsd_socket.o build/test/tcp_echo.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
