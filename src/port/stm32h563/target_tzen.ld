@@ -1,39 +1,52 @@
-/* Linker script for STM32H563 with TrustZone ENABLED (TZEN=1)
+/* Linker script for STM32H563 wolfIP NS application under wolfBoot
+ * (TZEN=1, with wolfBoot acting as the Secure boot stub).
  *
- * When TrustZone is enabled:
- * - Secure flash alias: 0x0C000000
- * - Secure SRAM alias: 0x30000000
- * - We run in secure mode and configure GTZC to allow DMA access
+ * Memory layout matches wolfBoot config/examples/stm32h5-tz.config:
+ *   wolfBoot (Secure):    0x0C000000 .. 0x0C040000
+ *   wolfBoot keyvault:    0x0C040000 .. 0x0C05C000
+ *   wolfBoot NSC veneer:  0x0C05C000 .. 0x0C060000
+ *   wolfBoot image hdr:   0x08060000 .. 0x08060400 (1024 B, prepended by sign)
+ *   NS app vectors+text:  0x08060400 .. 0x080FFFFF (boot partition end)
+ *
+ * RAM: wolfBoot (patched hal_gtzc_init / hal_tz_sau_init) keeps SRAM1
+ * secure for its own use and cedes SRAM2 + SRAM3 to NS:
+ *   NS RAM: 0x20040000 .. 0x2009FFFF (384 KB, SRAM2 + SRAM3)
+ *
+ * The NS app runs in Non-Secure world; plain LDR/STR carry HNONSEC=1,
+ * matching the H5 product-default NS attribution for the ETH peripheral
+ * and DMA. ETH descriptors and buffers live in the same NS RAM region
+ * as everything else -- no separate ETHMEM alias is needed.
  */
 
 MEMORY
 {
-    /* Secure addresses (TrustZone enabled) */
-    FLASH (rx)  : ORIGIN = 0x0C000000, LENGTH = 0x00200000
-    RAM   (rwx) : ORIGIN = 0x30000000, LENGTH = 0x00090000  /* 576KB secure SRAM (SRAM1+SRAM2+part of SRAM3) */
-
-    /* Non-secure SRAM for Ethernet DMA buffers (must be marked NS in GTZC) */
-    /* Using end of SRAM3 at 0x20098000 - 0x200A0000 (32KB for ETH) */
-    ETHMEM (rwx) : ORIGIN = 0x20098000, LENGTH = 0x00008000
+    FLASH (rx)  : ORIGIN = 0x08060400, LENGTH = 0x0009FC00 /* 639 KB */
+    RAM   (rwx) : ORIGIN = 0x20040000, LENGTH = 0x00060000 /* 384 KB */
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _sidata = LOADADDR(.data);
 
-/* Heap and stack sizes */
-_Min_Heap_Size = 0x10000;   /* 64KB heap */
-_Min_Stack_Size = 0x8000;   /* 32KB stack (SP math needs headroom) */
+/* Heap and stack sizes. Smaller than the TZEN=0 build because the NS
+ * RAM window is 384 KB (SRAM2+SRAM3) instead of 640 KB (full SRAM).
+ * SP math is fine on a 16 KB stack for the bare TCP echo build; TLS
+ * configurations should override these via EXTRA_LDFLAGS or revisit. */
+_Min_Heap_Size = 0x8000;    /* 32KB heap */
+_Min_Stack_Size = 0x4000;   /* 16KB stack */
 _heap_limit = _estack - _Min_Stack_Size;
 
 SECTIONS
 {
     .isr_vector :
     {
+        . = ALIGN(4);
         KEEP(*(.isr_vector))
+        . = ALIGN(4);
     } > FLASH
 
     .text :
     {
+        . = ALIGN(4);
         *(.text*)
         *(.rodata*)
         *(.ARM.extab* .gnu.linkonce.armextab.*)
@@ -41,6 +54,7 @@ SECTIONS
         *(.glue_7)
         *(.glue_7t)
         *(.eh_frame)
+        . = ALIGN(4);
     } > FLASH
 
     .preinit_array :
@@ -66,8 +80,10 @@ SECTIONS
 
     .data :
     {
+        . = ALIGN(4);
         _sdata = .;
         *(.data*)
+        . = ALIGN(4);
         _edata = .;
     } > RAM AT > FLASH
 
@@ -80,15 +96,6 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > RAM
-
-    /* Ethernet DMA buffers - placed in non-secure memory region */
-    .eth_buffers (NOLOAD) : ALIGN(32)
-    {
-        _eth_start = .;
-        *(.eth_buffers*)
-        . = ALIGN(32);
-        _eth_end = .;
-    } > ETHMEM
 
     /* Reserve minimum heap + stack space so the linker errors if RAM is full.
      * Heap starts just after BSS at 'end'/'_end'. Stack grows down from

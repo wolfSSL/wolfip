@@ -77,7 +77,7 @@ static int tls_client_test_done = 0;
 #endif
 
 /* Forward declarations */
-static void uart_puts(const char *s);
+void uart_puts(const char *s);
 static void delay(uint32_t count);
 
 /* =========================================================================
@@ -221,13 +221,13 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define ECHO_PORT 7
 #define RX_BUF_SIZE 1024
 
-#if TZEN_ENABLED
-#define RCC_BASE 0x54020C00u  /* Secure alias */
-#define ETH_BASE_DBG 0x50028000u  /* Secure ETH for debug */
-#else
-#define RCC_BASE 0x44020C00u  /* Non-secure alias */
-#define ETH_BASE_DBG 0x40028000u  /* Non-secure ETH for debug */
-#endif
+/* Non-secure peripheral aliases. wolfIP runs in NS world in both modes:
+ *   TZEN=0: TrustZone disabled, only NS aliases exist.
+ *   TZEN=1: wolfBoot is the secure stub and BLXNSs into this app, which
+ *           runs entirely in NS. Plain LDR/STR carry HNONSEC=1 and must
+ *           target the NS aliases (0x4xxxxxxx). */
+#define RCC_BASE 0x44020C00u
+#define ETH_BASE_DBG 0x40028000u
 #define RCC_AHB1ENR  (*(volatile uint32_t *)(RCC_BASE + 0x88u))
 #define RCC_AHB2ENR  (*(volatile uint32_t *)(RCC_BASE + 0x8Cu))
 #define RCC_APB3ENR  (*(volatile uint32_t *)(RCC_BASE + 0xA8u))
@@ -240,43 +240,11 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define RCC_CR_HSI48RDY     (1u << 13)
 #define RCC_CCIPR5_RNGSEL_Msk (3u << 4)
 
-/* SAU (Security Attribution Unit) - mark memory regions as non-secure */
-#define SAU_CTRL   (*(volatile uint32_t *)0xE000EDD0u)
-#define SAU_RNR    (*(volatile uint32_t *)0xE000EDD8u)
-#define SAU_RBAR   (*(volatile uint32_t *)0xE000EDDCu)
-#define SAU_RLAR   (*(volatile uint32_t *)0xE000EDE0u)
-
-/* GTZC (Global TrustZone Controller) - unlock SRAM for DMA access */
-#if TZEN_ENABLED
-/* Secure addresses when running in secure mode with TZEN=1 */
-#define GTZC1_BASE         0x50032400u  /* Secure alias */
-#else
-#define GTZC1_BASE         0x40032400u  /* Non-secure alias */
-#endif
-#define GTZC1_MPCBB1_CR    (*(volatile uint32_t *)(GTZC1_BASE + 0x800u))
-#define GTZC1_MPCBB2_CR    (*(volatile uint32_t *)(GTZC1_BASE + 0xC00u))
-#define GTZC1_MPCBB3_CR    (*(volatile uint32_t *)(GTZC1_BASE + 0x1000u))
-/* MPCBB SECCFGR registers - each bit controls 256 bytes of SRAM */
-#define GTZC1_MPCBB3_SECCFGR(n) (*(volatile uint32_t *)(GTZC1_BASE + 0x1000u + 0x100u + ((n) * 4u)))
-/* MPCBB PRIVCFGR registers - each bit controls privilege for 256 bytes of SRAM */
-#define GTZC1_MPCBB3_PRIVCFGR(n) (*(volatile uint32_t *)(GTZC1_BASE + 0x1000u + 0x200u + ((n) * 4u)))
-/* TZSC SECCFGR registers - control peripheral security */
-#define GTZC1_TZSC_SECCFGR1 (*(volatile uint32_t *)(GTZC1_BASE + 0x010u))
-#define GTZC1_TZSC_SECCFGR2 (*(volatile uint32_t *)(GTZC1_BASE + 0x014u))
-#define GTZC1_TZSC_SECCFGR3 (*(volatile uint32_t *)(GTZC1_BASE + 0x018u))
-
-/* GPIO base addresses */
-#if TZEN_ENABLED
-#define GPIOA_BASE 0x52020000u  /* Secure alias */
-#define GPIOB_BASE 0x52020400u
-#define GPIOC_BASE 0x52020800u
-#define GPIOG_BASE 0x52021800u
-#else
-#define GPIOA_BASE 0x42020000u  /* Non-secure alias */
+/* GPIO base addresses (NS aliases; see RCC_BASE comment above). */
+#define GPIOA_BASE 0x42020000u
 #define GPIOB_BASE 0x42020400u
 #define GPIOC_BASE 0x42020800u
 #define GPIOG_BASE 0x42021800u
-#endif
 
 /* GPIO register offsets */
 #define GPIO_MODER(base)   (*(volatile uint32_t *)((base) + 0x00u))
@@ -285,13 +253,10 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define GPIO_AFRL(base)    (*(volatile uint32_t *)((base) + 0x20u))
 #define GPIO_AFRH(base)    (*(volatile uint32_t *)((base) + 0x24u))
 
-/* SBS (System Bus Security) for RMII selection */
-/* SBS register definitions - PMCR is at offset 0x100 in SBS structure */
-#if TZEN_ENABLED
-#define SBS_BASE        0x54000400u  /* Secure alias */
-#else
-#define SBS_BASE        0x44000400u  /* Non-secure alias */
-#endif
+/* SBS (System Bus Security) for RMII selection.
+ * PMCR is at offset 0x100 in SBS structure. SBS is NS-default in TZSC
+ * and is used unconditionally from NS world here. */
+#define SBS_BASE        0x44000400u
 #define SBS_PMCR        (*(volatile uint32_t *)(SBS_BASE + 0x100u))
 #define SBS_PMCR_ETH_SEL_RMII (4u << 21)
 
@@ -310,11 +275,7 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define GPIO_BSRR(base)    (*(volatile uint32_t *)((base) + 0x18u))
 #define LED2_PIN 4u
 
-#if TZEN_ENABLED
-#define RNG_BASE 0x520C0800u
-#else
 #define RNG_BASE 0x420C0800u
-#endif
 #define RNG_CR   (*(volatile uint32_t *)(RNG_BASE + 0x00u))
 #define RNG_SR   (*(volatile uint32_t *)(RNG_BASE + 0x04u))
 #define RNG_DR   (*(volatile uint32_t *)(RNG_BASE + 0x08u))
@@ -340,9 +301,16 @@ static uint8_t rx_buf[RX_BUF_SIZE];
 static void rng_init(void)
 {
     uint32_t rng_cr;
+    uint32_t timeout;
 
     RCC_CR |= RCC_CR_HSI48ON;
-    while ((RCC_CR & RCC_CR_HSI48RDY) == 0u) {
+    /* Bounded waits throughout so emulators that do not model the
+     * HSI48 / RNG status bits (m33mu) cannot deadlock here. The RNG
+     * may not produce data on the emulator, but boot completes and
+     * higher-level code can fall back. */
+    timeout = 100000u;
+    while (((RCC_CR & RCC_CR_HSI48RDY) == 0u) && (timeout != 0u)) {
+        timeout--;
     }
 
     /* Select HSI48 as the RNG kernel clock. */
@@ -359,10 +327,14 @@ static void rng_init(void)
     rng_cr |= 0x0Du << RNG_CR_CONFIG3_SHIFT;
 
     RNG_CR = RNG_CR_CONDRST | rng_cr;
-    while ((RNG_CR & RNG_CR_CONDRST) == 0u) {
+    timeout = 100000u;
+    while (((RNG_CR & RNG_CR_CONDRST) == 0u) && (timeout != 0u)) {
+        timeout--;
     }
     RNG_CR = rng_cr | RNG_CR_RNGEN;
-    while ((RNG_SR & RNG_SR_DRDY) == 0u) {
+    timeout = 100000u;
+    while (((RNG_SR & RNG_SR_DRDY) == 0u) && (timeout != 0u)) {
+        timeout--;
     }
 }
 
@@ -513,7 +485,7 @@ static void uart_putc(char c)
     USART3_TDR = (uint32_t)c;
 }
 
-static void uart_puts(const char *s)
+void uart_puts(const char *s)
 {
     while (*s) {
         if (*s == '\n') uart_putc('\r');
@@ -603,7 +575,7 @@ void wolfmqtt_log(const char *fmt, ...)
         uart_puts("...[truncated]\n");
 }
 
-static void uart_puthex(uint32_t val)
+void uart_puthex(uint32_t val)
 {
     const char hex[] = "0123456789ABCDEF";
     uart_puts("0x");
@@ -774,6 +746,51 @@ static void echo_cb(int fd, uint16_t event, void *arg)
 }
 #endif
 
+#if TZEN_ENABLED
+/* When the NS app is launched by wolfBoot, the chip arrives here with
+ * the PLL programmed for 250 MHz SYSCLK / 250 MHz PCLK1
+ * (hal/stm32h5.c:clock_pll_on, plln=62 pllp=2). wolfIP's USART3 BRR
+ * and SysTick math assume HSI 64 MHz / HSIDIV=/2 / PCLK1 32 MHz (the
+ * H5 reset default). Rather than recompute every peripheral divisor,
+ * we revert clocks to that reset state before any peripheral init so
+ * the rest of the port behaves identically to the TZEN=0 path. */
+static void revert_sysclk_to_hsi(void)
+{
+    volatile uint32_t *rcc_cr     = (volatile uint32_t *)(RCC_BASE + 0x00u);
+    volatile uint32_t *rcc_cfgr1  = (volatile uint32_t *)(RCC_BASE + 0x1Cu);
+    volatile uint32_t *rcc_cfgr2  = (volatile uint32_t *)(RCC_BASE + 0x20u);
+    uint32_t reg;
+    uint32_t timeout;
+
+    /* CFGR1.SW: 0=HSI, 1=CSI, 2=HSE, 3=PLL1. Select HSI and wait for
+     * SWS (bits [3:5]) to confirm. Bounded retry so emulators that
+     * do not toggle the SWS feedback bits (m33mu) cannot deadlock. */
+    reg = *rcc_cfgr1;
+    reg &= ~0x7u;
+    *rcc_cfgr1 = reg;
+    timeout = 100000u;
+    while (((*rcc_cfgr1 & (0x7u << 3)) != 0u) && (timeout != 0u)) {
+        timeout--;
+    }
+
+    /* CR.HSIDIV (bits 4:3, shift 3): 0=/1 (64M), 1=/2 (32M), 2=/4, 3=/8.
+     * Per RM0481 Table 108. Force /2 to match the H5 reset default.
+     * Wait for HSIDIVF (bit 5) to confirm propagation. Same bounded
+     * retry so emulators without HSIDIVF feedback cannot deadlock. */
+    reg = *rcc_cr;
+    reg &= ~(0x3u << 3);
+    reg |= (0x1u << 3);
+    *rcc_cr = reg;
+    timeout = 100000u;
+    while (((*rcc_cr & (1u << 5)) == 0u) && (timeout != 0u)) {
+        timeout--;
+    }
+
+    /* AHB and APB prescalers back to /1. */
+    *rcc_cfgr2 = 0u;
+}
+#endif
+
 int main(void)
 {
     struct wolfIP_ll_dev *ll;
@@ -782,6 +799,10 @@ int main(void)
 #endif
     uint64_t tick = 0;
     int ret;
+
+#if TZEN_ENABLED
+    revert_sysclk_to_hsi();
+#endif
 
     /* Initialize LED first for debug - keep ON to confirm code is running */
     led_init();
@@ -810,33 +831,12 @@ int main(void)
     uart_puts("\n\n=== wolfIP STM32H563 Echo Server ===\n");
 #endif
 
-#if TZEN_ENABLED
-    /* Configure TrustZone for Ethernet DMA access */
-    uart_puts("Configuring TrustZone for Ethernet DMA...\n");
-    {
-        uint32_t i;
-
-        /* Expose only the Ethernet DMA window as non-secure. Leaving ALLNS
-         * clear keeps the rest of secure flash/SRAM/peripherals secure. */
-        SAU_RNR = 0u;
-        SAU_RBAR = 0x20098000u & 0xFFFFFFE0u;
-        SAU_RLAR = (0x2009FFFFu & 0xFFFFFFE0u) | 1u;
-        SAU_CTRL = 0x01u;  /* ENABLE */
-        __asm volatile ("dsb sy" ::: "memory");
-        __asm volatile ("isb sy" ::: "memory");
-
-        /* Mark MPCBB3 registers 36-39 as non-secure for ETHMEM */
-        for (i = 36; i <= 39; i++) {
-            GTZC1_MPCBB3_SECCFGR(i) = 0x00000000u;
-            GTZC1_MPCBB3_PRIVCFGR(i) = 0x00000000u;
-        }
-        __asm volatile ("dsb sy" ::: "memory");
-
-        /* Mark Ethernet MAC as non-secure in TZSC */
-        GTZC1_TZSC_SECCFGR3 &= ~(1u << 11);
-        __asm volatile ("dsb sy" ::: "memory");
-    }
-#endif
+    /* Under TZEN=1 the application is launched by wolfBoot in NS world
+     * (BLXNS from the secure stub). wolfBoot's hal_gtzc_init /
+     * hal_tz_sau_init / periph_unsecure already programmed SAU, GTZC
+     * MPCBB, and TZSC; this app does not (and cannot, from NS) touch
+     * those. ETH, RCC, GPIO, RNG, and SBS are NS-default in TZSC and
+     * accessible directly via the NS aliases used above. */
 
     uart_puts("Initializing wolfIP stack...\n");
     wolfIP_init_static(&IPStack);
@@ -858,6 +858,17 @@ int main(void)
     RCC_AHB1RSTR &= ~RCC_AHB1RSTR_ETHRST;
     __asm volatile ("dsb sy" ::: "memory");
     delay(10000);
+
+#if TZEN_ENABLED
+    /* The LAN8742A on NUCLEO-H563ZI is held in reset via NRST while
+     * wolfBoot's SYSRESETREQ asserts it; the PHY needs up to 167 ms
+     * after deassert to deliver REF_CLK on PA1. Without REF_CLK the
+     * subsequent ETH DMA software reset (DMAMR.SWR) hangs and
+     * stm32_eth_init returns -2. The TZEN=0 path inherits a much
+     * longer board-power-on settle, so this only matters for the
+     * wolfBoot-launched flow. ~200 ms at 32 MHz is enough headroom. */
+    delay(2000000);
+#endif
 
     uart_puts("Initializing Ethernet MAC...\n");
     ll = wolfIP_getdev(IPStack);
@@ -900,6 +911,38 @@ int main(void)
             uart_puts("  DHCP discover sent, waiting for lease...\n");
             /* Wait for DHCP to complete - poll frequently */
             dhcp_start_tick = tick;
+#ifdef DEBUG_H5_ETH
+            {
+                uint32_t dbg_polls = 0, dbg_pkts = 0;
+                volatile uint32_t *probe_ns = (volatile uint32_t *)0x2009aa40u;
+                volatile uint32_t *probe_s  = (volatile uint32_t *)0x3009aa40u;
+                uint32_t before_ns, after_ns, after_s;
+                /* CPU write to NS alias, read back via NS and S */
+                before_ns = *probe_ns;
+                *probe_ns = 0xC1A55B17u;  /* known pattern */
+                __asm volatile ("dsb sy" ::: "memory");
+                after_ns = *probe_ns;
+                after_s  = *probe_s;
+                uart_puts("  PROBE 0x2009aa40 before=0x"); uart_puthex(before_ns);
+                uart_puts(" after_ns=0x"); uart_puthex(after_ns);
+                uart_puts(" after_s=0x"); uart_puthex(after_s);
+                uart_puts("\n");
+                stm32_eth_get_stats(&dbg_polls, &dbg_pkts);
+                uart_puts("  ETH t0: polls=");
+                uart_putdec(dbg_polls);
+                uart_puts(" rx_pkts=");
+                uart_putdec(dbg_pkts);
+                uart_puts(" tx_pkts=");
+                uart_putdec(stm32_eth_get_tx_count());
+                uart_puts(" mac_tx=");
+                uart_putdec(stm32_eth_get_mac_tx_frames());
+                uart_puts(" mac_rx=");
+                uart_putdec(stm32_eth_get_mac_rx_frames());
+                uart_puts(" dmacsr=0x");
+                uart_puthex(stm32_eth_get_dmacsr());
+                uart_puts("\n");
+            }
+#endif
             while (!dhcp_bound(IPStack) && dhcp_client_is_running(IPStack)) {
                 /* Poll the stack - this processes received packets and sends pending data */
                 (void)wolfIP_poll(IPStack, tick);
@@ -907,6 +950,31 @@ int main(void)
                  * volatile loop ~8 cycles/iter: 8000 * 8 / 64MHz = 1ms */
                 tick++;
                 delay(8000);
+#ifdef DEBUG_H5_ETH
+                if ((tick - dhcp_start_tick) % 500 == 0) {
+                    uint32_t dbg_polls = 0, dbg_pkts = 0;
+                    stm32_eth_get_stats(&dbg_polls, &dbg_pkts);
+                    uart_puts("  ETH t=");
+                    uart_putdec(tick - dhcp_start_tick);
+                    uart_puts(" rx_pkts=");
+                    uart_putdec(dbg_pkts);
+                    uart_puts(" tx_pkts=");
+                    uart_putdec(stm32_eth_get_tx_count());
+                    uart_puts(" mac_tx=");
+                    uart_putdec(stm32_eth_get_mac_tx_frames());
+                    uart_puts(" mac_rx=");
+                    uart_putdec(stm32_eth_get_mac_rx_frames());
+                    uart_puts(" rx_crc_err=");
+                    uart_putdec(stm32_eth_get_mac_rx_errors());
+                    uart_puts(" dmacsr=0x");
+                    uart_puthex(stm32_eth_get_dmacsr());
+                    uart_puts(" rx_des3=0x");
+                    uart_puthex(stm32_eth_get_rx_des3());
+                    uart_puts(" tx0_des3=0x");
+                    uart_puthex(stm32_eth_get_tx_des3(0));
+                    uart_puts("\n");
+                }
+#endif
                 /* Check for timeout */
                 if ((tick - dhcp_start_tick) > dhcp_timeout)
                     break;
