@@ -65,6 +65,10 @@
 extern volatile unsigned long broker_uptime_sec;
 #endif
 
+#ifdef ENABLE_TFTP
+#include "tftp_client_demo.h"
+#endif
+
 #ifdef ENABLE_TLS_CLIENT
 
 /* Google IP for TLS client test (run: dig +short google.com) */
@@ -1074,6 +1078,22 @@ int main(void)
     }
 #endif
 
+#ifdef ENABLE_TFTP
+    uart_puts("Initializing TFTP client demo...\n");
+    {
+        ip4 srv = atoip4(TFTP_SERVER_IP);
+        uart_puts("  TFTP server: ");
+        uart_putip4(srv);
+        uart_puts("\n  TFTP file: ");
+        uart_puts(TFTP_FETCH_FILENAME);
+        uart_puts("\n");
+        if (tftp_client_demo_start(IPStack, srv, TFTP_FETCH_FILENAME,
+                uart_puts) < 0) {
+            uart_puts("ERROR: TFTP client init failed\n");
+        }
+    }
+#endif
+
     uart_puts("Entering main loop. Ready for connections!\n");
     uart_puts("  TCP Echo: port 7\n");
 #ifdef ENABLE_TLS_CLIENT
@@ -1101,6 +1121,10 @@ int main(void)
 #ifdef ENABLE_SSH
         /* Poll SSH server */
         ssh_server_poll();
+#endif
+
+#ifdef ENABLE_TFTP
+        tftp_client_demo_poll(tick);
 #endif
 
 #ifdef ENABLE_MQTT

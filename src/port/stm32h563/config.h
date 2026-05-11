@@ -65,4 +65,14 @@
 #define DHCP_REQUEST_RETRIES  1
 #endif
 
+/* TFTP client demo (ENABLE_TFTP=1). On boot, after DHCP, the demo fetches
+ * TFTP_FETCH_FILENAME from a tftpd-hpa running on TFTP_SERVER_IP and
+ * stages it into the wolfBoot update partition. */
+#ifndef TFTP_SERVER_IP
+#define TFTP_SERVER_IP           "192.168.12.10"
+#endif
+#ifndef TFTP_FETCH_FILENAME
+#define TFTP_FETCH_FILENAME      "app_v2_signed.bin"
+#endif
+
 #endif /* WOLF_CONFIG_H */

@@ -30,6 +30,11 @@ ENABLE_MQTT ?= 0
 # MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
 ENABLE_MQTT_BROKER ?= 0
 
+# TFTP client demo: set ENABLE_TFTP=1 to include the wolfIP TFTP client
+# that downloads a firmware image at boot and stages it into the
+# wolfBoot update partition. TZEN=0 only.
+ENABLE_TFTP ?= 0
+
 # FreeRTOS integration: set FREERTOS=1 to run the HTTPS server from a
 # FreeRTOS task using the blocking BSD socket wrapper layer.
 FREERTOS ?= 0
@@ -329,6 +334,33 @@ endif
 endif # ENABLE_MQTT_BROKER
 
 # -----------------------------------------------------------------------------
+# TFTP Client Demo (wolfIP TFTP) - one-shot RRQ GET into wolfBoot update partition
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_TFTP),1)
+
+ifeq ($(TZEN),1)
+  $(error ENABLE_TFTP=1 currently only supports TZEN=0)
+endif
+
+CFLAGS += -DENABLE_TFTP -DWOLFIP_ENABLE_TFTP=1
+CFLAGS += -I$(ROOT)/src/tftp
+
+# wolfBoot partition layout. Defaults match
+# ../wolfboot/config/examples/stm32h5-no-tz.config. Override on the
+# command line to match a different wolfBoot config.
+WOLFBOOT_PARTITION_UPDATE_ADDRESS ?= 0x08100000
+WOLFBOOT_PARTITION_SIZE           ?= 0xA0000
+WOLFBOOT_SECTOR_SIZE              ?= 0x4000
+CFLAGS += -DWOLFBOOT_PARTITION_UPDATE_ADDRESS=$(WOLFBOOT_PARTITION_UPDATE_ADDRESS)UL
+CFLAGS += -DWOLFBOOT_PARTITION_SIZE=$(WOLFBOOT_PARTITION_SIZE)UL
+CFLAGS += -DWOLFBOOT_SECTOR_SIZE=$(WOLFBOOT_SECTOR_SIZE)UL
+
+SRCS += tftp_client_demo.c
+SRCS += $(ROOT)/src/tftp/wolftftp.c
+
+endif # ENABLE_TFTP
+
+# -----------------------------------------------------------------------------
 # Build rules
 # -----------------------------------------------------------------------------
 OBJS := $(patsubst %.c,%.o,$(SRCS))
@@ -432,6 +464,7 @@ help:
 	@echo "  ENABLE_SSH=1    Enable SSH server (requires TLS + wolfSSH)"
 	@echo "  ENABLE_MQTT=1   Enable MQTT client (requires TLS + wolfMQTT)"
 	@echo "  ENABLE_MQTT_BROKER=1 Enable MQTT broker (requires TLS + wolfMQTT)"
+	@echo "  ENABLE_TFTP=1   Enable TFTP client demo (RRQ GET into wolfBoot update partition; TZEN=0 only)"
 	@echo "  FREERTOS=1      Run HTTPS in a FreeRTOS task via BSD socket wrappers"
 	@echo "  FREERTOS_PATH=  Path to FreeRTOS-Kernel (default: $(ROOT)/../FreeRTOS_Kernel)"
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
@@ -448,6 +481,7 @@ help:
 	@echo "  make ENABLE_TLS=1 ENABLE_TLS_CLIENT=1                       # TLS client (Google test)"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT=1                             # TLS + MQTT client"
 	@echo "  make ENABLE_TLS=1 ENABLE_MQTT_BROKER=1                      # TLS + MQTT broker"
+	@echo "  make ENABLE_TFTP=1                                          # TFTP client demo (one-shot RRQ at boot)"
 	@echo "  make FREERTOS=1 ENABLE_HTTPS=1                              # FreeRTOS HTTPS via BSD sockets"
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1 ENABLE_SSH=1 ENABLE_MQTT=1 ENABLE_MQTT_BROKER=1 # Full featured"
 	@echo ""
