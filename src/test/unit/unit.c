@@ -734,6 +734,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_raw_socket_recv_captures_ip_header);
     tcase_add_test(tc_proto, test_raw_socket_send_hdrincl_respected);
     tcase_add_test(tc_proto, test_raw_socket_send_builds_ip_header);
+    tcase_add_test(tc_proto, test_regression_raw_socket_send_ip_id_network_byte_order);
     tcase_add_test(tc_proto, test_raw_socket_sendto_short_addrlen_returns_einval);
     tcase_add_test(tc_proto, test_raw_socket_sendto_wrong_family_returns_einval);
     tcase_add_test(tc_proto, test_raw_socket_sendto_payload_too_large_for_ip_header_returns_einval);
