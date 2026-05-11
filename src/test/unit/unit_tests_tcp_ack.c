@@ -1265,6 +1265,24 @@ START_TEST(test_route_for_ip_matches_exact_ip_when_mask_is_zero)
 }
 END_TEST
 
+START_TEST(test_route_for_ip_skips_noncontiguous_connected_mask)
+{
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0A000001U, 0xFF00FF00U, 0x0A0000FEU);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0xC0A801FEU);
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_SECOND_IF, 0x0A010200U, 24U, 0xC0A801FEU), 0);
+
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0x0A010203U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(nexthop, 0xC0A801FEU);
+}
+END_TEST
+
 START_TEST(test_route_for_ip_gw_and_nonloop_fallback)
 {
     struct wolfIP s;
