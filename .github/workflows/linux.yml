@@ -19,8 +19,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential autoconf automake libtool pkg-config
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config \
+                                  tftpd-hpa tftp-hpa
           sudo modprobe tun
+          # The tftpd-hpa package installs a systemd unit that binds the
+          # standard TFTP port. The interop test starts its own in.tftpd
+          # bound to the test tap link, so stop the system instance to
+          # keep ports / file ownership predictable.
+          sudo systemctl stop tftpd-hpa || true
+          sudo systemctl disable tftpd-hpa || true
 
       - name: Clone and build wolfSSL from nightly-snapshot
         run: |
@@ -128,6 +135,28 @@ jobs:
         run: |
           set -euo pipefail
           timeout --preserve-status 5m build/test/unit
+
+      - name: Build TFTP interop test
+        run: |
+          make build/test-tftp-interop
+
+      - name: Run TFTP interop test (wolfIP client vs tftpd-hpa, wolfIP server vs tftp-hpa)
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          timeout --preserve-status 3m sudo ./build/test-tftp-interop all
+          sudo killall tcpdump || true
+
+      - name: Upload TFTP interop diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tftp-interop-diagnostics
+          path: |
+            /tmp/wolfip-tftp.pcap
+            /tmp/wolfip-tftpd-hpa.log
+            /tmp/wolfip-tftp-client.log
+          if-no-files-found: ignore
 
       - name: Build ESP unit tests
         run: |
