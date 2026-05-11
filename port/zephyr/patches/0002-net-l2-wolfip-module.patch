@@ -1,0 +1,170 @@
+Subject: [PATCH 2/4] NET_L2_WOLFIP — raw-frame L2 owned by wolfIP
+
+Adds a thin L2 module that intercepts Ethernet frames before Zephyr's
+native ethernet L2 / ARP / IPv4 dispatch, handing the raw frame to
+wolfip_zephyr_l2_input and delegating TX to the underlying ethernet
+driver. Hooks subsys/net/l2/{CMakeLists.txt,Kconfig} to source the new
+subdir. Depends on patch 0001 for the wolfip header / glue.
+
+---
+
+diff --git a/subsys/net/l2/CMakeLists.txt b/subsys/net/l2/CMakeLists.txt
+index d0cfc48f..f94b1d43 100644
+--- a/subsys/net/l2/CMakeLists.txt
++++ b/subsys/net/l2/CMakeLists.txt
+@@ -35,3 +35,7 @@ endif()
+ if(CONFIG_NET_L2_CANBUS_RAW)
+   add_subdirectory(canbus)
+ endif()
++
++if(CONFIG_NET_L2_WOLFIP)
++  add_subdirectory(wolfip)
++endif()
+diff --git a/subsys/net/l2/Kconfig b/subsys/net/l2/Kconfig
+index 64695b54..cce78802 100644
+--- a/subsys/net/l2/Kconfig
++++ b/subsys/net/l2/Kconfig
+@@ -18,6 +18,8 @@ source "subsys/net/l2/virtual/Kconfig"
+ 
+ source "subsys/net/l2/ethernet/Kconfig"
+ 
++source "subsys/net/l2/wolfip/Kconfig"
++
+ source "subsys/net/l2/ppp/Kconfig"
+ 
+ config NET_L2_PHY_IEEE802154
+diff --git a/subsys/net/l2/wolfip/CMakeLists.txt b/subsys/net/l2/wolfip/CMakeLists.txt
+new file mode 100644
+index 00000000..c30e3c7b
+--- /dev/null
++++ b/subsys/net/l2/wolfip/CMakeLists.txt
+@@ -0,0 +1,10 @@
++# SPDX-License-Identifier: Apache-2.0
++
++zephyr_library()
++zephyr_library_compile_definitions_ifdef(
++  CONFIG_NEWLIB_LIBC __LINUX_ERRNO_EXTENSIONS__
++  )
++
++zephyr_library_include_directories(. ${ZEPHYR_BASE}/subsys/net/ip)
++
++zephyr_library_sources_ifdef(CONFIG_NET_L2_WOLFIP wolfip_l2.c)
+diff --git a/subsys/net/l2/wolfip/Kconfig b/subsys/net/l2/wolfip/Kconfig
+new file mode 100644
+index 00000000..8d65bfd7
+--- /dev/null
++++ b/subsys/net/l2/wolfip/Kconfig
+@@ -0,0 +1,10 @@
++# SPDX-License-Identifier: Apache-2.0
++
++config NET_L2_WOLFIP
++	bool "wolfIP raw-frame L2"
++	depends on WOLFIP
++	help
++	  Lean L2 layer that delegates the entire L3+ stack (ARP, IPv4, ICMP,
++	  TCP, UDP, DHCPv4, DNS) to wolfIP. The underlying Zephyr device must
++	  still be an Ethernet driver; this L2 passes raw frames in and out
++	  without invoking Zephyr's Ethernet L2 / ARP / IPv4.
+diff --git a/subsys/net/l2/wolfip/wolfip_l2.c b/subsys/net/l2/wolfip/wolfip_l2.c
+new file mode 100644
+index 00000000..5f7eb3c6
+--- /dev/null
++++ b/subsys/net/l2/wolfip/wolfip_l2.c
+@@ -0,0 +1,97 @@
++/*
++ * Copyright (c) 2026 wolfSSL Inc.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <zephyr/logging/log.h>
++LOG_MODULE_REGISTER(net_l2_wolfip, CONFIG_NET_CORE_LOG_LEVEL);
++
++#include <stdint.h>
++#include <string.h>
++
++#include <zephyr/net/net_core.h>
++#include <zephyr/net/net_l2.h>
++#include <zephyr/net/net_log.h>
++#include <zephyr/net/net_if.h>
++#include <zephyr/net/net_pkt.h>
++#include <zephyr/net/ethernet.h>
++#include <zephyr/net/wolfip.h>
++
++#include "net_stats.h"
++
++static enum net_verdict wolfip_l2_recv(struct net_if *iface,
++				       struct net_pkt *pkt)
++{
++	uint8_t frame[1600];
++	size_t len;
++
++	len = net_pkt_get_len(pkt);
++	if (len == 0 || len > sizeof(frame)) {
++		NET_DBG("wolfIP L2 recv: invalid frame length %zu", len);
++		return NET_DROP;
++	}
++
++	net_pkt_cursor_init(pkt);
++	if (net_pkt_read(pkt, frame, len) < 0) {
++		return NET_DROP;
++	}
++
++	wolfip_zephyr_l2_input(iface, frame, len);
++
++	net_stats_update_bytes_recv(iface, len);
++
++	/* NET_OK means "consumed"; processing_data() will NOT unref — we must. */
++	net_pkt_unref(pkt);
++	return NET_OK;
++}
++
++static int wolfip_l2_send(struct net_if *iface, struct net_pkt *pkt)
++{
++	const struct ethernet_api *api = net_if_get_device(iface)->api;
++	int ret;
++
++	if (!api) {
++		return -ENOENT;
++	}
++
++	ret = net_l2_send(api->send, net_if_get_device(iface), iface, pkt);
++	if (!ret) {
++		size_t pkt_len = net_pkt_get_len(pkt);
++
++		net_stats_update_bytes_sent(iface, pkt_len);
++		ret = (int)pkt_len;
++		net_pkt_unref(pkt);
++	}
++
++	return ret;
++}
++
++static int wolfip_l2_enable(struct net_if *iface, bool state)
++{
++	const struct ethernet_api *api = net_if_get_device(iface)->api;
++
++	if (!api) {
++		return -ENOENT;
++	}
++
++	if (!state) {
++		if (api->stop) {
++			return api->stop(net_if_get_device(iface));
++		}
++	} else {
++		if (api->start) {
++			return api->start(net_if_get_device(iface));
++		}
++	}
++
++	return 0;
++}
++
++static enum net_l2_flags wolfip_l2_flags(struct net_if *iface)
++{
++	ARG_UNUSED(iface);
++	return NET_L2_MULTICAST | NET_L2_PROMISC_MODE;
++}
++
++NET_L2_INIT(WOLFIP_L2, wolfip_l2_recv, wolfip_l2_send, wolfip_l2_enable, wolfip_l2_flags);

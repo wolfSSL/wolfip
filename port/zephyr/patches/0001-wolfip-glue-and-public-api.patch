@@ -1,0 +1,1967 @@
+Subject: [PATCH 1/4] wolfIP integration glue and public API
+
+Adds the wolfIP runtime glue (wolfip_zephyr.c), the wolfIP control
+wrapper API (wolfip_control.c), Kconfig + CMakeLists, and the public
+header at include/zephyr/net/wolfip.h. Hooks subsys/net/lib into the
+build via add_subdirectory_ifdef(CONFIG_WOLFIP wolfip) and a Kconfig
+source line. No behavioural change to other subsystems yet — this
+patch alone gives you a buildable but inactive wolfIP runtime.
+
+---
+
+diff --git a/include/zephyr/net/wolfip.h b/include/zephyr/net/wolfip.h
+new file mode 100644
+index 00000000..6c365e9f
+--- /dev/null
++++ b/include/zephyr/net/wolfip.h
+@@ -0,0 +1,72 @@
++#ifndef ZEPHYR_INCLUDE_NET_WOLFIP_H_
++#define ZEPHYR_INCLUDE_NET_WOLFIP_H_
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include <zephyr/net/net_core.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct net_if;
++struct net_pkt;
++
++int wolfip_enable_iface(struct net_if *iface);
++int wolfip_disable_iface(struct net_if *iface);
++bool wolfip_iface_is_enabled(struct net_if *iface);
++
++enum net_verdict wolfip_zephyr_consume_rx(struct net_pkt *pkt);
++
++/*
++ * Called by the NET_L2_WOLFIP layer on each received Ethernet frame.
++ * The buffer holds the full frame including the 14-byte Ethernet header.
++ * Implementation lives in wolfip_zephyr.c.
++ */
++int wolfip_zephyr_l2_input(struct net_if *iface, const uint8_t *frame, size_t len);
++
++/*
++ * Attach iface to wolfIP: marks the iface's L2 as NET_L2_WOLFIP_L2,
++ * registers the socket offload, and copies the iface MAC into the wolfIP
++ * binding. Replaces the older wolfip_enable_iface flow.
++ */
++int wolfip_attach_iface(struct net_if *iface);
++int wolfip_detach_iface(struct net_if *iface);
++
++/*
++ * wolfIP type and struct forward declarations. These are only emitted when
++ * the wolfIP native header (<wolfip.h>) has not already been included; that
++ * header's own include guard is WOLFIP_H.
++ */
++#ifndef WOLFIP_H
++typedef uint32_t ip4;
++struct wolfIP;
++struct wolfIP_route_info;
++#endif
++
++/* wolfip_zephyr accessor functions (implemented in wolfip_zephyr.c) */
++struct wolfIP *wolfip_zephyr_get_stack(void);
++int  wolfip_zephyr_get_if_idx(struct net_if *iface, unsigned int *if_idx);
++void wolfip_zephyr_lock(void);
++void wolfip_zephyr_unlock(void);
++
++/* wolfIP control/query wrappers (implemented in wolfip_control.c) */
++int wolfip_ctrl_get_addr(unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
++int wolfip_ctrl_set_addr(unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
++int wolfip_ctrl_dhcp_start(unsigned int if_idx);
++int wolfip_ctrl_dhcp_is_running(unsigned int if_idx);
++int wolfip_ctrl_dhcp_is_bound(unsigned int if_idx);
++int wolfip_ctrl_get_dns(ip4 *dns);
++int wolfip_ctrl_arp_lookup(unsigned int if_idx, ip4 ip, uint8_t mac_out[6]);
++int wolfip_ctrl_route_add(unsigned int if_idx, ip4 prefix, uint8_t plen, ip4 gw);
++int wolfip_ctrl_route_del(unsigned int if_idx, ip4 prefix, uint8_t plen);
++unsigned int wolfip_ctrl_route_count(void);
++int wolfip_ctrl_route_get(unsigned int idx, struct wolfIP_route_info *info_out);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* ZEPHYR_INCLUDE_NET_WOLFIP_H_ */
+diff --git a/subsys/net/lib/CMakeLists.txt b/subsys/net/lib/CMakeLists.txt
+index b1255ccc..ef295408 100644
+--- a/subsys/net/lib/CMakeLists.txt
++++ b/subsys/net/lib/CMakeLists.txt
+@@ -24,6 +24,7 @@ add_subdirectory_ifdef(CONFIG_WIFI_CREDENTIALS       wifi_credentials)
+ add_subdirectory_ifdef(CONFIG_OCPP ocpp)
+ add_subdirectory_ifdef(CONFIG_NETMIDI2_HOST          midi2)
+ add_subdirectory_ifdef(CONFIG_WIREGUARD              wireguard)
++add_subdirectory_ifdef(CONFIG_WOLFIP                 wolfip)
+ 
+ if(CONFIG_NET_DHCPV4 OR CONFIG_NET_DHCPV4_SERVER)
+   add_subdirectory(dhcpv4)
+diff --git a/subsys/net/lib/Kconfig b/subsys/net/lib/Kconfig
+index 55c7e85b..7bb01529 100644
+--- a/subsys/net/lib/Kconfig
++++ b/subsys/net/lib/Kconfig
+@@ -32,6 +32,7 @@ source "subsys/net/lib/socks/Kconfig"
+ source "subsys/net/lib/sntp/Kconfig"
+ 
+ source "subsys/net/lib/ocpp/Kconfig"
++source "subsys/net/lib/wolfip/Kconfig"
+ 
+ endmenu
+ 
+diff --git a/subsys/net/lib/wolfip/CMakeLists.txt b/subsys/net/lib/wolfip/CMakeLists.txt
+new file mode 100644
+index 00000000..854c94c7
+--- /dev/null
++++ b/subsys/net/lib/wolfip/CMakeLists.txt
+@@ -0,0 +1,18 @@
++# SPDX-License-Identifier: Apache-2.0
++
++zephyr_library()
++
++set(WOLFIP_ROOT ${ZEPHYR_BASE}/../../wolfip)
++
++zephyr_library_include_directories(${WOLFIP_ROOT})
++zephyr_library_compile_definitions(
++  WOLFIP_MAX_INTERFACES=${CONFIG_WOLFIP_MAX_INTERFACES}
++  WOLFIP_ENABLE_FORWARDING=1
++)
++
++zephyr_library_sources(
++  ${WOLFIP_ROOT}/src/wolfip.c
++  wolfip_zephyr.c
++  wolfip_control.c
++)
++
+diff --git a/subsys/net/lib/wolfip/Kconfig b/subsys/net/lib/wolfip/Kconfig
+new file mode 100644
+index 00000000..49156ba0
+--- /dev/null
++++ b/subsys/net/lib/wolfip/Kconfig
+@@ -0,0 +1,53 @@
++# SPDX-License-Identifier: Apache-2.0
++
++menuconfig WOLFIP
++	bool "wolfIP IPv4 adapter"
++	depends on NETWORKING
++	depends on NET_SOCKETS
++	select NET_SOCKETS_OFFLOAD
++	select NET_L2_WOLFIP
++	help
++	  Route IPv4 socket traffic and IPv4 ingress/egress for selected
++	  interfaces through wolfIP while preserving the existing Zephyr
++	  driver model and interface-management APIs.
++
++if WOLFIP
++
++config WOLFIP_MAX_INTERFACES
++	int "Maximum number of wolfIP-backed interfaces"
++	range 1 8
++	default 2
++
++config WOLFIP_RX_QUEUE_LEN
++	int "wolfIP RX queue depth"
++	range 2 32
++	default 8
++
++config WOLFIP_POLL_INTERVAL_MS
++	int "wolfIP worker poll interval (ms)"
++	range 1 1000
++	default 10
++
++config WOLFIP_STACK_SIZE
++	int "wolfIP worker stack size"
++	range 1024 16384
++	default 4096
++
++config WOLFIP_INSTANCE_STORAGE_SIZE
++	int "wolfIP instance storage size"
++	range 65536 2097152
++	default 524288
++	help
++	  Size of the dedicated backing storage used for one wolfIP stack
++	  instance. This must be at least wolfIP_instance_size() for the
++	  enabled wolfIP feature set.
++
++config WOLFIP_THREAD_PRIORITY
++	int "wolfIP worker thread priority"
++	default 7
++
++config WOLFIP_DHCPV4
++	bool "Start wolfIP DHCPv4 on the primary bound interface"
++	default y
++
++endif
+diff --git a/subsys/net/lib/wolfip/wolfip_control.c b/subsys/net/lib/wolfip/wolfip_control.c
+new file mode 100644
+index 00000000..af913a72
+--- /dev/null
++++ b/subsys/net/lib/wolfip/wolfip_control.c
+@@ -0,0 +1,245 @@
++/*
++ * Copyright (c) 2026
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <errno.h>
++#include <stdint.h>
++#include <string.h>
++#include <zephyr/kernel.h>
++#include <zephyr/net/wolfip.h>
++#include <wolfip.h>
++
++int wolfip_ctrl_get_addr(unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw)
++{
++	struct wolfIP *s;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	if (ip == NULL || mask == NULL || gw == NULL) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	wolfIP_ipconfig_get_ex(s, if_idx, ip, mask, gw);
++	wolfip_zephyr_unlock();
++	return 0;
++}
++
++int wolfip_ctrl_set_addr(unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw)
++{
++	struct wolfIP *s;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	wolfIP_ipconfig_set_ex(s, if_idx, ip, mask, gw);
++	wolfip_zephyr_unlock();
++	return 0;
++}
++
++int wolfip_ctrl_dhcp_start(unsigned int if_idx)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = dhcp_client_init(s);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++int wolfip_ctrl_dhcp_is_running(unsigned int if_idx)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = dhcp_client_is_running(s);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++int wolfip_ctrl_dhcp_is_bound(unsigned int if_idx)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = dhcp_bound(s);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++int wolfip_ctrl_get_dns(ip4 *dns)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (dns == NULL) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = wolfIP_dns_server_get(s, dns);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++int wolfip_ctrl_arp_lookup(unsigned int if_idx, ip4 ip, uint8_t mac_out[6])
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	if (mac_out == NULL) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = wolfIP_arp_lookup_ex(s, if_idx, ip, mac_out);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++int wolfip_ctrl_route_add(unsigned int if_idx, ip4 prefix, uint8_t plen, ip4 gw)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = wolfIP_route_add(s, if_idx, prefix, plen, gw);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++int wolfip_ctrl_route_del(unsigned int if_idx, ip4 prefix, uint8_t plen)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (if_idx >= CONFIG_WOLFIP_MAX_INTERFACES) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = wolfIP_route_delete(s, if_idx, prefix, plen);
++	wolfip_zephyr_unlock();
++	return ret;
++}
++
++unsigned int wolfip_ctrl_route_count(void)
++{
++	struct wolfIP *s;
++	unsigned int count;
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return 0;
++	}
++
++	count = wolfIP_route_count(s);
++	wolfip_zephyr_unlock();
++	return count;
++}
++
++int wolfip_ctrl_route_get(unsigned int idx, struct wolfIP_route_info *info_out)
++{
++	struct wolfIP *s;
++	int ret;
++
++	if (info_out == NULL) {
++		return -EINVAL;
++	}
++
++	wolfip_zephyr_lock();
++	s = wolfip_zephyr_get_stack();
++	if (s == NULL) {
++		wolfip_zephyr_unlock();
++		return -ENODEV;
++	}
++
++	ret = wolfIP_route_get(s, idx, info_out);
++	wolfip_zephyr_unlock();
++	return ret;
++}
+diff --git a/subsys/net/lib/wolfip/wolfip_zephyr.c b/subsys/net/lib/wolfip/wolfip_zephyr.c
+new file mode 100644
+index 00000000..d0ace363
+--- /dev/null
++++ b/subsys/net/lib/wolfip/wolfip_zephyr.c
+@@ -0,0 +1,1514 @@
++/*
++ * Copyright (c) 2026
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <zephyr/init.h>
++#include <zephyr/kernel.h>
++#include <zephyr/logging/log.h>
++#include <zephyr/net/net_if.h>
++#include <zephyr/net/net_ip.h>
++#include <zephyr/net/net_l2.h>
++#include <zephyr/net/net_pkt.h>
++#include <zephyr/posix/netdb.h>
++#include <zephyr/net/socket.h>
++#include <zephyr/net/socket_offload.h>
++#include <zephyr/net/wolfip.h>
++#include <zephyr/random/random.h>
++#include <zephyr/sys/atomic.h>
++#include <zephyr/sys/byteorder.h>
++#include <zephyr/sys/fdtable.h>
++
++#include <errno.h>
++#include <limits.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <wolfip.h>
++
++LOG_MODULE_REGISTER(net_wolfip, CONFIG_NET_CORE_LOG_LEVEL);
++
++#define WOLFIP_ETH_ADDR_LEN 6U
++#define WOLFIP_ETH_HEADER_LEN 14U
++#define WOLFIP_LINK_MTU 1600U
++
++struct wolfip_binding {
++	struct net_if *iface;
++	bool enabled;
++	unsigned int if_idx;
++};
++
++struct wolfip_poll_state {
++	struct k_poll_signal signal;
++	short events;
++	short revents;
++	bool armed;
++};
++
++struct wolfip_socket {
++	int fd;
++	int wolf_fd;
++	k_timeout_t recv_timeout;
++	k_timeout_t send_timeout;
++	atomic_t pending_events;
++	bool nonblock;
++	bool is_listener;
++	int pending_child_wolf_fd;
++	struct wolfIP_sockaddr_in pending_child_peer;
++	struct k_sem event_sem;
++	struct wolfip_poll_state poll;
++};
++
++struct wolfip_dns_wait {
++	struct k_sem sem;
++	int status;
++	ip4 ip;
++};
++
++struct wolfip_context {
++	struct wolfIP *stack;
++	struct k_mutex lock;
++	struct k_sem wake_sem;
++	struct k_thread thread;
++	bool initialized;
++	bool dns_registered;
++	struct wolfip_binding bindings[CONFIG_WOLFIP_MAX_INTERFACES];
++	struct wolfip_dns_wait dns_wait;
++};
++
++static struct wolfip_context wolfip_ctx;
++K_THREAD_STACK_DEFINE(wolfip_thread_stack, CONFIG_WOLFIP_STACK_SIZE);
++static uint8_t wolfip_stack_storage[CONFIG_WOLFIP_INSTANCE_STORAGE_SIZE]
++	__aligned(sizeof(void *));
++
++#define WOLFIP_STACK() (wolfip_ctx.stack)
++
++static ssize_t wolfip_sendto(void *obj, const void *buf, size_t len, int flags,
++			     const struct net_sockaddr *dest_addr,
++			     net_socklen_t addrlen);
++static ssize_t wolfip_recvfrom(void *obj, void *buf, size_t max_len, int flags,
++			       struct net_sockaddr *src_addr,
++			       net_socklen_t *addrlen);
++static int wolfip_socket_create(int family, int type, int proto);
++static void wolfip_socket_event_cb(int sock_fd, uint16_t events, void *arg);
++static const struct socket_op_vtable wolfip_socket_fd_op_vtable;
++
++static ip4 net_addr_to_wolfip(const struct net_in_addr *addr)
++{
++	if (addr == NULL) {
++		return 0U;
++	}
++
++	return ((ip4)addr->s4_addr[0] << 24) |
++	       ((ip4)addr->s4_addr[1] << 16) |
++	       ((ip4)addr->s4_addr[2] << 8) |
++	       (ip4)addr->s4_addr[3];
++}
++
++static void wolfip_to_net_addr(ip4 addr, struct net_in_addr *out)
++{
++	if (out == NULL) {
++		return;
++	}
++
++	out->s4_addr[0] = (uint8_t)(addr >> 24);
++	out->s4_addr[1] = (uint8_t)(addr >> 16);
++	out->s4_addr[2] = (uint8_t)(addr >> 8);
++	out->s4_addr[3] = (uint8_t)addr;
++}
++
++static int wolfip_errno_from_ret(int ret)
++{
++	if (ret >= 0) {
++		return 0;
++	}
++
++	if (ret == -1) {
++		return EIO;
++	}
++
++	return -ret;
++}
++
++static struct wolfip_binding *wolfip_binding_for_iface(struct net_if *iface)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(wolfip_ctx.bindings); i++) {
++		if (wolfip_ctx.bindings[i].iface == iface) {
++			return &wolfip_ctx.bindings[i];
++		}
++	}
++
++	return NULL;
++}
++
++static bool wolfip_any_enabled(void)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(wolfip_ctx.bindings); i++) {
++		if (wolfip_ctx.bindings[i].enabled) {
++			return true;
++		}
++	}
++
++	return false;
++}
++
++static int wolfip_poll_ll_dev(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
++{
++	ARG_UNUSED(ll);
++	ARG_UNUSED(buf);
++	ARG_UNUSED(len);
++
++	return 0;
++}
++
++static int wolfip_send_ll_dev(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
++{
++	struct wolfip_binding *binding;
++	struct net_if *iface;
++	struct net_pkt *pkt;
++	int ret;
++	uint16_t ptype;
++
++	if (ll == NULL || buf == NULL || len == 0U) {
++		return -WOLFIP_EINVAL;
++	}
++
++	binding = ll->priv;
++	if (binding == NULL || !binding->enabled || binding->iface == NULL) {
++		return -WOLFIP_EINVAL;
++	}
++
++	iface = binding->iface;
++	pkt = net_pkt_alloc_with_buffer(iface, len, NET_AF_PACKET, 0, K_NO_WAIT);
++	if (pkt == NULL) {
++		return -WOLFIP_ENOMEM;
++	}
++
++	if (net_pkt_write(pkt, buf, len) < 0) {
++		net_pkt_unref(pkt);
++		return -WOLFIP_ENOMEM;
++	}
++
++	net_pkt_set_family(pkt, NET_AF_PACKET);
++	net_pkt_set_iface(pkt, iface);
++	net_pkt_cursor_init(pkt);
++
++	if (len >= WOLFIP_ETH_HEADER_LEN) {
++		const uint8_t *frame = buf;
++
++		(void)net_linkaddr_set(net_pkt_lladdr_dst(pkt), frame,
++				       WOLFIP_ETH_ADDR_LEN);
++		(void)net_linkaddr_set(net_pkt_lladdr_src(pkt),
++				       frame + WOLFIP_ETH_ADDR_LEN,
++				       WOLFIP_ETH_ADDR_LEN);
++		ptype = sys_get_be16(frame + 12);
++		net_pkt_set_ll_proto_type(pkt, ptype);
++	}
++
++	ret = net_if_send_data(iface, pkt);
++	if (ret < 0) {
++		net_pkt_unref(pkt);
++		return ret;
++	}
++
++	return ret;
++}
++
++static void wolfip_copy_iface_name(struct wolfIP_ll_dev *ll, struct net_if *iface)
++{
++	const struct device *dev;
++
++	dev = net_if_get_device(iface);
++	if (dev == NULL) {
++		ll->ifname[0] = '\0';
++		return;
++	}
++
++	snprintk(ll->ifname, sizeof(ll->ifname), "%s", dev->name);
++}
++
++static void wolfip_worker(void *arg1, void *arg2, void *arg3)
++{
++	ARG_UNUSED(arg1);
++	ARG_UNUSED(arg2);
++	ARG_UNUSED(arg3);
++
++	while (true) {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		(void)wolfIP_poll(WOLFIP_STACK(), k_uptime_get());
++		k_mutex_unlock(&wolfip_ctx.lock);
++
++		(void)k_sem_take(&wolfip_ctx.wake_sem,
++				 K_MSEC(CONFIG_WOLFIP_POLL_INTERVAL_MS));
++	}
++}
++
++static int wolfip_init_runtime(void)
++{
++	if (wolfip_ctx.initialized) {
++		return 0;
++	}
++
++	memset(&wolfip_ctx, 0, sizeof(wolfip_ctx));
++	k_mutex_init(&wolfip_ctx.lock);
++	k_sem_init(&wolfip_ctx.wake_sem, 0, UINT_MAX);
++	k_sem_init(&wolfip_ctx.dns_wait.sem, 0, 1);
++	if (wolfIP_instance_size() > sizeof(wolfip_stack_storage)) {
++		return -ENOMEM;
++	}
++
++	wolfip_ctx.stack = (struct wolfIP *)wolfip_stack_storage;
++	wolfIP_init(WOLFIP_STACK());
++
++	k_thread_create(&wolfip_ctx.thread, wolfip_thread_stack,
++			K_THREAD_STACK_SIZEOF(wolfip_thread_stack),
++			wolfip_worker, NULL, NULL, NULL,
++			CONFIG_WOLFIP_THREAD_PRIORITY, 0, K_NO_WAIT);
++	k_thread_name_set(&wolfip_ctx.thread, "wolfip");
++
++	wolfip_ctx.initialized = true;
++	return 0;
++}
++
++static short wolfip_socket_current_revents(struct wolfip_socket *sock,
++					   short requested)
++{
++	short revents = 0;
++	int can_read;
++	int can_write;
++	atomic_val_t pending;
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	can_read = wolfIP_sock_can_read(WOLFIP_STACK(), sock->wolf_fd);
++	can_write = wolfIP_sock_can_write(WOLFIP_STACK(), sock->wolf_fd);
++	k_mutex_unlock(&wolfip_ctx.lock);
++
++	if ((requested & ZSOCK_POLLIN) && can_read > 0) {
++		revents |= ZSOCK_POLLIN;
++	}
++
++	if ((requested & ZSOCK_POLLOUT) && can_write > 0) {
++		revents |= ZSOCK_POLLOUT;
++	}
++
++	pending = atomic_get(&sock->pending_events);
++	if (pending & CB_EVENT_CLOSED) {
++		revents |= ZSOCK_POLLHUP;
++	}
++
++	return revents;
++}
++
++static void wolfip_socket_signal_poll(struct wolfip_socket *sock)
++{
++	if (!sock->poll.armed) {
++		return;
++	}
++
++	sock->poll.revents |= wolfip_socket_current_revents(sock, sock->poll.events);
++	if (sock->poll.revents != 0) {
++		k_poll_signal_raise(&sock->poll.signal, sock->poll.revents);
++	}
++}
++
++static void wolfip_socket_event_cb(int sock_fd, uint16_t events, void *arg)
++{
++	struct wolfip_socket *sock = arg;
++
++	ARG_UNUSED(sock_fd);
++
++	if (sock == NULL) {
++		return;
++	}
++
++	/* Pre-accept inline while wolfIP's lock is held and the listener is
++	 * still in TCP_SYN_RCVD. If we wait for the app thread to wake and
++	 * call accept(), the peer's final ACK will arrive first and advance
++	 * the listener past SYN_RCVD — leaving wolfIP_sock_accept unable to
++	 * recover the connection. wolfIP's design is sequential: one
++	 * connection in flight at a time, so a single-deep stash is enough.
++	 */
++	if (sock->is_listener && (events & CB_EVENT_READABLE) &&
++	    sock->pending_child_wolf_fd < 0) {
++		struct wolfIP_sockaddr_in peer;
++		socklen_t peer_len = sizeof(peer);
++		int child_fd = wolfIP_sock_accept(WOLFIP_STACK(), sock->wolf_fd,
++						  (struct wolfIP_sockaddr *)&peer,
++						  &peer_len);
++		if (child_fd >= 0) {
++			sock->pending_child_wolf_fd = child_fd;
++			sock->pending_child_peer = peer;
++		}
++	}
++
++	atomic_or(&sock->pending_events, events);
++	k_sem_give(&sock->event_sem);
++	wolfip_socket_signal_poll(sock);
++}
++
++static int wolfip_socket_wait(struct wolfip_socket *sock, uint16_t want,
++			      k_timeout_t timeout)
++{
++	int ret;
++	uint64_t end = 0U;
++
++	if (K_TIMEOUT_EQ(timeout, K_NO_WAIT)) {
++		return -EAGAIN;
++	}
++
++	if (!K_TIMEOUT_EQ(timeout, K_FOREVER)) {
++		end = k_uptime_get() + k_ticks_to_ms_floor64(timeout.ticks);
++	}
++
++	while (true) {
++		atomic_val_t pending;
++
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		if ((want & CB_EVENT_READABLE) &&
++		    wolfIP_sock_can_read(WOLFIP_STACK(), sock->wolf_fd) > 0) {
++			k_mutex_unlock(&wolfip_ctx.lock);
++			return 0;
++		}
++
++		if ((want & CB_EVENT_WRITABLE) &&
++		    wolfIP_sock_can_write(WOLFIP_STACK(), sock->wolf_fd) > 0) {
++			k_mutex_unlock(&wolfip_ctx.lock);
++			return 0;
++		}
++		k_mutex_unlock(&wolfip_ctx.lock);
++
++		if (atomic_get(&sock->pending_events) & CB_EVENT_CLOSED) {
++			return -ECONNRESET;
++		}
++
++		/* Drain any pending event bits the caller is waiting on, then
++		 * return. Reading the bits here closes the wake-up race: if
++		 * the RX-side callback ran between the can_read/can_write
++		 * checks and the sem_take below, the bit it set is what
++		 * tells us to retry rather than block on a stale sem. */
++		pending = atomic_and(&sock->pending_events, ~(atomic_val_t)want);
++		if (pending & want) {
++			return 0;
++		}
++
++		k_sem_reset(&sock->event_sem);
++		/* Re-check pending after reset: a give that landed between
++		 * the atomic_and above and the reset is now dropped, so we
++		 * must observe its bit explicitly. */
++		pending = atomic_and(&sock->pending_events, ~(atomic_val_t)want);
++		if (pending & want) {
++			return 0;
++		}
++
++		ret = k_sem_take(&sock->event_sem,
++				 K_TIMEOUT_EQ(timeout, K_FOREVER) ?
++				 K_FOREVER :
++				 K_MSEC(MAX((int64_t)0, (int64_t)(end - k_uptime_get()))));
++		if (ret < 0) {
++			return -EAGAIN;
++		}
++	}
++}
++
++static int wolfip_alloc_socket_obj(int wolf_fd, struct wolfip_socket **sock_out)
++{
++	struct wolfip_socket *sock;
++	int fd;
++
++	fd = zvfs_reserve_fd();
++	if (fd < 0) {
++		return -1;
++	}
++
++	sock = k_malloc(sizeof(*sock));
++	if (sock == NULL) {
++		zvfs_free_fd(fd);
++		errno = ENOMEM;
++		return -1;
++	}
++
++	memset(sock, 0, sizeof(*sock));
++	sock->fd = fd;
++	sock->wolf_fd = wolf_fd;
++	sock->recv_timeout = K_FOREVER;
++	sock->send_timeout = K_FOREVER;
++	sock->pending_child_wolf_fd = -1;
++	k_sem_init(&sock->event_sem, 0, UINT_MAX);
++	k_poll_signal_init(&sock->poll.signal);
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	wolfIP_register_callback(WOLFIP_STACK(), wolf_fd,
++				 wolfip_socket_event_cb, sock);
++	k_mutex_unlock(&wolfip_ctx.lock);
++
++	if (sock_out != NULL) {
++		*sock_out = sock;
++	}
++
++	return fd;
++}
++
++static int wolfip_dns_numeric_result(const char *node, const char *service,
++				     struct zsock_addrinfo **res)
++{
++	struct zsock_addrinfo *ai;
++	struct net_sockaddr_in *sin;
++	struct net_in_addr addr;
++	unsigned long port = 0U;
++	char *endptr = NULL;
++
++	if (node == NULL || res == NULL) {
++		return -EINVAL;
++	}
++
++	if (net_addr_pton(NET_AF_INET, node, &addr) < 0) {
++		return -EINVAL;
++	}
++
++	if (service != NULL) {
++		port = strtoul(service, &endptr, 10);
++		if (endptr == NULL || *endptr != '\0' || port > UINT16_MAX) {
++			return -EINVAL;
++		}
++	}
++
++	ai = k_calloc(1, sizeof(*ai));
++	sin = k_calloc(1, sizeof(*sin));
++	if (ai == NULL || sin == NULL) {
++		k_free(ai);
++		k_free(sin);
++		return -ENOMEM;
++	}
++
++	sin->sin_family = NET_AF_INET;
++	sin->sin_port = sys_cpu_to_be16((uint16_t)port);
++	sin->sin_addr = addr;
++
++	ai->ai_family = NET_AF_INET;
++	ai->ai_socktype = 0;
++	ai->ai_protocol = 0;
++	ai->ai_addrlen = sizeof(*sin);
++	ai->ai_addr = (struct sockaddr *)sin;
++	*res = ai;
++	return 0;
++}
++
++static void wolfip_dns_lookup_cb(uint32_t ip)
++{
++	wolfip_ctx.dns_wait.ip = ip;
++	wolfip_ctx.dns_wait.status = (ip == 0U) ? -EHOSTUNREACH : 0;
++	k_sem_give(&wolfip_ctx.dns_wait.sem);
++}
++
++static int wolfip_getaddrinfo(const char *node, const char *service,
++			      const struct zsock_addrinfo *hints,
++			      struct zsock_addrinfo **res)
++{
++	struct zsock_addrinfo *ai;
++	struct net_sockaddr_in *sin;
++	struct net_in_addr addr;
++	unsigned long port = 0U;
++	uint16_t dns_id;
++	int ret;
++
++	if (res == NULL) {
++		return EAI_FAIL;
++	}
++
++	*res = NULL;
++
++	if (hints != NULL && hints->ai_family != AF_UNSPEC &&
++	    hints->ai_family != AF_INET) {
++		return EAI_FAMILY;
++	}
++
++	ret = wolfip_dns_numeric_result(node, service, res);
++	if (ret == 0) {
++		return 0;
++	}
++
++	if (node == NULL) {
++		return EAI_NONAME;
++	}
++
++	if (service != NULL) {
++		char *endptr = NULL;
++
++		port = strtoul(service, &endptr, 10);
++		if (endptr == NULL || *endptr != '\0' || port > UINT16_MAX) {
++			return EAI_SERVICE;
++		}
++	}
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	k_sem_reset(&wolfip_ctx.dns_wait.sem);
++	wolfip_ctx.dns_wait.status = -EINPROGRESS;
++	wolfip_ctx.dns_wait.ip = 0U;
++	ret = nslookup(WOLFIP_STACK(), node, &dns_id, wolfip_dns_lookup_cb);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	ARG_UNUSED(dns_id);
++	if (ret < 0) {
++		return EAI_FAIL;
++	}
++
++	if (k_sem_take(&wolfip_ctx.dns_wait.sem, K_SECONDS(5)) < 0 ||
++	    wolfip_ctx.dns_wait.status < 0) {
++		return EAI_AGAIN;
++	}
++
++	ai = k_calloc(1, sizeof(*ai));
++	sin = k_calloc(1, sizeof(*sin));
++	if (ai == NULL || sin == NULL) {
++		k_free(ai);
++		k_free(sin);
++		return EAI_MEMORY;
++	}
++
++	wolfip_to_net_addr(wolfip_ctx.dns_wait.ip, &addr);
++	sin->sin_family = AF_INET;
++	sin->sin_port = sys_cpu_to_be16((uint16_t)port);
++	sin->sin_addr = addr;
++
++	ai->ai_family = AF_INET;
++	ai->ai_socktype = hints ? hints->ai_socktype : 0;
++	ai->ai_protocol = hints ? hints->ai_protocol : 0;
++	ai->ai_addrlen = sizeof(*sin);
++	ai->ai_addr = (struct sockaddr *)sin;
++	*res = ai;
++	return 0;
++}
++
++static void wolfip_freeaddrinfo(struct zsock_addrinfo *res)
++{
++	struct zsock_addrinfo *next;
++
++	while (res != NULL) {
++		next = res->ai_next;
++		k_free(res->ai_addr);
++		k_free(res->ai_canonname);
++		k_free(res);
++		res = next;
++	}
++}
++
++static const struct socket_dns_offload wolfip_dns_ops = {
++	.getaddrinfo = wolfip_getaddrinfo,
++	.freeaddrinfo = wolfip_freeaddrinfo,
++};
++
++static bool wolfip_is_supported_family(int family, int type, int proto)
++{
++	if (!wolfip_any_enabled()) {
++		return false;
++	}
++
++	if (family != NET_AF_INET) {
++		return false;
++	}
++
++	if (type != NET_SOCK_STREAM && type != NET_SOCK_DGRAM) {
++		return false;
++	}
++
++	if (proto == 0 || proto == IPPROTO_TCP || proto == IPPROTO_UDP ||
++	    proto == IPPROTO_ICMP) {
++		return true;
++	}
++
++	return false;
++}
++
++static int wolfip_socket_create(int family, int type, int proto)
++{
++	struct wolfip_socket *sock;
++	int wolf_fd;
++	int fd;
++
++	if (!wolfip_is_supported_family(family, type, proto)) {
++		errno = EAFNOSUPPORT;
++		return -1;
++	}
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	wolf_fd = wolfIP_sock_socket(WOLFIP_STACK(), family, type, proto);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (wolf_fd < 0) {
++		errno = wolfip_errno_from_ret(wolf_fd);
++		return -1;
++	}
++
++	fd = wolfip_alloc_socket_obj(wolf_fd, &sock);
++	if (fd < 0) {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		(void)wolfIP_sock_close(WOLFIP_STACK(), wolf_fd);
++		k_mutex_unlock(&wolfip_ctx.lock);
++		return -1;
++	}
++
++	zvfs_finalize_typed_fd(fd, sock, &wolfip_socket_fd_op_vtable.fd_vtable,
++			       ZVFS_MODE_IFSOCK);
++	return fd;
++}
++
++static struct wolfIP_sockaddr_in wolfip_sockaddr_in_from_net(const struct net_sockaddr_in *in)
++{
++	struct wolfIP_sockaddr_in out;
++
++	memset(&out, 0, sizeof(out));
++	out.sin_family = AF_INET;
++	out.sin_port = in->sin_port;
++	out.sin_addr.s_addr = sys_cpu_to_be32(net_addr_to_wolfip(&in->sin_addr));
++	return out;
++}
++
++static void wolfip_sockaddr_in_to_net(const struct wolfIP_sockaddr_in *in,
++				      struct net_sockaddr_in *out)
++{
++	ip4 addr;
++
++	memset(out, 0, sizeof(*out));
++	out->sin_family = AF_INET;
++	out->sin_port = in->sin_port;
++	addr = sys_be32_to_cpu(in->sin_addr.s_addr);
++	wolfip_to_net_addr(addr, &out->sin_addr);
++}
++
++static ssize_t wolfip_read(void *obj, void *buf, size_t sz)
++{
++	return wolfip_recvfrom(obj, buf, sz, 0, NULL, NULL);
++}
++
++static ssize_t wolfip_write(void *obj, const void *buf, size_t sz)
++{
++	return wolfip_sendto(obj, buf, sz, 0, NULL, 0);
++}
++
++static int wolfip_close2(void *obj, int fd)
++{
++	struct wolfip_socket *sock = obj;
++	int ret;
++
++	ARG_UNUSED(fd);
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	wolfIP_register_callback(WOLFIP_STACK(), sock->wolf_fd, NULL, NULL);
++	if (sock->pending_child_wolf_fd >= 0) {
++		(void)wolfIP_sock_close(WOLFIP_STACK(),
++					sock->pending_child_wolf_fd);
++		sock->pending_child_wolf_fd = -1;
++	}
++	ret = wolfIP_sock_close(WOLFIP_STACK(), sock->wolf_fd);
++	k_mutex_unlock(&wolfip_ctx.lock);
++
++	k_free(sock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++	return 0;
++}
++
++static int wolfip_poll_prepare(void *obj, struct zsock_pollfd *pfd,
++			       struct k_poll_event **pev,
++			       struct k_poll_event *pev_end)
++{
++	struct wolfip_socket *sock = obj;
++
++	if (*pev == pev_end) {
++		return -ENOMEM;
++	}
++
++	k_poll_signal_reset(&sock->poll.signal);
++	sock->poll.events = pfd->events;
++	sock->poll.revents = wolfip_socket_current_revents(sock, pfd->events);
++	sock->poll.armed = true;
++
++	if (sock->poll.revents != 0) {
++		k_poll_signal_raise(&sock->poll.signal, sock->poll.revents);
++	}
++
++	**pev = (struct k_poll_event)K_POLL_EVENT_INITIALIZER(
++		K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY,
++		&sock->poll.signal);
++	(*pev)++;
++	return 0;
++}
++
++static int wolfip_poll_update(void *obj, struct zsock_pollfd *pfd,
++			      struct k_poll_event **pev)
++{
++	struct wolfip_socket *sock = obj;
++	unsigned int signaled;
++	int result;
++
++	ARG_UNUSED(pev);
++
++	signaled = 0U;
++	result = 0;
++	k_poll_signal_check(&sock->poll.signal, &signaled, &result);
++	pfd->revents = sock->poll.revents;
++	sock->poll.revents = 0;
++	sock->poll.armed = false;
++	return 0;
++}
++
++static int wolfip_ioctl(void *obj, unsigned int request, va_list args)
++{
++	struct wolfip_socket *sock = obj;
++
++	switch (request) {
++	case ZFD_IOCTL_POLL_PREPARE: {
++		struct zsock_pollfd *pfd;
++		struct k_poll_event **pev;
++		struct k_poll_event *pev_end;
++
++		pfd = va_arg(args, struct zsock_pollfd *);
++		pev = va_arg(args, struct k_poll_event **);
++		pev_end = va_arg(args, struct k_poll_event *);
++		return wolfip_poll_prepare(obj, pfd, pev, pev_end);
++	}
++
++	case ZFD_IOCTL_POLL_UPDATE: {
++		struct zsock_pollfd *pfd;
++		struct k_poll_event **pev;
++
++		pfd = va_arg(args, struct zsock_pollfd *);
++		pev = va_arg(args, struct k_poll_event **);
++		return wolfip_poll_update(obj, pfd, pev);
++	}
++
++	case ZFD_IOCTL_POLL_OFFLOAD:
++		return -EOPNOTSUPP;
++
++	case ZVFS_F_GETFL:
++		return sock->nonblock ? ZVFS_O_NONBLOCK : 0;
++
++	case ZVFS_F_SETFL: {
++		int flags = va_arg(args, int);
++
++		sock->nonblock = (flags & ZVFS_O_NONBLOCK) != 0;
++		return 0;
++	}
++
++	case ZFD_IOCTL_FIONBIO: {
++		int *value = va_arg(args, int *);
++
++		sock->nonblock = (*value != 0);
++		return 0;
++	}
++
++	case ZFD_IOCTL_FIONREAD: {
++		int *avail = va_arg(args, int *);
++
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		*avail = wolfIP_sock_can_read(WOLFIP_STACK(), sock->wolf_fd) > 0 ? 1 : 0;
++		k_mutex_unlock(&wolfip_ctx.lock);
++		return 0;
++	}
++	}
++
++	return -EINVAL;
++}
++
++static int wolfip_shutdown(void *obj, int how)
++{
++	ARG_UNUSED(obj);
++	ARG_UNUSED(how);
++
++	errno = ENOTSUP;
++	return -1;
++}
++
++static int wolfip_bind(void *obj, const struct net_sockaddr *addr,
++		       net_socklen_t addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in sin;
++	int ret;
++
++	if (addr == NULL || addr->sa_family != AF_INET ||
++	    addrlen < sizeof(struct net_sockaddr_in)) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	sin = wolfip_sockaddr_in_from_net((const struct net_sockaddr_in *)addr);
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	ret = wolfIP_sock_bind(WOLFIP_STACK(), sock->wolf_fd,
++			       (const struct wolfIP_sockaddr *)&sin,
++			       sizeof(sin));
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++	return 0;
++}
++
++static int wolfip_connect(void *obj, const struct net_sockaddr *addr,
++			  net_socklen_t addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in sin;
++	int ret;
++
++	if (addr == NULL || addr->sa_family != AF_INET ||
++	    addrlen < sizeof(struct net_sockaddr_in)) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	sin = wolfip_sockaddr_in_from_net((const struct net_sockaddr_in *)addr);
++
++	do {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		ret = wolfIP_sock_connect(WOLFIP_STACK(), sock->wolf_fd,
++					  (const struct wolfIP_sockaddr *)&sin,
++					  sizeof(sin));
++		k_mutex_unlock(&wolfip_ctx.lock);
++		if (ret >= 0) {
++			return 0;
++		}
++	} while ((ret == -WOLFIP_EAGAIN || ret == -EINPROGRESS) &&
++		 !sock->nonblock &&
++		 wolfip_socket_wait(sock, CB_EVENT_WRITABLE | CB_EVENT_CLOSED,
++				    sock->send_timeout) == 0);
++
++	errno = wolfip_errno_from_ret(ret);
++	return -1;
++}
++
++static int wolfip_listen(void *obj, int backlog)
++{
++	struct wolfip_socket *sock = obj;
++	int ret;
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	ret = wolfIP_sock_listen(WOLFIP_STACK(), sock->wolf_fd, backlog);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++	sock->is_listener = true;
++	return 0;
++}
++
++static int wolfip_accept(void *obj, struct net_sockaddr *addr,
++			 net_socklen_t *addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in peer;
++	int child_wolf_fd = -1;
++	int fd;
++	struct wolfip_socket *child;
++
++	/* The RX-side event callback pre-accepts inline when a SYN lands on
++	 * this listener and stashes the resulting wolfIP child fd. Pop it
++	 * here; otherwise block waiting for the next SYN.
++	 */
++	while (true) {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		if (sock->pending_child_wolf_fd >= 0) {
++			child_wolf_fd = sock->pending_child_wolf_fd;
++			peer = sock->pending_child_peer;
++			sock->pending_child_wolf_fd = -1;
++		}
++		k_mutex_unlock(&wolfip_ctx.lock);
++
++		if (child_wolf_fd >= 0) {
++			break;
++		}
++
++		if (atomic_get(&sock->pending_events) & CB_EVENT_CLOSED) {
++			errno = ECONNRESET;
++			return -1;
++		}
++
++		if (sock->nonblock) {
++			errno = EAGAIN;
++			return -1;
++		}
++
++		if (wolfip_socket_wait(sock,
++				       CB_EVENT_READABLE | CB_EVENT_CLOSED,
++				       sock->recv_timeout) != 0) {
++			errno = EAGAIN;
++			return -1;
++		}
++	}
++
++	fd = wolfip_alloc_socket_obj(child_wolf_fd, &child);
++	if (fd < 0) {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		(void)wolfIP_sock_close(WOLFIP_STACK(), child_wolf_fd);
++		k_mutex_unlock(&wolfip_ctx.lock);
++		return -1;
++	}
++
++	/* The child was pre-accepted in TCP_SYN_RCVD. Block until the peer's
++	 * final ACK lands and wolfIP fires CB_EVENT_WRITABLE on the
++	 * ESTABLISHED transition (or CB_EVENT_READABLE if data arrived in
++	 * the same RX burst, or CB_EVENT_CLOSED on RST). Without this wait
++	 * the sample's first recv() would hit wolfIP's "not established"
++	 * branch and fail with -1.
++	 *
++	 * wolfip_socket_wait()'s can_write fast-path can't help here:
++	 * wolfIP_sock_can_write returns 1 for SYN_RCVD too, so the wait
++	 * would return immediately. Drive the wait purely off the cb-fired
++	 * pending_events bits.
++	 */
++	if (!sock->nonblock) {
++		const atomic_val_t want = CB_EVENT_READABLE | CB_EVENT_WRITABLE |
++					  CB_EVENT_CLOSED;
++		while (true) {
++			atomic_val_t pending;
++
++			pending = atomic_and(&child->pending_events, ~want);
++			if (pending & want) {
++				break;
++			}
++
++			k_sem_reset(&child->event_sem);
++			pending = atomic_and(&child->pending_events, ~want);
++			if (pending & want) {
++				break;
++			}
++
++			if (k_sem_take(&child->event_sem, sock->recv_timeout) < 0) {
++				break;
++			}
++		}
++	}
++
++	zvfs_finalize_typed_fd(fd, child, &wolfip_socket_fd_op_vtable.fd_vtable,
++			       ZVFS_MODE_IFSOCK);
++
++	if (addr != NULL && addrlen != NULL && *addrlen >= sizeof(struct net_sockaddr_in)) {
++		wolfip_sockaddr_in_to_net(&peer, (struct net_sockaddr_in *)addr);
++		*addrlen = sizeof(struct net_sockaddr_in);
++	}
++
++	return fd;
++}
++
++static ssize_t wolfip_sendto(void *obj, const void *buf, size_t len, int flags,
++			     const struct net_sockaddr *dest_addr,
++			     net_socklen_t addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in sin;
++	const struct wolfIP_sockaddr *dest = NULL;
++	int ret;
++
++	if (dest_addr != NULL) {
++		if (dest_addr->sa_family != AF_INET ||
++		    addrlen < sizeof(struct net_sockaddr_in)) {
++			errno = EINVAL;
++			return -1;
++		}
++
++		sin = wolfip_sockaddr_in_from_net((const struct net_sockaddr_in *)dest_addr);
++		dest = (const struct wolfIP_sockaddr *)&sin;
++	}
++
++	do {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		ret = wolfIP_sock_sendto(WOLFIP_STACK(), sock->wolf_fd, buf, len,
++					 flags, dest, dest ? sizeof(sin) : 0);
++		k_mutex_unlock(&wolfip_ctx.lock);
++		if (ret >= 0) {
++			return ret;
++		}
++	} while (ret == -WOLFIP_EAGAIN &&
++		 !sock->nonblock &&
++		 wolfip_socket_wait(sock, CB_EVENT_WRITABLE | CB_EVENT_CLOSED,
++				    sock->send_timeout) == 0);
++
++	errno = wolfip_errno_from_ret(ret);
++	return -1;
++}
++
++static ssize_t wolfip_recvfrom(void *obj, void *buf, size_t max_len, int flags,
++			       struct net_sockaddr *src_addr,
++			       net_socklen_t *addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in sin;
++	socklen_t sin_len;
++	int ret;
++
++	sin_len = sizeof(sin);
++
++	do {
++		k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++		ret = wolfIP_sock_recvfrom(WOLFIP_STACK(), sock->wolf_fd, buf,
++					   max_len, flags,
++					   src_addr ? (struct wolfIP_sockaddr *)&sin : NULL,
++					   src_addr ? &sin_len : NULL);
++		k_mutex_unlock(&wolfip_ctx.lock);
++		if (ret >= 0) {
++			if (src_addr != NULL && addrlen != NULL &&
++			    *addrlen >= sizeof(struct net_sockaddr_in)) {
++				wolfip_sockaddr_in_to_net(&sin,
++							  (struct net_sockaddr_in *)src_addr);
++				*addrlen = sizeof(struct net_sockaddr_in);
++			}
++
++			return ret;
++		}
++	} while (ret == -WOLFIP_EAGAIN &&
++		 !sock->nonblock &&
++		 wolfip_socket_wait(sock, CB_EVENT_READABLE | CB_EVENT_CLOSED,
++				    sock->recv_timeout) == 0);
++
++	errno = wolfip_errno_from_ret(ret);
++	return -1;
++}
++
++static int wolfip_getsockopt(void *obj, int level, int optname,
++			     void *optval, net_socklen_t *optlen)
++{
++	struct wolfip_socket *sock = obj;
++	socklen_t wolf_len;
++	int ret;
++
++	if (optlen == NULL) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	wolf_len = *optlen;
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	ret = wolfIP_sock_getsockopt(WOLFIP_STACK(), sock->wolf_fd, level,
++				     optname, optval, &wolf_len);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++
++	*optlen = wolf_len;
++	return 0;
++}
++
++static int wolfip_setsockopt(void *obj, int level, int optname,
++			     const void *optval, net_socklen_t optlen)
++{
++	struct wolfip_socket *sock = obj;
++	int ret;
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	ret = wolfIP_sock_setsockopt(WOLFIP_STACK(), sock->wolf_fd, level,
++				     optname, optval, optlen);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++	return 0;
++}
++
++static size_t wolfip_msghdr_len(const struct net_msghdr *msg)
++{
++	size_t total = 0U;
++	size_t i;
++
++	if (msg == NULL) {
++		return 0U;
++	}
++
++	for (i = 0; i < msg->msg_iovlen; i++) {
++		total += msg->msg_iov[i].iov_len;
++	}
++
++	return total;
++}
++
++static void wolfip_scatter_iov(const struct net_msghdr *msg,
++			       const uint8_t *src, size_t len)
++{
++	size_t copied = 0U;
++	size_t i;
++
++	for (i = 0; i < msg->msg_iovlen && copied < len; i++) {
++		size_t chunk = MIN(msg->msg_iov[i].iov_len, len - copied);
++
++		memcpy(msg->msg_iov[i].iov_base, src + copied, chunk);
++		copied += chunk;
++	}
++}
++
++static ssize_t wolfip_sendmsg(void *obj, const struct net_msghdr *msg, int flags)
++{
++	uint8_t stack_buf[256];
++	uint8_t *buf = stack_buf;
++	size_t len;
++	size_t copied = 0U;
++	size_t i;
++
++	if (msg == NULL) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	if (msg->msg_iovlen == 0U) {
++		return wolfip_sendto(obj, NULL, 0U, flags,
++				     (const struct net_sockaddr *)msg->msg_name,
++				     msg->msg_namelen);
++	}
++
++	if (msg->msg_iovlen == 1U) {
++		return wolfip_sendto(obj, msg->msg_iov[0].iov_base,
++				     msg->msg_iov[0].iov_len, flags,
++				     (const struct net_sockaddr *)msg->msg_name,
++				     msg->msg_namelen);
++	}
++
++	len = wolfip_msghdr_len(msg);
++	if (len > sizeof(stack_buf)) {
++		buf = k_malloc(len);
++		if (buf == NULL) {
++			errno = ENOMEM;
++			return -1;
++		}
++	}
++
++	for (i = 0; i < msg->msg_iovlen; i++) {
++		memcpy(buf + copied, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
++		copied += msg->msg_iov[i].iov_len;
++	}
++
++	i = wolfip_sendto(obj, buf, len, flags,
++			  (const struct net_sockaddr *)msg->msg_name,
++			  msg->msg_namelen);
++
++	if (buf != stack_buf) {
++		k_free(buf);
++	}
++
++	return (ssize_t)i;
++}
++
++static ssize_t wolfip_recvmsg(void *obj, struct net_msghdr *msg, int flags)
++{
++	uint8_t stack_buf[256];
++	uint8_t *buf = stack_buf;
++	size_t len;
++	ssize_t ret;
++
++	if (msg == NULL) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	if (msg->msg_iovlen == 0U) {
++		return 0;
++	}
++
++	if (msg->msg_iovlen == 1U) {
++		ret = wolfip_recvfrom(obj, msg->msg_iov[0].iov_base,
++				      msg->msg_iov[0].iov_len, flags,
++				      (struct net_sockaddr *)msg->msg_name,
++				      &msg->msg_namelen);
++		if (ret >= 0) {
++			msg->msg_flags = 0;
++		}
++		return ret;
++	}
++
++	len = wolfip_msghdr_len(msg);
++	if (len > sizeof(stack_buf)) {
++		buf = k_malloc(len);
++		if (buf == NULL) {
++			errno = ENOMEM;
++			return -1;
++		}
++	}
++
++	ret = wolfip_recvfrom(obj, buf, len, flags,
++			      (struct net_sockaddr *)msg->msg_name,
++			      &msg->msg_namelen);
++	if (ret >= 0) {
++		wolfip_scatter_iov(msg, buf, (size_t)ret);
++		msg->msg_flags = 0;
++	}
++
++	if (buf != stack_buf) {
++		k_free(buf);
++	}
++
++	return ret;
++}
++
++static int wolfip_getpeername(void *obj, struct net_sockaddr *addr,
++			      net_socklen_t *addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in peer;
++	socklen_t peer_len;
++	int ret;
++
++	if (addr == NULL || addrlen == NULL || *addrlen < sizeof(struct net_sockaddr_in)) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	peer_len = sizeof(peer);
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	ret = wolfIP_sock_getpeername(WOLFIP_STACK(), sock->wolf_fd,
++				      (struct wolfIP_sockaddr *)&peer, &peer_len);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++
++	wolfip_sockaddr_in_to_net(&peer, (struct net_sockaddr_in *)addr);
++	*addrlen = sizeof(struct net_sockaddr_in);
++	return 0;
++}
++
++static int wolfip_getsockname(void *obj, struct net_sockaddr *addr,
++			      net_socklen_t *addrlen)
++{
++	struct wolfip_socket *sock = obj;
++	struct wolfIP_sockaddr_in self;
++	socklen_t self_len;
++	int ret;
++
++	if (addr == NULL || addrlen == NULL || *addrlen < sizeof(struct net_sockaddr_in)) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	self_len = sizeof(self);
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	ret = wolfIP_sock_getsockname(WOLFIP_STACK(), sock->wolf_fd,
++				      (struct wolfIP_sockaddr *)&self, &self_len);
++	k_mutex_unlock(&wolfip_ctx.lock);
++	if (ret < 0) {
++		errno = wolfip_errno_from_ret(ret);
++		return -1;
++	}
++
++	wolfip_sockaddr_in_to_net(&self, (struct net_sockaddr_in *)addr);
++	*addrlen = sizeof(struct net_sockaddr_in);
++	return 0;
++}
++
++static const struct socket_op_vtable wolfip_socket_fd_op_vtable = {
++	.fd_vtable = {
++		.read = wolfip_read,
++		.write = wolfip_write,
++		.close2 = wolfip_close2,
++		.ioctl = wolfip_ioctl,
++	},
++	.shutdown = wolfip_shutdown,
++	.bind = wolfip_bind,
++	.connect = wolfip_connect,
++	.listen = wolfip_listen,
++	.accept = wolfip_accept,
++	.sendto = wolfip_sendto,
++	.recvfrom = wolfip_recvfrom,
++	.getsockopt = wolfip_getsockopt,
++	.setsockopt = wolfip_setsockopt,
++	.sendmsg = wolfip_sendmsg,
++	.recvmsg = wolfip_recvmsg,
++	.getpeername = wolfip_getpeername,
++	.getsockname = wolfip_getsockname,
++};
++
++NET_SOCKET_OFFLOAD_REGISTER(wolfip, CONFIG_NET_SOCKETS_OFFLOAD_PRIORITY,
++			    NET_AF_INET, wolfip_is_supported_family,
++			    wolfip_socket_create);
++
++int wolfip_attach_iface(struct net_if *iface)
++{
++	extern const struct net_l2 NET_L2_GET_NAME(WOLFIP_L2);
++	struct wolfip_binding *binding;
++	struct wolfIP_ll_dev *ll;
++	struct net_linkaddr *linkaddr;
++	const struct net_l2 **l2_ptr;
++	int ret;
++
++	if (iface == NULL) {
++		return -EINVAL;
++	}
++
++	ret = wolfip_init_runtime();
++	if (ret < 0) {
++		return ret;
++	}
++
++	binding = wolfip_binding_for_iface(iface);
++	if (binding == NULL) {
++		int i;
++
++		for (i = 0; i < ARRAY_SIZE(wolfip_ctx.bindings); i++) {
++			if (wolfip_ctx.bindings[i].iface == NULL) {
++				binding = &wolfip_ctx.bindings[i];
++				binding->iface = iface;
++				binding->if_idx = i;
++				break;
++			}
++		}
++	}
++
++	if (binding == NULL) {
++		return -ENOMEM;
++	}
++
++	ll = wolfIP_getdev_ex(WOLFIP_STACK(), binding->if_idx);
++	if (ll == NULL) {
++		return -EINVAL;
++	}
++
++	memset(ll, 0, sizeof(*ll));
++	ll->poll = wolfip_poll_ll_dev;
++	ll->send = wolfip_send_ll_dev;
++	ll->priv = binding;
++	ll->mtu = net_if_get_mtu(iface);
++	wolfip_copy_iface_name(ll, iface);
++
++	linkaddr = net_if_get_link_addr(iface);
++	if (linkaddr != NULL && linkaddr->len >= WOLFIP_ETH_ADDR_LEN) {
++		memcpy(ll->mac, linkaddr->addr, WOLFIP_ETH_ADDR_LEN);
++	}
++
++	binding->enabled = true;
++
++	l2_ptr = (const struct net_l2 **)&iface->if_dev->l2;
++	*l2_ptr = &NET_L2_GET_NAME(WOLFIP_L2);
++
++	net_if_flag_set(iface, NET_IF_IPV4);
++
++	net_if_socket_offload_set(iface, wolfip_socket_create);
++
++	if (!wolfip_ctx.dns_registered) {
++		socket_offload_dns_register(&wolfip_dns_ops);
++		wolfip_ctx.dns_registered = true;
++	}
++
++	socket_offload_dns_enable(true);
++
++	if (!net_if_is_admin_up(iface)) {
++		(void)net_if_up(iface);
++	}
++
++	k_sem_give(&wolfip_ctx.wake_sem);
++	return 0;
++}
++
++int wolfip_detach_iface(struct net_if *iface)
++{
++	struct wolfip_binding *binding;
++
++	binding = wolfip_binding_for_iface(iface);
++	if (binding == NULL) {
++		return -ENOENT;
++	}
++
++	net_if_flag_clear(iface, NET_IF_IPV4);
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	(void)wolfIP_route_delete(WOLFIP_STACK(), binding->if_idx, 0U, 0U);
++	wolfIP_ipconfig_set_ex(WOLFIP_STACK(), binding->if_idx, 0U, 0U, 0U);
++	k_mutex_unlock(&wolfip_ctx.lock);
++
++	net_if_socket_offload_set(iface, NULL);
++	memset(binding, 0, sizeof(*binding));
++
++	if (!wolfip_any_enabled()) {
++		socket_offload_dns_enable(false);
++	}
++
++	return 0;
++}
++
++int wolfip_enable_iface(struct net_if *iface)
++{
++	return wolfip_attach_iface(iface);
++}
++
++int wolfip_disable_iface(struct net_if *iface)
++{
++	return wolfip_detach_iface(iface);
++}
++
++bool wolfip_iface_is_enabled(struct net_if *iface)
++{
++	struct wolfip_binding *binding;
++
++	binding = wolfip_binding_for_iface(iface);
++	return binding != NULL && binding->enabled;
++}
++
++int wolfip_zephyr_l2_input(struct net_if *iface, const uint8_t *frame, size_t len)
++{
++	struct wolfip_binding *binding;
++
++	binding = wolfip_binding_for_iface(iface);
++	if (binding == NULL || !binding->enabled) {
++		return -ENOENT;
++	}
++
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++	wolfIP_recv_ex(WOLFIP_STACK(), binding->if_idx, (void *)frame,
++		       (uint32_t)len);
++	/* Drive callbacks synchronously between frames. wolfIP holds events
++	 * on each socket between wolfIP_recv_ex and the next wolfIP_poll. If
++	 * we let the worker thread pick this up on its poll-interval tick,
++	 * follow-up frames in the same TAP burst (e.g. the peer's ACK of a
++	 * just-arrived SYN) will land before the LISTEN socket's accept-cb
++	 * can run, leaving the listener stranded mid-handshake.
++	 */
++	(void)wolfIP_poll(WOLFIP_STACK(), k_uptime_get());
++	k_mutex_unlock(&wolfip_ctx.lock);
++
++	k_sem_give(&wolfip_ctx.wake_sem);
++	return 0;
++}
++
++uint32_t wolfIP_getrandom(void)
++{
++	return sys_rand32_get();
++}
++
++struct wolfIP *wolfip_zephyr_get_stack(void)
++{
++	return wolfip_ctx.stack;
++}
++
++int wolfip_zephyr_get_if_idx(struct net_if *iface, unsigned int *if_idx)
++{
++	struct wolfip_binding *binding = wolfip_binding_for_iface(iface);
++	if (binding == NULL || !binding->enabled || if_idx == NULL) {
++		return -ENOENT;
++	}
++	*if_idx = binding->if_idx;
++	return 0;
++}
++
++void wolfip_zephyr_lock(void)
++{
++	k_mutex_lock(&wolfip_ctx.lock, K_FOREVER);
++}
++
++void wolfip_zephyr_unlock(void)
++{
++	k_mutex_unlock(&wolfip_ctx.lock);
++}
++
++static int wolfip_sys_init(void)
++{
++	return 0;
++}
++
++SYS_INIT(wolfip_sys_init, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
