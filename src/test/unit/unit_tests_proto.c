@@ -6583,6 +6583,51 @@ START_TEST(test_raw_socket_send_builds_ip_header)
 }
 END_TEST
 
+START_TEST(test_regression_raw_socket_send_ip_id_network_byte_order)
+{
+    struct wolfIP s;
+    int sd;
+    uint8_t payload[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    struct wolfIP_sockaddr_in sin;
+    uint32_t dst_ip = 0x0A00000BU;
+    uint8_t nh_mac[6] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26};
+    uint16_t expected_id;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    s.arp.neighbors[0].ip = dst_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, nh_mac, sizeof(nh_mac));
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(dst_ip);
+
+    last_frame_sent_size = 0;
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+
+    expected_id = s.ipcounter;
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+    wolfIP_poll(&s, 0);
+
+    ck_assert_uint_eq(last_frame_sent_size,
+                      ETH_HEADER_LEN + IP_HEADER_LEN + sizeof(payload));
+    {
+        struct wolfIP_ip_packet *sent = (struct wolfIP_ip_packet *)last_frame_sent;
+        ck_assert_uint_eq(ee16(sent->id), expected_id);
+    }
+    ck_assert_uint_eq(s.ipcounter, (uint16_t)(expected_id + 1));
+}
+END_TEST
+
 START_TEST(test_raw_socket_sendto_short_addrlen_returns_einval)
 {
     struct wolfIP s;

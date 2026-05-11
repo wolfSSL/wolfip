@@ -5927,7 +5927,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             rip->ver_ihl = 0x45;
             rip->tos = 0;
             rip->len = ee16((uint16_t)(len + IP_HEADER_LEN));
-            rip->id = ee16(ipcounter_next(s));
+            rip->id = ipcounter_next(s);
             rip->flags_fo = 0;
             rip->ttl = 64;
             rip->proto = (uint8_t)rs->protocol;
