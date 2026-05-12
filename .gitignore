@@ -7,6 +7,7 @@
 *.bin
 *.swp
 *.elf
+*.gcov
 CMakeCache.txt
 CMakeFiles
 CMakeScripts

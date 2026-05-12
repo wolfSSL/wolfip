@@ -1136,6 +1136,12 @@ struct tcpsocket {
 /* UDP socket */
 struct udpsocket {
     struct fifo rxbuf, txbuf;
+    /* POSIX UDP sockets are unconnected by default: sendto(addr) sets
+     * only the destination of that datagram, not a persistent RX
+     * filter. Only an explicit wolfIP_sock_connect() narrows incoming
+     * delivery to a specific peer. udp_try_recv consults this flag
+     * before honouring dst_port/remote_ip as match constraints. */
+    uint8_t connected;
 #ifdef IP_MULTICAST
     struct udp_mcast_join mcast[WOLFIP_UDP_MCAST_MEMBERSHIPS];
     uint8_t mcast_ttl;
@@ -2279,19 +2285,27 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
         uint32_t expected_len;
+        /* Only connected UDP sockets restrict by the peer's
+         * ip/port. Unconnected sockets (sendto-only or pure listeners)
+         * must accept datagrams from any source, per POSIX. This is
+         * required by protocols where the server's reply originates
+         * from a different port than the one the request was sent to
+         * (TFTP TID change, RFC 1350; certain DHCP relay setups). */
+        int peer_match = (t->sock.udp.connected == 0) ||
+                ((t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
+                 (t->remote_ip == 0 || t->remote_ip == src_ip));
         int addr_match =
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == dst_ip && (t->remote_ip == 0 || t->remote_ip == src_ip)));
+                 (t->local_ip == dst_ip && peer_match));
 #ifdef IP_MULTICAST
         if (wolfIP_ip_is_multicast(dst_ip)) {
             addr_match = udp_socket_has_mcast(t, if_idx, dst_ip) &&
-                         (t->remote_ip == 0 || t->remote_ip == src_ip ||
+                         (t->sock.udp.connected == 0 ||
+                          t->remote_ip == 0 || t->remote_ip == src_ip ||
                           t->remote_ip == dst_ip);
         }
 #endif
-        if (t->src_port == ee16(udp->dst_port) &&
-                (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
-                addr_match) {
+        if (t->src_port == ee16(udp->dst_port) && addr_match) {
 
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
@@ -5355,34 +5369,50 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     sin = (const struct wolfIP_sockaddr_in *)addr;
     if (IS_SOCKET_UDP(sockfd)) {
         struct ipconf *conf;
+        uint16_t new_dst_port;
+        ip4 new_remote_ip;
+        uint8_t new_if_idx;
+        ip4 new_local_ip;
+
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
             return -WOLFIP_EINVAL;
-
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
         if (addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -WOLFIP_EINVAL;
         if (sin->sin_family != AF_INET)
             return -WOLFIP_EINVAL;
-        ts->dst_port = ee16(sin->sin_port);
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+
+        /* Resolve everything into locals first; the socket's
+         * dst_port/remote_ip/connected fields are observed by
+         * udp_try_recv to gate the peer RX filter, so they must not
+         * be left mutated if any validation below fails. */
+        new_dst_port = ee16(sin->sin_port);
+        new_remote_ip = ee32(sin->sin_addr.s_addr);
         if (ts->bound_local_ip != IPADDR_ANY) {
             int bound_match = 0;
-            unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
+            unsigned int bound_if = wolfIP_if_for_local_ip(s,
+                    ts->bound_local_ip, &bound_match);
             if (!bound_match)
                 return -WOLFIP_EINVAL;
-            ts->if_idx = (uint8_t)bound_if;
-            ts->local_ip = ts->bound_local_ip;
+            new_if_idx = (uint8_t)bound_if;
+            new_local_ip = ts->bound_local_ip;
         } else {
-            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            if_idx = wolfIP_route_for_ip(s, new_remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
-            ts->if_idx = (uint8_t)if_idx;
+            new_if_idx = (uint8_t)if_idx;
             if (conf && conf->ip != IPADDR_ANY)
-                ts->local_ip = conf->ip;
+                new_local_ip = conf->ip;
             else {
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
-                ts->local_ip = (primary && primary->ip != IPADDR_ANY) ? primary->ip : IPADDR_ANY;
+                new_local_ip = (primary && primary->ip != IPADDR_ANY)
+                        ? primary->ip : IPADDR_ANY;
             }
         }
+        ts->dst_port = new_dst_port;
+        ts->remote_ip = new_remote_ip;
+        ts->if_idx = new_if_idx;
+        ts->local_ip = new_local_ip;
+        ts->sock.udp.connected = 1;
         return 0;
     } else if (IS_SOCKET_ICMP(sockfd)) {
         struct ipconf *conf;

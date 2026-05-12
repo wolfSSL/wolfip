@@ -36,6 +36,8 @@
 #ifndef WOLFIP_ENABLE_FORWARDING
 #define WOLFIP_ENABLE_FORWARDING 1
 #endif
+#undef WOLFIP_ENABLE_TFTP
+#define WOLFIP_ENABLE_TFTP 1
 #if WOLFIP_ENABLE_LOOPBACK
 #define TEST_LOOPBACK_IF 0U
 #define TEST_PRIMARY_IF 1U
@@ -47,6 +49,7 @@
 #endif
 #include <stdio.h>
 #include "../../wolfip.c"
+#include "../../tftp/wolftftp.c"
 #include <stdlib.h> /* for random() */
 #include "mocks/wolfssl/wolfcrypt/settings.h"
 #include "mocks/wolfssl/wolfcrypt/memory.h"
