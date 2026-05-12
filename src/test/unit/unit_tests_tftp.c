@@ -1621,6 +1621,42 @@ START_TEST(test_tftp_client_unexpected_opcode_rejected)
 }
 END_TEST
 
+START_TEST(test_tftp_client_invalid_first_data_does_not_lock_tid)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_client client;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint srv = tftp_remote(0x0A000080U, 0);
+    struct wolftftp_endpoint attacker = tftp_remote(srv.ip, 4321);
+    struct wolftftp_endpoint tid = tftp_remote(srv.ip, 5678);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    int len;
+
+    tftp_test_ctx_reset(&ctx);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_client_init(&client, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_client_start_rrq(&client, &srv, "fw.bin"), 0);
+
+    /* A malformed first DATA must be rejected without latching its TID. */
+    memset(pkt, 0, sizeof(pkt));
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_DATA);
+    ck_assert_int_eq(wolftftp_client_receive(&client, cfg.local_port,
+        &attacker, pkt, 3), WOLFTFTP_ERR_PACKET);
+    ck_assert_uint_eq(client.tid_locked, 0U);
+    ck_assert_uint_eq(client.server.port, WOLFTFTP_PORT);
+
+    memcpy(pkt + 4, "0123456789abcdef", 16);
+    len = wolftftp_build_data(pkt, sizeof(pkt), 1, pkt + 4, 16);
+    ck_assert_int_eq(wolftftp_client_receive(&client, cfg.local_port,
+        &tid, pkt, (uint16_t)len), 0);
+    ck_assert_uint_eq(client.tid_locked, 1U);
+    ck_assert_uint_eq(client.server.port, tid.port);
+}
+END_TEST
+
 START_TEST(test_tftp_client_max_image_size_enforced_on_data)
 {
     /* OACK didn't trip the tsize check (no tsize); enforcement
@@ -2035,6 +2071,7 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_send_failure_propagation);
     tcase_add_test(tc_proto, test_tftp_parse_option_ranges);
     tcase_add_test(tc_proto, test_tftp_client_unexpected_opcode_rejected);
+    tcase_add_test(tc_proto, test_tftp_client_invalid_first_data_does_not_lock_tid);
     tcase_add_test(tc_proto, test_tftp_client_max_image_size_enforced_on_data);
     tcase_add_test(tc_proto, test_tftp_client_duplicate_block_replays_last_ack);
     tcase_add_test(tc_proto, test_tftp_client_open_sink_missing_callbacks);

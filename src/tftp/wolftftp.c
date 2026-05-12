@@ -741,6 +741,10 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
     if (opcode != WOLFTFTP_OP_DATA)
         return WOLFTFTP_ERR_PACKET;
 
+    ret = wolftftp_parse_data(buf, len, &data);
+    if (ret != 0)
+        return ret;
+
     if (client->tid_locked == 0U) {
         client->server.port = remote->port;
         client->tid_locked = 1;
@@ -754,9 +758,6 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
         client->advertised_size = 0;
         client->state = WOLFTFTP_CLIENT_RECV_DATA;
     }
-    ret = wolftftp_parse_data(buf, len, &data);
-    if (ret != 0)
-        return ret;
     client->deadline_ms = 0;
     client->retries = 0;
     return wolftftp_client_accept_data(client, &data);
