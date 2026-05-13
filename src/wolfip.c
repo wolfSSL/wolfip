@@ -8795,8 +8795,6 @@ static int dns_skip_name(const uint8_t *buf, int len, int offset)
         if (pos > len)
             return -1;
     }
-    if (loop >= len)
-        return -1;
     return pos;
 }
 
@@ -8812,8 +8810,6 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
         if (c == DNS_NAME_TERMINATOR) {
             if (!jumped)
                 pos++;
-            if (o >= out_len)
-                return -1;
             out[o] = DNS_NAME_TERMINATOR;
             return 0;
         }
@@ -9003,10 +8999,6 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                         ee16(rr->class) == DNS_CLASS_IN &&
                         rdlen >= DNS_IPV4_RDATA_LEN) {
                     uint32_t ip;
-                    if (pos + DNS_IPV4_RDATA_LEN > dns_len) {
-                        dns_abort_query(s);
-                        return;
-                    }
                     ip = get_be32((const uint8_t *)buf + pos);
                     if (s->dns_lookup_cb)
                         s->dns_lookup_cb(ip);
