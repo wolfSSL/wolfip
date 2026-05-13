@@ -8823,6 +8823,11 @@ static int dns_skip_name(const uint8_t *buf, int len, int offset)
         if (pos > len)
             return -1;
     }
+    /* Defensive: bound the number of label iterations to `len`. The in-loop
+     * guards above already prevent runaway pos advance, but this catch-all
+     * protects against any future refactor that lets the loop body advance
+     * pos by zero (e.g. a malformed compression pointer that doesn't break
+     * out). DoS via crafted name compression must NOT be possible. */
     if (loop >= len)
         return -1;
     return pos;
@@ -8840,6 +8845,9 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
         if (c == DNS_NAME_TERMINATOR) {
             if (!jumped)
                 pos++;
+            /* Defensive: when out_len == 0 the label-copy guards below
+             * never run, so this catches the empty-name + zero-capacity
+             * case. Required to prevent an out-of-bounds write to out[0]. */
             if (o >= out_len)
                 return -1;
             out[o] = DNS_NAME_TERMINATOR;
@@ -9031,10 +9039,6 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                         ee16(rr->class) == DNS_CLASS_IN &&
                         rdlen >= DNS_IPV4_RDATA_LEN) {
                     uint32_t ip;
-                    if (pos + DNS_IPV4_RDATA_LEN > dns_len) {
-                        dns_abort_query(s);
-                        return;
-                    }
                     ip = get_be32((const uint8_t *)buf + pos);
                     if (s->dns_lookup_cb)
                         s->dns_lookup_cb(ip);

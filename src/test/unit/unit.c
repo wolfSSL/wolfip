@@ -1,3 +1,24 @@
+/* unit.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
+
 #include "unit_shared.c"
 #include "unit_tests_fifo.c"
 #include "unit_tests_api.c"
@@ -7,6 +28,14 @@
 #include "unit_tests_proto.c"
 #include "unit_tests_multicast.c"
 #include "unit_tests_tftp.c"
+#include "unit_tests_branches.c"
+#include "unit_tests_socket_api_arms.c"
+#include "unit_tests_tcp_state.c"
+#include "unit_tests_poll_dispatcher.c"
+#include "unit_tests_dhcp_edges.c"
+#include "unit_tests_ip_arp_recv.c"
+#include "unit_tests_dns_edges.c"
+#include "unit_tests_misc_edges.c"
 
 Suite *wolf_suite(void)
 {
@@ -909,6 +938,549 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_behaviors);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_invalid_desc);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_want_write_keeps_buffer);
+
+    /* Branch-coverage tests backported from the trimmed wolfIP suite. */
+    tcase_add_test(tc_core, test_socket_from_fd_invalid_inputs);
+    tcase_add_test(tc_core, test_can_read_write_icmp_socket);
+    tcase_add_test(tc_core, test_sock_socket_wrong_domain);
+    tcase_add_test(tc_core, test_sock_socket_unsupported_protocol);
+    tcase_add_test(tc_core, test_sock_socket_pool_exhaustion);
+    tcase_add_test(tc_core, test_sock_close_invalid_inputs);
+    tcase_add_test(tc_core, test_sock_close_udp_dispatches_filter);
+    tcase_add_test(tc_core, test_sock_close_icmp_dispatches_filter);
+    tcase_add_test(tc_core, test_sock_connect_invalid_args_udp_icmp);
+    tcase_add_test(tc_core, test_sock_connect_udp_descriptor_oor);
+    tcase_add_test(tc_core, test_sock_connect_udp_short_addrlen_or_wrong_family);
+    tcase_add_test(tc_core, test_sock_connect_udp_uses_bound_local_ip);
+    tcase_add_test(tc_core, test_sock_connect_udp_unbound_uses_route);
+    tcase_add_test(tc_core, test_sock_connect_icmp_basic);
+    tcase_add_test(tc_core, test_sock_connect_icmp_wrong_family_or_short);
+    tcase_add_test(tc_core, test_sock_connect_icmp_bound_local_mismatch);
+    tcase_add_test(tc_core, test_sock_bind_null_or_short);
+    tcase_add_test(tc_core, test_sock_bind_oor_and_unmarked);
+    tcase_add_test(tc_core, test_sock_bind_udp_rebind_rejected);
+    tcase_add_test(tc_core, test_sock_bind_udp_wrong_family);
+    tcase_add_test(tc_core, test_sock_bind_udp_any_uses_primary);
+    tcase_add_test(tc_core, test_sock_bind_icmp_basic_and_rebind);
+    tcase_add_test(tc_core, test_sock_bind_icmp_wrong_family);
+    tcase_add_test(tc_core, test_sock_bind_filter_block_rolls_back);
+    tcase_add_test(tc_core, test_sendto_arg_validation);
+    tcase_add_test(tc_core, test_sendto_udp_short_addrlen_and_zero_dest);
+    tcase_add_test(tc_core, test_sendto_udp_auto_assigns_src_port);
+    tcase_add_test(tc_core, test_sendto_icmp_branches);
+    tcase_add_test(tc_core, test_recvfrom_arg_validation);
+    tcase_add_test(tc_core, test_recvfrom_icmp_populates_sin);
+    tcase_add_test(tc_core, test_setsockopt_invalid_socket);
+    tcase_add_test(tc_core, test_setsockopt_recvttl_argument_checks);
+    tcase_add_test(tc_core, test_setsockopt_unknown_optname_returns_zero);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_setsockopt_multicast_short_optlen);
+    tcase_add_test(tc_core, test_setsockopt_multicast_ttl_out_of_range);
+    tcase_add_test(tc_core, test_setsockopt_multicast_on_icmp_is_noop);
+    tcase_add_test(tc_core, test_setsockopt_drop_unjoined_returns_einval);
+#endif
+    tcase_add_test(tc_core, test_getsockopt_invalid_inputs);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_getsockopt_multicast_if_short_optlen);
+#endif
+    tcase_add_test(tc_core, test_poll_dispatches_socket_callback);
+    tcase_add_test(tc_core, test_poll_fires_expired_timer);
+    tcase_add_test(tc_core, test_poll_arp_pending_when_nexthop_unresolved);
+    tcase_add_test(tc_core, test_poll_filter_block_holds_tx);
+    tcase_add_test(tc_core, test_poll_drains_icmp_tx);
+    tcase_add_test(tc_core, test_arp_pending_record_replaces_oldest_slot);
+    tcase_add_test(tc_core, test_arp_flush_pending_drops_ttl1);
+    tcase_add_test(tc_core, test_icmp_input_short_frame_dropped);
+    tcase_add_test(tc_core, test_icmp_input_bad_checksum_dropped);
+    tcase_add_test(tc_core, test_icmp_input_filter_blocked);
+    tcase_add_test(tc_core, test_udp_try_recv_short_frame_dropped);
+    tcase_add_test(tc_core, test_udp_try_recv_bad_udp_checksum_dropped);
+    tcase_add_test(tc_core, test_udp_try_recv_filter_blocked);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_mcast_if_from_addr_validation);
+#endif
+    tcase_add_test(tc_core, test_udp_send_and_receive_through_poll);
+    tcase_add_test(tc_core, test_sock_getsockname_udp_success);
+    tcase_add_test(tc_core, test_sock_getpeername_negative_sockfd);
+    tcase_add_test(tc_core, test_arp_lookup_missing_returns_neg1);
+    tcase_add_test(tc_core, test_fifo_can_push_len_validation);
+    tcase_add_test(tc_core, test_fifo_can_push_len_full_no_wrap_returns_zero);
+    tcase_add_test(tc_core, test_fifo_can_push_len_head_wraps_when_h_wrap_matches);
+    tcase_add_test(tc_core, test_fifo_can_push_len_end_space_insufficient_then_wraps);
+    tcase_add_test(tc_core, test_fifo_can_push_len_end_space_insufficient_tail_too_close);
+    tcase_add_test(tc_core, test_fifo_can_push_len_h_wrap_insufficient_space);
+    tcase_add_test(tc_core, test_fifo_can_push_len_h_wrap_head_ge_tail_no_space);
+    tcase_add_test(tc_core, test_fifo_push_returns_minus_one_when_full);
+    tcase_add_test(tc_core, test_route_for_ip_gateway_fallback);
+    tcase_add_test(tc_core, test_route_for_ip_first_non_loop_fallback);
+    tcase_add_test(tc_core, test_sendto_udp_txbuf_full_eagain);
+    tcase_add_test(tc_core, test_sendto_icmp_no_remote_after_addr_zero);
+    tcase_add_test(tc_core, test_ip_recv_with_ip_options_strips_and_dispatches);
+    tcase_add_test(tc_core, test_ip_recv_wrong_version_dropped);
+    tcase_add_test(tc_core, test_ip_recv_short_ihl_dropped);
+    tcase_add_test(tc_core, test_ip_recv_fragment_dropped);
+    tcase_add_test(tc_core, test_ip_recv_bad_header_checksum_dropped);
+    tcase_add_test(tc_core, test_arp_recv_short_frame_dropped);
+    tcase_add_test(tc_core, test_arp_recv_request_for_other_ip_ignored);
+    tcase_add_test(tc_core, test_arp_recv_request_refreshes_existing_neighbor);
+    tcase_add_test(tc_core, test_arp_recv_reply_overwrite_blocked_when_no_pending);
+    tcase_add_test(tc_core, test_arp_request_rate_limited);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_close_releases_multicast);
+#endif
+    tcase_add_test(tc_core, test_send_port_unreachable_filter_blocked_at_eth);
+    tcase_add_test(tc_core, test_send_ttl_exceeded_filter_blocked_at_icmp);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_mcast_join_non_multicast_rejected_direct);
+    tcase_add_test(tc_core, test_mcast_join_exhausts_socket_slots);
+    tcase_add_test(tc_core, test_mcast_drop_unjoined_returns_einval_direct);
+#endif
+    tcase_add_test(tc_core, test_arp_store_neighbor_refresh_existing);
+    tcase_add_test(tc_core, test_arp_store_neighbor_full_table);
+    tcase_add_test(tc_core, test_arp_pending_record_rejects_null_and_oversized);
+    tcase_add_test(tc_core, test_sock_bind_icmp_filter_rolls_back);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_setsockopt_multicast_ttl_int_path);
+    tcase_add_test(tc_core, test_setsockopt_multicast_loop_int_and_uint8);
+    tcase_add_test(tc_core, test_setsockopt_multicast_ttl_uint8_path);
+#endif
+    tcase_add_test(tc_core, test_icmp_input_echo_reply_path_filter_at_eth);
+    tcase_add_test(tc_core, test_ip_recv_with_options_oversize_dropped);
+    tcase_add_test(tc_core, test_wolfip_recv_on_null_stack_returns);
+
+    /* Socket API arms: TCP, RAW, PACKET */
+    tcase_add_test(tc_core, test_register_callback_tcp_stores_handle);
+    tcase_add_test(tc_core, test_register_callback_tcp_oor_ignored);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_register_callback_raw_stores_handle);
+    tcase_add_test(tc_core, test_register_callback_raw_oor_ignored);
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_register_callback_packet_stores_handle);
+    tcase_add_test(tc_core, test_register_callback_packet_oor_ignored);
+#endif
+    tcase_add_test(tc_core, test_sock_can_read_tcp_established_empty);
+    tcase_add_test(tc_core, test_sock_can_read_tcp_close_wait_returns_one);
+    tcase_add_test(tc_core, test_sock_can_read_tcp_invalid_fd);
+    tcase_add_test(tc_core, test_sock_can_write_tcp_syn_sent_returns_zero);
+    tcase_add_test(tc_core, test_sock_can_write_tcp_established_with_space);
+    tcase_add_test(tc_core, test_sock_can_write_tcp_closed_returns_one);
+    tcase_add_test(tc_core, test_sock_can_write_tcp_invalid_fd);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_can_read_raw_empty);
+    tcase_add_test(tc_core, test_sock_can_read_raw_invalid_fd);
+    tcase_add_test(tc_core, test_sock_can_write_raw_with_space);
+    tcase_add_test(tc_core, test_sock_can_write_raw_invalid_fd);
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_sock_can_read_packet_empty);
+    tcase_add_test(tc_core, test_sock_can_write_packet_with_space);
+#endif
+    tcase_add_test(tc_core, test_sock_bind_tcp_success);
+    tcase_add_test(tc_core, test_sock_bind_tcp_any_ip_uses_primary);
+    tcase_add_test(tc_core, test_sock_bind_tcp_oor_fd);
+    tcase_add_test(tc_core, test_sock_bind_tcp_state_closed_required);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_bind_raw_specific_interface);
+    tcase_add_test(tc_core, test_sock_bind_raw_any_ip_uses_primary);
+    tcase_add_test(tc_core, test_sock_bind_raw_wrong_family);
+    tcase_add_test(tc_core, test_sock_bind_raw_oor_fd);
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_sock_bind_packet_success);
+    tcase_add_test(tc_core, test_sock_bind_packet_wrong_family);
+    tcase_add_test(tc_core, test_sock_bind_packet_out_of_range_ifindex);
+    tcase_add_test(tc_core, test_sock_bind_packet_oor_fd);
+#endif
+    tcase_add_test(tc_core, test_sock_connect_tcp_invalid_fd);
+    tcase_add_test(tc_core, test_sock_connect_tcp_syn_sent_returns_eagain);
+    tcase_add_test(tc_core, test_sock_connect_tcp_established_arm_returns_zero);
+    tcase_add_test(tc_core, test_sock_connect_tcp_bad_state_returns_einval);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_connect_raw_sets_remote_ip);
+    tcase_add_test(tc_core, test_sock_connect_raw_invalid_fd);
+    tcase_add_test(tc_core, test_sock_connect_raw_wrong_family);
+    tcase_add_test(tc_core, test_sock_connect_raw_with_bound_local_ip);
+#endif
+    tcase_add_test(tc_core, test_sock_sendto_tcp_established_sends_data);
+    tcase_add_test(tc_core, test_sock_sendto_tcp_invalid_fd);
+    tcase_add_test(tc_core, test_sock_sendto_tcp_close_wait_sends_data);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_sendto_raw_null_dest_uses_stored_remote_ip);
+    tcase_add_test(tc_core, test_sock_sendto_raw_null_dest_no_remote_ip);
+    tcase_add_test(tc_core, test_sock_sendto_raw_hdrincl_dst_from_buf);
+    tcase_add_test(tc_core, test_sock_sendto_raw_invalid_fd);
+    tcase_add_test(tc_core, test_sock_sendto_raw_fifo_full_returns_eagain);
+    tcase_add_test(tc_core, test_sock_setsockopt_raw_hdrincl);
+    tcase_add_test(tc_core, test_sock_setsockopt_raw_dontroute);
+    tcase_add_test(tc_core, test_sock_setsockopt_raw_recvttl);
+    tcase_add_test(tc_core, test_sock_setsockopt_raw_unknown_option);
+    tcase_add_test(tc_core, test_sock_setsockopt_raw_null_optval);
+    tcase_add_test(tc_core, test_sock_setsockopt_raw_invalid_fd);
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_sock_setsockopt_packet_returns_einval);
+    tcase_add_test(tc_core, test_sock_sendto_packet_writes_raw_frame);
+    tcase_add_test(tc_core, test_sock_sendto_packet_with_sll_updates_dst_mac);
+    tcase_add_test(tc_core, test_sock_sendto_packet_too_small);
+    tcase_add_test(tc_core, test_sock_sendto_packet_invalid_fd);
+#endif
+    tcase_add_test(tc_core, test_sock_recvfrom_tcp_not_established);
+    tcase_add_test(tc_core, test_sock_recvfrom_tcp_established_empty_queue);
+    tcase_add_test(tc_core, test_sock_recvfrom_tcp_invalid_fd);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_recvfrom_raw_empty);
+    tcase_add_test(tc_core, test_sock_recvfrom_raw_invalid_fd);
+    tcase_add_test(tc_core, test_sock_recvfrom_raw_with_sin);
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_sock_recvfrom_packet_empty);
+    tcase_add_test(tc_core, test_sock_recvfrom_packet_invalid_fd);
+    tcase_add_test(tc_core, test_sock_recvfrom_packet_null_addrlen_with_sll);
+#endif
+    tcase_add_test(tc_core, test_sock_getsockname_tcp_success);
+    tcase_add_test(tc_core, test_sock_getsockname_tcp_invalid_fd);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_getsockname_raw_success);
+    tcase_add_test(tc_core, test_sock_getsockname_raw_invalid_fd);
+#endif
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_sock_getsockname_packet_success);
+#endif
+    tcase_add_test(tc_core, test_sock_getpeername_tcp_success);
+    tcase_add_test(tc_core, test_sock_getpeername_tcp_invalid_fd);
+    tcase_add_test(tc_core, test_sock_getpeername_tcp_null_addr);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_sock_getpeername_raw_success);
+    tcase_add_test(tc_core, test_sock_getpeername_raw_no_remote_ip);
+    tcase_add_test(tc_core, test_sock_getpeername_raw_invalid_fd);
+    tcase_add_test(tc_core, test_sock_get_recv_ttl_raw_disabled);
+    tcase_add_test(tc_core, test_sock_get_recv_ttl_raw_enabled);
+    tcase_add_test(tc_core, test_sock_get_recv_ttl_raw_null_ttl);
+    tcase_add_test(tc_core, test_sock_get_recv_ttl_raw_invalid_fd);
+#endif
+    tcase_add_test(tc_core, test_notify_loopback_tcp_sets_writable);
+    tcase_add_test(tc_core, test_notify_loopback_tcp_non_loopback_not_notified);
+    tcase_add_test(tc_core, test_notify_loopback_null_stack_no_crash);
+
+    /* === Branch-coverage tests from fleet ===*/
+    /* --- unit_tests_tcp_state.c (62 tests) --- */
+    tcase_add_test(tc_core, test_tcp_send_reset_reply_ignores_rst_input);
+    tcase_add_test(tc_core, test_tcp_send_reset_reply_ack_in_uses_ack_seq);
+    tcase_add_test(tc_core, test_tcp_send_reset_reply_syn_no_ack_sets_rst_ack);
+    tcase_add_test(tc_core, test_tcp_parse_options_ws_clamped_to_14);
+    tcase_add_test(tc_core, test_tcp_parse_options_sack_bad_olen_ignored);
+    tcase_add_test(tc_core, test_tcp_parse_options_nop_advances);
+    tcase_add_test(tc_core, test_tcp_parse_options_zero_olen_breaks);
+    tcase_add_test(tc_core, test_tcp_parse_options_timestamp_parsed);
+    tcase_add_test(tc_core, test_tcp_parse_options_mss_zero_ignored);
+    tcase_add_test(tc_core, test_tcp_parse_options_sack_permitted_parsed);
+    tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_bad_seq_ignored);
+    tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen);
+    tcase_add_test(tc_core, test_tcp_input_time_wait_sends_ack_on_any_segment);
+    tcase_add_test(tc_core, test_tcp_input_last_ack_unacceptable_sends_ack);
+    tcase_add_test(tc_core, test_tcp_input_last_ack_syn_sends_challenge_ack);
+    tcase_add_test(tc_core, test_tcp_input_established_syn_sends_challenge_ack);
+    tcase_add_test(tc_core, test_tcp_input_established_out_of_window_sends_ack);
+    tcase_add_test(tc_core, test_tcp_input_established_no_ack_dropped);
+    tcase_add_test(tc_core, test_tcp_input_established_fin_ooo_no_close_wait);
+    tcase_add_test(tc_core, test_tcp_input_syn_rcvd_ack_with_fin_enters_close_wait);
+    tcase_add_test(tc_core, test_tcp_input_window_grows_from_zero_stops_persist);
+    tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_timeout_closes_socket);
+    tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_wrong_state_stops_timer);
+    tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_not_needed_stops);
+    tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_maxretries_nonlistener_closes);
+    tcase_add_test(tc_core, test_tcp_ack_duplicate_zero_inflight_early_return);
+    tcase_add_test(tc_core, test_tcp_ack_duplicate_ack_ne_snd_una_returns);
+    tcase_add_test(tc_core, test_tcp_ack_fourth_dupack_inflates_cwnd);
+    tcase_add_test(tc_core, test_tcp_ack_close_wait_processes_ack);
+    tcase_add_test(tc_core, test_tcp_mark_unsacked_no_cover_no_sack_returns_zero);
+    tcase_add_test(tc_core, test_tcp_resync_inflight_null_args);
+    tcase_add_test(tc_core, test_tcp_resync_inflight_skips_when_ctrl_rto_active);
+    tcase_add_test(tc_core, test_tcp_resync_inflight_arms_timer_on_sent_payload);
+    tcase_add_test(tc_core, test_tcp_resync_inflight_cancels_timer_when_no_payload);
+    tcase_add_test(tc_core, test_tcp_find_pending_retrans_null_args);
+    tcase_add_test(tc_core, test_tcp_find_pending_retrans_already_sent_skipped);
+    tcase_add_test(tc_core, test_tcp_find_pending_retrans_unsent_retrans_returned);
+    tcase_add_test(tc_core, test_tcp_send_empty_immediate_null_tsocket);
+    tcase_add_test(tc_core, test_tcp_send_empty_immediate_null_seg);
+    tcase_add_test(tc_core, test_tcp_send_empty_immediate_short_frame_len);
+    tcase_add_test(tc_core, test_tcp_send_empty_immediate_arp_hit_sends);
+    tcase_add_test(tc_core, test_tcp_send_zero_wnd_probe_null_ts);
+    tcase_add_test(tc_core, test_tcp_send_zero_wnd_probe_non_tcp_proto);
+    tcase_add_test(tc_core, test_tcp_send_zero_wnd_probe_empty_txbuf);
+    tcase_add_test(tc_core, test_tcp_send_zero_wnd_probe_sends_probe);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_null_args);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_wrong_type_ignored);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_ttl_exceeded_syn_sent);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_port_unreach_syn_sent_closes);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_src_ip_mismatch_not_closed);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_frag_needed_reduces_mss);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_avail_too_small);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_raw_route_for_ip_null_stack);
+    tcase_add_test(tc_core, test_raw_route_for_ip_null_rs_uses_route);
+    tcase_add_test(tc_core, test_raw_route_for_ip_bound_local_ip_match);
+    tcase_add_test(tc_core, test_raw_route_for_ip_bound_local_ip_no_match);
+    tcase_add_test(tc_core, test_raw_route_for_ip_dontroute_local_match);
+    tcase_add_test(tc_core, test_raw_route_for_ip_dontroute_no_local_match);
+#endif /* WOLFIP_RAWSOCKETS */
+    tcase_add_test(tc_core, test_tcp_input_listen_rst_ignored);
+    tcase_add_test(tc_core, test_tcp_input_fin_wait_1_fin_enters_closing);
+    tcase_add_test(tc_core, test_tcp_input_fin_wait_2_fin_enters_time_wait);
+    tcase_add_test(tc_core, test_tcp_input_rst_in_window_not_exact_sends_ack);
+    /* --- unit_tests_poll_dispatcher.c (47 tests) --- */
+    tcase_add_test(tc_core, test_poll_device_poll_returns_zero_exits_loop);
+    tcase_add_test(tc_core, test_poll_device_poll_returns_negative_exits_loop);
+    tcase_add_test(tc_core, test_poll_device_non_ethernet_path_receives);
+    tcase_add_test(tc_core, test_poll_device_non_ethernet_minimum_mtu_clamped);
+    tcase_add_test(tc_core, test_poll_device_budget_exhaustion_stops_at_budget);
+    tcase_add_test(tc_core, test_poll_device_no_poll_callback_skipped);
+    tcase_add_test(tc_core, test_poll_timer_fires_multiple_in_one_tick);
+    tcase_add_test(tc_core, test_poll_timer_cancelled_tombstone_drained_before_live_timer);
+    tcase_add_test(tc_core, test_poll_timer_callback_rearms_itself);
+    tcase_add_test(tc_core, test_poll_timer_callback_cancels_sibling);
+    tcase_add_test(tc_core, test_poll_icmp_socket_callback_dispatched);
+    tcase_add_test(tc_core, test_poll_tcp_socket_callback_dispatched);
+    tcase_add_test(tc_core, test_poll_udp_socket_callback_dispatched);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_poll_raw_socket_callback_dispatched);
+#endif /* WOLFIP_RAWSOCKETS */
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_poll_packet_socket_callback_dispatched);
+#endif /* WOLFIP_PACKET_SOCKETS */
+    tcase_add_test(tc_core, test_poll_tx_tcp_pkt_flag_sent_desc_skipped);
+    tcase_add_test(tc_core, test_poll_tx_tcp_arp_miss_emits_arp_request);
+    tcase_add_test(tc_core, test_poll_tx_tcp_filter_tcp_blocks_send);
+    tcase_add_test(tc_core, test_poll_tx_tcp_send_eagain_breaks_loop);
+    tcase_add_test(tc_core, test_poll_tx_tcp_zero_window_starts_persist);
+    tcase_add_test(tc_core, test_poll_tx_tcp_retransmit_replay);
+    tcase_add_test(tc_core, test_poll_tx_tcp_loopback_path);
+    tcase_add_test(tc_core, test_poll_tx_udp_sends_on_arp_hit);
+    tcase_add_test(tc_core, test_poll_tx_udp_filter_ip_blocks_send);
+    tcase_add_test(tc_core, test_poll_tx_udp_eagain_retains_queue);
+    tcase_add_test(tc_core, test_poll_tx_udp_broadcast_sets_ff_mac);
+    tcase_add_test(tc_core, test_poll_tx_udp_loopback_path_no_crash);
+    tcase_add_test(tc_core, test_poll_tx_icmp_sends_on_arp_hit);
+    tcase_add_test(tc_core, test_poll_tx_icmp_filter_blocks_send);
+    tcase_add_test(tc_core, test_poll_tx_icmp_eagain_retains_queue);
+    tcase_add_test(tc_core, test_poll_tx_icmp_broadcast_sets_ff_mac);
+    tcase_add_test(tc_core, test_poll_tx_icmp_loopback_path_no_crash);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_poll_tx_raw_sends_on_arp_hit);
+    tcase_add_test(tc_core, test_poll_tx_raw_arp_miss_emits_request);
+    tcase_add_test(tc_core, test_poll_tx_raw_dst_zero_skips_descriptor);
+    tcase_add_test(tc_core, test_poll_tx_raw_filter_blocks_send);
+    tcase_add_test(tc_core, test_poll_tx_raw_loopback_path);
+#endif /* WOLFIP_RAWSOCKETS */
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_poll_tx_packet_sends_frame);
+    tcase_add_test(tc_core, test_poll_tx_packet_filter_blocks_advances_desc);
+#endif /* WOLFIP_PACKET_SOCKETS */
+    tcase_add_test(tc_core, test_poll_combined_timer_and_socket_cb_in_same_tick);
+    tcase_add_test(tc_core, test_poll_no_timers_and_no_events_is_noop);
+    tcase_add_test(tc_core, test_poll_last_tick_updated);
+    tcase_add_test(tc_core, test_poll_loopback_interface_iterated);
+    tcase_add_test(tc_core, test_poll_multiple_udp_sockets_both_cbs_dispatched);
+    tcase_add_test(tc_core, test_poll_tcp_cb_not_dispatched_when_closed);
+    tcase_add_test(tc_core, test_poll_udp_cb_not_dispatched_without_events);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_poll_tx_udp_multicast_arp_skipped_uses_mcast_mac);
+#endif /* IP_MULTICAST */
+    /* --- unit_tests_dhcp_edges.c (43 tests) --- */
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_zero_lease_noop);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_null_noop);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_renew_gt_lease_clamped);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_lt_renew_fixed);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_gt_lease_clamped);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_explicit_t1_t2);
+    tcase_add_test(tc_core, test_dhcp_msg_type_returns_offer);
+    tcase_add_test(tc_core, test_dhcp_msg_type_returns_nak);
+    tcase_add_test(tc_core, test_dhcp_msg_type_returns_ack);
+    tcase_add_test(tc_core, test_dhcp_msg_type_returns_request);
+    tcase_add_test(tc_core, test_dhcp_msg_type_returns_discover);
+    tcase_add_test(tc_core, test_dhcp_msg_type_bad_xid_returns_neg1);
+    tcase_add_test(tc_core, test_dhcp_msg_type_bad_magic_returns_neg1);
+    tcase_add_test(tc_core, test_dhcp_msg_type_boot_request_returns_neg1);
+    tcase_add_test(tc_core, test_dhcp_msg_type_len_ne_1_not_returned);
+    tcase_add_test(tc_core, test_dhcp_msg_type_pad_bytes_skipped);
+    tcase_add_test(tc_core, test_dhcp_msg_type_truncated_option_returns_neg1);
+    tcase_add_test(tc_core, test_dhcp_parse_offer_type_ack_not_offer_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_offer_subnet_mask_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_offer_inner_truncated_opt2_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_offer_inner_truncated_data_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_offer_inner_pad_then_end);
+    tcase_add_test(tc_core, test_dhcp_parse_offer_outer_end_with_state_already_set);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_mismatched_server_id_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_server_id_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_offer_ip_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_subnet_mask_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_router_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_dns_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_lease_time_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_renewal_time_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_rebind_time_len_lt4_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_no_ip_after_ack_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_no_mask_after_ack_rejected);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_with_renewal_and_rebind_times);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_dns_already_set_skipped);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_inner_pad_bytes_skipped);
+    tcase_add_test(tc_core, test_dhcp_timer_cb_renewing_not_yet_rebind_sends_request);
+    tcase_add_test(tc_core, test_dhcp_timer_cb_renewing_past_rebind_transitions_to_rebinding);
+    tcase_add_test(tc_core, test_dhcp_timer_cb_rebinding_not_expired_sends_request);
+    tcase_add_test(tc_core, test_dhcp_timer_cb_bound_lease_not_expired_starts_renew);
+    tcase_add_test(tc_core, test_dhcp_timer_cb_default_state_noop);
+    tcase_add_test(tc_core, test_dhcp_timer_cb_null_arg_noop);
+    /* --- unit_tests_ip_arp_recv.c (34 tests) --- */
+    tcase_add_test(tc_core, test_ip_recv_limited_broadcast_dst_is_local);
+    tcase_add_test(tc_core, test_ip_recv_directed_broadcast_dst_is_local);
+    tcase_add_test(tc_core, test_ip_recv_ipaddr_any_dst_is_local);
+    tcase_add_test(tc_core, test_ip_recv_forward_arp_hit_sends_immediately);
+    tcase_add_test(tc_core, test_ip_recv_forward_unconfigured_iface_skipped);
+    tcase_add_test(tc_core, test_ip_recv_forward_link_local_src_rpf_drop);
+    tcase_add_test(tc_core, test_ip_recv_options_nop_delivered);
+    tcase_add_test(tc_core, test_ip_recv_options_rr_stripped_and_delivered);
+    tcase_add_test(tc_core, test_ip_recv_options_bad_length_aborts_parse);
+    tcase_add_test(tc_core, test_ip_recv_options_strip_checksum_recomputed);
+    tcase_add_test(tc_core, test_ip_recv_options_ssrr_dropped);
+    tcase_add_test(tc_core, test_ip_recv_loopback_dst_on_non_loopback_dropped);
+    tcase_add_test(tc_core, test_ip_recv_loopback_src_on_non_loopback_dropped);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl_normal_decremented);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_short_frame_dropped);
+    tcase_add_test(tc_core, test_ip_recv_dest_matches_secondary_iface_ip_is_local);
+    tcase_add_test(tc_core, test_ip_recv_multicast_dst_not_forwarded);
+    tcase_add_test(tc_core, test_arp_recv_htype_not_ethernet_dropped);
+    tcase_add_test(tc_core, test_arp_recv_ptype_not_ipv4_dropped);
+    tcase_add_test(tc_core, test_arp_recv_hlen_not_6_dropped);
+    tcase_add_test(tc_core, test_arp_recv_plen_not_4_dropped);
+    tcase_add_test(tc_core, test_arp_recv_sender_own_ip_rejected);
+    tcase_add_test(tc_core, test_arp_recv_sender_ipaddr_any_rejected);
+    tcase_add_test(tc_core, test_arp_recv_reply_sender_broadcast_rejected);
+    tcase_add_test(tc_core, test_arp_recv_reply_sender_multicast_rejected);
+    tcase_add_test(tc_core, test_arp_recv_reply_sender_own_ip_rejected);
+    tcase_add_test(tc_core, test_arp_recv_reply_sender_zero_ip_rejected);
+    tcase_add_test(tc_core, test_arp_recv_valid_request_caches_neighbor_when_pending);
+    tcase_add_test(tc_core, test_arp_recv_runt_packet_dropped);
+    tcase_add_test(tc_core, test_ip_recv_wrong_version_dropped_v6);
+    tcase_add_test(tc_core, test_ip_recv_ihl_too_small_dropped);
+    tcase_add_test(tc_core, test_ip_recv_ip_len_less_than_hlen_dropped);
+    tcase_add_test(tc_core, test_ip_recv_bad_ip_checksum_dropped);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_ip_recv_multicast_not_joined_dropped);
+#endif /* IP_MULTICAST */
+    /* --- unit_tests_dns_edges.c (22 tests) --- */
+    tcase_add_test(tc_core, test_dns_callback_recvfrom_error_closes_socket);
+    tcase_add_test(tc_core, test_dns_callback_rcode_nonzero_aborts_query);
+    tcase_add_test(tc_core, test_dns_callback_zero_ancount_no_delivery);
+    tcase_add_test(tc_core, test_dns_callback_aaaa_answer_skipped_for_a_query);
+    tcase_add_test(tc_core, test_dns_callback_rr_rdlen_truncated_aborts_query);
+    tcase_add_test(tc_core, test_dns_callback_bad_question_name_aborts_query);
+    tcase_add_test(tc_core, test_dns_callback_answer_forward_ptr_aborts_query);
+    tcase_add_test(tc_core, test_dns_cancel_timer_null_noop);
+    tcase_add_test(tc_core, test_dns_schedule_timer_null_noop);
+    tcase_add_test(tc_core, test_dns_timeout_cb_null_noop);
+    tcase_add_test(tc_core, test_dns_timeout_cb_zero_id_noop);
+    tcase_add_test(tc_core, test_dns_timeout_cb_resend_failure_aborts_query);
+    tcase_add_test(tc_core, test_dns_copy_name_label_too_big_for_output);
+    tcase_add_test(tc_core, test_dns_copy_name_zero_out_len_rejects_terminator_write);
+    tcase_add_test(tc_core, test_dns_copy_name_ptr_at_end_of_buffer);
+    tcase_add_test(tc_core, test_dns_copy_name_label_past_end);
+    tcase_add_test(tc_core, test_dns_copy_name_separator_overflow);
+    tcase_add_test(tc_core, test_dns_copy_name_label_overflow_output);
+    tcase_add_test(tc_core, test_dns_skip_name_label_past_end);
+    tcase_add_test(tc_core, test_dns_copy_name_second_label_separator_and_label_fit);
+    tcase_add_test(tc_core, test_dns_callback_ptr_bad_copy_name_stays_pending);
+    tcase_add_test(tc_core, test_dns_copy_name_jumped_no_pos_increment);
+    tcase_add_test(tc_core, test_dns_send_query_socket_alloc_failure);
+    /* --- unit_tests_misc_edges.c (75 tests) --- */
+    tcase_add_test(tc_core, test_wolfip_init_null_stack);
+    tcase_add_test(tc_core, test_wolfip_init_static_null_ptr);
+    tcase_add_test(tc_core, test_wolfip_ipconfig_set_ex_null_stack);
+    tcase_add_test(tc_core, test_wolfip_ipconfig_set_ex_bad_ifidx);
+    tcase_add_test(tc_core, test_wolfip_ipconfig_get_ex_null_stack);
+    tcase_add_test(tc_core, test_wolfip_ipconfig_get_ex_null_out_ptrs);
+    tcase_add_test(tc_core, test_wolfip_mtu_set_zero_resets_to_default);
+    tcase_add_test(tc_core, test_wolfip_mtu_set_below_min_clamps);
+    tcase_add_test(tc_core, test_wolfip_mtu_set_above_max_clamps);
+    tcase_add_test(tc_core, test_wolfip_mtu_get_null_mtu_ptr);
+    tcase_add_test(tc_core, test_wolfip_arp_lookup_ex_null_stack);
+    tcase_add_test(tc_core, test_wolfip_arp_lookup_ex_null_mac);
+    tcase_add_test(tc_core, test_wolfip_arp_lookup_ex_found);
+    tcase_add_test(tc_core, test_fifo_push_full_hwrap_head_eq_tail);
+    tcase_add_test(tc_core, test_fifo_push_hwrap_head_ge_tail_space_zero);
+    tcase_add_test(tc_core, test_fifo_push_no_end_space_tail_too_small);
+    tcase_add_test(tc_core, test_fifo_can_push_len_hwrap_head_plus_needed_gt_tail);
+    tcase_add_test(tc_core, test_fifo_can_push_len_no_hwrap_head_plus_needed_gt_size);
+    tcase_add_test(tc_core, test_fifo_next_pos_out_of_range);
+    tcase_add_test(tc_core, test_fifo_next_desc_len_too_large);
+    tcase_add_test(tc_core, test_fifo_len_tail_gt_head_with_hwrap);
+    tcase_add_test(tc_core, test_iphdr_verify_checksum_bad);
+    tcase_add_test(tc_core, test_iphdr_verify_checksum_good);
+    tcase_add_test(tc_core, test_wolfip_ip_is_broadcast_null_stack);
+    tcase_add_test(tc_core, test_wolfip_ip_is_broadcast_all_ones);
+    tcase_add_test(tc_core, test_wolfip_ip_is_broadcast_full_mask_skipped);
+    tcase_add_test(tc_core, test_wolfip_select_nexthop_null_conf);
+    tcase_add_test(tc_core, test_wolfip_select_nexthop_broadcast);
+#ifdef IP_MULTICAST
+    tcase_add_test(tc_core, test_eth_is_ipv4_multicast_mac_true);
+    tcase_add_test(tc_core, test_eth_is_ipv4_multicast_mac_high_bit_set);
+    tcase_add_test(tc_core, test_eth_is_ipv4_multicast_mac_wrong_prefix);
+    tcase_add_test(tc_core, test_mcast_membership_find_null_stack);
+    tcase_add_test(tc_core, test_udp_socket_has_mcast_null_tsocket);
+#endif /* IP_MULTICAST */
+    tcase_add_test(tc_core, test_wolfip_ip_is_multicast_boundary);
+    tcase_add_test(tc_core, test_close_socket_null);
+    tcase_add_test(tc_core, test_close_socket_non_tcp_udp);
+    tcase_add_test(tc_core, test_tx_has_writable_space_unknown_proto);
+    tcase_add_test(tc_core, test_tx_has_writable_space_null);
+    tcase_add_test(tc_core, test_bind_port_in_use_port_zero);
+    tcase_add_test(tc_core, test_arp_pending_record_refresh_existing);
+    tcase_add_test(tc_core, test_arp_pending_record_replaces_oldest);
+    tcase_add_test(tc_core, test_arp_pending_match_and_clear_expires_stale);
+    tcase_add_test(tc_core, test_arp_pending_match_and_clear_null_stack);
+    tcase_add_test(tc_core, test_arp_neighbor_index_aged_out);
+    tcase_add_test(tc_core, test_arp_neighbor_index_null_stack);
+    tcase_add_test(tc_core, test_wolfip_route_for_ip_null_stack);
+    tcase_add_test(tc_core, test_wolfip_route_for_ip_broadcast_address);
+    tcase_add_test(tc_core, test_wolfip_forward_interface_null_or_single_iface);
+    tcase_add_test(tc_core, test_wolfip_forward_interface_local_dest_rejected);
+    tcase_add_test(tc_core, test_wolfip_loopback_send_null_ll);
+    tcase_add_test(tc_core, test_wolfip_send_ttl_exceeded_null_ll);
+    tcase_add_test(tc_core, test_wolfip_send_port_unreachable_null_ll_misc);
+    tcase_add_test(tc_core, test_wolfip_sock_socket_icmp_success);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_wolfip_rawsocket_from_fd_not_used);
+#endif /* WOLFIP_RAWSOCKETS */
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_wolfip_packetsocket_from_fd_not_used);
+#endif /* WOLFIP_PACKET_SOCKETS */
+    tcase_add_test(tc_core, test_wolfip_recv_on_short_frame);
+    tcase_add_test(tc_core, test_filter_mask_for_proto_default_branch);
+    tcase_add_test(tc_core, test_filter_dispatch_null_meta_initializes);
+    tcase_add_test(tc_core, test_wolfip_sock_listen_udp_fd);
+    tcase_add_test(tc_core, test_wolfip_sock_accept_udp_fd);
+    tcase_add_test(tc_core, test_wolfip_sock_close_negative_fd);
+    tcase_add_test(tc_core, test_ipcounter_next_increments);
+    tcase_add_test(tc_core, test_ipcounter_next_wraps);
+    tcase_add_test(tc_core, test_queue_insert_pos_equals_size_returns_error);
+    tcase_add_test(tc_core, test_wolfip_sock_socket_tcp_all_sockets);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_raw_try_recv_filter_blocks_frame);
+#endif /* WOLFIP_RAWSOCKETS */
+    tcase_add_test(tc_core, test_fifo_can_push_len_head_lt_tail_no_hwrap);
+    tcase_add_test(tc_core, test_fifo_can_push_len_hwrap_head_equals_hwrap);
+    tcase_add_test(tc_core, test_fifo_push_hwrap_head_equals_hwrap_succeeds);
+    tcase_add_test(tc_core, test_fifo_push_no_hwrap_wraps_to_front_succeeds);
+    tcase_add_test(tc_core, test_fifo_push_exact_end_sets_hwrap);
+    tcase_add_test(tc_core, test_wolfip_send_port_unreachable_large_ihl);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_wolfip_rawsocket_from_fd_negative_fd);
+#endif /* WOLFIP_RAWSOCKETS */
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_core, test_wolfip_packetsocket_from_fd_negative_fd);
+#endif /* WOLFIP_PACKET_SOCKETS */
+    tcase_add_test(tc_core, test_bind_port_in_use_different_ips_no_collision);
+
     suite_add_tcase(s, tc_core);
     suite_add_tcase(s, tc_utils);
     suite_add_tcase(s, tc_proto);

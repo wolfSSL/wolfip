@@ -439,7 +439,15 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_tcp_flow.c \
 	src/test/unit/unit_tests_proto.c \
 	src/test/unit/unit_tests_multicast.c \
-	src/test/unit/unit_tests_tftp.c
+	src/test/unit/unit_tests_tftp.c \
+	src/test/unit/unit_tests_branches.c \
+	src/test/unit/unit_tests_socket_api_arms.c \
+	src/test/unit/unit_tests_tcp_state.c \
+	src/test/unit/unit_tests_poll_dispatcher.c \
+	src/test/unit/unit_tests_dhcp_edges.c \
+	src/test/unit/unit_tests_ip_arp_recv.c \
+	src/test/unit/unit_tests_dns_edges.c \
+	src/test/unit/unit_tests_misc_edges.c
 
 unit: build/test/unit
 
@@ -574,6 +582,18 @@ autocov-multicast: unit-multicast $(COV_MCAST_UNIT)
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/multicast.html
 
+cov-multicast: unit-multicast $(COV_MCAST_UNIT)
+	@echo "[RUN] unit multicast (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_MCAST_UNIT)
+	@echo "[COV] gcovr multicast html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/multicast.html
+	@$(OPEN_CMD) build/coverage/multicast.html
+
 # Install dynamic library to re-link linux applications
 #
 install:
@@ -672,7 +692,7 @@ build/test/test-wolfguard-interop: src/test/test_wolfguard_interop.c src/port/po
 clean-test-wolfguard-interop:
 	@rm -f build/test/test-wolfguard-interop build/test/test_wolfguard_interop.o build/test/linux_tun.o
 
-.PHONY: clean all static cppcheck cov autocov autocov-multicast unit-multicast unit-asan unit-ubsan unit-leaksan clean-unit \
+.PHONY: clean all static cppcheck cov autocov autocov-multicast cov-multicast unit-multicast unit-asan unit-ubsan unit-leaksan clean-unit \
         unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \

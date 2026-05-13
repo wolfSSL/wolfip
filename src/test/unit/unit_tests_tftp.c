@@ -1,6 +1,6 @@
 /* unit_tests_tftp.c
  *
- * Copyright (C) 2026 wolfSSL Inc.
+ * Copyright (C) 2024 wolfSSL Inc.
  *
  * This file is part of wolfIP TCP/IP stack.
  *
@@ -18,7 +18,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
-
 struct tftp_test_ctx {
     uint8_t sent[32][WOLFTFTP_PKT_MAX];
     uint16_t sent_len[32];
