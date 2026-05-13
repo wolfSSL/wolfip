@@ -34,6 +34,16 @@ void Reset_Handler(void)
     uint32_t *src;
     uint32_t *dst;
 
+#if TZEN_ENABLED
+    /* Point VTOR_NS at our vector table. wolfBoot's BLXNS sets VTOR_S
+     * but does not write VTOR_NS; without this, NS exceptions vector
+     * to address 0 (wolfBoot's S vectors) and lock the CPU. The NS
+     * vector table is at the start of FLASH (0x08060400, after the
+     * 1024-byte wolfBoot header). */
+    *(volatile uint32_t *)0xE000ED08u = 0x08060400u;
+    __asm volatile ("dsb sy" ::: "memory");
+#endif
+
     src = &_sidata;
     for (dst = &_sdata; dst < &_edata; ) {
         *dst++ = *src++;

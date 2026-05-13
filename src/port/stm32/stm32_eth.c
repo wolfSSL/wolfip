@@ -16,11 +16,11 @@
 #endif
 
 #if defined(STM32H5)
-#if TZEN_ENABLED
-#define ETH_BASE            0x50028000UL  /* Secure alias */
-#else
-#define ETH_BASE            0x40028000UL  /* Non-secure alias */
-#endif
+/* Always use the NS alias of ETH on H5. Both wolfIP build modes run in
+ * the Non-Secure world: TZEN=0 has no security distinction, and TZEN=1
+ * runs as a NS application launched by wolfBoot (plain LDR/STR carry
+ * HNONSEC=1 and would fault on a 0x5xxxxxxx access). */
+#define ETH_BASE            0x40028000UL
 #define STM32_ETH_NEEDS_MDIO_DELAY 0
 #elif defined(STM32H7)
 #define ETH_BASE            0x40028000UL
@@ -207,14 +207,16 @@ struct eth_desc {
 #if defined(STM32H7) || defined(STM32N6)
 #define ETH_SECTION __attribute__((section(".eth_buffers")))
 #elif defined(STM32H5)
-#if TZEN_ENABLED
-#define ETH_SECTION __attribute__((section(".eth_buffers")))
-#else
+/* H5 places ETH descriptors and buffers in the regular .bss region.
+ * Both TZEN=0 (TrustZone disabled) and TZEN=1 (NS app under wolfBoot)
+ * link RAM into a single NS-accessible region; no separate ETHMEM
+ * alias is needed since the CPU and ETH DMA both run in NS world and
+ * share the same NS view of physical SRAM. */
 #define ETH_SECTION
 #endif
-#endif
 
-/* DMA buffer address — use secure alias (0x34), matching RISAF SEC=1. */
+/* DMA descriptor / buffer addresses are taken as-is. NS pointers map
+ * directly to NS DMA accesses on H5; H7 / N6 use identity mapping. */
 #define ETH_DMA_ADDR(ptr) ((uint32_t)(ptr))
 
 static struct eth_desc rx_ring[RX_DESC_COUNT] __attribute__((aligned(32))) ETH_SECTION;
@@ -235,6 +237,9 @@ static int32_t phy_addr = -1;
 
 static uint32_t rx_poll_count = 0;
 static uint32_t rx_pkt_count = 0;
+#ifdef DEBUG_H5_ETH
+static uint32_t tx_send_count = 0;
+#endif
 
 static uint16_t eth_mdio_read(uint32_t phy, uint32_t reg);
 static void eth_mdio_write(uint32_t phy, uint32_t reg, uint16_t value);
@@ -256,7 +261,7 @@ static int eth_hw_reset(void)
      * (HAL uses 1 second). Do NOT manually clear SWR — it corrupts DMA. */
     timeout = 50000000U; /* ~80ms at 600MHz */
 #else
-    timeout = 1000000U;
+    timeout = 5000000U;
 #endif
 
     ETH_DMAMR |= ETH_DMAMR_SWR;
@@ -664,9 +669,10 @@ static void eth_phy_init(void)
         }
     }
 
-    /* Reset PHY. */
+    /* Reset PHY. PHY reset typically completes in <1 ms; allow ~1 s
+     * worst case at the H5's 32 MHz HSI / CR=4 MDC speed. */
     eth_mdio_write((uint32_t)phy_addr, PHY_REG_BCR, PHY_BCR_RESET);
-    timeout = 100000U;
+    timeout = 5000U;
     do {
         ctrl = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BCR);
     } while ((ctrl & PHY_BCR_RESET) != 0U && --timeout != 0U);
@@ -677,15 +683,19 @@ static void eth_phy_init(void)
     ctrl |= PHY_BCR_AUTONEG_ENABLE | PHY_BCR_RESTART_AUTONEG;
     eth_mdio_write((uint32_t)phy_addr, PHY_REG_BCR, ctrl);
 
-    /* Wait for auto-negotiation complete. */
-    timeout = 100000U;
+    /* Wait for auto-negotiation complete. With a cable plugged in
+     * aneg takes ~3 s; without a cable it never completes. Cap the
+     * wait so boot proceeds (with link DOWN) in ~5 s instead of ~40 s. */
+    timeout = 20000U;
     do {
         bsr = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
         bsr |= eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
     } while ((bsr & PHY_BSR_AUTONEG_COMPLETE) == 0U && --timeout != 0U);
 
-    /* Wait for link up. */
-    timeout = 100000U;
+    /* Wait for link up. Link comes up promptly once aneg finishes;
+     * a short timeout is enough -- if there is no cable the previous
+     * loop has already burned its budget. */
+    timeout = 5000U;
     do {
         bsr = eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
         bsr |= eth_mdio_read((uint32_t)phy_addr, PHY_REG_BSR);
@@ -779,6 +789,9 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     next_idx = (tx_idx + 1U) % TX_DESC_COUNT;
     ETH_DMACTXDTPR = ETH_DMA_ADDR(&tx_ring[next_idx]);
     tx_idx = next_idx;
+#ifdef DEBUG_H5_ETH
+    tx_send_count++;
+#endif
 
     return (int)len;
 }
@@ -826,6 +839,47 @@ uint32_t stm32_eth_get_dmacsr(void)
     }
     return val;
 }
+
+#ifdef DEBUG_H5_ETH
+/* H5 MAC frame counters (MMC) - read-only, free-running.
+ *   ETH base 0x40028000, MMC offsets:
+ *     0x0114 MMC Tx Single Collision Good Frames -> not us
+ *     0x014C TX FRAMES OK BY CNT (TXSNGLCOLG_GBPF.. actual)
+ *   Simpler: use generic MAC_TX_PACKET_COUNT_GOOD = 0x40028068
+ *            and MAC_RX_PACKET_COUNT_GOOD = 0x4002809C
+ *   But H5 uses MMC: TX 0x0768 RX 0x0794 (good_packet counters).
+ *   Reference: RM0481 Rev2 Sec 60.8.4.
+ */
+#define ETH_MMC_TX_PACKET_GOOD ETH_REG(0x0768U)
+#define ETH_MMC_RX_PACKET_GOOD ETH_REG(0x0794U)
+#define ETH_MMC_RX_CRC_ERR     ETH_REG(0x0794U + 0x10U) /* 0x07A4 */
+
+uint32_t stm32_eth_get_tx_count(void)
+{
+    return tx_send_count;
+}
+
+uint32_t stm32_eth_get_tx_des3(uint32_t i)
+{
+    if (i >= TX_DESC_COUNT) return 0xFFFFFFFFU;
+    return tx_ring[i].des3;
+}
+
+uint32_t stm32_eth_get_mac_rx_frames(void)
+{
+    return ETH_MMC_RX_PACKET_GOOD;
+}
+
+uint32_t stm32_eth_get_mac_tx_frames(void)
+{
+    return ETH_MMC_TX_PACKET_GOOD;
+}
+
+uint32_t stm32_eth_get_mac_rx_errors(void)
+{
+    return ETH_MMC_RX_CRC_ERR;
+}
+#endif
 
 int stm32_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 {

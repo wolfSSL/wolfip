@@ -28,11 +28,24 @@
 #define ETHERNET
 #define LINK_MTU                1536
 
+#if TZEN_ENABLED
+/* TZEN=1: NS app under wolfBoot has only 384 KB NS RAM (SRAM2+SRAM3,
+ * since wolfBoot keeps SRAM1 secure for its own .bss/heap). Scale the
+ * preallocated socket pool down to fit baseline TCP echo + TLS in that
+ * window; the MQTT broker config (5 client slots, 4xMTU buffers) does
+ * not fit and is not enabled in this mode yet. */
+#define MAX_TCPSOCKETS          8
+#define MAX_UDPSOCKETS          2
+#define MAX_ICMPSOCKETS         1
+#define RXBUF_SIZE              (LINK_MTU * 2)
+#define TXBUF_SIZE              (LINK_MTU * 2)
+#else
 #define MAX_TCPSOCKETS          17   /* 12 base + 5 for MQTT broker (listen + 4 clients) */
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         1    /* Reduced from 2 */
 #define RXBUF_SIZE              (LINK_MTU * 4)   /* Reduced for RAM fit with broker */
 #define TXBUF_SIZE              (LINK_MTU * 4)   /* Reduced for RAM fit with broker */
+#endif
 
 #define MAX_NEIGHBORS            16
 
