@@ -1,14 +1,23 @@
 /* unit_tests_tcp_state.c
  *
- * Copyright (C) 2026 wolfSSL Inc.
+ * Copyright (C) 2024 wolfSSL Inc.
  *
- * Branch-coverage tests for the TCP state machine and related helpers:
- *   tcp_input, tcp_rto_cb, tcp_ack, tcp_mark_unsacked_for_retransmit,
- *   tcp_send_zero_wnd_probe, tcp_send_empty_immediate, tcp_resync_inflight,
- *   tcp_send_reset_reply, tcp_parse_options, tcp_find_pending_retrans,
- *   icmp_try_deliver_tcp_error, raw_route_for_ip.
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
-
 /* -----------------------------------------------------------------------
  * Helper: build and feed a TCP segment with options + optional payload.
  * ----------------------------------------------------------------------- */

@@ -1,10 +1,23 @@
 /* unit_tests_dns_edges.c
  *
- * Edge-case and error-path coverage for dns_callback() and dns_copy_name().
+ * Copyright (C) 2024 wolfSSL Inc.
  *
- * Copyright (C) 2026 wolfSSL Inc.  GPL v3 or later.
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
-
 /* ------------------------------------------------------------------ *
  * Helper: build a minimal valid DNS A-response header + question into
  * buf[], return the offset of the first answer NAME field so callers
@@ -388,20 +401,38 @@ START_TEST(test_dns_timeout_cb_resend_failure_aborts_query)
 END_TEST
 
 /* ------------------------------------------------------------------ *
- * dns_copy_name: output buffer fills exactly at the NUL terminator
- * (line 8816: o >= out_len)
- * Build: "ab" → label = [2,'a','b',0].  With out_len == 2, o == 2 at
- * the terminator write → must return -1.
+ * dns_copy_name: label does not fit in caller buffer.
+ * Build: "ab" → label = [2,'a','b',0]. With out_len == 2 the
+ * label-bound guard (o + c >= out_len) fires before the terminator
+ * write — this exercises the label-copy capacity path, NOT the
+ * terminator guard (see test_dns_copy_name_zero_out_len_... below).
  * ------------------------------------------------------------------ */
-START_TEST(test_dns_copy_name_output_buffer_full_at_terminator)
+START_TEST(test_dns_copy_name_label_too_big_for_output)
 {
     /* buf: [2,'a','b',0] */
     const uint8_t buf[4] = { 2, 'a', 'b', 0 };
     char out[2];   /* exactly "ab" with no room for NUL */
     int ret;
 
-    /* out_len == 2: after copying "ab" o == 2 == out_len → -1 */
+    /* out_len == 2: 0 + 2 >= 2 → label-bound guard fires → -1 */
     ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out));
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
+/* ------------------------------------------------------------------ *
+ * dns_copy_name: terminator-write guard when out_len == 0.
+ * Build: bare terminator [0] with out_len == 0. The label-copy guards
+ * are not reached for an empty name, so this uniquely exercises the
+ * 'o >= out_len' check at the NAME_TERMINATOR write site.
+ * ------------------------------------------------------------------ */
+START_TEST(test_dns_copy_name_zero_out_len_rejects_terminator_write)
+{
+    const uint8_t buf[1] = { 0 };
+    char out[1]; /* not written; placeholder */
+    int ret;
+
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, 0);
     ck_assert_int_eq(ret, -1);
 }
 END_TEST

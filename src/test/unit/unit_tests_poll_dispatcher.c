@@ -1,18 +1,23 @@
 /* unit_tests_poll_dispatcher.c
  *
- * Copyright (C) 2026 wolfSSL Inc.
+ * Copyright (C) 2024 wolfSSL Inc.
  *
- * Tests targeting wolfIP_poll branch coverage:
- *   - Device poll path (non-ethernet, loopback, MTU edge, budget exhaustion)
- *   - Timer firing (multiple, cancelled-head tombstones, self-rearming)
- *   - Socket callback dispatch (RAW, PACKET, ICMP, TCP, UDP)
- *   - TCP TX loop (ARP miss, retransmit replay, PKT_FLAG_SENT skip, filter,
- *                  zero-window persist, EAGAIN break)
- *   - UDP TX loop (loopback path, filter block, broadcast MAC, EAGAIN)
- *   - ICMP TX loop (loopback path, filter block, broadcast, EAGAIN)
- *   - RAW/PACKET TX loops (send, ARP miss, filter block, dst-ip==0 skip)
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
-
 /* ------------------------------------------------------------------ */
 /* Helper state local to this file                                     */
 /* ------------------------------------------------------------------ */
@@ -1200,9 +1205,10 @@ START_TEST(test_poll_tx_raw_dst_zero_skips_descriptor)
     ck_assert_int_ge(sd, 0);
     r = &s.rawsockets[SOCKET_UNMARK(sd)];
 
-    /* Manually inject a descriptor with dst_ip == 0 */
+    /* struct wolfIP_ip_packet already includes the Ethernet header at
+     * offset 0; cast the whole buffer (do NOT advance by ETH_HEADER_LEN). */
     memset(buf, 0, sizeof(buf));
-    ip_pkt = (struct wolfIP_ip_packet *)(buf + ETH_HEADER_LEN);
+    ip_pkt = (struct wolfIP_ip_packet *)buf;
     ip_pkt->dst = 0; /* zero dst triggers skip */
     ip_pkt->src = ee32(0x0A000001U);
     ip_pkt->ver_ihl = 0x45;

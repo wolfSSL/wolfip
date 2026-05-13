@@ -1,3 +1,24 @@
+/* unit.c
+ *
+ * Copyright (C) 2024 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
+
 #include "unit_shared.c"
 #include "unit_tests_fifo.c"
 #include "unit_tests_api.c"
@@ -1353,7 +1374,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dns_timeout_cb_null_noop);
     tcase_add_test(tc_core, test_dns_timeout_cb_zero_id_noop);
     tcase_add_test(tc_core, test_dns_timeout_cb_resend_failure_aborts_query);
-    tcase_add_test(tc_core, test_dns_copy_name_output_buffer_full_at_terminator);
+    tcase_add_test(tc_core, test_dns_copy_name_label_too_big_for_output);
+    tcase_add_test(tc_core, test_dns_copy_name_zero_out_len_rejects_terminator_write);
     tcase_add_test(tc_core, test_dns_copy_name_ptr_at_end_of_buffer);
     tcase_add_test(tc_core, test_dns_copy_name_label_past_end);
     tcase_add_test(tc_core, test_dns_copy_name_separator_overflow);

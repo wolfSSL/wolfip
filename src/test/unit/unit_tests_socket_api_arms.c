@@ -1,11 +1,23 @@
 /* unit_tests_socket_api_arms.c
  *
- * Branch-coverage tests for the TCP, RAW, and PACKET arms of the
- * BSD socket API in src/wolfip.c.
+ * Copyright (C) 2024 wolfSSL Inc.
  *
- * UDP/ICMP arms are already covered in unit_tests_branches.c.
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
-
 /* ---- wolfIP_register_callback: TCP, RAW, and PACKET arms ---- */
 
 START_TEST(test_register_callback_tcp_stores_handle)
@@ -876,7 +888,10 @@ START_TEST(test_sock_sendto_raw_hdrincl_dst_from_buf)
     struct wolfIP s;
     int sd;
     int one = 1;
-    uint8_t ip_buf[IP_HEADER_LEN + 4];
+    /* struct wolfIP_ip_packet embeds an Ethernet header at offset 0; the
+     * IP fields live at offset ETH_HEADER_LEN, so the backing buffer must
+     * include both. */
+    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN + 4];
     struct wolfIP_ip_packet *ip;
     uint8_t nh_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     int ret;
@@ -894,7 +909,8 @@ START_TEST(test_sock_sendto_raw_hdrincl_dst_from_buf)
     ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
                 WOLFIP_IP_HDRINCL, &one, sizeof(one)), 0);
 
-    /* Build a minimal IP packet starting right after ETH header offset */
+    /* Build a minimal IP packet within the buffer; the Ethernet bytes are
+     * harmless filler that sendto ignores when IP_HDRINCL is set. */
     memset(ip_buf, 0, sizeof(ip_buf));
     ip = (struct wolfIP_ip_packet *)ip_buf;
     ip->ver_ihl = 0x45;
