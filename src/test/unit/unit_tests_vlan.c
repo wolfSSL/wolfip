@@ -506,6 +506,87 @@ START_TEST(test_vlan_api_delete_bad_ifidx_rejected)
 }
 END_TEST
 
+/* Regression: wolfIP_vlan_get used to default *parent_if_idx to 0 if the
+ * parent pointer didn't match any slot in ll_dev[], silently reporting the
+ * wrong parent. After the fix it must return -WOLFIP_EINVAL and leave the
+ * caller's out pointers untouched. */
+START_TEST(test_vlan_api_get_dangling_parent_pointer_rejected)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *sub;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    unsigned int got_parent = 0xEEEEEEEEu;
+    uint16_t got_vid = 0xEEEE;
+    uint8_t  got_pcp = 0xEE, got_dei = 0xEE;
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+
+    /* Sanity: get() succeeds while the parent pointer is intact. */
+    ret = wolfIP_vlan_get(&s, sub_idx, &got_parent, &got_vid, &got_pcp, &got_dei);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(got_parent, TEST_PRIMARY_IF);
+
+    /* Corrupt the parent pointer so it no longer matches any slot. */
+    sub = wolfIP_getdev_ex(&s, sub_idx);
+    ck_assert_ptr_nonnull(sub);
+    sub->vlan_parent = (struct wolfIP_ll_dev *)(uintptr_t)0xDEADBEEFu;
+
+    got_parent = 0xEEEEEEEEu;
+    got_vid = 0xEEEE;
+    got_pcp = 0xEE;
+    got_dei = 0xEE;
+    ret = wolfIP_vlan_get(&s, sub_idx, &got_parent, &got_vid, &got_pcp, &got_dei);
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+    /* Output pointers must be untouched on failure. */
+    ck_assert_uint_eq(got_parent, 0xEEEEEEEEu);
+    ck_assert_uint_eq(got_vid, 0xEEEE);
+    ck_assert_uint_eq(got_pcp, 0xEE);
+    ck_assert_uint_eq(got_dei, 0xEE);
+
+    /* Restore so the cleanup path doesn't dereference the bogus pointer. */
+    sub->vlan_active = 0;
+    sub->vlan_parent = NULL;
+}
+END_TEST
+
+/* Regression: wolfIP_ll_send_frame used to allow vlan_active=1 to bypass
+ * the !ll->send guard, then -- if vlan_parent was NULL -- fell through to
+ * `ll->send(...)` and dereferenced a NULL function pointer. The hardened
+ * guard rejects that inconsistent state explicitly. */
+START_TEST(test_vlan_tx_active_without_parent_rejected)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *sub;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint8_t buf[60];
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+
+    /* Force the inconsistent state directly: vlan_active=1, vlan_parent=NULL.
+     * (wolfIP_vlan_create itself never produces this, but defensive code
+     * must still refuse to send rather than crash.) */
+    sub = wolfIP_getdev_ex(&s, sub_idx);
+    ck_assert_ptr_nonnull(sub);
+    sub->vlan_parent = NULL;
+    ck_assert_ptr_null(sub->send);
+
+    memset(buf, 0, sizeof(buf));
+    last_frame_sent_size = 0;
+    ret = wolfIP_ll_send_frame(&s, sub_idx, buf, sizeof(buf));
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+    ck_assert_uint_eq((uint32_t)last_frame_sent_size, 0u);
+
+    /* Restore so teardown doesn't trip. */
+    sub->vlan_active = 0;
+}
+END_TEST
+
 START_TEST(test_vlan_api_get_null_args_rejected)
 {
     struct wolfIP s;

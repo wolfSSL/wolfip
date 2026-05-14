@@ -1611,10 +1611,18 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
     if (!ll)
         return -WOLFIP_EINVAL;
 #if WOLFIP_VLAN
-    /* VLAN sub-ifaces have no send callback of their own; let the VLAN block
-     * below handle validation and delegation to the parent. */
-    if (!ll->vlan_active && !ll->send)
+    /* A live VLAN sub-iface delegates transmission to its parent (its own
+     * send callback is intentionally NULL), so validate the sub-iface state
+     * instead of the (always-NULL) send pointer. For a physical interface
+     * we still require a non-NULL send callback. Reject inconsistent state
+     * (vlan_active=1 with no parent) before it reaches the send path below
+     * where it would otherwise dereference a NULL function pointer. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return -WOLFIP_EINVAL;
+    } else if (!ll->send) {
         return -WOLFIP_EINVAL;
+    }
 #else
     if (!ll->send)
         return -WOLFIP_EINVAL;
@@ -8468,17 +8476,25 @@ int wolfIP_vlan_get(struct wolfIP *s, unsigned int if_idx,
 {
     struct wolfIP_ll_dev *slot;
     unsigned int i;
+    unsigned int parent_idx = 0;
+    int parent_found = 0;
     if (!s || !parent_if_idx || !vid || !pcp || !dei) return -WOLFIP_EINVAL;
     if (if_idx >= s->if_count) return -WOLFIP_EINVAL;
     slot = &s->ll_dev[if_idx];
     if (!slot->vlan_active || !slot->vlan_parent) return -WOLFIP_EINVAL;
-    *parent_if_idx = 0;
+    /* The parent pointer must resolve to a slot in s->ll_dev[]. If it
+     * doesn't, the sub-interface state is inconsistent (programming error
+     * or memory corruption); fail loudly rather than reporting parent 0. */
     for (i = 0; i < s->if_count; i++) {
         if (&s->ll_dev[i] == slot->vlan_parent) {
-            *parent_if_idx = i;
+            parent_idx = i;
+            parent_found = 1;
             break;
         }
     }
+    if (!parent_found)
+        return -WOLFIP_EINVAL;
+    *parent_if_idx = parent_idx;
     *vid = slot->vlan_vid;
     *pcp = slot->vlan_pcp;
     *dei = slot->vlan_dei;
