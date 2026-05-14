@@ -177,6 +177,15 @@ struct wolfIP_ll_dev {
     int (*send)(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
     /* optional context private pointer */
     void *priv;
+#if WOLFIP_VLAN
+    /* 802.1Q VLAN sub-interface descriptor. When vlan_active is 0, this slot
+     * is either a physical interface or a deleted/empty slot. */
+    struct wolfIP_ll_dev *vlan_parent; /* NULL => physical; else points into ll_dev[] */
+    uint16_t vlan_vid;                  /* 0..4094 */
+    uint8_t  vlan_pcp;                  /* 0..7 (802.1p priority) */
+    uint8_t  vlan_dei;                  /* 0..1 (drop-eligible indicator) */
+    uint8_t  vlan_active;               /* 1 if this slot is a live sub-iface */
+#endif
 };
 
 /* Struct to contain an IP device configuration */
@@ -396,6 +405,37 @@ int wolfIP_mtu_get(struct wolfIP *s, unsigned int if_idx, uint32_t *mtu);
 void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
 int wolfIP_arp_lookup_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac);
+
+#if WOLFIP_VLAN
+/* 802.1Q VLAN sub-interface management.
+ *
+ * A VLAN sub-interface is a logical interface that sits on top of a physical
+ * (untagged) interface. Frames sent out of a sub-interface are 802.1Q-tagged
+ * with the configured VID/PCP/DEI; frames arriving on the physical interface
+ * with a matching tag are stripped and delivered as if they had arrived on
+ * the sub-interface. Each sub-interface gets its own ipconf slot (own IP,
+ * mask, gateway, DHCP, ARP table behavior).
+ *
+ * Returns 0 on success, -WOLFIP_EINVAL on validation failure (null stack,
+ * bad parent index, parent not physical, VID >= 4095, PCP > 7, DEI > 1,
+ * duplicate VID on the same parent, no free ll_dev slot, exhausted
+ * WOLFIP_VLAN_MAX).
+ */
+int wolfIP_vlan_create(struct wolfIP *s, unsigned int parent_if_idx,
+                       uint16_t vid, uint8_t pcp, uint8_t dei,
+                       unsigned int *out_if_idx);
+
+/* Remove a VLAN sub-interface. Refuses to delete a physical interface or an
+ * already-inactive slot. The slot is marked inactive (vlan_active = 0) but
+ * the index remains valid; subsequent wolfIP_vlan_create may reuse it. */
+int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx);
+
+/* Query VLAN configuration on a sub-interface. Returns -WOLFIP_EINVAL if
+ * if_idx is not a live sub-interface or any output pointer is NULL. */
+int wolfIP_vlan_get(struct wolfIP *s, unsigned int if_idx,
+                    unsigned int *parent_if_idx, uint16_t *vid,
+                    uint8_t *pcp, uint8_t *dei);
+#endif /* WOLFIP_VLAN */
 
 /* Callback flags */
 #define CB_EVENT_READABLE 0x01 /* Accepted connection or data available */

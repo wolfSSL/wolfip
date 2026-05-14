@@ -36,6 +36,7 @@
 #include "unit_tests_ip_arp_recv.c"
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
+#include "unit_tests_vlan.c"
 
 Suite *wolf_suite(void)
 {
@@ -1480,6 +1481,42 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_wolfip_packetsocket_from_fd_negative_fd);
 #endif /* WOLFIP_PACKET_SOCKETS */
     tcase_add_test(tc_core, test_bind_port_in_use_different_ips_no_collision);
+
+#if WOLFIP_VLAN
+    /* --- unit_tests_vlan.c (30 tests for 802.1Q support) --- */
+    tcase_add_test(tc_proto, test_vlan_api_create_basic);
+    tcase_add_test(tc_proto, test_vlan_api_create_vid_max_ok);
+    tcase_add_test(tc_proto, test_vlan_api_create_vid_4095_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_vid_above_max_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_pcp_above_7_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_dei_above_1_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_duplicate_vid_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_same_vid_two_parents_ok);
+    tcase_add_test(tc_proto, test_vlan_api_create_parent_not_physical_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_exhausts_max);
+    tcase_add_test(tc_proto, test_vlan_api_create_uninitialized_parent_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_loopback_parent_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_create_null_args_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_delete_basic);
+    tcase_add_test(tc_proto, test_vlan_api_delete_physical_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_delete_bad_ifidx_rejected);
+    tcase_add_test(tc_proto, test_vlan_api_get_null_args_rejected);
+    tcase_add_test(tc_proto, test_vlan_tx_tag_inserted);
+    tcase_add_test(tc_proto, test_vlan_tx_pcp_and_dei_encoded);
+    tcase_add_test(tc_proto, test_vlan_tx_vid_zero_priority_tag);
+    tcase_add_test(tc_proto, test_vlan_tx_vid_4094_encoded);
+    tcase_add_test(tc_proto, test_vlan_tx_oversize_rejected);
+    tcase_add_test(tc_proto, test_vlan_tx_runt_rejected);
+    tcase_add_test(tc_proto, test_vlan_rx_tagged_match_delivered);
+    tcase_add_test(tc_proto, test_vlan_rx_tagged_mismatch_dropped);
+    tcase_add_test(tc_proto, test_vlan_rx_untagged_on_physical_ok);
+    tcase_add_test(tc_proto, test_vlan_rx_runt_tagged_dropped);
+    tcase_add_test(tc_proto, test_vlan_rx_multiple_subs_correct_dispatch);
+    tcase_add_test(tc_proto, test_vlan_rx_delete_then_dropped);
+    tcase_add_test(tc_proto, test_vlan_rx_dei_bit_accepted);
+    tcase_add_test(tc_proto, test_vlan_rx_tagged_arp_processed);
+    tcase_add_test(tc_proto, test_vlan_mtu_inherited);
+#endif /* WOLFIP_VLAN */
 
     suite_add_tcase(s, tc_core);
     suite_add_tcase(s, tc_utils);

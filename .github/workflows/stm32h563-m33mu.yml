@@ -449,3 +449,49 @@ jobs:
           if [ -f /tmp/tcpdump.pid ]; then
             sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
           fi
+
+  stm32h563_m33mu_vlan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          apt-get update
+          # iproute2: 'ip' command (tap, vlan link-add)
+          # tcpdump:  packet capture on tap0
+          # tshark:   filter/parse the pcap for VID + direction assertions
+          # sudo:     the integration script wraps privileged ops with sudo
+          apt-get install -y sudo iproute2 tcpdump tshark
+
+      - name: Run VLAN integration test (TCP echo over 802.1Q)
+        timeout-minutes: 15
+        env:
+          VLAN_VID: "100"
+          VLAN_PCP: "0"
+          M33MU_TIMEOUT: "60"
+        run: |
+          set -euo pipefail
+          # The script builds the firmware with ENABLE_VLAN=1, sets up tap0
+          # + tap0.${VLAN_VID}, boots m33mu, probes the TCP echo service on
+          # port 7 over the VLAN, and asserts via tshark that 802.1Q frames
+          # flowed in both directions on VID=${VLAN_VID}.
+          bash tools/scripts/debug-m33mu-vlan-local.sh
+
+      - name: Upload VLAN artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vlan-debug-artifacts
+          path: |
+            /tmp/m33mu-vlan.log
+            /tmp/m33mu-vlan.pcap
+            /tmp/m33mu-vlan-tshark.txt
+            /tmp/m33mu-vlan-echo.txt
+          if-no-files-found: ignore
