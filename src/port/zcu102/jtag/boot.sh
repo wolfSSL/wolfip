@@ -63,7 +63,7 @@ echo "  app.elf      : ${APP_ELF}"
 echo "  app.bin      : ${APP_BIN} ($(stat -c%s "${APP_BIN}") bytes)"
 echo
 
-export APP_ELF APP_BIN PSU_INIT_TCL
+export APP_ELF APP_BIN PSU_INIT_TCL APP_LOAD_ADDR
 
 "${XSDB}" "${SCRIPT_DIR}/boot.tcl"
 

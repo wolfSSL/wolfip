@@ -21,6 +21,16 @@
 #   PSU_INIT_TCL  path to psu_init.tcl
 
 set OCM_BASE 0xFFFC0000
+# DDR layout uses 0x10000000 (matches WOLFBOOT_LOAD_ADDRESS in
+# wolfBoot's config/examples/zynqmp.config). The jtag/boot.sh script
+# exports APP_LOAD_ADDR if set, otherwise defaults to the OCM base.
+# Use scan to convert a hex string ("0x10000000") to an integer the
+# rest of this script can compare and pass to mwr / dow.
+if {[info exists env(APP_LOAD_ADDR)]} {
+    scan $env(APP_LOAD_ADDR) "%i" APP_LOAD_ADDR
+} else {
+    set APP_LOAD_ADDR $OCM_BASE
+}
 
 # Load a raw binary file to a target address via mwr -force, one
 # 32-bit word at a time. Slow but reliable - bypasses xsdb's cache
@@ -111,12 +121,20 @@ foreach c [split "=== JTAG ready, loading app ===\r\n" ""] {
 after 200
 
 # ----------------------------------------------------------------------
-# 4. Load the wolfIP app binary into OCM (linker places everything
-#    in the 256 KB OCM at 0xFFFC0000, see target.ld).
+# 4. Load the wolfIP app.
+#
+# For the OCM layout we use mwr-force per-word (load_binary): the
+# native xsdb `dow` path triggers a cache-flush dance that fails after
+# psu_init when targeting OCM. For the DDR layout that workaround is
+# not necessary -- the AXI master path is reliable to DDR once the
+# DDR controller is up, and `dow` is much faster than the
+# word-at-a-time fallback. Choose based on APP_LOAD_ADDR: anything
+# >= 0xFF000000 is OCM/peripheral and gets the slow safe path; below
+# that is DDR and uses dow on the ELF directly.
 # ----------------------------------------------------------------------
 puts ""
-puts "Loading: $env(APP_BIN) at 0xFFFC0000 (OCM)"
-load_binary $env(APP_BIN) 0xFFFC0000
+puts "Loading: $env(APP_BIN) at [format 0x%X $APP_LOAD_ADDR] via mwr-force"
+load_binary $env(APP_BIN) $APP_LOAD_ADDR
 
 # ----------------------------------------------------------------------
 # 5. Install RVBAR boot loop in OCM so rst -processor doesn't crash.

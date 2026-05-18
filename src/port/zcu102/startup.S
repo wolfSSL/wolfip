@@ -22,6 +22,18 @@
  * boots us in EL3 NS with caches/MMU off (or sometimes on - we force
  * them off here to be safe), then jumps to _start at the image entry.
  */
+    /* A loader (FSBL, wolfBoot, ...) that respects the ELF entry
+     * point in the program header branches to _start directly. A
+     * loader that simply branches to the first byte of the binary
+     * (wolfBoot's do_boot path does this -- it uses LOAD_ADDRESS,
+     * not the ELF entry) lands on this stub instead, which forwards
+     * to _start. Linker scripts place this section first in the
+     * output image so it always sits at offset 0 of the binary. */
+    .section .boot_entry, "ax"
+    .global _boot_entry
+_boot_entry:
+    b       _start
+
     .section .vectors, "ax"
     .align 11                  /* 2048 byte align required by VBAR */
     .global _vectors

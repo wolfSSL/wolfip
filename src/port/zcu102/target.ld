@@ -58,6 +58,11 @@ PHDRS
 
 SECTIONS
 {
+    .boot_entry :
+    {
+        KEEP(*(.boot_entry))
+    } > OCM :text
+
     .vectors :
     {
         . = ALIGN(2048);

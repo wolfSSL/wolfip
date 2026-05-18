@@ -28,7 +28,21 @@ CFLAGS  += $(CFLAGS_EXTRA)
 
 ASFLAGS := -mcpu=cortex-a53
 
-LDSCRIPT := target.ld
+# Layout selector. Default ocm keeps the OCM-only layout that the JTAG
+# iteration scripts depend on (everything in OCM @ 0xFFFC0000). Pass
+# LAYOUT=ddr to relink for DDR @ 0x10000000 -- this is the layout
+# wolfBoot expects (WOLFBOOT_LOAD_ADDRESS in zynqmp.config).
+LAYOUT ?= ocm
+ifeq ($(LAYOUT),ddr)
+    LDSCRIPT := target_ddr.ld
+    CFLAGS   += -DZCU102_LAYOUT_DDR
+else ifeq ($(LAYOUT),ocm)
+    LDSCRIPT := target.ld
+    CFLAGS   += -DZCU102_LAYOUT_OCM
+else
+    $(error LAYOUT must be 'ocm' or 'ddr')
+endif
+
 LDFLAGS  := -nostdlib -nostartfiles -T $(LDSCRIPT) -Wl,-gc-sections
 # Replace newlib's aarch64 memset/memcpy (which use 'dc zva' and hang
 # on this Cortex-A53 setup) with our bytewise versions in main.c.

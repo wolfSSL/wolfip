@@ -115,9 +115,20 @@ static void mmu_build_tables(void)
     /* L2_DDR: 512 entries covering 0..1 GB at 2 MB each. */
     dma_lo = (uint64_t)(uintptr_t)_dma_buffers_start;
     dma_hi = (uint64_t)(uintptr_t)_dma_buffers_end;
+#ifdef ZCU102_LAYOUT_DDR
+    /* DDR layout: the app and its dma_buffers both live in DDR. We
+     * keep all of DDR as Normal-WB cacheable and rely on the explicit
+     * DC CVAC / IVAC ops in gem.c for coherency. Disabling the NC
+     * carve-out means the stack (which shares a 2 MB block with the
+     * dma_buffers in the DDR linker layout) stays cacheable. */
+    (void)dma_lo; (void)dma_hi;
+#endif
 
     for (i = 0; i < 512; i++) {
         addr = (uint64_t)i * L2_BLOCK_SIZE;
+#ifdef ZCU102_LAYOUT_DDR
+        L2_DDR[i] = BLOCK_NORMAL(addr);
+#else
         if ((addr + L2_BLOCK_SIZE) <= dma_lo || addr >= dma_hi) {
             L2_DDR[i] = BLOCK_NORMAL(addr);
         } else {
@@ -126,6 +137,7 @@ static void mmu_build_tables(void)
              * not alignment-fault when staging frames into tx_buf_pool. */
             L2_DDR[i] = BLOCK_NORMAL_NC(addr);
         }
+#endif /* ZCU102_LAYOUT_DDR */
     }
 
     /* L2_PERIPH: 3..4 GB range. All Device-nGnRnE except the last
