@@ -52,6 +52,29 @@
 #define WOLFIP_ENABLE_DHCP       1
 #endif
 
+/* 802.1Q VLAN sub-interface support. Off by default; enable on the make
+ * command line with ENABLE_VLAN=1 (the Makefile then passes -DWOLFIP_VLAN=1
+ * and bumps WOLFIP_MAX_INTERFACES so the sub-interface fits).
+ *
+ * The capacity check accounts for 1 physical + (loopback ? 1 : 0) +
+ * WOLFIP_VLAN_MAX sub-interface slots. */
+#ifndef WOLFIP_VLAN
+#define WOLFIP_VLAN              0
+#endif
+#ifndef WOLFIP_VLAN_MAX
+#define WOLFIP_VLAN_MAX          4
+#endif
+#if WOLFIP_VLAN
+#if WOLFIP_ENABLE_LOOPBACK
+#define WOLFIP_VLAN_RESERVED_SLOTS 2
+#else
+#define WOLFIP_VLAN_RESERVED_SLOTS 1
+#endif
+#if (WOLFIP_MAX_INTERFACES < (WOLFIP_VLAN_RESERVED_SLOTS + WOLFIP_VLAN_MAX))
+#error "WOLFIP_VLAN requires WOLFIP_MAX_INTERFACES >= 1 (physical) + (WOLFIP_ENABLE_LOOPBACK ? 1 : 0) + WOLFIP_VLAN_MAX"
+#endif
+#endif
+
 /* Static IP fallback (used when DHCP is disabled or times out) */
 #define WOLFIP_IP                "192.168.12.11"
 #define WOLFIP_NETMASK           "255.255.255.0"

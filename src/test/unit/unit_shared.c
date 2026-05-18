@@ -29,7 +29,12 @@
 #undef WOLFIP_PACKET_SOCKETS
 #define WOLFIP_PACKET_SOCKETS 1
 #undef WOLFIP_MAX_INTERFACES
+#if WOLFIP_VLAN
+/* Need room for 1 loopback + 1 physical + multiple VLAN sub-ifaces. */
+#define WOLFIP_MAX_INTERFACES 6
+#else
 #define WOLFIP_MAX_INTERFACES 3
+#endif
 #undef WOLFIP_ENABLE_LOOPBACK
 #define WOLFIP_ENABLE_LOOPBACK 1
 #undef WOLFIP_ENABLE_FORWARDING

@@ -886,6 +886,44 @@ int main(void)
         uart_puts("\n");
     }
 
+#ifdef ENABLE_VLAN
+    /* 802.1Q VLAN sub-interface: create a logical interface on top of the
+     * physical (untagged) interface and run all traffic through it. The
+     * physical interface stays without an IP; sockets bound on the VLAN
+     * IP will automatically tag outgoing frames and accept incoming frames
+     * matching the configured VID. */
+    {
+        unsigned int vlan_idx = 0;
+        ip4 vip = atoip4(VLAN_IP);
+        ip4 vnm = atoip4(VLAN_MASK);
+        ip4 vgw = atoip4(VLAN_GW);
+        int v_ret;
+
+        uart_puts("Creating VLAN sub-interface VID=");
+        uart_putdec((uint32_t)(VLAN_VID));
+        uart_puts(" PCP=");
+        uart_putdec((uint32_t)(VLAN_PCP));
+        uart_puts(" on physical if 0\n");
+        v_ret = wolfIP_vlan_create(IPStack, 0, (uint16_t)(VLAN_VID),
+                                   (uint8_t)(VLAN_PCP), 0, &vlan_idx);
+        if (v_ret < 0) {
+            uart_puts("  ERROR: wolfIP_vlan_create failed (-");
+            uart_putdec((uint32_t)(-v_ret));
+            uart_puts(")\n");
+        } else {
+            uart_puts("  VLAN sub-iface at idx ");
+            uart_putdec((uint32_t)vlan_idx);
+            uart_puts("\n  IP: ");
+            uart_putip4(vip);
+            uart_puts("\n  Mask: ");
+            uart_putip4(vnm);
+            uart_puts("\n  GW: ");
+            uart_putip4(vgw);
+            uart_puts("\n");
+            wolfIP_ipconfig_set_ex(IPStack, vlan_idx, vip, vnm, vgw);
+        }
+    }
+#else /* ENABLE_VLAN */
 #ifdef DHCP
     {
         uint32_t dhcp_start_tick;
@@ -958,6 +996,7 @@ int main(void)
         wolfIP_ipconfig_set(IPStack, ip, nm, gw);
     }
 #endif
+#endif /* ENABLE_VLAN */
 
 #ifdef WOLFIP_USE_FREERTOS
     uart_puts("Starting FreeRTOS BSD socket layer...\n");

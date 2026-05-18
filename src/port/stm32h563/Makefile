@@ -35,6 +35,18 @@ ENABLE_MQTT_BROKER ?= 0
 # wolfBoot update partition. TZEN=0 only.
 ENABLE_TFTP ?= 0
 
+# 802.1Q VLAN sub-interface support. Set ENABLE_VLAN=1 to enable
+# WOLFIP_VLAN at compile time and run all DHCP/TFTP/etc. traffic over
+# a VLAN sub-interface with VID = VLAN_VID. Static IP configuration on
+# the sub-interface is selected via VLAN_IP / VLAN_MASK / VLAN_GW; the
+# physical interface stays untagged with no IP.
+ENABLE_VLAN ?= 0
+VLAN_VID ?= 100
+VLAN_PCP ?= 0
+VLAN_IP ?= 10.10.100.2
+VLAN_MASK ?= 255.255.255.0
+VLAN_GW ?= 10.10.100.1
+
 # FreeRTOS integration: set FREERTOS=1 to run the HTTPS server from a
 # FreeRTOS task using the blocking BSD socket wrapper layer.
 FREERTOS ?= 0
@@ -359,6 +371,18 @@ SRCS += tftp_client_demo.c
 SRCS += $(ROOT)/src/tftp/wolftftp.c
 
 endif # ENABLE_TFTP
+
+# -----------------------------------------------------------------------------
+# 802.1Q VLAN
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_VLAN),1)
+CFLAGS += -DENABLE_VLAN -DWOLFIP_VLAN=1
+# Need room for 1 loopback + 1 physical + at least 1 VLAN sub-iface.
+# wolfIP default WOLFIP_MAX_INTERFACES is 2; bump to 6 to leave headroom.
+CFLAGS += -DWOLFIP_MAX_INTERFACES=6
+CFLAGS += -DVLAN_VID=$(VLAN_VID) -DVLAN_PCP=$(VLAN_PCP)
+CFLAGS += -DVLAN_IP=\"$(VLAN_IP)\" -DVLAN_MASK=\"$(VLAN_MASK)\" -DVLAN_GW=\"$(VLAN_GW)\"
+endif
 
 # -----------------------------------------------------------------------------
 # Build rules

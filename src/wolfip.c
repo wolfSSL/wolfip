@@ -126,6 +126,12 @@ struct wolfIP_icmp_packet;
 
 #define ETH_TYPE_IP 0x0800
 #define ETH_TYPE_ARP 0x0806
+#if WOLFIP_VLAN
+#define ETH_TYPE_VLAN_8021Q 0x8100
+#define WOLFIP_VLAN_TAG_LEN 4
+#define WOLFIP_VLAN_VID_MAX 4094
+#define WOLFIP_VLAN_PCP_MAX 7
+#endif
 
 #define NO_TIMER 0
 
@@ -1406,6 +1412,14 @@ static inline uint32_t wolfIP_ll_frame_mtu(const struct wolfIP_ll_dev *ll)
 {
     uint32_t mtu;
 
+#if WOLFIP_VLAN
+    if (ll && ll->vlan_active && ll->vlan_parent) {
+        uint32_t pmtu = wolfIP_ll_frame_mtu(ll->vlan_parent);
+        return (pmtu > WOLFIP_VLAN_TAG_LEN)
+               ? (pmtu - WOLFIP_VLAN_TAG_LEN)
+               : 0U;
+    }
+#endif
     if (!ll || ll->mtu == 0)
         return LINK_MTU;
     mtu = ll->mtu;
@@ -1594,8 +1608,25 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
     if (!s)
         return -WOLFIP_EINVAL;
     ll = wolfIP_ll_at(s, if_idx);
-    if (!ll || !ll->send)
+    if (!ll)
         return -WOLFIP_EINVAL;
+#if WOLFIP_VLAN
+    /* A live VLAN sub-iface delegates transmission to its parent (its own
+     * send callback is intentionally NULL), so validate the sub-iface state
+     * instead of the (always-NULL) send pointer. For a physical interface
+     * we still require a non-NULL send callback. Reject inconsistent state
+     * (vlan_active=1 with no parent) before it reaches the send path below
+     * where it would otherwise dereference a NULL function pointer. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return -WOLFIP_EINVAL;
+    } else if (!ll->send) {
+        return -WOLFIP_EINVAL;
+    }
+#else
+    if (!ll->send)
+        return -WOLFIP_EINVAL;
+#endif
     frame_mtu = wolfIP_ll_frame_mtu(ll);
     if (len > frame_mtu)
         return -WOLFIP_EINVAL;
@@ -1604,6 +1635,30 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
             return -WOLFIP_EINVAL;
         return ll->send(ll, (uint8_t *)buf + ETH_HEADER_LEN, len - ETH_HEADER_LEN);
     }
+#if WOLFIP_VLAN
+    if (ll->vlan_active && ll->vlan_parent) {
+        struct wolfIP_ll_dev *parent = ll->vlan_parent;
+        uint32_t parent_mtu;
+        uint16_t tpid, tci;
+        uint8_t staging[LINK_MTU + WOLFIP_VLAN_TAG_LEN];
+        if (len < (uint32_t)ETH_HEADER_LEN)
+            return -WOLFIP_EINVAL;
+        if (!parent->send)
+            return -WOLFIP_EINVAL;
+        parent_mtu = wolfIP_ll_frame_mtu(parent);
+        if (len + WOLFIP_VLAN_TAG_LEN > parent_mtu)
+            return -WOLFIP_EINVAL;
+        memcpy(staging, buf, 12);                       /* dst+src MAC */
+        tpid = ee16(ETH_TYPE_VLAN_8021Q);
+        memcpy(staging + 12, &tpid, 2);
+        tci = ee16((uint16_t)(((uint16_t)(ll->vlan_pcp & 0x7) << 13)
+                              | ((uint16_t)(ll->vlan_dei & 0x1) << 12)
+                              | (ll->vlan_vid & 0x0FFF)));
+        memcpy(staging + 14, &tci, 2);
+        memcpy(staging + 16, (uint8_t *)buf + 12, len - 12);
+        return parent->send(parent, staging, len + WOLFIP_VLAN_TAG_LEN);
+    }
+#endif
     return ll->send(ll, buf, len);
 }
 
@@ -8155,12 +8210,10 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
     memset(arp.tma, 0, 6);
     arp.tip = ee32(tip);
     arp_pending_record(s, if_idx, tip);
-    if (ll->send) {
-        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp.eth,
-                                     sizeof(struct arp_packet)) != 0)
-            return;
-        ll->send(ll, &arp, sizeof(struct arp_packet));
-    }
+    if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp.eth,
+                                 sizeof(struct arp_packet)) != 0)
+        return;
+    wolfIP_ll_send_frame(s, if_idx, &arp, sizeof(struct arp_packet));
 }
 
 static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
@@ -8215,11 +8268,9 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
             }
         }
         eth_output_add_header(s, if_idx, arp->tma, &arp->eth, ETH_TYPE_ARP);
-        if (ll->send) {
-            if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp->eth, len) != 0)
-                return;
-            ll->send(ll, buf, len);
-        }
+        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &arp->eth, len) != 0)
+            return;
+        wolfIP_ll_send_frame(s, if_idx, buf, (uint32_t)len);
     }
     else if (arp->opcode == ee16(ARP_REPLY)) {
         ip4 sip = ee32(arp->sip);
@@ -8307,6 +8358,149 @@ struct wolfIP_ll_dev *wolfIP_getdev_ex(struct wolfIP *s, unsigned int if_idx)
 {
     return wolfIP_ll_at(s, if_idx);
 }
+
+#if WOLFIP_VLAN
+int wolfIP_vlan_create(struct wolfIP *s, unsigned int parent_if_idx,
+                       uint16_t vid, uint8_t pcp, uint8_t dei,
+                       unsigned int *out_if_idx)
+{
+    struct wolfIP_ll_dev *parent;
+    struct wolfIP_ll_dev *slot;
+    unsigned int i;
+    unsigned int new_idx;
+    unsigned int vlan_count = 0;
+
+    if (!s || !out_if_idx) return -WOLFIP_EINVAL;
+    if (parent_if_idx >= s->if_count) return -WOLFIP_EINVAL;
+    parent = &s->ll_dev[parent_if_idx];
+    /* Parent must be a real, initialized Ethernet device:
+     *   - not a VLAN sub-iface (would imply Q-in-Q, unsupported)
+     *   - has a send callback (rejects uninitialized / deleted slots)
+     *   - is an Ethernet device (rejects loopback / non-ethernet — VLAN
+     *     is an IEEE 802.3 concept). */
+    if (parent->vlan_parent != NULL || parent->vlan_active) return -WOLFIP_EINVAL;
+    if (parent->send == NULL) return -WOLFIP_EINVAL;
+    if (parent->non_ethernet) return -WOLFIP_EINVAL;
+    if (vid > WOLFIP_VLAN_VID_MAX) return -WOLFIP_EINVAL;
+    if (pcp > WOLFIP_VLAN_PCP_MAX) return -WOLFIP_EINVAL;
+    if (dei > 1) return -WOLFIP_EINVAL;
+    /* Reject duplicate VID on same parent and count active VLANs. */
+    for (i = 0; i < s->if_count; i++) {
+        if (s->ll_dev[i].vlan_active) {
+            vlan_count++;
+            if (s->ll_dev[i].vlan_parent == parent
+                && s->ll_dev[i].vlan_vid == vid)
+                return -WOLFIP_EINVAL;
+        }
+    }
+    if (vlan_count >= WOLFIP_VLAN_MAX) return -WOLFIP_EINVAL;
+    /* Find a free slot: a slot with no send/poll function and no vlan_active/parent.
+     * Deleted VLAN slots and unused pre-allocated physical slots both qualify.
+     * Skip the parent slot itself. */
+    slot = NULL;
+    new_idx = s->if_count;
+    for (i = 0; i < s->if_count; i++) {
+        struct wolfIP_ll_dev *cand = &s->ll_dev[i];
+        if (cand == parent) continue;
+        if (!cand->vlan_active && cand->vlan_parent == NULL
+            && cand->send == NULL && cand->poll == NULL) {
+            slot = cand;
+            new_idx = i;
+            break;
+        }
+    }
+    if (!slot) return -WOLFIP_EINVAL;
+    memset(slot, 0, sizeof(*slot));
+    memcpy(slot->mac, parent->mac, 6);
+    /* Build "<parent>.<vid>" without depending on <stdio.h>. Truncate parent
+     * name to leave 1 + up to 4 VID digits + NUL within ifname[16]. */
+    {
+        size_t pn = 0;
+        size_t cap;
+        unsigned int v;
+        char *out = slot->ifname;
+        cap = sizeof(slot->ifname);
+        while (pn < cap - 7 && parent->ifname[pn] != '\0') {
+            out[pn] = parent->ifname[pn];
+            pn++;
+        }
+        out[pn++] = '.';
+        v = (unsigned int)vid;
+        if (v == 0) {
+            out[pn++] = '0';
+        } else {
+            char digits[6];
+            int nd = 0;
+            while (v > 0 && nd < 6) {
+                digits[nd++] = (char)('0' + (v % 10));
+                v /= 10;
+            }
+            while (nd > 0)
+                out[pn++] = digits[--nd];
+        }
+        out[pn] = '\0';
+    }
+    slot->non_ethernet = parent->non_ethernet;
+    slot->mtu = 0; /* MTU derived dynamically from parent via wolfIP_ll_frame_mtu */
+    slot->poll = NULL;
+    slot->send = NULL;
+    slot->priv = NULL;
+    slot->vlan_parent = parent;
+    slot->vlan_vid = vid;
+    slot->vlan_pcp = pcp;
+    slot->vlan_dei = dei;
+    slot->vlan_active = 1;
+    memset(&s->ipconf[new_idx], 0, sizeof(s->ipconf[new_idx]));
+    s->ipconf[new_idx].ll = slot;
+    *out_if_idx = new_idx;
+    return 0;
+}
+
+int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
+{
+    struct wolfIP_ll_dev *slot;
+    if (!s) return -WOLFIP_EINVAL;
+    if (if_idx >= s->if_count) return -WOLFIP_EINVAL;
+    slot = &s->ll_dev[if_idx];
+    if (!slot->vlan_active || !slot->vlan_parent) return -WOLFIP_EINVAL;
+    /* Wipe the slot so it can be reused. s->if_count is not changed to avoid
+     * renumbering active sub-ifaces. */
+    memset(slot, 0, sizeof(*slot));
+    memset(&s->ipconf[if_idx], 0, sizeof(s->ipconf[if_idx]));
+    return 0;
+}
+
+int wolfIP_vlan_get(struct wolfIP *s, unsigned int if_idx,
+                    unsigned int *parent_if_idx, uint16_t *vid,
+                    uint8_t *pcp, uint8_t *dei)
+{
+    struct wolfIP_ll_dev *slot;
+    unsigned int i;
+    unsigned int parent_idx = 0;
+    int parent_found = 0;
+    if (!s || !parent_if_idx || !vid || !pcp || !dei) return -WOLFIP_EINVAL;
+    if (if_idx >= s->if_count) return -WOLFIP_EINVAL;
+    slot = &s->ll_dev[if_idx];
+    if (!slot->vlan_active || !slot->vlan_parent) return -WOLFIP_EINVAL;
+    /* The parent pointer must resolve to a slot in s->ll_dev[]. If it
+     * doesn't, the sub-interface state is inconsistent (programming error
+     * or memory corruption); fail loudly rather than reporting parent 0. */
+    for (i = 0; i < s->if_count; i++) {
+        if (&s->ll_dev[i] == slot->vlan_parent) {
+            parent_idx = i;
+            parent_found = 1;
+            break;
+        }
+    }
+    if (!parent_found)
+        return -WOLFIP_EINVAL;
+    *parent_if_idx = parent_idx;
+    *vid = slot->vlan_vid;
+    *pcp = slot->vlan_pcp;
+    *dei = slot->vlan_dei;
+    return 0;
+}
+#endif /* WOLFIP_VLAN */
 
 int wolfIP_mtu_set(struct wolfIP *s, unsigned int if_idx, uint32_t mtu)
 {
@@ -8625,6 +8819,38 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     #endif /* DEBUG_ETH */
     if (wolfIP_filter_notify_eth(WOLFIP_FILT_RECEIVING, s, if_idx, eth, len) != 0)
         return;
+#if WOLFIP_VLAN
+    if (eth->type == ee16(ETH_TYPE_VLAN_8021Q)) {
+        uint16_t tci_be, tci, vid;
+        unsigned int sub_idx;
+        int found = 0;
+        /* Require enough bytes for Ethernet header + 4-byte VLAN tag. */
+        if (len < (uint32_t)(ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN))
+            return;
+        memcpy(&tci_be, (uint8_t *)buf + ETH_HEADER_LEN, 2);
+        tci = ee16(tci_be);
+        vid = tci & 0x0FFF;
+        /* Walk sub-interfaces to find a match on this physical link + VID. */
+        for (sub_idx = 0; sub_idx < s->if_count; sub_idx++) {
+            struct wolfIP_ll_dev *cand = &s->ll_dev[sub_idx];
+            if (cand->vlan_active && cand->vlan_parent == ll
+                && cand->vlan_vid == vid) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found)
+            return; /* No matching VLAN sub-interface; drop. */
+        /* Strip the 4-byte tag in place: slide MAC headers forward. */
+        memmove((uint8_t *)buf + WOLFIP_VLAN_TAG_LEN, buf, 12);
+        buf = (uint8_t *)buf + WOLFIP_VLAN_TAG_LEN;
+        len -= WOLFIP_VLAN_TAG_LEN;
+        /* Rebind dispatch context to the matched sub-interface. */
+        eth = (struct wolfIP_eth_frame *)buf;
+        if_idx = sub_idx;
+        ll = wolfIP_ll_at(s, if_idx);
+    }
+#endif /* WOLFIP_VLAN */
 #if WOLFIP_PACKET_SOCKETS
     packet_try_recv(s, if_idx, eth, len);
 #endif
@@ -9609,11 +9835,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 break;
             eth_output_add_header(s, tx_if, r->nexthop_mac, &ip->eth, ETH_TYPE_IP);
 #endif
-            {
-                struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                if (ll && ll->send)
-                    ll->send(ll, ip, desc->len);
-            }
+            wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
             fifo_pop(&r->txbuf);
             desc = fifo_peek(&r->txbuf);
             (void)nexthop;
@@ -9637,11 +9859,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 desc = fifo_next(&p->txbuf, desc);
                 continue;
             }
-            {
-                struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                if (ll && ll->send)
-                    ll->send(ll, frame, desc->len);
-            }
+            wolfIP_ll_send_frame(s, tx_if, frame, desc->len);
             fifo_pop(&p->txbuf);
             desc = fifo_peek(&p->txbuf);
         }
