@@ -17,6 +17,12 @@
 # Optional env (sensible defaults):
 #   APP_ELF      - default: ${PORT_DIR}/app.elf
 #   APP_BIN      - default: ${PORT_DIR}/app.bin (objcopy'd here)
+#   APP_LOAD_ADDR- default: 0xFFFC0000 (OCM). Set to 0x10000000 for the
+#                  LAYOUT=ddr build, which is also what wolfBoot uses.
+#   PMUFW_ELF    - path to pmufw.elf. When set, jtag/boot.tcl loads it
+#                  into the PMU MicroBlaze and starts it before
+#                  psu_init. Required for reliable DDR access via
+#                  JTAG; not needed for the OCM-only layout.
 #
 # Usage (from the port directory):
 #   XSDB=/opt/Xilinx/2025.2/Vitis/bin/xsdb \
@@ -56,6 +62,28 @@ fi
 echo "Generating app.bin from app.elf..."
 "${OBJCOPY}" -O binary "${APP_ELF}" "${APP_BIN}"
 
+# If PMU FW is provided, generate its flat binary alongside. xsdb's
+# `dow` fails on the PMU MicroBlaze target without a loaded XSA, so
+# the TCL loads it via mwr-force from this .bin instead. PMU FW is
+# MicroBlaze, so it needs a MicroBlaze-capable objcopy (override
+# with MB_OBJCOPY=, defaults to the Vitis-shipped one if present).
+if [[ -n "${PMUFW_ELF:-}" ]]; then
+    if [[ ! -f "${PMUFW_ELF}" ]]; then
+        echo "ERROR: PMUFW_ELF set but not found: ${PMUFW_ELF}" >&2
+        exit 1
+    fi
+    MB_OBJCOPY="${MB_OBJCOPY:-/opt/Xilinx/2025.2/gnu/microblaze/lin/bin/mb-objcopy}"
+    if ! command -v "${MB_OBJCOPY}" >/dev/null 2>&1 && [[ ! -x "${MB_OBJCOPY}" ]]; then
+        echo "ERROR: MicroBlaze objcopy not found at ${MB_OBJCOPY}" >&2
+        echo "       set MB_OBJCOPY=/path/to/mb-objcopy" >&2
+        exit 1
+    fi
+    PMUFW_BIN="${PMUFW_BIN:-${PMUFW_ELF%.elf}.bin}"
+    echo "Generating $(basename "${PMUFW_BIN}") from pmufw.elf (mb-objcopy)..."
+    "${MB_OBJCOPY}" -O binary "${PMUFW_ELF}" "${PMUFW_BIN}"
+    export PMUFW_BIN
+fi
+
 echo "JTAG boot ZCU102 wolfIP app"
 echo "  xsdb         : ${XSDB}"
 echo "  psu_init.tcl : ${PSU_INIT_TCL}"
@@ -63,7 +91,7 @@ echo "  app.elf      : ${APP_ELF}"
 echo "  app.bin      : ${APP_BIN} ($(stat -c%s "${APP_BIN}") bytes)"
 echo
 
-export APP_ELF APP_BIN PSU_INIT_TCL APP_LOAD_ADDR
+export APP_ELF APP_BIN PSU_INIT_TCL APP_LOAD_ADDR PMUFW_ELF
 
 "${XSDB}" "${SCRIPT_DIR}/boot.tcl"
 

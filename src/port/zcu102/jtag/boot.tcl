@@ -85,7 +85,38 @@ targets -set -nocase -filter {name =~ "*PSU*"}
 rst -system
 after 500
 
+# ----------------------------------------------------------------------
+# 1b. Load and start PMU firmware (MicroBlaze on the PMU).
+#
+# Without PMU FW, JTAG writes to DDR after psu_init are unreliable on
+# this board -- the DDR controller training appears to need PMU
+# coordination. Loading PMU FW via JTAG mirrors what the CSU
+# BootROM would do during a normal SD/QSPI boot. Only do this if
+# PMUFW_ELF is set in the environment; otherwise we keep the OCM-only
+# behavior we had in Phase 1. We do this BEFORE the CSU JTAG-bootmode
+# write because CSU touches PMU on the bootmode handshake.
+# ----------------------------------------------------------------------
+if {[info exists env(PMUFW_BIN)]} {
+    puts ""
+    puts "Loading PMU FW: $env(PMUFW_BIN)"
+    # xsdb's `dow` fails on PMU MicroBlaze without a loaded XSA
+    # ("Invalid context"). Bypass it by writing the binary via
+    # mwr-force to PMU IRAM at 0xFFDC0000 -- same technique we use
+    # for the A53 app. The PMU's BootROM hands control to IRAM @
+    # 0xFFDC0000 after we deassert PMU reset (psu_init touches PMU
+    # via CRL_APB.RST_LPD_TOP which keeps PMU running).
+    jtag targets
+    targets -set -nocase -filter {name =~ "PMU"}
+    stop
+    after 200
+    load_binary $env(PMUFW_BIN) 0xFFDC0000
+    con
+    after 1500
+    puts "PMU FW running."
+}
+
 puts "Forcing JTAG boot mode (CSU)..."
+targets -set -nocase -filter {name =~ "*PSU*"}
 mwr 0xFF5E0200 0x0100
 after 1000
 
@@ -135,6 +166,23 @@ after 200
 puts ""
 puts "Loading: $env(APP_BIN) at [format 0x%X $APP_LOAD_ADDR] via mwr-force"
 load_binary $env(APP_BIN) $APP_LOAD_ADDR
+# Verify the first word landed. KNOWN ISSUE: with APP_LOAD_ADDR in DDR
+# (e.g. 0x10000000), single-word mwr-force writes succeed but the
+# bulk per-word loop in load_binary frequently shows the first word
+# read back as something other than what we wrote, even with PMU FW
+# running. The same xsdb cache/coherency dance that breaks `dow` over
+# DDR after psu_init appears to be at play. The OCM target works
+# reliably. Track this separately; the DDR path will be exercised
+# end-to-end via SD/QSPI once wolfBoot's bootgen chain is set up.
+if {$APP_LOAD_ADDR < 0xFF000000} {
+    set fp [open $env(APP_BIN) rb]
+    set head [read $fp 4]
+    close $fp
+    binary scan $head iu expect
+    set got [mrd -value -force [format 0x%X $APP_LOAD_ADDR]]
+    puts [format "  verify: image\[0\]=0x%08X mem\[0\]=0x%08X %s" \
+          $expect $got [expr {$expect == $got ? "OK" : "MISMATCH (known JTAG-DDR issue)"}]]
+}
 
 # ----------------------------------------------------------------------
 # 5. Install RVBAR boot loop in OCM so rst -processor doesn't crash.
