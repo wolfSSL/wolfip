@@ -21,10 +21,11 @@
  * Cadence GEM driver for ZynqMP GEM3 (on-board RJ45 on ZCU102).
  *
  * - 32-bit DMA addressing (OCM low bank, well under 4 GB).
- * - Polled TX and polled RX. The GEM3 GIC SPI 63 is wired up (see
- *   board.h) but the A53 IRQ exception is not currently entered on
- *   this EL3 setup; gem_isr() is driven directly from eth_poll() in
- *   the main loop instead. See README "Known issues".
+ * - IRQ-driven RX (GIC-400 SPI 63 -> gem_isr) and polled TX. Note:
+ *   the SCR_EL3.IRQ routing bit must be set on this A53 for the
+ *   exception to actually be entered, despite the ARM ARM appearing
+ *   to say SCR_EL3.IRQ only affects lower-EL routing. See
+ *   startup.S for the explicit SCR_EL3 setup.
  * - BDs and frame buffers live in the .dma_buffers section, which the
  *   linker places in OCM (Normal-WB executable per L2_PERIPH[511]).
  *   Cache coherency between CPU L1 D-cache and the MAC DMA path is
@@ -379,14 +380,9 @@ static int eth_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 
     (void)ll;
 
-    /* Polled IRQ dispatch: drive gem_isr() directly when GEM has
-     * pending interrupts. This bypasses both the CPU IRQ exception
-     * (which never fires on this Cortex-A53 / GIC-400 setup for
-     * reasons not yet pinned) and the GIC routing. Functionally
-     * equivalent to IRQ-driven operation. */
-    if (GEM_ISR != 0)
-        gem_isr();
-
+    /* RX frames are delivered into swq[] by gem_isr() running off the
+     * GIC-400 INTID 95 IRQ path (see startup.S SCR_EL3 setup and
+     * board.h IRQ_GEM3). eth_poll just drains the SW queue here. */
     tail = swq_tail;
     if (tail == swq_head)
         return 0;             /* SW queue empty */

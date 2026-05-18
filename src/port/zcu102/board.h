@@ -56,12 +56,16 @@
 #define GICC_BASE               0xF9020000UL
 
 /* ---------------------------------------------------------------------
- * GIC SPI numbers (ZynqMP TRM Table 13-1)
+ * GIC SPI numbers as GIC INTIDs (ARM GIC numbering: SPI N -> INTID 32+N).
+ * The ZynqMP TRM Table 13-1 column "SPI ID" is the GIC_SPI offset (0..)
+ * used in Linux device trees; the actual GIC INTID is 32 + that offset.
+ * We use INTIDs directly throughout this driver, so add 32.
  * ------------------------------------------------------------------- */
-#define IRQ_GEM0                57   /* SPI 57 */
-#define IRQ_GEM1                59   /* SPI 59 */
-#define IRQ_GEM2                61   /* SPI 61 */
-#define IRQ_GEM3                63   /* SPI 63 - on-board ZCU102 RJ45 */
+#define IRQ_GEM0                (32 + 57)  /* GIC_SPI 57 -> INTID 89 */
+#define IRQ_GEM1                (32 + 59)  /* GIC_SPI 59 -> INTID 91 */
+#define IRQ_GEM2                (32 + 61)  /* GIC_SPI 61 -> INTID 93 */
+#define IRQ_GEM3                (32 + 63)  /* GIC_SPI 63 -> INTID 95
+                                            * on-board ZCU102 RJ45 */
 
 /* ---------------------------------------------------------------------
  * CRL_APB clock and reset registers

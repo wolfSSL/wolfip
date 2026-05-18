@@ -171,6 +171,15 @@ int main(void)
         uart_puts(" SCR_EL3="); uart_puthex((uint32_t)scr);
         uart_puts(" VBAR_EL3="); uart_puthex((uint32_t)vbar);
         uart_puts("\n");
+        {
+            uint32_t vec_irq_curr_spx;
+            vec_irq_curr_spx = *(volatile uint32_t *)(vbar + 0x280);
+            uart_puts("  vec[Cur SPx IRQ] @ ");
+            uart_puthex((uint32_t)(vbar + 0x280));
+            uart_puts(" = ");
+            uart_puthex(vec_irq_curr_spx);
+            uart_puts(" (B opcode: top byte 0x14 expected)\n");
+        }
         uart_puts("  GICD_CTLR="); uart_puthex(*(volatile uint32_t *)(GICD_BASE + 0x000));
         uart_puts(" GICD_ISENABLER(0)="); uart_puthex(*(volatile uint32_t *)(GICD_BASE + 0x100));
         uart_puts(" GICD_IGROUPR(0)="); uart_puthex(*(volatile uint32_t *)(GICD_BASE + 0x080));
@@ -180,6 +189,16 @@ int main(void)
         uart_puts("\n");
         gic_self_test_sgi(0);
         delay_ms(10);
+        {
+            uint64_t isr, rpr;
+            __asm__ volatile ("mrs %0, isr_el1" : "=r"(isr));
+            rpr = *(volatile uint32_t *)(GICC_BASE + 0x014);
+            uart_puts("  post-SGI: ISR_EL1=");
+            uart_puthex((uint32_t)isr);
+            uart_puts(" (bit7=I, bit6=F, bit8=A)\n");
+            uart_puts("  GICC_RPR="); uart_puthex((uint32_t)rpr);
+            uart_puts(" (running priority; 0xFF=idle)\n");
+        }
         uart_puts("  SGI fired. gic_total_irqs: ");
         uart_putdec(before);
         uart_puts(" -> ");
@@ -199,6 +218,28 @@ int main(void)
                 uart_puthex(*(volatile uint32_t *)(GICC_BASE + 0x018));
                 uart_puts("\n");
             }
+        }
+        /* Extra system-register snapshot. FSBL/ATF sometimes leaves
+         * HCR_EL2 / MDCR_EL3 / OSLAR_EL1 with bits set that affect
+         * exception routing or debug halt; dump them so we can rule
+         * those out. NOTE: WFI wake test was tried here and hangs
+         * the CPU even though ISR_EL1.I=1 was observed earlier - the
+         * GIC appears to assert and deassert nIRQ within a few cycles
+         * rather than holding it level until ACK. That is consistent
+         * with edge-triggered SGI behavior but is not what the spec
+         * requires; it leaves no time for the exception logic to
+         * latch the event. */
+        {
+            uint64_t hcr, mdcr, sctlr, oslsr;
+            __asm__ volatile ("mrs %0, hcr_el2"   : "=r"(hcr));
+            __asm__ volatile ("mrs %0, mdcr_el3"  : "=r"(mdcr));
+            __asm__ volatile ("mrs %0, sctlr_el3" : "=r"(sctlr));
+            __asm__ volatile ("mrs %0, oslsr_el1" : "=r"(oslsr));
+            uart_puts("  HCR_EL2=");   uart_puthex((uint32_t)hcr);
+            uart_puts(" MDCR_EL3=");   uart_puthex((uint32_t)mdcr);
+            uart_puts("\n  SCTLR_EL3="); uart_puthex((uint32_t)sctlr);
+            uart_puts(" OSLSR_EL1="); uart_puthex((uint32_t)oslsr);
+            uart_puts("\n");
         }
     }
 #endif

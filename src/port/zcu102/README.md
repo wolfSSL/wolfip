@@ -11,9 +11,10 @@ UDP echo socket on port 7 and runs a DHCP client to acquire a lease.
 ## What this port covers
 
 - PS-GEM3 (on-board RJ45) at 1 Gbps via the TI DP83867IR PHY (RGMII).
-- Polled RX + polled TX (GIC-400 SPI 63 latches correctly, but the
-  Cortex-A53 IRQ exception is not delivered in our EL3 single-EL setup;
-  `eth_poll()` drives `gem_isr()` directly from the main loop).
+- IRQ-driven RX via GIC-400 SPI 63 (`gem_isr()` runs from the EL3 IRQ
+  vector), polled TX. Requires `SCR_EL3.IRQ=1` to actually enter the
+  exception on this A53 even though we run at EL3 -- see the comment
+  in `startup.S`.
 - Clean-room Cadence GEM driver - no XEmacPs, no Xilinx Standalone BSP,
   no `xparameters.h`. All register base addresses live in `board.h`.
 - MMU at EL3 with a static page table: DDR Normal WB, peripherals
@@ -194,9 +195,5 @@ at `/dev/ttyUSB0` and 115200 8N1).
 
 ## Known issues
 
-- The A53 IRQ exception is not delivered (GIC latches the SPI/SGI and
-  `GICC_IAR` ack works when polled, but the IRQ vector never fires).
-  Worked around by polling `gem_isr()` from `eth_poll()` in the main
-  loop. Real root cause is open.
 - `MAX_TCPSOCKETS=2` is the minimum for the current wolfIP core - see
   the timer-heap note above.

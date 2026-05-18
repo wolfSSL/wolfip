@@ -104,16 +104,19 @@ _start:
     msr     spsel, #1
 
     /* Force SCR_EL3 to a known state. We run entirely at EL3 in
-     * Secure world, so:
-     *   bit 0 NS  = 0  (stay Secure)
-     *   bit 1 IRQ = 0  (IRQ taken at current EL, i.e. EL3)
-     *   bit 2 FIQ = 0  (FIQ taken at current EL, i.e. EL3)
-     *   bit 3 EA  = 0  (SError taken at current EL)
-     *   bit 10 RW = 0  (no lower EL64; we never drop to lower EL)
-     * All other bits 0. FSBL leaves this at an unspecified value,
-     * which has been a source of confusion when debugging IRQ
-     * delivery; pin it. */
-    msr     scr_el3, xzr
+     * Secure world. The wolfBoot AArch64 startup explicitly sets the
+     * IRQ + FIQ + EA routing bits even though the ARM ARM says they
+     * only affect lower-EL interrupts; reusing that convention here
+     * because empirically the A53 does not enter the IRQ exception
+     * unless these are set (ISR_EL1.I went high but no exception
+     * fired with these bits clear).
+     *   bit 0  NS  = 0  (stay Secure)
+     *   bit 1  IRQ = 1  (route IRQ to EL3)
+     *   bit 2  FIQ = 1  (route FIQ to EL3)
+     *   bit 3  EA  = 1  (route SError/abort to EL3)
+     *   bit 10 RW  = 0  (no lower EL64; we never drop to lower EL) */
+    mov     x0, #((1 << 1) | (1 << 2) | (1 << 3))
+    msr     scr_el3, x0
     isb
 
     /* Vector base. */
