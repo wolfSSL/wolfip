@@ -1,0 +1,154 @@
+# JTAG load of the wolfIP A53-0 bare-metal app on ZCU102.
+#
+# Pattern adapted from a known-working ZynqMP JTAG bare-metal loader
+# (puf-provision/run.tcl). Key differences from earlier attempts that
+# all failed silently:
+#   1. Force JTAG bootmode via CSU register write (mwr 0xFF5E0200 0x0100).
+#      Without this, rst -system leaves the SoC in a state where dow
+#      eventually fails or the core won't resume.
+#   2. Use psu_init.tcl directly (no FSBL stage). FSBL on this board has
+#      a JTAG-mode park (WFE deep-sleep) that 'con' cannot wake.
+#   3. Use mwr -force per word to write the raw binary instead of dow.
+#      xsdb's dow path on DDR has a cache-flush dance that fails after
+#      psu_init runs.
+#   4. Install a 'b .' bootloop at the A53 default RVBAR (0xFFFF0000)
+#      so rst -processor is safe and doesn't fly off into garbage.
+#   5. After dow, target A53, rst -processor, stop, rwr pc, con.
+#
+# Env vars (set by jtag/boot.sh):
+#   APP_BIN       path to the raw binary (objcopy -O binary app.elf app.bin)
+#   APP_ELF       path to the ELF (for entry point reading)
+#   PSU_INIT_TCL  path to psu_init.tcl
+
+set OCM_BASE 0xFFFC0000
+
+# Load a raw binary file to a target address via mwr -force, one
+# 32-bit word at a time. Slow but reliable - bypasses xsdb's cache
+# coherency logic that breaks dow on DDR after psu_init.
+proc load_binary {bin_file base_addr} {
+    set fp [open $bin_file rb]
+    set data [read $fp]
+    close $fp
+    set len [string length $data]
+
+    # Pad to 4-byte alignment.
+    set pad [expr {(4 - ($len % 4)) % 4}]
+    if {$pad > 0} {
+        append data [string repeat "\x00" $pad]
+    }
+    set padded [string length $data]
+    set words [expr {$padded / 4}]
+
+    puts "  loading [format %d $len] bytes ($words words) to [format 0x%08X $base_addr]"
+
+    targets -set -nocase -filter {name =~ "*PSU*"}
+    for {set i 0} {$i < $words} {incr i} {
+        set off [expr {$i * 4}]
+        binary scan $data @${off}iu word
+        mwr -force [format "0x%X" [expr {$base_addr + $off}]] \
+                   [format "0x%X" [expr {$word & 0xFFFFFFFF}]]
+        if {($i % 8192) == 0 && $i > 0} {
+            puts "  [expr {$i * 100 / $words}]%..."
+        }
+    }
+    puts "  100% done"
+    return $len
+}
+
+# ----------------------------------------------------------------------
+# 1. Connect, system reset, force JTAG bootmode.
+# ----------------------------------------------------------------------
+puts "Connecting..."
+connect
+
+# Enumerate the JTAG chain explicitly. Without this poke, the DAP /
+# PSU / APU targets are sometimes not visible immediately after the
+# hw_server attach - 'targets' will only show PS TAP / PMU / PL.
+puts "JTAG chain:"
+jtag targets
+
+puts "All targets:"
+targets
+
+puts "System reset..."
+targets -set -nocase -filter {name =~ "*PSU*"}
+rst -system
+after 500
+
+puts "Forcing JTAG boot mode (CSU)..."
+mwr 0xFF5E0200 0x0100
+after 1000
+
+# ----------------------------------------------------------------------
+# 2. psu_init - DDR, clocks, MIO, UART, GEM3 pinmux.
+# ----------------------------------------------------------------------
+puts "Sourcing psu_init.tcl..."
+source $env(PSU_INIT_TCL)
+puts "psu_init..."
+psu_init
+after 1000
+puts "psu_post_config..."
+psu_post_config
+after 500
+
+# ----------------------------------------------------------------------
+# 3. UART0 baud init (FSBL would do this; psu_init alone doesn't).
+# ----------------------------------------------------------------------
+puts "UART0 baud init (115200 8N1 at 100 MHz ref)..."
+targets -set -nocase -filter {name =~ "*PSU*"}
+mwr 0xFF000000 0x03      ;# CR: TX_RST + RX_RST
+mwr 0xFF000004 0x20      ;# MR: 8N1
+mwr 0xFF000018 124       ;# BAUDGEN: CD = 124
+mwr 0xFF000034 6         ;# BAUDDIV: BDIV = 6
+mwr 0xFF000000 0x114     ;# CR: TXEN + RXEN + STPBRK
+after 100
+
+# Banner write so we can see UART is live before our app starts.
+foreach c [split "=== JTAG ready, loading app ===\r\n" ""] {
+    scan $c %c v
+    mwr -force 0xFF000030 $v
+}
+after 200
+
+# ----------------------------------------------------------------------
+# 4. Load the wolfIP app binary into OCM (linker places everything
+#    in the 256 KB OCM at 0xFFFC0000, see target.ld).
+# ----------------------------------------------------------------------
+puts ""
+puts "Loading: $env(APP_BIN) at 0xFFFC0000 (OCM)"
+load_binary $env(APP_BIN) 0xFFFC0000
+
+# ----------------------------------------------------------------------
+# 5. Install RVBAR boot loop in OCM so rst -processor doesn't crash.
+# ----------------------------------------------------------------------
+puts ""
+puts "Installing RVBAR boot loop at 0xFFFF0000..."
+targets -set -nocase -filter {name =~ "*PSU*"}
+mwr -force 0xFFFF0000 0x14000000   ;# B . (branch to self, aarch64)
+mwr -force 0xFFFF0004 0x14000000
+
+# ----------------------------------------------------------------------
+# 6. A53 #0: reset, halt, set PC, continue.
+# ----------------------------------------------------------------------
+puts ""
+puts "Preparing A53 #0..."
+targets -set -nocase -filter {name =~ "*A53*#0"}
+rst -processor
+after 200
+catch {stop}
+after 200
+puts "PC after rst -processor (should be RVBAR 0xFFFF0000): [rrd pc]"
+
+set readelf [expr {[info exists env(READELF)] ? $env(READELF) : "aarch64-none-elf-readelf"}]
+set entry [exec $readelf -h $env(APP_ELF) | grep "Entry point" | awk "{print \$NF}"]
+puts "App ELF entry: $entry"
+rwr pc $entry
+puts "PC after rwr: [rrd pc]"
+
+puts ""
+puts "con..."
+con
+
+puts "Detaching, leaving app running."
+disconnect
+exit
