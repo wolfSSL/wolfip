@@ -35,6 +35,11 @@
 #ifndef LINK_MTU_MIN
 #define LINK_MTU_MIN 64U
 #endif
+
+#ifndef WOLFIP_MAX_ROUTES
+#define WOLFIP_MAX_ROUTES 16U
+#endif
+
 #define WOLFIP_LOOPBACK_IP 0x7F000001U
 #define WOLFIP_LOOPBACK_MASK 0xFF000000U
 #if WOLFIP_ENABLE_LOOPBACK
@@ -1248,6 +1253,13 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int if_idx);
+static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len);
+#if WOLFIP_ENABLE_FORWARDING
+static int wolfIP_route_match_prefix(ip4 addr, ip4 prefix, uint8_t prefix_len);
+static uint32_t wolfIP_prefix_mask(uint8_t prefix_len);
+#endif
+static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
+                                        unsigned int *if_idx, ip4 *nexthop);
 static inline unsigned int wolfIP_socket_if_idx(const struct tsocket *t);
 #ifdef WOLFIP_ESP
 static int esp_send(struct wolfIP_ll_dev *ll_dev,
@@ -1318,6 +1330,15 @@ struct wolfIP_timer {
     void (*cb)(void *arg);
 };
 
+struct wolfIP_route_entry {
+    ip4 prefix;
+    ip4 gateway;
+    uint32_t order;
+    uint8_t prefix_len;
+    uint8_t if_idx;
+    uint8_t used;
+};
+
 /* Timer binary heap */
 struct timers_binheap {
     struct wolfIP_timer timers[MAX_TIMERS];
@@ -1366,6 +1387,10 @@ struct wolfIP {
 #endif
     uint16_t ipcounter;
     uint64_t last_tick;
+#if WOLFIP_ENABLE_FORWARDING
+    uint32_t route_generation;
+    struct wolfIP_route_entry routes[WOLFIP_MAX_ROUTES];
+#endif
 #ifdef ETHERNET
     struct wolfIP_arp {
         uint64_t last_arp[WOLFIP_MAX_INTERFACES];
@@ -1674,6 +1699,52 @@ static inline struct ipconf *wolfIP_primary_ipconf(struct wolfIP *s)
     return wolfIP_ipconf_at(s, WOLFIP_PRIMARY_IF_IDX);
 }
 
+static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len)
+{
+    uint8_t len = 0U;
+    uint32_t seen_zero = 0U;
+    unsigned int bit;
+
+    if (!prefix_len)
+        return -WOLFIP_EINVAL;
+
+    for (bit = 0U; bit < 32U; bit++) {
+        uint32_t test = 0x80000000U >> bit;
+
+        if ((mask & test) != 0U) {
+            if (seen_zero != 0U)
+                return -WOLFIP_EINVAL;
+            len++;
+        } else {
+            seen_zero = 1U;
+        }
+    }
+
+    *prefix_len = len;
+    return 0;
+}
+
+#if WOLFIP_ENABLE_FORWARDING
+static uint32_t wolfIP_prefix_mask(uint8_t prefix_len)
+{
+    if (prefix_len == 0U)
+        return 0U;
+    if (prefix_len >= 32U)
+        return 0xFFFFFFFFU;
+    return 0xFFFFFFFFU << (32U - prefix_len);
+}
+
+static int wolfIP_route_match_prefix(ip4 addr, ip4 prefix, uint8_t prefix_len)
+{
+    uint32_t mask = wolfIP_prefix_mask(prefix_len);
+
+    if (prefix_len == 0U)
+        return 1;
+
+    return ((addr & mask) == (prefix & mask)) ? 1 : 0;
+}
+#endif /* WOLFIP_ENABLE_FORWARDING */
+
 static inline uint16_t ipcounter_next(struct wolfIP *s)
 {
     uint16_t id = s->ipcounter;
@@ -1832,60 +1903,151 @@ static int wolfIP_forward_interface(struct wolfIP *s, unsigned int in_if, ip4 de
 }
 #endif
 
-static inline ip4 wolfIP_select_nexthop(const struct ipconf *conf, ip4 dest)
+static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
+                                        unsigned int *if_idx, ip4 *nexthop)
 {
-    if (dest == 0xFFFFFFFFU)
-        return dest;
-    if (!conf)
-        return dest;
-    if (ip_is_local_conf(conf, dest))
-        return dest;
-    if (conf->gw != IPADDR_ANY)
-        return conf->gw;
-    return dest;
+    unsigned int best_if = 0U;
+    ip4 best_nexthop = dest;
+    uint8_t best_prefix = 0U;
+#if WOLFIP_ENABLE_FORWARDING
+    uint32_t best_order = UINT32_MAX;
+#endif
+    int found = 0;
+    unsigned int i;
+
+    if (!s || s->if_count == 0U)
+        return -WOLFIP_EINVAL;
+
+    if (WOLFIP_PRIMARY_IF_IDX < s->if_count)
+        best_if = WOLFIP_PRIMARY_IF_IDX;
+
+    if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest)) {
+        if (if_idx)
+            *if_idx = best_if;
+        if (nexthop)
+            *nexthop = dest;
+        return 0;
+    }
+
+    /* Score connected (on-link) subnets and static routes together under
+     * one longest-prefix-match. The connected subnet must not short-
+     * circuit, otherwise a more-specific static route on a different
+     * iface (e.g. 10.1.2.0/24 -> if 2) can never override a less-
+     * specific connected subnet (e.g. 10.0.0.0/8 -> if 1). */
+    for (i = 0; i < s->if_count; i++) {
+        const struct ipconf *conf = wolfIP_ipconf_at(s, i);
+        uint8_t prefix_len;
+
+        if (!conf || conf->ip == IPADDR_ANY)
+            continue;
+
+        /* Exact local-IP match always wins immediately (delivery to self). */
+        if (conf->ip == dest) {
+            if (if_idx)
+                *if_idx = i;
+            if (nexthop)
+                *nexthop = dest;
+            return 0;
+        }
+
+        if (!ip_is_local_conf(conf, dest))
+            continue;
+
+        if (wolfIP_mask_prefix_len(conf->mask, &prefix_len) < 0)
+            continue;
+        if (!found || prefix_len > best_prefix) {
+            best_if = i;
+            best_nexthop = dest;
+            best_prefix = prefix_len;
+#if WOLFIP_ENABLE_FORWARDING
+            best_order = 0U;
+#endif
+            found = 1;
+        }
+    }
+
+    #if WOLFIP_ENABLE_FORWARDING
+    for (i = 0; i < WOLFIP_MAX_ROUTES; i++) {
+        const struct wolfIP_route_entry *route = &s->routes[i];
+
+        if (!route->used)
+            continue;
+        if (!wolfIP_route_match_prefix(dest, route->prefix, route->prefix_len))
+            continue;
+
+        if (!found ||
+            route->prefix_len > best_prefix ||
+            (route->prefix_len == best_prefix && route->order < best_order) ||
+            (route->prefix_len == best_prefix && route->order == best_order &&
+             route->if_idx < best_if)) {
+            best_if = route->if_idx;
+            best_nexthop = route->gateway != IPADDR_ANY ? route->gateway : dest;
+            best_prefix = route->prefix_len;
+            best_order = route->order;
+            found = 1;
+        }
+    }
+    #endif
+
+    if (!found) {
+        int has_gw_fallback = 0;
+        int has_non_loop = 0;
+        unsigned int gw_fallback = best_if;
+        unsigned int first_non_loop = best_if;
+
+        for (i = 0; i < s->if_count; i++) {
+            const struct ipconf *conf = wolfIP_ipconf_at(s, i);
+
+            if (!conf || (conf->ip == IPADDR_ANY && conf->gw == IPADDR_ANY))
+                continue;
+            if (!wolfIP_is_loopback_if(i) && !has_non_loop) {
+                first_non_loop = i;
+                has_non_loop = 1;
+            }
+            if (!wolfIP_is_loopback_if(i) && !has_gw_fallback &&
+                conf->gw != IPADDR_ANY) {
+                gw_fallback = i;
+                has_gw_fallback = 1;
+            }
+        }
+
+        if (has_gw_fallback) {
+            const struct ipconf *conf = wolfIP_ipconf_at(s, gw_fallback);
+            best_if = gw_fallback;
+            best_nexthop = (conf && conf->gw != IPADDR_ANY) ? conf->gw : dest;
+        } else if (has_non_loop) {
+            best_if = first_non_loop;
+            best_nexthop = dest;
+        }
+    }
+
+    if (if_idx)
+        *if_idx = best_if;
+    if (nexthop)
+        *nexthop = best_nexthop;
+    return 0;
 }
 
 static unsigned int wolfIP_route_for_ip(struct wolfIP *s, ip4 dest)
 {
-    unsigned int default_if = 0;
-    unsigned int gw_fallback = 0;
-    unsigned int first_non_loop = 0;
-    int has_gw_fallback = 0;
-    int has_non_loop = 0;
-    unsigned int i;
+    unsigned int if_idx = 0U;
 
-    if (!s || s->if_count == 0)
-        return 0;
+    (void)wolfIP_route_lookup_internal(s, dest, &if_idx, NULL);
+    return if_idx;
+}
 
-    if (WOLFIP_PRIMARY_IF_IDX < s->if_count)
-        default_if = WOLFIP_PRIMARY_IF_IDX;
+static ip4 wolfIP_select_nexthop_ex(struct wolfIP *s, unsigned int *if_idx, ip4 dest)
+{
+    unsigned int resolved_if = if_idx ? *if_idx : 0U;
+    ip4 nexthop = dest;
 
-    if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest))
-        return default_if;
-
-    for (i = 0; i < s->if_count; i++) {
-        struct ipconf *conf = &s->ipconf[i];
-        if (conf->ip == IPADDR_ANY && conf->gw == IPADDR_ANY)
-            continue;
-        if (ip_is_local_conf(conf, dest) || conf->ip == dest) {
-            return i;
-        }
-        if (!wolfIP_is_loopback_if(i) && !has_non_loop) {
-            first_non_loop = i;
-            has_non_loop = 1;
-        }
-        if (!wolfIP_is_loopback_if(i) && !has_gw_fallback && conf->gw != IPADDR_ANY) {
-            gw_fallback = i;
-            has_gw_fallback = 1;
-        }
+    if (wolfIP_route_lookup_internal(s, dest, &resolved_if, &nexthop) == 0) {
+        if (if_idx)
+            *if_idx = resolved_if;
+        return nexthop;
     }
-    if (has_gw_fallback) {
-        return gw_fallback;
-    }
-    if (has_non_loop) {
-        return first_non_loop;
-    }
-    return default_if;
+
+    return dest;
 }
 
 static inline unsigned int wolfIP_socket_if_idx(const struct tsocket *t)
@@ -1918,7 +2080,8 @@ static unsigned int raw_route_for_ip(struct wolfIP *s, struct rawsocket *rs, ip4
                 return i;
         }
     }
-    return wolfIP_route_for_ip(s, dest);
+    (void)wolfIP_route_lookup_internal(s, dest, &if_idx, NULL);
+    return if_idx;
 }
 #endif
 
@@ -3094,12 +3257,9 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
             return -1;
         memcpy(t->nexthop_mac, ll->mac, 6);
     } else if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
-        struct ipconf *conf = wolfIP_ipconf_at(t->S, tx_if);
         ip4 nexthop;
 
-        if (!conf)
-            return -1;
-        nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
+        nexthop = wolfIP_select_nexthop_ex(t->S, &tx_if, t->remote_ip);
 
         if (arp_lookup(t->S, tx_if, nexthop, t->nexthop_mac) < 0) {
             arp_request(t->S, tx_if, nexthop);
@@ -3570,7 +3730,6 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     uint32_t frame_len;
     unsigned int tx_if;
 #ifdef ETHERNET
-    struct ipconf *conf;
     ip4 nexthop;
 #endif
 
@@ -3619,8 +3778,7 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
 
     tx_if = wolfIP_socket_if_idx(t);
 #ifdef ETHERNET
-    conf = wolfIP_ipconf_at(t->S, tx_if);
-    nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
+    nexthop = wolfIP_select_nexthop_ex(t->S, &tx_if, t->remote_ip);
     if (wolfIP_is_loopback_if(tx_if)) {
         struct wolfIP_ll_dev *loop = wolfIP_ll_at(t->S, tx_if);
         if (loop)
@@ -8312,6 +8470,15 @@ int wolfIP_arp_lookup_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t 
 
 #endif
 
+int wolfIP_dns_server_get(struct wolfIP *s, ip4 *dns_server)
+{
+    if (!s || !dns_server)
+        return -WOLFIP_EINVAL;
+
+    *dns_server = s->dns_server;
+    return 0;
+}
+
 /* Initialize the IP stack */
 void wolfIP_init(struct wolfIP *s)
 {
@@ -9523,8 +9690,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 continue;
             } else {
 #ifdef ETHERNET
-                struct ipconf *conf = wolfIP_ipconf_at(s, tx_if);
-                ip4 nexthop = wolfIP_select_nexthop(conf, ts->remote_ip);
+                ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, ts->remote_ip);
                 if (wolfIP_is_loopback_if(tx_if)) {
                     struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                     if (loop)
@@ -9653,8 +9819,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             unsigned int tx_if = wolfIP_socket_if_idx(t);
             int send_ret = 0;
 #ifdef ETHERNET
-            struct ipconf *conf = wolfIP_ipconf_at(s, tx_if);
-            ip4 nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
+            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, t->remote_ip);
             if (wolfIP_is_loopback_if(tx_if)) {
                 struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                 if (loop)
@@ -9732,8 +9897,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             unsigned int tx_if = wolfIP_socket_if_idx(t);
             int send_ret = 0;
 #ifdef ETHERNET
-            struct ipconf *conf = wolfIP_ipconf_at(s, tx_if);
-            ip4 nexthop = wolfIP_select_nexthop(conf, t->remote_ip);
+            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, t->remote_ip);
             if (wolfIP_is_loopback_if(tx_if)) {
                 struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                 if (loop)
@@ -9797,9 +9961,6 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             ip4 dst_ip = ee32(ip->dst);
             unsigned int tx_if = r->if_idx;
             ip4 nexthop;
-#ifdef ETHERNET
-            struct ipconf *conf;
-#endif
             if (dst_ip == 0) {
                 fifo_pop(&r->txbuf);
                 desc = fifo_peek(&r->txbuf);
@@ -9809,8 +9970,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 tx_if = raw_route_for_ip(s, r, dst_ip, r->dontroute);
             r->if_idx = (uint8_t)tx_if;
 #ifdef ETHERNET
-            conf = wolfIP_ipconf_at(s, tx_if);
-            nexthop = r->dontroute ? dst_ip : wolfIP_select_nexthop(conf, dst_ip);
+            nexthop = dst_ip;
+            if (!r->dontroute) {
+                nexthop = wolfIP_select_nexthop_ex(s, &tx_if, dst_ip);
+                r->if_idx = (uint8_t)tx_if;
+            }
             if (wolfIP_is_loopback_if(tx_if)) {
                 struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                 if (loop)
@@ -9902,3 +10066,144 @@ void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip,
     if (gw)
         *gw = conf->gw;
 }
+
+#if WOLFIP_ENABLE_FORWARDING
+unsigned int wolfIP_route_count(struct wolfIP *s)
+{
+    unsigned int i;
+    unsigned int count = 0U;
+
+    if (!s)
+        return 0U;
+
+    for (i = 0; i < WOLFIP_MAX_ROUTES; i++) {
+        if (s->routes[i].used)
+            count++;
+    }
+
+    return count;
+}
+
+int wolfIP_route_get(struct wolfIP *s, unsigned int route_idx,
+                     struct wolfIP_route_info *info)
+{
+#if WOLFIP_ENABLE_FORWARDING
+    unsigned int i;
+    unsigned int seen = 0U;
+
+    if (!s || !info)
+        return -WOLFIP_EINVAL;
+
+    for (i = 0; i < WOLFIP_MAX_ROUTES; i++) {
+        if (!s->routes[i].used)
+            continue;
+        if (seen++ != route_idx)
+            continue;
+        info->prefix = s->routes[i].prefix;
+        info->gateway = s->routes[i].gateway;
+        info->prefix_len = s->routes[i].prefix_len;
+        info->if_idx = s->routes[i].if_idx;
+        return 0;
+    }
+
+    return -WOLFIP_EINVAL;
+#else
+    (void)s;
+    (void)route_idx;
+    (void)info;
+    return -WOLFIP_EINVAL;
+#endif
+}
+
+int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
+                     uint8_t prefix_len, ip4 gateway)
+{
+#if WOLFIP_ENABLE_FORWARDING
+    unsigned int i;
+    struct wolfIP_route_entry *free_slot = NULL;
+    uint32_t mask;
+
+    if (!s || if_idx >= s->if_count || prefix_len > 32U)
+        return -WOLFIP_EINVAL;
+
+    mask = wolfIP_prefix_mask(prefix_len);
+    prefix &= mask;
+
+    for (i = 0; i < WOLFIP_MAX_ROUTES; i++) {
+        struct wolfIP_route_entry *route = &s->routes[i];
+
+        if (!route->used) {
+            if (!free_slot)
+                free_slot = route;
+            continue;
+        }
+
+        if (route->if_idx == if_idx &&
+            route->prefix_len == prefix_len &&
+            route->prefix == prefix) {
+            route->gateway = gateway;
+            return 0;
+        }
+    }
+
+    if (!free_slot)
+        return -WOLFIP_ENOMEM;
+
+    free_slot->used = 1U;
+    free_slot->if_idx = (uint8_t)if_idx;
+    free_slot->prefix_len = prefix_len;
+    free_slot->prefix = prefix;
+    free_slot->gateway = gateway;
+    free_slot->order = s->route_generation++;
+    return 0;
+#else
+    (void)s;
+    (void)if_idx;
+    (void)prefix;
+    (void)prefix_len;
+    (void)gateway;
+    return -WOLFIP_EINVAL;
+#endif
+}
+
+int wolfIP_route_delete(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
+                        uint8_t prefix_len)
+{
+#if WOLFIP_ENABLE_FORWARDING
+    unsigned int i;
+    uint32_t mask;
+
+    if (!s || if_idx >= s->if_count || prefix_len > 32U)
+        return -WOLFIP_EINVAL;
+
+    mask = wolfIP_prefix_mask(prefix_len);
+    prefix &= mask;
+
+    for (i = 0; i < WOLFIP_MAX_ROUTES; i++) {
+        struct wolfIP_route_entry *route = &s->routes[i];
+
+        if (!route->used)
+            continue;
+        if (route->if_idx != if_idx || route->prefix_len != prefix_len ||
+            route->prefix != prefix)
+            continue;
+        memset(route, 0, sizeof(*route));
+        return 0;
+    }
+
+    return -WOLFIP_EINVAL;
+#else
+    (void)s;
+    (void)if_idx;
+    (void)prefix;
+    (void)prefix_len;
+    return -WOLFIP_EINVAL;
+#endif
+}
+
+int wolfIP_route_lookup(struct wolfIP *s, ip4 dest, unsigned int *if_idx,
+                        ip4 *nexthop)
+{
+    return wolfIP_route_lookup_internal(s, dest, if_idx, nexthop);
+}
+#endif /* WOLFIP_ENABLE_FORWARDING */

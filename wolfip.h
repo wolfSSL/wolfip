@@ -196,6 +196,13 @@ struct ipconf {
     ip4 gw;
 };
 
+struct wolfIP_route_info {
+    ip4 prefix;
+    ip4 gateway;
+    uint8_t prefix_len;
+    uint8_t if_idx;
+};
+
 #ifdef IP_MULTICAST
 struct wolfIP_mreq_addr {
     uint32_t s_addr;
@@ -267,9 +274,6 @@ struct wolfIP_ip_mreq {
 #define IPSTACK_SOCK_STREAM 1
 #define IPSTACK_SOCK_DGRAM 2
 #define IPSTACK_SOCK_RAW 3
-#ifndef AF_PACKET
-#define AF_PACKET 17
-#endif
 
 
 struct wolfIP_sockaddr_in {
@@ -280,11 +284,19 @@ struct wolfIP_sockaddr_in {
 struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
 
+/* Pull in the system socket types when available, but only declare
+ * WOLFIP_HAVE_POSIX_TYPES once BOTH <sys/socket.h> AND <sys/uio.h> are
+ * confirmed present — wolfIP needs iovec/msghdr (from <sys/uio.h>) just
+ * as much as the socket types. If <sys/uio.h> is missing we fall through
+ * to the local iovec/msghdr definitions below so the build still works.
+ */
 #if defined(__has_include)
 #if __has_include(<sys/socket.h>)
 #include <sys/socket.h>
+#if __has_include(<sys/uio.h>)
 #include <sys/uio.h>
 #define WOLFIP_HAVE_POSIX_TYPES 1
+#endif
 #endif
 #endif
 
@@ -378,6 +390,7 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd);
 int dhcp_client_init(struct wolfIP *s);
 int dhcp_bound(struct wolfIP *s);
 int dhcp_client_is_running(struct wolfIP *s);
+int wolfIP_dns_server_get(struct wolfIP *s, ip4 *dns_server);
 
 /* DNS client */
 
@@ -405,6 +418,17 @@ int wolfIP_mtu_get(struct wolfIP *s, unsigned int if_idx, uint32_t *mtu);
 void wolfIP_ipconfig_set_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, ip4 mask, ip4 gw);
 void wolfIP_ipconfig_get_ex(struct wolfIP *s, unsigned int if_idx, ip4 *ip, ip4 *mask, ip4 *gw);
 int wolfIP_arp_lookup_ex(struct wolfIP *s, unsigned int if_idx, ip4 ip, uint8_t *mac);
+#if WOLFIP_ENABLE_FORWARDING
+int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
+                     uint8_t prefix_len, ip4 gateway);
+int wolfIP_route_delete(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
+                        uint8_t prefix_len);
+int wolfIP_route_lookup(struct wolfIP *s, ip4 dest, unsigned int *if_idx,
+                        ip4 *nexthop);
+int wolfIP_route_get(struct wolfIP *s, unsigned int route_idx,
+                     struct wolfIP_route_info *info);
+unsigned int wolfIP_route_count(struct wolfIP *s);
+#endif /* WOLFIP_ENABLE_FORWARDING */
 
 #if WOLFIP_VLAN
 /* 802.1Q VLAN sub-interface management.
