@@ -1,0 +1,31 @@
+# hostapd_sae_hwsim.conf.template
+#
+# WPA3-Personal (SAE) AP on a mac80211_hwsim virtual radio for interop
+# testing against the wolfIP supplicant's software SAE state machine.
+#
+# Placeholders in @...@ are substituted by run_hwsim_sae_test.sh.
+
+interface=@IFACE@
+driver=nl80211
+logger_stdout=-1
+logger_stdout_level=2
+
+ssid=@SSID@
+hw_mode=g
+channel=1
+
+# WPA3-SAE: AKM=SAE (00:0F:AC:08), CCMP-128 pairwise + group, MFP
+# required (per WPA3 cert).
+wpa=2
+wpa_key_mgmt=SAE
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+sae_password=@PSK@
+ieee80211w=2
+sae_groups=19 20 21
+
+# Forces sae_pwe=0 (legacy hunt-and-peck) to match v1 of the wolfIP
+# supplicant. v2 will add H2E (sae_pwe=2) per RFC 9380.
+sae_pwe=0
+
+ctrl_interface=/tmp/wolfip_hostapd_ctrl
