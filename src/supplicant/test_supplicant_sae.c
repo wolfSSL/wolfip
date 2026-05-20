@@ -118,13 +118,14 @@ static int ap_handle_supp_frame(struct fake_ap *a,
         if (sae_generate_commit(&a->sae) != 0) return -1;
         {
             uint8_t  commit_body[2 + 3 * SAE_MAX_PRIME_LEN];
-            size_t   clen = 0;
+            size_t   commit_len = 0;
             if (sae_serialize_commit(&a->sae, commit_body,
-                                     sizeof(commit_body), &clen) != 0) {
+                                     sizeof(commit_body),
+                                     &commit_len) != 0) {
                 return -1;
             }
             if (ap_send_frame(3, 1, a->h2e ? 126U : 0U,
-                              commit_body, clen) != 0) return -1;
+                              commit_body, commit_len) != 0) return -1;
         }
         a->sent_commit = 1;
 
