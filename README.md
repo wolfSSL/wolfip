@@ -19,6 +19,7 @@ configured to forward traffic between multiple network interfaces.
 - Optional IPv4-forwarding
 - Optional IPv4 UDP multicast with IGMPv3 ASM membership reports
 - Reusable allocation-free TFTP module under `src/tftp/`
+- Optional in-tree Wi-Fi supplicant (`src/supplicant/`) with WPA2-Personal (PSK 4-way), WPA2-Enterprise (EAP-TLS, optional PEAP/MSCHAPv2), and WPA3-Personal (SAE dragonfly with hunt-and-peck and RFC 9380 Hash-to-Element PWE, groups 19/20/21). See `tools/hostapd/README.md` for the build matrix and interop test harness.
 
 ## Supported socket types
 
