@@ -1,0 +1,41 @@
+# hostapd_psk.conf.template
+#
+# Hostapd in wired+WPA2-PSK mode for interop testing of the wolfIP
+# supplicant's 4-way handshake against a real authenticator. The wired
+# driver provides the link-layer; hostapd's wpa_auth state machine is
+# driver-agnostic, so the 4-way exchange itself is the same code path
+# that runs against a real Wi-Fi radio.
+#
+# Placeholders in @...@ are substituted by run_hostapd_test.sh.
+
+interface=@IFACE@
+driver=wired
+logger_stdout=-1
+logger_stdout_level=0
+
+# 'ssid' is used by hostapd to derive the PMK alongside the passphrase
+# (PBKDF2-HMAC-SHA1). It is not advertised in any Beacon since this is
+# wired mode; both peers must agree on the value by configuration.
+ssid=@SSID@
+
+# WPA2-Personal (RSN, CCMP, PSK).
+wpa=2
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+wpa_passphrase=@PSK@
+
+# 802.1X PAE must be enabled for hostapd's wired driver to deliver any
+# EAPOL frame to the station state machine, even when key management is
+# WPA-PSK. With wpa_key_mgmt=WPA-PSK, hostapd will skip EAP entirely
+# and trigger the 4-way handshake instead.
+#
+# Hostapd's config validator refuses ieee8021x=1 without some kind of
+# EAP/RADIUS backend, even when EAP isn't actually used. We satisfy the
+# check with a dummy eap_server + user file - the PSK key-management
+# path doesn't consult them at runtime.
+ieee8021x=1
+eap_server=1
+eap_user_file=@USER_FILE@
+
+ctrl_interface=/tmp/wolfip_hostapd_ctrl
