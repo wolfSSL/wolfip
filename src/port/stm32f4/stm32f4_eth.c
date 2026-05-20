@@ -40,8 +40,9 @@
 #define ETH_DEBUG(...) do { } while (0)
 #endif
 
-/* Millisecond tick provided by the board port (SysTick handler). */
-extern volatile uint64_t HAL_time_ms;
+/* HAL_time_ms (declared in stm32f4_eth.h) is the SysTick-driven millisecond
+ * tick maintained by the board port.  Use stm32f4_hal_time_ms() to read it
+ * tear-free. */
 
 /* HCLK frequency provided by the board port (used to pick MDIO divider). */
 extern uint32_t stm32f4_eth_hclk_hz(void);
@@ -284,12 +285,16 @@ static void eth_config_mac(const uint8_t *mac)
      * no PS bit (no GMII support). */
     ETH_MACCR = MACCR_ACS | MACCR_IPCO | MACCR_DM;
 
-    /* Perfect filter, broadcast allowed (DBF=0). */
-#ifdef DEBUG_ETH
-    ETH_MACFFR = (1U << 0); /* PR=1 promiscuous for diag */
-#else
-    ETH_MACFFR = 0U;
-#endif
+    /* Set PM=1 (Promiscuous Mode).  On this STM32F4 GMAC IP the hardware
+     * address filter rejects every incoming frame -- including broadcast
+     * ARP and multicast -- when PM=0, even with BFD=0 (broadcasts
+     * supposedly enabled), PAM=1 (pass-all-multicast), or RA=1
+     * (receive-all) set.  Only PM=1 opens the RX path.  Verified on
+     * NUCLEO-F439ZI with all four bits exercised individually.  wolfIP
+     * does its own destination-MAC check in software (wolfip.c
+     * recv_on()), so accepting extra frames here is benign aside from a
+     * small CPU cost in the polling loop. */
+    ETH_MACFFR = (1U << 0);
 }
 
 static void eth_config_speed_duplex(void)
@@ -405,10 +410,10 @@ static int eth_phy_init(void)
 
     /* Soft reset and wait. */
     (void)mdio_write(STM32F4_ETH_PHY_ADDR, PHY_BCR, BCR_RESET);
-    deadline = HAL_time_ms + 500U;
+    deadline = stm32f4_hal_time_ms() + 500U;
     do {
         bmcr = mdio_read(STM32F4_ETH_PHY_ADDR, PHY_BCR);
-    } while ((bmcr & BCR_RESET) && (HAL_time_ms < deadline));
+    } while ((bmcr & BCR_RESET) && (stm32f4_hal_time_ms() < deadline));
     if (bmcr & BCR_RESET) {
         printf("  PHY: reset did not clear\n");
         return -1;
@@ -424,12 +429,13 @@ static int eth_phy_init(void)
                      BCR_AUTONEG | BCR_RESTART_AN);
 
     /* Wait up to 5s for link up + AN complete. */
-    deadline = HAL_time_ms + 5000U;
+    deadline = stm32f4_hal_time_ms() + 5000U;
     do {
         bsr = mdio_read(STM32F4_ETH_PHY_ADDR, PHY_BSR);
         bsr = mdio_read(STM32F4_ETH_PHY_ADDR, PHY_BSR); /* latch-clear */
     } while (((bsr & (BSR_LINK | BSR_AN_COMPLETE)) !=
-              (BSR_LINK | BSR_AN_COMPLETE)) && (HAL_time_ms < deadline));
+              (BSR_LINK | BSR_AN_COMPLETE)) &&
+             (stm32f4_hal_time_ms() < deadline));
 
     printf("  PHY link: %s, AN: %s\n",
            (bsr & BSR_LINK) ? "UP" : "DOWN",
@@ -620,7 +626,7 @@ int stm32f4_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     eth_stop();
 
     if (eth_hw_reset() != 0)
-        return -2;
+        return -1;
 
     eth_config_dma();
     eth_init_desc();

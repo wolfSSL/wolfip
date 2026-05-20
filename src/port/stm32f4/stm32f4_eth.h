@@ -27,6 +27,23 @@
 #include <stdint.h>
 #include "wolfip.h"
 
+/* Millisecond tick counter, maintained by SysTick_Handler in the port's
+ * main.c.  Reads on Cortex-M4 are non-atomic (LDRD is interruptible), so
+ * always read it through stm32f4_hal_time_ms() below to avoid tearing. */
+extern volatile uint64_t HAL_time_ms;
+
+/* Tear-free read of HAL_time_ms.  Lamport double-read: in the worst case a
+ * SysTick fires between the two halves and a/b disagree, so re-read. */
+static inline uint64_t stm32f4_hal_time_ms(void)
+{
+    uint64_t a, b;
+    do {
+        a = HAL_time_ms;
+        b = HAL_time_ms;
+    } while (a != b);
+    return b;
+}
+
 /* Initialize the STM32F4 Ethernet MAC + DMA + PHY and hook the driver into
  * the wolfIP link-layer device.  PHY auto-negotiation is run synchronously
  * with a 5-second timeout.  Returns 0 on success, -2 if the PHY is reachable
