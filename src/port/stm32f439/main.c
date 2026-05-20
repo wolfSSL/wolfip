@@ -66,9 +66,24 @@
 #define RCC_PLLCFGR     (*(volatile uint32_t *)(RCC_BASE + 0x04U))
 #define RCC_CFGR        (*(volatile uint32_t *)(RCC_BASE + 0x08U))
 #define RCC_AHB1ENR     (*(volatile uint32_t *)(RCC_BASE + 0x30U))
+#define RCC_AHB2ENR     (*(volatile uint32_t *)(RCC_BASE + 0x34U))
 #define RCC_APB1ENR     (*(volatile uint32_t *)(RCC_BASE + 0x40U))
 #define RCC_APB2ENR     (*(volatile uint32_t *)(RCC_BASE + 0x44U))
 #define RCC_AHB1RSTR    (*(volatile uint32_t *)(RCC_BASE + 0x10U))
+
+#define RCC_AHB2ENR_RNGEN (1U << 6)
+
+/* Hardware RNG (RM0090 sec 24).  Clocked from PLL48CLK = 48 MHz (PLLQ=7). */
+#define RNG_BASE        0x50060800UL
+#define RNG_CR          (*(volatile uint32_t *)(RNG_BASE + 0x00U))
+#define RNG_SR          (*(volatile uint32_t *)(RNG_BASE + 0x04U))
+#define RNG_DR          (*(volatile uint32_t *)(RNG_BASE + 0x08U))
+#define RNG_CR_RNGEN    (1U << 2)
+#define RNG_SR_DRDY     (1U << 0)
+#define RNG_SR_CECS     (1U << 1)
+#define RNG_SR_SECS     (1U << 2)
+#define RNG_SR_CEIS     (1U << 5)
+#define RNG_SR_SEIS     (1U << 6)
 
 #define RCC_CR_HSEON    (1U << 16)
 #define RCC_CR_HSERDY   (1U << 17)
@@ -143,6 +158,8 @@
   #define UART_RX_PIN       9U
   #define UART_AF           7U
 #elif defined(BOARD_STM32439I_EVAL)
+  /* UART4 PC10(TX)/PC11(RX) AF8 -- STM32437I-EVAL VCP route, matches the
+   * wolfssl-examples-stm32 BARE F437 reference firmware. */
   #define UART_BASE         0x40004C00UL  /* UART4 */
   #define UART_CLK_BIT      RCC_APB1ENR_UART4EN
   #define UART_PORT         GPIOC_BASE
@@ -505,24 +522,38 @@ static void eth_clk_init(void)
 }
 
 /* ===================================================================== */
-/* wolfIP random number source                                            */
+/* wolfIP random number source - STM32F4 hardware RNG                     */
 /* ===================================================================== */
+
+static void rng_init(void)
+{
+    RCC_AHB2ENR |= RCC_AHB2ENR_RNGEN;
+    (void)RCC_AHB2ENR;
+    RNG_CR = RNG_CR_RNGEN;
+}
 
 uint32_t wolfIP_getrandom(void)
 {
-    static uint32_t lfsr;
-    static int seeded;
+    uint32_t sr;
+    uint32_t retries = 100U;
 
-    if (!seeded) {
-        lfsr = (uint32_t)HAL_time_ms;
-        if (lfsr == 0U)
-            lfsr = 0xC0FFEE01U;
-        seeded = 1;
+    while (retries-- > 0U) {
+        sr = RNG_SR;
+        if (sr & (RNG_SR_CEIS | RNG_SR_SEIS)) {
+            /* Clear error flags and restart the RNG.  CEIS indicates
+             * PLL48CLK trouble; SEIS indicates a seed-quality failure.
+             * Both are recoverable per RM0090. */
+            RNG_SR = sr & ~(RNG_SR_CEIS | RNG_SR_SEIS);
+            RNG_CR = 0U;
+            RNG_CR = RNG_CR_RNGEN;
+            continue;
+        }
+        if (sr & RNG_SR_DRDY)
+            return RNG_DR;
     }
-    lfsr ^= lfsr << 13;
-    lfsr ^= lfsr >> 17;
-    lfsr ^= lfsr << 5;
-    return lfsr;
+    /* RNG never produced data - fall back to a fixed value rather than
+     * hanging the stack.  This should not happen on a healthy board. */
+    return 0xDEADBEEFU;
 }
 
 /* ===================================================================== */
@@ -596,6 +627,7 @@ int main(void)
 
     systick_init();
     uart_init();
+    rng_init();
 
     printf("\n\n=== wolfIP STM32F437/F439 (" BOARD_NAME ") ===\n");
     printf("Build: " __DATE__ " " __TIME__ "\n");
@@ -620,7 +652,7 @@ int main(void)
 
 #ifdef DHCP
     printf("Starting DHCP...\n");
-    (void)wolfIP_poll(IPStack, HAL_time_ms);
+    (void)wolfIP_poll(IPStack, stm32f4_hal_time_ms());
     (void)dhcp_client_init(IPStack);
 #else
     {
@@ -642,10 +674,22 @@ int main(void)
 
     printf("TCP echo server on port %d\n", ECHO_PORT);
     listen_fd = wolfIP_sock_socket(IPStack, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+        printf("  ERROR: wolfIP_sock_socket failed (%d)\n", listen_fd);
+        for (;;) { __asm volatile ("wfi"); }
+    }
     wolfIP_register_callback(IPStack, listen_fd, echo_cb, IPStack);
-    (void)wolfIP_sock_bind(IPStack, listen_fd,
+    ret = wolfIP_sock_bind(IPStack, listen_fd,
                            (struct wolfIP_sockaddr *)&addr, sizeof(addr));
-    (void)wolfIP_sock_listen(IPStack, listen_fd, 1);
+    if (ret < 0) {
+        printf("  ERROR: wolfIP_sock_bind failed (%d)\n", ret);
+        for (;;) { __asm volatile ("wfi"); }
+    }
+    ret = wolfIP_sock_listen(IPStack, listen_fd, 1);
+    if (ret < 0) {
+        printf("  ERROR: wolfIP_sock_listen failed (%d)\n", ret);
+        for (;;) { __asm volatile ("wfi"); }
+    }
 
     printf("Ready! Test with:\n");
     printf("  ping <ip>\n");
@@ -654,13 +698,13 @@ int main(void)
     {
         uint64_t last_diag_ms = 0;
 #ifdef DHCP
-        uint64_t dhcp_start_ms = HAL_time_ms;
-        uint64_t dhcp_reinit_ms = HAL_time_ms;
+        uint64_t dhcp_start_ms = stm32f4_hal_time_ms();
+        uint64_t dhcp_reinit_ms = dhcp_start_ms;
         int dhcp_done = 0;
 #endif
 
         for (;;) {
-            uint64_t now = HAL_time_ms;
+            uint64_t now = stm32f4_hal_time_ms();
             (void)wolfIP_poll(IPStack, now);
 
 #ifdef DHCP
