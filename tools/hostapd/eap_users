@@ -1,0 +1,9 @@
+# wolfIP supplicant interop test - EAP user file for hostapd.
+#
+# Outer identity that the supplicant sends in EAP-Response/Identity.
+# The asterisk "*" entries are phase-2 fallbacks (unused for EAP-TLS).
+# We allow TLS for any inner identity since EAP-TLS authenticates by
+# certificate, not username/password.
+
+"alice@wolfip.local"  TLS
+*                     TLS
