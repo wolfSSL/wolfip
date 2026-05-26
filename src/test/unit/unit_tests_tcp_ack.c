@@ -2321,16 +2321,16 @@ START_TEST(test_arp_recv_request_does_not_store_self_neighbor)
     for (i = 0; i < MAX_NEIGHBORS; i++) {
         if (s.arp.neighbors[i].if_idx != TEST_PRIMARY_IF)
             continue;
-        if (s.arp.neighbors[i].ip == sender_ip) {
+        if (s.arp.neighbors[i].ip == sender_ip)
             sender_count++;
-            ck_assert_mem_eq(s.arp.neighbors[i].mac, sender_mac,
-                             sizeof(sender_mac));
-        }
         if (s.arp.neighbors[i].ip == local_ip)
             self_count++;
     }
 
-    ck_assert_int_eq(sender_count, 1);
+    /* A REQUEST must never populate the cache: not our own IP (self), and
+     * -- even with an outstanding pending request -- not the sender either,
+     * since a spoofed sender IP/MAC could otherwise poison it (CWE-290). */
+    ck_assert_int_eq(sender_count, 0);
     ck_assert_int_eq(self_count, 0);
 }
 END_TEST

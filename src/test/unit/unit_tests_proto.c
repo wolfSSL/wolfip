@@ -2694,8 +2694,9 @@ START_TEST(test_arp_request_handling) {
     memcpy(arp_req.sma, req_mac, 6);
     arp_req.tip = ee32(device_ip);
 
-    /* Model a solicited learn: stack has an outstanding ARP request for
-     * req_ip, so the request handler is allowed to populate the cache. */
+    /* Even with an outstanding ARP request for req_ip, the request handler
+     * must not learn the sender: only a REPLY may populate the cache,
+     * otherwise a spoofed sender IP/MAC could poison it (CWE-290). */
     s.last_tick = 1000;
     arp_pending_record(&s, TEST_PRIMARY_IF, req_ip);
 
@@ -2705,9 +2706,8 @@ START_TEST(test_arp_request_handling) {
     wolfIP_poll(&s, 1001);
     wolfIP_poll(&s, 1002);
 
-    /* Check if ARP table updated with requester's MAC and IP */
-    ck_assert_int_eq(arp_lookup(&s, TEST_PRIMARY_IF, req_ip, mac), 0);
-    ck_assert_mem_eq(mac, req_mac, 6);
+    /* ARP table must NOT have been populated from the request */
+    ck_assert_int_eq(arp_lookup(&s, TEST_PRIMARY_IF, req_ip, mac), -1);
 
     /* Check if an ARP reply was generated */
     arp_reply = (struct arp_packet *)last_frame_sent;
