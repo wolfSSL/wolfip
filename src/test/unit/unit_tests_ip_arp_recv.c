@@ -1175,13 +1175,17 @@ START_TEST(test_arp_recv_reply_sender_zero_ip_rejected)
 END_TEST
 
 /* =========================================================================
- * arp_recv: valid ARP request IS cached when sender IP is legitimate
+ * arp_recv: a valid ARP request is answered but does NOT install a neighbor;
+ *           only a following REPLY populates the cache
  * =========================================================================
- * Positive test: confirms the happy path around the sender validation
- * runs (sip valid → arp_store_neighbor called when pending match exists).
+ * A REQUEST must never learn a new neighbor, even when it matches an
+ * outstanding pending request -- otherwise a spoofed sender IP/MAC can
+ * poison the cache and lock out the genuine reply (CWE-290, see
+ * test_arp_recv_forged_request_cannot_poison_pending). We still reply to the
+ * request, and the genuine reply that follows resolves the pending entry.
  * We use arp_pending_record directly to bypass the arp_request rate-limit.
  */
-START_TEST(test_arp_recv_valid_request_caches_neighbor_when_pending)
+START_TEST(test_arp_recv_request_replies_but_reply_caches_neighbor)
 {
     struct wolfIP s;
     struct arp_packet arp;
@@ -1198,8 +1202,9 @@ START_TEST(test_arp_recv_valid_request_caches_neighbor_when_pending)
     ll   = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
     conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
 
-    /* Pre-register a pending ARP request so learn path is triggered.
-     * arp_pending_record is the low-level helper; we use it directly. */
+    /* Pre-register a pending ARP request: even so, the request must not be
+     * allowed to learn the sender. arp_pending_record is the low-level
+     * helper; we use it directly. */
     arp_pending_record(&s, TEST_PRIMARY_IF, sender_ip);
 
     build_valid_arp_request(&arp, ll, conf->ip, sender_ip);
@@ -1208,10 +1213,91 @@ START_TEST(test_arp_recv_valid_request_caches_neighbor_when_pending)
     last_frame_sent_size = 0;
     arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
 
-    /* A reply should have been sent */
+    /* A reply should have been sent ... */
     ck_assert_uint_gt(last_frame_sent_size, 0);
-    /* Neighbor must now be in the cache */
+    /* ... but the request must NOT have installed a neighbor entry. */
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender_ip), 0);
+
+    /* The genuine reply for the still-pending request now populates it. */
+    build_valid_arp_request(&arp, ll, conf->ip, sender_ip);
+    arp.opcode = ee16(ARP_REPLY);
+    memcpy(arp.sma, sender_mac, 6);
+    memcpy(arp.tma, ll->mac, 6);
+    arp.tip = ee32(conf->ip);
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
     ck_assert_int_ge(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender_ip), 0);
+}
+END_TEST
+
+/*
+ * The neighbor cache for target_ip must end up holding the genuine MAC,
+ * never the attacker's.  This test FAILS against the vulnerable code.
+ */
+START_TEST(test_arp_recv_forged_request_cannot_poison_pending)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    const ip4 our_ip    = 0x0A000001U;
+    const ip4 target_ip = 0x0A000050U;   /* peer the victim is resolving */
+    static const uint8_t attacker_mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+    static const uint8_t legit_mac[6]    = {0x02, 0xCA, 0xFE, 0xBA, 0xBE, 0x01};
+    uint8_t mac_out[6];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, our_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    ll   = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+    s.last_tick = 1000;
+
+    /* (1) Victim issues an outbound ARP request for target_ip. */
+    arp_pending_record(&s, TEST_PRIMARY_IF, target_ip);
+
+    /* (2) Attacker forges a REQUEST: sender IP is the peer being resolved,
+     *     but the sender MAC is the attacker's. */
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, attacker_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype    = ee16(1);
+    arp.ptype    = ee16(0x0800);
+    arp.hlen     = 6;
+    arp.plen     = 4;
+    arp.opcode   = ee16(ARP_REQUEST);
+    memcpy(arp.sma, attacker_mac, 6);
+    arp.sip      = ee32(target_ip);
+    memset(arp.tma, 0, 6);
+    arp.tip      = ee32(conf->ip);
+    s.last_tick += 1;
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    /* (3) The genuine reply from target_ip arrives with the real MAC. */
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, legit_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype    = ee16(1);
+    arp.ptype    = ee16(0x0800);
+    arp.hlen     = 6;
+    arp.plen     = 4;
+    arp.opcode   = ee16(ARP_REPLY);
+    memcpy(arp.sma, legit_mac, 6);
+    arp.sip      = ee32(target_ip);
+    memcpy(arp.tma, ll->mac, 6);
+    arp.tip      = ee32(conf->ip);
+    s.last_tick += 1;
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    /* The genuine MAC must win: a forged request must never install (and
+     * then lock in) a spoofed MAC for a peer the victim is resolving. */
+    ck_assert_int_eq(arp_lookup(&s, TEST_PRIMARY_IF, target_ip, mac_out), 0);
+    ck_assert_mem_eq(mac_out, legit_mac, 6);
 }
 END_TEST
 
