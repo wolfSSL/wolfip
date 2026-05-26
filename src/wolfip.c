@@ -7783,15 +7783,24 @@ static int dhcp_poll(struct wolfIP *s)
 
 static int dhcp_send_request(struct wolfIP *s)
 {
+
     struct dhcp_msg req;
     struct dhcp_option *opt = (struct dhcp_option *)(req.options);
     struct wolfIP_sockaddr_in sin;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
-    uint64_t retry_at = s ? (s->last_tick + 1U) : 0;
-    int renewing = (s->dhcp_state == DHCP_RENEWING);
-    int rebinding = (s->dhcp_state == DHCP_REBINDING);
+    uint64_t retry_at = 0;
+    int renewing = 0;
+    int rebinding = 0;
     int ret;
     uint32_t opt_sz = 0;
+
+    if (!s)
+        return -1;
+
+    retry_at = s ? (s->last_tick + 1U) : 0;
+    renewing = (s->dhcp_state == DHCP_RENEWING);
+    rebinding = (s->dhcp_state == DHCP_REBINDING);
+
     /* Prepare DHCP request */
     memset(&req, 0, sizeof(struct dhcp_msg));
     req.op = BOOT_REQUEST;
