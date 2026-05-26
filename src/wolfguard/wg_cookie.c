@@ -26,6 +26,9 @@ void wg_cookie_checker_init(struct wg_cookie_checker *checker,
 {
     memset(checker, 0, sizeof(*checker));
 
+    checker->secret_birthdate = (UINT64_MAX -
+            (uint64_t)WG_COOKIE_SECRET_MAX_AGE * 1000UL - 1);
+
     wg_hash2(checker->message_mac1_key,
              (const uint8_t *)WG_LABEL_MAC1, strlen(WG_LABEL_MAC1),
              device_public_key, WG_PUBLIC_KEY_LEN);
