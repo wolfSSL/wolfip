@@ -475,8 +475,6 @@ static void wg_handle_initiation(struct wg_device *dev, const uint8_t *data,
         return;
     }
 
-    dev->handshakes_per_cycle++;
-
     /* Under load: require valid cookie (mac2) or send cookie reply */
     if (dev->under_load && mac_state != WG_COOKIE_MAC_VALID_WITH_COOKIE) {
         struct wg_msg_cookie cookie_reply;
@@ -496,6 +494,8 @@ static void wg_handle_initiation(struct wg_device *dev, const uint8_t *data,
         }
         return;
     }
+
+    dev->handshakes_per_cycle++;
 
     /* Consume initiation */
     peer = wg_noise_consume_initiation(dev, msg);
@@ -561,8 +561,6 @@ static void wg_handle_response(struct wg_device *dev, const uint8_t *data,
         return;
     }
 
-    dev->handshakes_per_cycle++;
-
     /* Under load: require valid cookie (mac2) or send cookie reply */
     if (dev->under_load && mac_state != WG_COOKIE_MAC_VALID_WITH_COOKIE) {
         struct wg_msg_cookie cookie_reply;
@@ -582,6 +580,8 @@ static void wg_handle_response(struct wg_device *dev, const uint8_t *data,
         }
         return;
     }
+
+    dev->handshakes_per_cycle++;
 
     /* Find peer by receiver_index (our sender_index from initiation) */
     receiver_index = wg_le32_decode(msg->receiver_index);

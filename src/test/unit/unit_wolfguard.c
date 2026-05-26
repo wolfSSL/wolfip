@@ -1695,6 +1695,49 @@ START_TEST(test_cookie_enforcement_under_load)
 }
 END_TEST
 
+/* Response-path load accounting must trip under_load. */
+START_TEST(test_response_under_load_threshold)
+{
+    struct wg_device dev_a, dev_b;
+    struct wg_peer peer_a, peer_b;
+    struct wg_msg_initiation init_msg;
+    struct wg_msg_response resp_msg;
+    struct wg_peer *found;
+    size_t mac_off;
+    int i;
+
+    setup_paired_devices(&dev_a, &dev_b, &peer_a, &peer_b);
+
+    dev_a.now = 20000;
+    dev_b.now = 20000;
+    wg_noise_handshake_init(&peer_a.handshake, dev_a.static_private,
+                            dev_b.static_public, NULL, &dev_a.rng);
+    ck_assert_int_eq(wg_noise_create_initiation(&dev_a, &peer_a, &init_msg), 0);
+    mac_off = offsetof(struct wg_msg_initiation, macs);
+    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off);
+
+    found = wg_noise_consume_initiation(&dev_b, &init_msg);
+    ck_assert_ptr_nonnull(found);
+    ck_assert_int_eq(wg_noise_create_response(&dev_b, found, &resp_msg), 0);
+
+    resp_msg.receiver_index = 0xDEADBEEFu;
+    mac_off = offsetof(struct wg_msg_response, macs);
+    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off);
+
+    wolfguard_poll(&dev_a, 30000);
+    ck_assert_int_eq(dev_a.under_load, 0);
+
+    for (i = 0; i < WOLFGUARD_MAX_PEERS; i++) {
+        wg_packet_receive(&dev_a, (const uint8_t *)&resp_msg, sizeof(resp_msg),
+                          ee32(0xC0A80105), ee16(40000));
+    }
+    ck_assert_int_eq(dev_a.handshakes_per_cycle, WOLFGUARD_MAX_PEERS);
+
+    wolfguard_poll(&dev_a, 40000);
+    ck_assert_int_eq(dev_a.under_load, 1);
+}
+END_TEST
+
 /* PSK survives rekey */
 START_TEST(test_psk_survives_rekey)
 {
@@ -2068,6 +2111,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_cookie_mac1_invalid);
     tcase_add_test(tc, test_cookie_reply);
     tcase_add_test(tc, test_cookie_enforcement_under_load);
+    tcase_add_test(tc, test_response_under_load_threshold);
     suite_add_tcase(s, tc);
 
     /* Allowed IPs */
