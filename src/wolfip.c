@@ -2148,6 +2148,8 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
                               void *arg)
 {
     struct tsocket *t;
+    if (!s)
+        return;
     if (sock_fd < 0)
         return;
     if (IS_SOCKET_TCP(sock_fd)) {
