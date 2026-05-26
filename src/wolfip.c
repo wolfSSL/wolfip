@@ -9406,6 +9406,9 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     struct wolfIP_timer tmr;
     memset(buf, 0, LINK_MTU);
 
+    if (!s)
+        return -WOLFIP_EINVAL;
+
     s->last_tick = now;
 
     /* Step 1: Poll the device */
