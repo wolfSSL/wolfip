@@ -242,6 +242,9 @@ int wolfguard_output(struct wg_device *dev, const uint8_t *packet, size_t len)
     if (len < 20)
         return -1; /* Too short for IPv4 header */
 
+    if ((packet[0] >> 4) != 4)
+        return -1;
+
     /* Extract destination IP from IPv4 header (offset 16) */
     memcpy(&dst_ip, packet + 16, 4);
 

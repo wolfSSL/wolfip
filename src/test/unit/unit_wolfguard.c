@@ -2067,6 +2067,61 @@ START_TEST(test_allowed_ip_source_rejected)
 END_TEST
 
 /*
+ * wolfguard_output (the wg0 TX dispatch) must reject frames whose IP version
+ * nibble is not 4.  wolfguard is IPv4-only (wg_allowedips_lookup keys on a
+ * uint32_t), and the destination-address read at offset 16 is only meaningful
+ * for an IPv4 header.  A raw or packet socket bound to wg0 (WOLFIP_RAWSOCKETS /
+ * WOLFIP_PACKET_SOCKETS) can hand an arbitrary frame to wolfguard_output; with
+ * no version check a non-IPv4 frame is misparsed as IPv4 and queued for
+ * encryption to whichever peer happens to match the four bytes at offset 16.
+ */
+START_TEST(test_output_rejects_non_ipv4)
+{
+    struct wg_device dev;
+    uint8_t frame[32];
+    const uint8_t bad_versions[] = { 0x00, 0x50, 0x60, 0xF0 }; /* not IPv4 */
+    size_t i;
+    int ret;
+
+    memset(&dev, 0, sizeof(dev));
+
+    /* Peer 0 owns 10.0.0.0/24 and is active but has no session, so any packet
+     * that reaches wg_packet_send is staged rather than encrypted. */
+    ck_assert_int_eq(wg_allowedips_insert(&dev, ee32(0x0A000000), 24, 0), 0);
+    dev.peers[0].is_active = 1;
+    /* A non-zeroed handshake state keeps wg_packet_send's staging branch from
+     * initiating a handshake, which would reach for the (absent) UDP socket. */
+    dev.peers[0].handshake.state = WG_HANDSHAKE_CREATED_INITIATION;
+
+    /* Each frame carries dest 10.0.0.2 at offset 16 -- a match for peer 0 --
+     * so the only thing standing between it and the send path is the version
+     * check.  staged_count stays 0 only if the frame is dropped first. */
+    for (i = 0; i < sizeof(bad_versions); i++) {
+        memset(frame, 0, sizeof(frame));
+        frame[0] = bad_versions[i];
+        frame[16] = 10; frame[17] = 0; frame[18] = 0; frame[19] = 2;
+
+        dev.peers[0].staged_count = 0;
+        ret = wolfguard_output(&dev, frame, sizeof(frame));
+
+        ck_assert_int_eq(ret, -1);
+        ck_assert_uint_eq(dev.peers[0].staged_count, 0);
+    }
+
+    /* Positive control: a well-formed IPv4 frame to the same destination is
+     * accepted and reaches the send path (staged, since there is no session). */
+    memset(frame, 0, sizeof(frame));
+    frame[0] = 0x45; /* IPv4, IHL=5 */
+    frame[16] = 10; frame[17] = 0; frame[18] = 0; frame[19] = 2;
+
+    dev.peers[0].staged_count = 0;
+    ret = wolfguard_output(&dev, frame, sizeof(frame));
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(dev.peers[0].staged_count, 1);
+}
+END_TEST
+
+/*
  * Test suite assembly
  * */
 
@@ -2142,6 +2197,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_staged_packets_zeroed_after_send);
     tcase_add_test(tc, test_keepalive_rejected_expired_key);
     tcase_add_test(tc, test_allowed_ip_source_rejected);
+    tcase_add_test(tc, test_output_rejects_non_ipv4);
     suite_add_tcase(s, tc);
 
     /* Timer logic (condition checks) */
