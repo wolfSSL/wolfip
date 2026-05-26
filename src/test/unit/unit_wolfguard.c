@@ -748,6 +748,62 @@ START_TEST(test_cookie_reply)
 END_TEST
 
 /*
+ * a default-initialized cookie secret must never validate a mac2.
+ */
+START_TEST(test_cookie_zero_secret_no_mac2_bypass)
+{
+    struct wg_device dev;
+    struct wg_peer peer;
+    struct wg_msg_initiation msg;
+    enum wg_cookie_mac_state state;
+    size_t mac_off;
+    uint32_t src_ip = 0x0A0A0A01;
+    uint16_t src_port = 12345;
+    uint8_t zero_secret[WG_HASH_LEN];
+    uint8_t src_data[6];
+    uint8_t forged_cookie[WG_COOKIE_LEN];
+
+    init_test_rng();
+
+    memset(&dev, 0, sizeof(dev));
+    memset(&peer, 0, sizeof(peer));
+
+    wg_dh_generate(dev.static_private, dev.static_public, &test_rng);
+
+    /* Default-initialized checker: secret all-zero, birthdate 0 */
+    wg_cookie_checker_init(&dev.cookie_checker, dev.static_public);
+
+    /* Build an initiation with a valid mac1 (the mac1 key derives from the
+     * device public key, which the attacker knows) and an initially zero mac2 */
+    memcpy(peer.public_key, dev.static_public, WG_PUBLIC_KEY_LEN);
+    wg_cookie_init(&peer.cookie, dev.static_public);
+
+    memset(&msg, 0xAA, sizeof(msg));
+    mac_off = offsetof(struct wg_msg_initiation, macs);
+    ck_assert_int_eq(wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off), 0);
+
+    /* Forge mac2 from the known all-zero secret, exactly as validate() would
+     * derive the cookie for this source */
+    memset(zero_secret, 0, sizeof(zero_secret));
+    memcpy(src_data, &src_ip, 4);
+    src_data[4] = (uint8_t)(src_port);
+    src_data[5] = (uint8_t)(src_port >> 8);
+    ck_assert_int_eq(wg_mac(forged_cookie, zero_secret, WG_HASH_LEN,
+                            src_data, sizeof(src_data)), 0);
+    ck_assert_int_eq(wg_mac(msg.macs.mac2, forged_cookie, WG_COOKIE_LEN,
+                            (uint8_t *)&msg, mac_off + WG_COOKIE_LEN), 0);
+
+    /* Boot-relative now: small ms-since-boot, within the freshness window */
+    state = wg_cookie_validate(&dev.cookie_checker, &msg, sizeof(msg),
+                               mac_off, src_ip, src_port, 5000);
+
+    /* The forged mac2 must NOT be accepted: a never-generated secret may never
+     * yield VALID_WITH_COOKIE (which would bypass under-load enforcement). */
+    ck_assert_int_ne(state, WG_COOKIE_MAC_VALID_WITH_COOKIE);
+}
+END_TEST
+
+/*
  * Allowed IPs (wg_allowedips.c)
  * */
 
@@ -2165,6 +2221,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_cookie_mac1_valid);
     tcase_add_test(tc, test_cookie_mac1_invalid);
     tcase_add_test(tc, test_cookie_reply);
+    tcase_add_test(tc, test_cookie_zero_secret_no_mac2_bypass);
     tcase_add_test(tc, test_cookie_enforcement_under_load);
     tcase_add_test(tc, test_response_under_load_threshold);
     suite_add_tcase(s, tc);
