@@ -263,7 +263,7 @@ int wolfguard_output(struct wg_device *dev, const uint8_t *packet, size_t len)
 void wolfguard_poll(struct wg_device *dev, uint64_t now_ms)
 {
     dev->now = now_ms;
-    dev->under_load = (dev->handshakes_per_cycle > WOLFGUARD_MAX_PEERS);
+    dev->under_load = (dev->handshakes_per_cycle >= WOLFGUARD_MAX_PEERS);
     dev->handshakes_per_cycle = 0;
     wg_timers_tick(dev, now_ms);
 }
