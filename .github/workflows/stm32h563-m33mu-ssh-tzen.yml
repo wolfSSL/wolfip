@@ -9,7 +9,7 @@ on:
 jobs:
   stm32h563_m33mu_ssh_tzen:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     container:
       image: ghcr.io/wolfssl/wolfboot-ci-m33mu:latest
       options: --privileged
@@ -56,7 +56,7 @@ jobs:
           grep -Fq "Initializing SSH server" /tmp/wolfip-app.strings
 
       - name: Run m33mu + DHCP + SSH test
-        timeout-minutes: 30
+        timeout-minutes: 10
         run: |
           set -euo pipefail
 
@@ -87,13 +87,12 @@ jobs:
           sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
           # wolfBoot does a full software ECC256 verify of the 300 KB
-          # signed NS image, which takes ~10 minutes inside m33mu before
-          # it BLXNSes into wolfIP. Allow up to 25 minutes total runtime
-          # and ~20 minutes for the DHCP lease to appear.
+          # signed NS image before it BLXNSes into wolfIP. End-to-end the
+          # m33mu run takes ~3 minutes; 360s gives ~2x headroom.
           sudo m33mu \
             ../wolfboot/wolfboot.bin \
             src/port/stm32h563/app_v1_signed.bin:0x60000 \
-            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 1500 --quit-on-faults \
+            --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 360 --quit-on-faults \
             2>&1 | tee /tmp/m33mu.log &
           sleep 1
           m33mu_pid="$(pgrep -n -x m33mu || true)"
@@ -102,7 +101,7 @@ jobs:
           fi
 
           ip=""
-          for _ in $(seq 1 1200); do
+          for _ in $(seq 1 300); do
             if [ -s /tmp/dnsmasq.leases ]; then
               ip="$(tail -n1 /tmp/dnsmasq.leases | cut -d' ' -f3)"
             fi
