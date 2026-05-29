@@ -64,6 +64,17 @@ SECTIONS
         __fini_array_end = .;
     } > FLASH
 
+    /* ETH DMA arena. TrustZone is disabled here so there is no privilege
+     * constraint, but stm32_eth.c emits descriptors/buffers into the
+     * named .eth_buffers section for all STM32H5 builds, so give it an
+     * explicit home in RAM. */
+    .eth_buffers (NOLOAD) :
+    {
+        . = ALIGN(32);
+        KEEP(*(.eth_buffers))
+        . = ALIGN(32);
+    } > RAM
+
     .data :
     {
         . = ALIGN(4);
