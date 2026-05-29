@@ -207,12 +207,14 @@ struct eth_desc {
 #if defined(STM32H7) || defined(STM32N6)
 #define ETH_SECTION __attribute__((section(".eth_buffers")))
 #elif defined(STM32H5)
-/* H5 places ETH descriptors and buffers in the regular .bss region.
- * Both TZEN=0 (TrustZone disabled) and TZEN=1 (NS app under wolfBoot)
- * link RAM into a single NS-accessible region; no separate ETHMEM
- * alias is needed since the CPU and ETH DMA both run in NS world and
- * share the same NS view of physical SRAM. */
-#define ETH_SECTION
+/* H5 pins ETH descriptors and buffers into the .eth_buffers section.
+ * Under TZEN=1, wolfBoot keeps SRAM3 non-secure but PRIVILEGED and
+ * cedes SRAM2 as non-secure + UNPRIVILEGED. The H5 ETH DMA master is
+ * unprivileged, so its descriptors/buffers must live in SRAM2; the
+ * linker script places .eth_buffers at the base of NS RAM (SRAM2 at
+ * 0x20040000). The same macro is used for TZEN=0, which has no
+ * privilege constraint but maps .eth_buffers the same way. */
+#define ETH_SECTION __attribute__((section(".eth_buffers")))
 #endif
 
 /* DMA descriptor / buffer addresses are taken as-is. NS pointers map

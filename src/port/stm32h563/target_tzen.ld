@@ -11,11 +11,15 @@
  * RAM: wolfBoot (patched hal_gtzc_init / hal_tz_sau_init) keeps SRAM1
  * secure for its own use and cedes SRAM2 + SRAM3 to NS:
  *   NS RAM: 0x20040000 .. 0x2009FFFF (384 KB, SRAM2 + SRAM3)
+ * SRAM2 (0x20040000, 64 KB) is non-secure + UNPRIVILEGED; SRAM3
+ * (0x20050000, 320 KB) is non-secure + PRIVILEGED. The .eth_buffers
+ * section is placed first so the ETH DMA descriptors/buffers land in
+ * SRAM2: the H5 ETH DMA master is unprivileged and can only reach the
+ * unprivileged window. The privileged NS CPU uses the rest of RAM.
  *
  * The NS app runs in Non-Secure world; plain LDR/STR carry HNONSEC=1,
  * matching the H5 product-default NS attribution for the ETH peripheral
- * and DMA. ETH descriptors and buffers live in the same NS RAM region
- * as everything else -- no separate ETHMEM alias is needed.
+ * and DMA.
  */
 
 MEMORY
@@ -77,6 +81,18 @@ SECTIONS
         KEEP(*(.fini_array*))
         __fini_array_end = .;
     } > FLASH
+
+    /* ETH DMA arena: placed first in RAM (RAM ORIGIN = 0x20040000 =
+     * SRAM2 base) so descriptors/buffers stay in the unprivileged SRAM2
+     * window reachable by the unprivileged ETH DMA master. NOLOAD: no
+     * FLASH load image, so LOADADDR(.data) below is unaffected. */
+    .eth_buffers (NOLOAD) :
+    {
+        . = ALIGN(32);
+        KEEP(*(.eth_buffers))
+        . = ALIGN(32);
+    } > RAM
+    ASSERT(. <= 0x20050000, ".eth_buffers must fit within SRAM2 (0x20040000-0x2004FFFF)")
 
     .data :
     {
