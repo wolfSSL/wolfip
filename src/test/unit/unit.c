@@ -1289,7 +1289,7 @@ Suite *wolf_suite(void)
 #ifdef IP_MULTICAST
     tcase_add_test(tc_core, test_poll_tx_udp_multicast_arp_skipped_uses_mcast_mac);
 #endif /* IP_MULTICAST */
-    /* --- unit_tests_dhcp_edges.c (43 tests) --- */
+    /* --- unit_tests_dhcp_edges.c (46 tests) --- */
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_zero_lease_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_null_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_renew_gt_lease_clamped);
@@ -1307,6 +1307,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_msg_type_len_ne_1_not_returned);
     tcase_add_test(tc_core, test_dhcp_msg_type_pad_bytes_skipped);
     tcase_add_test(tc_core, test_dhcp_msg_type_truncated_option_returns_neg1);
+    tcase_add_test(tc_core, test_dhcp_msg_type_nak_wrong_server_id_rejected);
+    tcase_add_test(tc_core, test_dhcp_msg_type_nak_absent_server_id_rejected);
+    tcase_add_test(tc_core, test_dhcp_msg_type_nak_matching_server_id_accepted);
     tcase_add_test(tc_core, test_dhcp_parse_offer_type_ack_not_offer_rejected);
     tcase_add_test(tc_core, test_dhcp_parse_offer_subnet_mask_len_lt4_rejected);
     tcase_add_test(tc_core, test_dhcp_parse_offer_inner_truncated_opt2_rejected);
