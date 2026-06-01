@@ -2563,8 +2563,21 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
             } else if (icmp->code == ICMP_PROT_UNREACH ||
                     icmp->code == ICMP_PORT_UNREACH) {
                 if (t->sock.tcp.state == TCP_SYN_SENT ||
-                        t->sock.tcp.state == TCP_SYN_RCVD)
-                    close_socket(t);
+                        t->sock.tcp.state == TCP_SYN_RCVD) {
+                    uint32_t emb_seq, snd_nxt;
+
+                    /* RFC 5927 4.1: only honour the error if the embedded
+                     * SEG.SEQ lies within the send window [SND.UNA, SND.NXT).
+                     * In SYN_SENT/SYN_RCVD the lone in-flight segment is the
+                     * SYN(-ACK), occupying exactly snd_una (seq is not yet
+                     * advanced here), so SND.NXT == snd_una + 1. */
+                    memcpy(&emb_seq, orig_tcp + 4, sizeof(emb_seq));
+                    emb_seq = ee32(emb_seq);
+                    snd_nxt = tcp_seq_inc(t->sock.tcp.snd_una, 1);
+                    if (tcp_seq_leq(t->sock.tcp.snd_una, emb_seq) &&
+                            tcp_seq_lt(emb_seq, snd_nxt))
+                        close_socket(t);
+                }
             }
         }
         break;
