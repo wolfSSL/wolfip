@@ -7592,6 +7592,9 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
 {
     uint8_t *opt = (uint8_t *)msg->options;
     uint8_t *opt_end;
+    int msg_type = -1;
+    int saw_server_id = 0;
+    uint32_t server_id = 0;
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
     if (ee32(msg->magic) != DHCP_MAGIC)
@@ -7618,11 +7621,20 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
         len = opt[1];
         if (opt + 2 + len > opt_end)
             break;
-        if (code == DHCP_OPTION_MSG_TYPE && len == 1)
-            return opt[2];
+        if (code == DHCP_OPTION_MSG_TYPE && len == 1) {
+            msg_type = opt[2];
+        } else if (code == DHCP_OPTION_SERVER_ID && len >= 4) {
+            server_id = DHCP_OPT_data_to_u32((struct dhcp_option *)opt);
+            saw_server_id = 1;
+        }
         opt += 2 + len;
     }
-    return -1;
+    /* Reject a reply that does not carry the server identifier of the
+     * server we committed to during the OFFER phase. */
+    if (s->dhcp_server_ip != 0 &&
+        (!saw_server_id || server_id != s->dhcp_server_ip))
+        return -1;
+    return msg_type;
 }
 
 static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
@@ -8282,11 +8294,6 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
                     if (memcmp(s->arp.neighbors[idx].mac, sender_mac, 6) == 0)
                         s->arp.neighbors[idx].ts = s->last_tick;
                 }
-                /* Do not learn a new neighbor from an unsolicited REQUEST:
-                 * a same-LAN attacker can spoof sip to match an outstanding pending request and install
-                 * a forged MAC that then locks out the genuine reply. Only REPLYs
-                 * populate new cache entries; the pending slot is left intact so the genuine
-                 * reply still resolves. */
             }
         }
         eth_output_add_header(s, if_idx, arp->tma, &arp->eth, ETH_TYPE_ARP);

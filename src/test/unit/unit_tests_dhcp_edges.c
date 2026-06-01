@@ -371,8 +371,62 @@ START_TEST(test_dhcp_msg_type_truncated_option_returns_neg1)
 }
 END_TEST
 
+START_TEST(test_dhcp_msg_type_nak_wrong_server_id_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    uint8_t *p;
+
+    wolfIP_init(&s);
+    s.dhcp_xid = 0xDEADBEEFU;
+    s.dhcp_server_ip = 0x0A000001U;          /* committed server */
+
+    build_dhcp_msg_base(&s, &msg, DHCP_NAK);
+    p = (uint8_t *)msg.options + 3;          /* after MSG_TYPE TLV */
+    append_opt4(&p, DHCP_OPTION_SERVER_ID, 0x0A000002U); /* different server */
+    append_end(&p);
+
+    ck_assert_int_eq(dhcp_msg_type(&s, &msg, sizeof(msg)), -1);
+}
+END_TEST
+
+START_TEST(test_dhcp_msg_type_nak_absent_server_id_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+
+    wolfIP_init(&s);
+    s.dhcp_xid = 0xDEADBEEFU;
+    s.dhcp_server_ip = 0x0A000001U;          /* committed server */
+
+    build_dhcp_msg_base(&s, &msg, DHCP_NAK); /* no SERVER_ID option */
+    ((uint8_t *)msg.options)[3] = DHCP_OPTION_END;
+
+    ck_assert_int_eq(dhcp_msg_type(&s, &msg, sizeof(msg)), -1);
+}
+END_TEST
+
+START_TEST(test_dhcp_msg_type_nak_matching_server_id_accepted)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    uint8_t *p;
+
+    wolfIP_init(&s);
+    s.dhcp_xid = 0xDEADBEEFU;
+    s.dhcp_server_ip = 0x0A000001U;          /* committed server */
+
+    build_dhcp_msg_base(&s, &msg, DHCP_NAK);
+    p = (uint8_t *)msg.options + 3;
+    append_opt4(&p, DHCP_OPTION_SERVER_ID, 0x0A000001U); /* committed server */
+    append_end(&p);
+
+    ck_assert_int_eq(dhcp_msg_type(&s, &msg, sizeof(msg)), DHCP_NAK);
+}
+END_TEST
+
 /* -------------------------------------------------------------------------
- * dhcp_parse_offer — additional branches
+ * dhcp_parse_offer - additional branches
  * ---------------------------------------------------------------------- */
 
 START_TEST(test_dhcp_parse_offer_type_ack_not_offer_rejected)
