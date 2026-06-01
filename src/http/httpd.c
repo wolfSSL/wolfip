@@ -300,14 +300,6 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     struct http_request req;
     struct http_url *url = NULL;
     memset(&req, 0, sizeof(struct http_request));
-    decoded_len = http_url_decode(p, len); /* Decode can be done in place */
-    if (decoded_len < 0) {
-        http_send_response_headers(hc, HTTP_STATUS_BAD_REQUEST,
-                http_status_text(HTTP_STATUS_BAD_REQUEST), "text/plain", 0);
-        return decoded_len;
-    }
-    len = (size_t)decoded_len;
-    end = p + len;
     if (len < 4)
         goto bad_request;
     /* Parse the request line */
@@ -328,6 +320,13 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
         goto bad_request;
     memcpy(req.path, p, n);
     req.path[n] = '\0';
+    decoded_len = http_url_decode(req.path, n);
+    if (decoded_len < 0)
+        goto bad_request;
+    req.path[decoded_len] = '\0';
+    if (memchr(req.path, '\r', (size_t)decoded_len) ||
+            memchr(req.path, '\n', (size_t)decoded_len))
+        goto bad_request;
     p = q + 1;
     q = strchr(p, '\r');
     if (!q)
