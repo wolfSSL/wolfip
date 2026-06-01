@@ -1645,7 +1645,67 @@ START_TEST(test_icmp_try_deliver_tcp_error_port_unreach_syn_sent_closes)
     memset(ts, 0, sizeof(*ts));
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
-    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.state   = TCP_SYN_SENT;
+    ts->sock.tcp.seq     = 0xDEADBEEFU;   /* ISS */
+    ts->sock.tcp.snd_una = 0xDEADBEEFU;
+    ts->local_ip  = 0x0A000001U;
+    ts->remote_ip = 0x0A000064U;
+    ts->src_port  = 54321;
+    ts->dst_port  = 443;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(buf, 0, sizeof(buf));
+    icmp->ip.len = ee16((uint16_t)(sizeof(buf) - ETH_HEADER_LEN));
+    icmp->type   = ICMP_DEST_UNREACH;
+    icmp->code   = ICMP_PORT_UNREACH;
+
+    orig_ip = (struct wolfIP_ip_wire *)(buf + sizeof(struct wolfIP_icmp_packet));
+    orig_ip->ver_ihl = 0x45;
+    orig_ip->proto   = WI_IPPROTO_TCP;
+    orig_ip->src     = ee32(ts->local_ip);
+    orig_ip->dst     = ee32(ts->remote_ip);
+
+    orig_tcp_hdr = (uint8_t *)orig_ip + IP_HEADER_LEN;
+    sp = ee16(ts->src_port);
+    dp = ee16(ts->dst_port);
+    memcpy(orig_tcp_hdr,     &sp, 2);
+    memcpy(orig_tcp_hdr + 2, &dp, 2);
+    /* RFC 5927 4.1: embedded SEG.SEQ is the in-flight SYN (== ISS == snd_una),
+     * so it falls inside the [snd_una, snd_una+1) send window. */
+    {
+        uint32_t emb_seq = ee32(ts->sock.tcp.seq);
+        memcpy(orig_tcp_hdr + 4, &emb_seq, 4);
+    }
+
+    icmp_try_deliver_tcp_error(&s, icmp);
+
+    /* PORT_UNREACH on SYN_SENT with an in-window seq must close the socket */
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+START_TEST(test_icmp_try_deliver_tcp_error_port_unreach_bad_seq_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_icmp_packet) + IP_HEADER_LEN + 8];
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)buf;
+    struct wolfIP_ip_wire *orig_ip;
+    uint8_t *orig_tcp_hdr;
+    uint16_t sp, dp;
+    uint32_t bad_seq;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state   = TCP_SYN_SENT;
+    ts->sock.tcp.seq     = 0xDEADBEEFU;   /* ISS */
+    ts->sock.tcp.snd_una = 0xDEADBEEFU;
     ts->local_ip  = 0x0A000001U;
     ts->remote_ip = 0x0A000064U;
     ts->src_port  = 54321;
@@ -1669,10 +1729,14 @@ START_TEST(test_icmp_try_deliver_tcp_error_port_unreach_syn_sent_closes)
     memcpy(orig_tcp_hdr,     &sp, 2);
     memcpy(orig_tcp_hdr + 2, &dp, 2);
 
+    /* seq far outside [snd_una, snd_una+1) */
+    bad_seq = ee32(0x41414141U);
+    memcpy(orig_tcp_hdr + 4, &bad_seq, 4);
+
     icmp_try_deliver_tcp_error(&s, icmp);
 
-    /* PORT_UNREACH on SYN_SENT must close the socket */
-    ck_assert_int_eq(ts->proto, 0);
+    /* Out-of-window seq: socket must NOT be closed */
+    ck_assert_int_ne(ts->proto, 0);
 }
 END_TEST
 

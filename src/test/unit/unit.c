@@ -1215,6 +1215,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_wrong_type_ignored);
     tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_ttl_exceeded_syn_sent);
     tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_port_unreach_syn_sent_closes);
+    tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_port_unreach_bad_seq_ignored);
     tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_src_ip_mismatch_not_closed);
     tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_frag_needed_reduces_mss);
     tcase_add_test(tc_core, test_icmp_try_deliver_tcp_error_avail_too_small);
