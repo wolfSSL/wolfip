@@ -71,15 +71,19 @@ void wolfIP_esp_sa_del_all(void)
     return;
 }
 
+static const uint8_t zero_spi[ESP_SPI_LEN] = {0x00, 0x00, 0x00, 0x00};
+
+/* Get an SA by spi.
+ * If spi is null, return the first empty slot (an SA with all zero SPI).
+ * */
 static inline wolfIP_esp_sa *
 esp_sa_get(int in, const uint8_t * spi)
 {
-    uint8_t         empty_sa[4] = {0x00, 0x00, 0x00, 0x00};
     wolfIP_esp_sa * list = NULL;
     size_t          i = 0;
 
     if (spi == NULL) {
-        spi = empty_sa;
+        spi = zero_spi;
     }
 
     in = (in == 0 ? 0 : 1);
@@ -109,6 +113,27 @@ void wolfIP_esp_sa_del(int in, uint8_t * spi)
     return;
 }
 
+/* return  0 if valid spi number.
+ * return -1 if invalid
+ * */
+static inline int
+esp_spi_valid(const uint8_t * spi)
+{
+    /* RFC4303:
+     *   The SPI value of zero (0) is reserved for local,
+     *   implementation-specific use and MUST NOT be sent on the wire.
+     * */
+    if (memcmp(spi, zero_spi, ESP_SPI_LEN) == 0) {
+        ESP_LOG("info: invalid zero (0) value spi\n");
+        return -1;
+    }
+
+    /* SPI values 1 through 255 are reserved by IANA, and technically we
+     * could check and reject them. Probably not worth being this fastidious.
+     * */
+    return 0;
+}
+
 /* Configure a new Security Association based on either
  * enc = ESP_ENC_GCM_RFC4106 (gcm), or enc = ESP_AUTH_GCM_RFC4543 (gmac).
  * */
@@ -119,6 +144,10 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     wolfIP_esp_sa * new_sa = NULL;
     int             err = 0;
     esp_auth_t      auth = 0;
+
+    if (esp_spi_valid(spi) < 0) {
+        return -1;
+    }
 
     new_sa = esp_sa_get(in, NULL);
     if (new_sa == NULL) {
@@ -233,6 +262,10 @@ int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
 {
     wolfIP_esp_sa * new_sa = NULL;
 
+    if (esp_spi_valid(spi) < 0) {
+        return -1;
+    }
+
     new_sa = esp_sa_get(in, NULL);
     if (new_sa == NULL) {
         ESP_LOG("error: sa %s pool is full\n", in == 1 ? "in" : "out");
@@ -274,6 +307,10 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                                uint8_t auth_key_len, uint8_t icv_len)
 {
     wolfIP_esp_sa * new_sa = NULL;
+
+    if (esp_spi_valid(spi) < 0) {
+        return -1;
+    }
 
     new_sa = esp_sa_get(in, NULL);
     if (new_sa == NULL) {
@@ -328,6 +365,10 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
                             uint8_t icv_len)
 {
     wolfIP_esp_sa * new_sa = NULL;
+
+    if (esp_spi_valid(spi) < 0) {
+        return -1;
+    }
 
     new_sa = esp_sa_get(in, NULL);
     if (new_sa == NULL) {
@@ -1312,8 +1353,14 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     memcpy(&seq, ip->data + ESP_SPI_LEN, sizeof(seq));
     seq = ee32(seq);
 
+    if (esp_spi_valid(spi) < 0) {
+        return -1;
+    }
+
     for (size_t i = 0; i < in_sa_num; ++i) {
-        if (memcmp(spi, in_sa_list[i].spi, sizeof(spi)) == 0) {
+        if (memcmp(spi, in_sa_list[i].spi, sizeof(spi)) == 0 &&
+                   ip->dst == ee32(in_sa_list[i].dst) &&
+                   ip->src == ee32(in_sa_list[i].src)) {
             ESP_DEBUG("info: found sa: 0x%02x%02x%02x%02x\n",
                       spi[0], spi[1], spi[2], spi[3]);
             esp_sa = &in_sa_list[i];
@@ -1326,7 +1373,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
          *   If no valid Security Association exists for this packet, the
          *   receiver MUST discard the packet; this is an auditable event.
          * */
-        ESP_LOG("error: unknown spi: 0x%02x%02x%02x%02x\n",
+        ESP_LOG("info: unknown spi: 0x%02x%02x%02x%02x\n",
                spi[0], spi[1], spi[2], spi[3]);
         return -1;
     }
@@ -1521,9 +1568,10 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     }
 
     /* todo: priority, proto / port filtering. currently this grabs
-     * the first dst match. */
+     * the first dst and src match. */
     for (size_t i = 0; i < out_sa_num; ++i) {
-        if (ip->dst == ee32(out_sa_list[i].dst)) {
+        if (ip->dst == ee32(out_sa_list[i].dst)  &&
+            ip->src == ee32(out_sa_list[i].src)) {
             esp_sa = &out_sa_list[i];
             ESP_DEBUG("info: found out sa: 0x%02x%02x%02x%02x\n",
                       esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2],

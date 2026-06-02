@@ -86,6 +86,7 @@ static uint8_t spi_a[4]   = { 0x11, 0x22, 0x33, 0x44 };
 static uint8_t spi_b[4]   = { 0x55, 0x66, 0x77, 0x88 };
 static uint8_t spi_c[4]   = { 0x99, 0xAA, 0xBB, 0xCC };
 static uint8_t spi_d[4]   = { 0xFF, 0xEE, 0xDD, 0xCC }; /* overflows pool */
+static uint8_t spi_bad[4] = { 0x00, 0x00, 0x00, 0x00 };
 
 /* Test IP addresses. */
 #define T_SRC  "192.168.1.1"
@@ -206,6 +207,14 @@ START_TEST(test_sa_hmac_bad)
     int ret;
     esp_setup();
 
+    /* everything good but spi */
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_bad,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868,
+                                 (uint8_t *)k_auth16, sizeof(k_auth16),
+                                 ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, -1);
+
     /* auth with wrong icv len */
     ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_a,
                                  atoip4(T_SRC), atoip4(T_DST),
@@ -255,6 +264,12 @@ START_TEST(test_sa_cbc_hmac_bad)
 {
     int ret;
     esp_setup();
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_bad,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_NONE, NULL, 0, 0);
+    ck_assert_int_eq(ret, -1);
+
     ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_a,
                                      atoip4(T_SRC), atoip4(T_DST),
                                      (uint8_t *)k_aes128, sizeof(k_aes128),
