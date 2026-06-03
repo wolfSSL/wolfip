@@ -119,6 +119,9 @@ void wolfIP_esp_sa_del(int in, uint8_t * spi)
 static inline int
 esp_spi_valid(const uint8_t * spi)
 {
+    if (spi == NULL) {
+        return -1;
+    }
     /* RFC4303:
      *   The SPI value of zero (0) is reserved for local,
      *   implementation-specific use and MUST NOT be sent on the wire.
@@ -1357,15 +1360,38 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         return -1;
     }
 
+    /* ESP SA lookup:
+     *  - If user configured {spi, src, dst}, then match on full triplet.
+     *  - If either src or dst are 0, don't require a full match.
+     *  - The spi must always match.
+     * */
     for (size_t i = 0; i < in_sa_num; ++i) {
-        if (memcmp(spi, in_sa_list[i].spi, sizeof(spi)) == 0 &&
-                   ip->dst == ee32(in_sa_list[i].dst) &&
-                   ip->src == ee32(in_sa_list[i].src)) {
-            ESP_DEBUG("info: found sa: 0x%02x%02x%02x%02x\n",
-                      spi[0], spi[1], spi[2], spi[3]);
-            esp_sa = &in_sa_list[i];
-            break;
+        if (esp_spi_valid(out_sa_list[i].spi) < 0) {
+            /* skip empty slots */
+            continue;
         }
+
+        if (memcmp(spi, in_sa_list[i].spi, sizeof(spi)) != 0) {
+            /* SPI doesn't match */
+            continue;
+        }
+
+        if (in_sa_list[i].dst != 0 &&
+            ip->dst != ee32(in_sa_list[i].dst)) {
+            /* SA ip dst is configured, and doesn't match */
+            continue;
+        }
+
+        if (in_sa_list[i].src != 0 &&
+            ip->src != ee32(in_sa_list[i].src)) {
+            /* SA ip src is configured, and doesn't match */
+            continue;
+        }
+
+        ESP_DEBUG("info: found sa: 0x%02x%02x%02x%02x\n",
+                  spi[0], spi[1], spi[2], spi[3]);
+        esp_sa = &in_sa_list[i];
+        break;
     }
 
     if (esp_sa == NULL) {
@@ -1373,7 +1399,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
          *   If no valid Security Association exists for this packet, the
          *   receiver MUST discard the packet; this is an auditable event.
          * */
-        ESP_LOG("info: unknown spi: 0x%02x%02x%02x%02x\n",
+        ESP_LOG("error: unknown spi: 0x%02x%02x%02x%02x\n",
                spi[0], spi[1], spi[2], spi[3]);
         return -1;
     }
@@ -1570,14 +1596,28 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     /* todo: priority, proto / port filtering. currently this grabs
      * the first dst and src match. */
     for (size_t i = 0; i < out_sa_num; ++i) {
-        if (ip->dst == ee32(out_sa_list[i].dst)  &&
-            ip->src == ee32(out_sa_list[i].src)) {
-            esp_sa = &out_sa_list[i];
-            ESP_DEBUG("info: found out sa: 0x%02x%02x%02x%02x\n",
-                      esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2],
-                      esp_sa->spi[3]);
-            break;
+        if (esp_spi_valid(out_sa_list[i].spi) < 0) {
+            /* skip empty slots */
+            continue;
         }
+
+        if (out_sa_list[i].dst != 0 &&
+            ip->dst != ee32(out_sa_list[i].dst)) {
+            /* SA ip dst is configured, and doesn't match */
+            continue;
+        }
+
+        if (out_sa_list[i].src != 0 &&
+            ip->src != ee32(out_sa_list[i].src)) {
+            /* SA ip src is configured, and doesn't match */
+            continue;
+        }
+
+        esp_sa = &out_sa_list[i];
+        ESP_DEBUG("info: found out sa: 0x%02x%02x%02x%02x\n",
+                  esp_sa->spi[0], esp_sa->spi[1], esp_sa->spi[2],
+                  esp_sa->spi[3]);
+        break;
     }
 
     if (esp_sa == NULL) {

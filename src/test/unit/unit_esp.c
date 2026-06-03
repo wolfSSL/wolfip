@@ -1263,8 +1263,8 @@ END_TEST
 
 /*
  * no matching outbound SA (esp_transport_wrap returns 1)
- * */
-/* When no outbound SA matches ip->dst, wrap must return 1 (caller should
+ *
+ * When no outbound SA matches ip->dst, wrap must return 1 (caller should
  * send plaintext). */
 START_TEST(test_wrap_no_matching_sa)
 {
