@@ -86,11 +86,12 @@ static uint8_t spi_a[4]   = { 0x11, 0x22, 0x33, 0x44 };
 static uint8_t spi_b[4]   = { 0x55, 0x66, 0x77, 0x88 };
 static uint8_t spi_c[4]   = { 0x99, 0xAA, 0xBB, 0xCC };
 static uint8_t spi_d[4]   = { 0xFF, 0xEE, 0xDD, 0xCC }; /* overflows pool */
-static uint8_t spi_bad[4] = { 0x00, 0x00, 0x00, 0x00 };
+static uint8_t spi_zero[4] = { 0x00, 0x00, 0x00, 0x00 };
 
 /* Test IP addresses. */
 #define T_SRC  "192.168.1.1"
 #define T_DST  "192.168.1.2"
+#define T_MISC "192.168.1.9"
 
 /*
  * builds a minimal IPv4 packet (with Ethernet frame header).
@@ -208,7 +209,7 @@ START_TEST(test_sa_hmac_bad)
     esp_setup();
 
     /* everything good but spi */
-    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_bad,
+    ret = wolfIP_esp_sa_new_hmac(1, (uint8_t *)spi_zero,
                                  atoip4(T_SRC), atoip4(T_DST),
                                  ESP_AUTH_SHA256_RFC4868,
                                  (uint8_t *)k_auth16, sizeof(k_auth16),
@@ -264,7 +265,7 @@ START_TEST(test_sa_cbc_hmac_bad)
 {
     int ret;
     esp_setup();
-    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_bad,
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_zero,
                                      atoip4(T_SRC), atoip4(T_DST),
                                      (uint8_t *)k_aes128, sizeof(k_aes128),
                                      ESP_AUTH_NONE, NULL, 0, 0);
@@ -900,6 +901,195 @@ START_TEST(test_unwrap_invalid_pad_pattern)
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
+
+/*
+ * test esp ip src/dst filtering
+ *
+ * This tests 4 scenarios:
+ *   1. misc src, dst address that does not match the SA triplet.
+ *   2. wildcard dst ip in outbound SA only, with misc dst address.
+ *   3. wildcard dst ip in both in/out SAs, with misc dst address.
+ *   4. wildcard src ip in both in/out SAs, with misc src address.
+ * */
+START_TEST(test_unwrap_ip_filtering)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    uint8_t        ref[64];
+    uint32_t       frame_len;
+    uint16_t       ip_len;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint8_t        restored_proto;
+    int            ret;
+    uint32_t       i;
+
+    /* Fill reference payload with a known pattern. */
+    for (i = 0U; i < sizeof(ref); i++) {
+        ref[i] = (uint8_t)(i & 0xFFU);
+    }
+
+    esp_setup();
+
+    /*
+     * 0th Scenario:
+     * do quick sanity check that wrap/unwrap works.
+     * */
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_SRC), atoip4(T_DST),
+                                    4321, 1234, ref, sizeof(ref));
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+    /* wrap */
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;
+    /* unwrap */
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, 0);
+    restored_proto = ip->proto;
+    ck_assert_uint_eq(restored_proto, WI_IPPROTO_UDP);
+    /* The udp payload must match the original plaintext exactly. */
+    ck_assert_mem_eq(ip->data + UDP_HEADER_LEN, ref, sizeof(ref));
+
+    /*
+     * 1st Scenario:
+     * misc src, dst address that do not match the SA triplet
+     * */
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_MISC), atoip4(T_DST),
+                                    4321, 1234, ref, sizeof(ref));
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+    ret = esp_transport_wrap(ip, &ip_len);
+    /* wrap fails */
+    ck_assert_int_eq(ret, 1);
+
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_SRC), atoip4(T_MISC),
+                                    4321, 1234, ref, sizeof(ref));
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+    ret = esp_transport_wrap(ip, &ip_len);
+    /* wrap fails */
+    ck_assert_int_eq(ret, 1);
+
+    /*
+     * 2nd Scenario:
+     * wildcard dst ip in outbound SA only, with misc dst address.
+     * */
+    wolfIP_esp_sa_del_all();
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), 0,
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+    /* Build a plaintext IPv4/UDP packet to MISC address. */
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_SRC), atoip4(T_MISC),
+                                    4321, 1234, ref, sizeof(ref));
+
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    /* wrap succeeds because it can wildcard. */
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;
+    /* but unwrap does not have wildcard and fails to match triplet */
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, -1);
+
+    /*
+     * 3rd Scenario:
+     * wildcard dst ip in both in/out SAs, with misc dst address.
+     * */
+    wolfIP_esp_sa_del_all();
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), 0,
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), 0,
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    /* Build a plaintext IPv4/UDP packet to MISC. */
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_SRC), atoip4(T_MISC),
+                                    4321, 1234, ref, sizeof(ref));
+
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    /* now wrap and unwrap succeeds because dst can wildcard match */
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;
+
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, 0);
+
+    /*
+     * 4th Scenario:
+     * wildcard src ip in both in/out SAs, with misc src address.
+     * */
+    wolfIP_esp_sa_del_all();
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     0, atoip4(T_DST),
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     0, atoip4(T_DST),
+                                     k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    /* Build a plaintext IPv4/UDP packet from MISC. */
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_MISC),atoip4(T_DST),
+                                    4321, 1234, ref, sizeof(ref));
+
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    /* now wrap and unwrap succeeds because src can wildcard match */
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    frame_len   = (uint32_t)ip_len + ETH_HEADER_LEN;
+
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, 0);
+}
 
 /*
  * full enc/dec round-trips
@@ -1740,6 +1930,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_unwrap_below_min_len);
     tcase_add_test(tc, test_unwrap_pad_too_big);
     tcase_add_test(tc, test_unwrap_invalid_pad_pattern);
+    tcase_add_test(tc, test_unwrap_ip_filtering);
     suite_add_tcase(s, tc);
 
     /* Crypto round-trips */

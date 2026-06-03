@@ -117,7 +117,7 @@ void wolfIP_esp_sa_del(int in, uint8_t * spi)
  * return -1 if invalid
  * */
 static inline int
-esp_spi_valid(const uint8_t * spi)
+esp_spi_valid(const uint8_t * spi, int log_it)
 {
     if (spi == NULL) {
         return -1;
@@ -127,7 +127,9 @@ esp_spi_valid(const uint8_t * spi)
      *   implementation-specific use and MUST NOT be sent on the wire.
      * */
     if (memcmp(spi, zero_spi, ESP_SPI_LEN) == 0) {
-        ESP_LOG("info: invalid zero (0) value spi\n");
+        if (log_it) {
+            ESP_LOG("info: invalid zero (0) value spi\n");
+        }
         return -1;
     }
 
@@ -148,7 +150,7 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     int             err = 0;
     esp_auth_t      auth = 0;
 
-    if (esp_spi_valid(spi) < 0) {
+    if (esp_spi_valid(spi, 1) < 0) {
         return -1;
     }
 
@@ -265,7 +267,7 @@ int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
 {
     wolfIP_esp_sa * new_sa = NULL;
 
-    if (esp_spi_valid(spi) < 0) {
+    if (esp_spi_valid(spi, 1) < 0) {
         return -1;
     }
 
@@ -311,7 +313,7 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
 {
     wolfIP_esp_sa * new_sa = NULL;
 
-    if (esp_spi_valid(spi) < 0) {
+    if (esp_spi_valid(spi, 1) < 0) {
         return -1;
     }
 
@@ -369,7 +371,7 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
 {
     wolfIP_esp_sa * new_sa = NULL;
 
-    if (esp_spi_valid(spi) < 0) {
+    if (esp_spi_valid(spi, 1) < 0) {
         return -1;
     }
 
@@ -1356,7 +1358,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     memcpy(&seq, ip->data + ESP_SPI_LEN, sizeof(seq));
     seq = ee32(seq);
 
-    if (esp_spi_valid(spi) < 0) {
+    if (esp_spi_valid(spi, 1) < 0) {
         return -1;
     }
 
@@ -1366,7 +1368,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
      *  - The spi must always match.
      * */
     for (size_t i = 0; i < in_sa_num; ++i) {
-        if (esp_spi_valid(out_sa_list[i].spi) < 0) {
+        if (esp_spi_valid(in_sa_list[i].spi, 0) < 0) {
             /* skip empty slots */
             continue;
         }
@@ -1596,7 +1598,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     /* todo: priority, proto / port filtering. currently this grabs
      * the first dst and src match. */
     for (size_t i = 0; i < out_sa_num; ++i) {
-        if (esp_spi_valid(out_sa_list[i].spi) < 0) {
+        if (esp_spi_valid(out_sa_list[i].spi, 0) < 0) {
             /* skip empty slots */
             continue;
         }
