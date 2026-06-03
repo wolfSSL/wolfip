@@ -1090,6 +1090,7 @@ START_TEST(test_unwrap_ip_filtering)
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, 0);
 }
+END_TEST
 
 /*
  * full enc/dec round-trips
