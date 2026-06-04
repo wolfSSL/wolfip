@@ -1238,3 +1238,13 @@ START_TEST(test_dhcp_parse_ack_without_lease_time_rejected)
     ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
 }
 END_TEST
+
+/* F-5485: the public DHCP helper APIs must tolerate a NULL stack pointer and
+ * return a deterministic value instead of dereferencing it. */
+START_TEST(test_dhcp_public_apis_null_stack_safe)
+{
+    ck_assert_int_eq(dhcp_bound(NULL), 0);
+    ck_assert_int_eq(dhcp_client_is_running(NULL), 0);
+    ck_assert_int_eq(dhcp_client_init(NULL), -WOLFIP_EINVAL);
+}
+END_TEST

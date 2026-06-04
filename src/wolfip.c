@@ -8035,6 +8035,8 @@ static int dhcp_send_discover(struct wolfIP *s)
 
 int dhcp_bound(struct wolfIP *s)
 {
+    if (!s)
+        return 0;
     return (s->dhcp_state == DHCP_BOUND ||
             s->dhcp_state == DHCP_RENEWING ||
             s->dhcp_state == DHCP_REBINDING);
@@ -8042,12 +8044,16 @@ int dhcp_bound(struct wolfIP *s)
 
 int dhcp_client_is_running(struct wolfIP *s)
 {
+    if (!s)
+        return 0;
     return DHCP_IS_RUNNING(s);
 }
 
 int dhcp_client_init(struct wolfIP *s)
 {
     struct wolfIP_sockaddr_in sin;
+    if (!s)
+        return -WOLFIP_EINVAL;
     if (s->dhcp_state != DHCP_OFF)
         return -1;
     s->dhcp_xid = wolfIP_getrandom();
