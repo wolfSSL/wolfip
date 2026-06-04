@@ -1388,6 +1388,67 @@ START_TEST(test_ip_recv_esp_transport_unwrap_failure_drops_packet)
 }
 END_TEST
 
+/* F-5784: an ESP packet whose outer IPv4 header carries options (IHL>5) must
+ * still be unwrapped and delivered. ip_recv used to dispatch ESP before the
+ * IP option-strip, so esp_transport_unwrap read the SPI from the option bytes,
+ * the SA lookup failed, and every IHL>5 ESP packet was silently dropped. */
+START_TEST(test_ip_recv_esp_transport_with_ip_options_delivers_payload)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    struct wolfIP s;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[] = { 'o', 'p', 't', '!' };
+    uint8_t rxbuf[sizeof(payload)] = {0};
+    uint32_t frame_len;
+    uint16_t ip_len;
+    uint32_t esp_payload_len;
+    uint8_t *opt;
+    int udp_sd;
+    int ret;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+    wolfIP_ipconfig_set(&s, atoip4(T_DST), 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(atoip4(T_DST));
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    frame_len = build_udp_ip_packet(buf, sizeof(buf), atoip4(T_SRC), atoip4(T_DST),
+                                    4321, 1234, payload, sizeof(payload));
+    ip_len = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
+
+    /* Splice a 4-byte Router-Alert option into the outer IP header so it
+     * becomes IHL=6, shifting the ESP header off its default offset. */
+    esp_payload_len = frame_len - (ETH_HEADER_LEN + IP_HEADER_LEN);
+    opt = buf + ETH_HEADER_LEN + IP_HEADER_LEN;
+    memmove(opt + 4U, opt, esp_payload_len);
+    opt[0] = 0x94U; opt[1] = 0x04U; opt[2] = 0x00U; opt[3] = 0x00U;
+    ip->ver_ihl = 0x46U;
+    ip->len = ee16((uint16_t)(ee16(ip->len) + 4U));
+    ip->csum = 0;
+    iphdr_set_checksum(ip);
+    frame_len += 4U;
+
+    ip_recv(&s, 0, ip, frame_len);
+
+    ret = wolfIP_sock_recvfrom(&s, udp_sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+}
+END_TEST
+
 /* Mock send that captures the last frame sent.
  * Used by tests that exercise the full TX path (tcp_send_empty_immediate). */
 static uint8_t esp_test_last_frame[LINK_MTU];
@@ -1756,6 +1817,7 @@ static Suite *esp_suite(void)
     tc = tcase_create("ip_recv");
     tcase_add_test(tc, test_ip_recv_esp_transport_delivers_udp_payload);
     tcase_add_test(tc, test_ip_recv_esp_transport_unwrap_failure_drops_packet);
+    tcase_add_test(tc, test_ip_recv_esp_transport_with_ip_options_delivers_payload);
     suite_add_tcase(s, tc);
 
     /* No-SA outbound path */

@@ -8806,23 +8806,6 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     wolfIP_print_ip(ip);
     #endif /* DEBUG_IP*/
 
-    #ifdef WOLFIP_ESP
-    /* note: esp transport mode only handled here.
-     * ip forwarding would require esp tunnel mode. */
-    if (ip->proto == 0x32) {
-        int err;
-        if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
-            return;
-        }
-        /* proto is ESP 0x32 (50), try to unwrap. */
-        err = esp_transport_unwrap(ip, &len);
-        if (err) {
-            LOG("info: failed to unwrap esp packet, dropping.\n");
-            return;
-        }
-    }
-    #endif /* WOLFIP_ESP */
-
     {
         struct wolfIP_ip_packet *dispatch_ip = ip;
         uint32_t dispatch_len = len;
@@ -8845,6 +8828,28 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             dispatch_ip->csum = 0;
             iphdr_set_checksum(dispatch_ip);
         }
+
+    #ifdef WOLFIP_ESP
+        /* note: esp transport mode only handled here.
+         * ip forwarding would require esp tunnel mode.
+         * Run after the option strip above: esp_transport_unwrap reads the
+         * ESP header at a fixed 20-byte-IP-header offset, so it must be given
+         * a packet whose options have already been removed (IHL == 5).
+         * Otherwise an IHL>5 ESP packet has its SPI read from the option
+         * bytes, the SA lookup fails, and it is silently dropped. */
+        if (dispatch_ip->proto == 0x32) {
+            int err;
+            if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
+                return;
+            }
+            /* proto is ESP 0x32 (50), try to unwrap. */
+            err = esp_transport_unwrap(dispatch_ip, &dispatch_len);
+            if (err) {
+                LOG("info: failed to unwrap esp packet, dropping.\n");
+                return;
+            }
+        }
+    #endif /* WOLFIP_ESP */
 
         if (dispatch_ip->proto == 0x06) {
             struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)dispatch_ip;
