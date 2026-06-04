@@ -1957,6 +1957,14 @@ START_TEST(test_sock_connect_tcp_bound_local_ip_no_match)
     sin.sin_addr.s_addr = ee32(0x0A000002U);
 
     ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    /* F-5479: a rejected connect must leave the socket CLOSED, not wedged in
+     * SYN_SENT. Otherwise the next connect returns a stuck EAGAIN for a SYN
+     * that was never queued. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    /* Retrying must re-validate (EINVAL again), not report a phantom in-flight
+     * SYN. */
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
 }
 END_TEST
 

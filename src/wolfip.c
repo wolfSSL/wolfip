@@ -5602,29 +5602,39 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         return -WOLFIP_EINVAL;
     if (ts->sock.tcp.state == TCP_CLOSED) {
         struct ipconf *conf;
-        ts->sock.tcp.state = TCP_SYN_SENT;
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        ip4 new_remote_ip = ee32(sin->sin_addr.s_addr);
+        uint8_t new_if_idx;
+        ip4 new_local_ip;
+
+        /* Resolve and validate the local binding into locals before mutating
+         * the socket. A failed validation here must not leave the socket in
+         * TCP_SYN_SENT (no SYN queued, no RTO timer), which would make every
+         * later connect return EAGAIN forever. Mirrors the UDP arm above. */
         if (ts->bound_local_ip != IPADDR_ANY) {
             int bound_match = 0;
             unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
             if (!bound_match)
                 return -WOLFIP_EINVAL;
-            ts->if_idx = (uint8_t)bound_if;
-            ts->local_ip = ts->bound_local_ip;
+            new_if_idx = (uint8_t)bound_if;
+            new_local_ip = ts->bound_local_ip;
         } else {
-            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            if_idx = wolfIP_route_for_ip(s, new_remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
-            ts->if_idx = (uint8_t)if_idx;
+            new_if_idx = (uint8_t)if_idx;
             if (conf && conf->ip != IPADDR_ANY)
-                ts->local_ip = conf->ip;
+                new_local_ip = conf->ip;
             else {
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
-                    ts->local_ip = primary->ip;
+                    new_local_ip = primary->ip;
                 else
-                    ts->local_ip = IPADDR_ANY;
+                    new_local_ip = IPADDR_ANY;
             }
         }
+        ts->sock.tcp.state = TCP_SYN_SENT;
+        ts->remote_ip = new_remote_ip;
+        ts->if_idx = new_if_idx;
+        ts->local_ip = new_local_ip;
         if (!ts->src_port)
             ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
         if (ts->src_port < 1024)
