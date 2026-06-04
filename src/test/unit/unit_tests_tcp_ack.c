@@ -4331,6 +4331,48 @@ START_TEST(test_tcp_rebuild_rx_sack_right_edge_wraps)
 }
 END_TEST
 
+/* F-5481: RFC 2018 sec.4 (2) - the first SACK block MUST describe the segment
+ * that triggered the ACK. Store three disjoint islands so descending-sequence
+ * order would put the most recently received (lowest) island last; the rebuild
+ * must instead promote the triggering segment's block to rx_sack[0]. */
+START_TEST(test_tcp_rebuild_rx_sack_triggering_block_first)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[16] = {0};
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 300, 10), 0);
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 400, 10), 0);
+    /* This is the freshest segment and the lowest sequence: under a plain
+     * descending sort it would be reported last and dropped first on
+     * option-space truncation. */
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 200, 10), 0);
+
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 3);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].left, 200);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].right, 210);
+    /* Remaining islands keep descending order behind the required first block. */
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[1].left, 400);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[2].left, 300);
+
+    /* Closing holes advances the cumulative ACK (the RFC exemption), so the
+     * consume path reports remaining islands in plain descending order. */
+    ts->sock.tcp.ack = 200;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 200);
+    tcp_consume_ooo(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 2);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].left, 400);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[1].left, 300);
+}
+END_TEST
+
 START_TEST(test_tcp_consume_ooo_wrap_trim_and_promote)
 {
     struct wolfIP s;

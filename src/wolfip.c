@@ -2910,7 +2910,8 @@ static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t coun
     return (uint8_t)(out + 1);
 }
 
-static void tcp_rebuild_rx_sack(struct tsocket *t)
+static void tcp_rebuild_rx_sack(struct tsocket *t, uint32_t trig_seq,
+        uint32_t trig_len)
 {
     struct tcp_sack_block blocks[TCP_OOO_MAX_SEGS];
     uint8_t i, count = 0;
@@ -2935,6 +2936,26 @@ static void tcp_rebuild_rx_sack(struct tsocket *t)
     while (count > 0 && t->sock.tcp.rx_sack_count < TCP_SACK_MAX_BLOCKS) {
         count--;
         t->sock.tcp.rx_sack[t->sock.tcp.rx_sack_count++] = blocks[count];
+    }
+
+    /* RFC 2018 sec.4 (2): the first SACK block MUST contain the segment that
+     * triggered this ACK (unless that segment advanced the cumulative ACK, in
+     * which case the caller passes trig_len == 0). The loop above leaves blocks
+     * in descending-sequence order, so the triggering island can be anywhere;
+     * move the merged block holding it to the front. This also guarantees it
+     * survives truncation when the TCP option lacks room for every block. */
+    if (trig_len != 0U) {
+        for (i = 0; i < t->sock.tcp.rx_sack_count; i++) {
+            struct tcp_sack_block *b = &t->sock.tcp.rx_sack[i];
+            if (tcp_seq_leq(b->left, trig_seq) && tcp_seq_lt(trig_seq, b->right)) {
+                struct tcp_sack_block first = t->sock.tcp.rx_sack[i];
+                uint8_t j;
+                for (j = i; j > 0; j--)
+                    t->sock.tcp.rx_sack[j] = t->sock.tcp.rx_sack[j - 1];
+                t->sock.tcp.rx_sack[0] = first;
+                break;
+            }
+        }
     }
 }
 
@@ -2964,7 +2985,7 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
         /* Duplicate range: keep newest bytes and avoid consuming another slot. */
         if (t->sock.tcp.ooo[i].seq == seq && t->sock.tcp.ooo[i].len == len) {
             memcpy(t->sock.tcp.ooo[i].data, data, len);
-            tcp_rebuild_rx_sack(t);
+            tcp_rebuild_rx_sack(t, seq, len);
             return 0;
         }
     }
@@ -2975,7 +2996,7 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
     t->sock.tcp.ooo[slot].seq = seq;
     t->sock.tcp.ooo[slot].len = len;
     memcpy(t->sock.tcp.ooo[slot].data, data, len);
-    tcp_rebuild_rx_sack(t);
+    tcp_rebuild_rx_sack(t, seq, len);
     return 0;
 }
 
@@ -3039,8 +3060,10 @@ static void tcp_consume_ooo(struct tsocket *t)
         }
     }
     /* Rebuild advertised SACK blocks from whatever OOO cache remains after
-     * promotion. If all holes closed, this naturally drops SACK reporting. */
-    tcp_rebuild_rx_sack(t);
+     * promotion. If all holes closed, this naturally drops SACK reporting.
+     * Promotion advances the cumulative ACK, so RFC 2018's "first block holds
+     * the triggering segment" rule does not apply here (trig_len == 0). */
+    tcp_rebuild_rx_sack(t, 0, 0);
 }
 
 static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t max_len)
