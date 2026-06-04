@@ -273,11 +273,12 @@ static int wolftftp_build_request(uint8_t *buf, uint16_t max_len, uint16_t opcod
 }
 
 /* Reject filenames that could escape the integrator's namespace: any absolute
- * path (leading '/' or '\') and any ".." path component. The library hands the
- * name straight to io.open(), and TFTP is unauthenticated, so a naive
- * filesystem-backed open() would otherwise be exposed to traversal. The check
- * is component-aware: a ".." segment between separators (or as the whole name)
- * is rejected, but dots inside a name ("fw..bin") are fine. */
+ * path (leading '/' or '\', or a Windows drive specifier like "C:\...") and any
+ * ".." path component. The library hands the name straight to io.open(), and
+ * TFTP is unauthenticated, so a naive filesystem-backed open() would otherwise
+ * be exposed to traversal. The check is component-aware: a ".." segment between
+ * separators (or as the whole name) is rejected, but dots inside a name
+ * ("fw..bin") are fine. */
 static int wolftftp_filename_is_safe(const char *name)
 {
     const char *seg = name;
@@ -287,6 +288,14 @@ static int wolftftp_filename_is_safe(const char *name)
         return 0;
     if (name[0] == '/' || name[0] == '\\')
         return 0;
+    /* ':' is never valid in a portable filename; on Windows it introduces a
+     * drive specifier ("C:\windows", "C:foo") or an NTFS alternate data stream
+     * ("name:stream"), either of which would sidestep the leading-separator
+     * check above. Reject it wherever it appears. */
+    for (c = name; *c != '\0'; c++) {
+        if (*c == ':')
+            return 0;
+    }
     for (c = name; ; c++) {
         if (*c == '/' || *c == '\\' || *c == '\0') {
             size_t seglen = (size_t)(c - seg);

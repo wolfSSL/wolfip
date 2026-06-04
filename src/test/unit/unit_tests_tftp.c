@@ -346,6 +346,9 @@ START_TEST(test_tftp_parse_request_rejects_path_traversal)
         "fw/../../secret",    /* embedded traversal           */
         "images/..",          /* trailing traversal component */
         "a/..\\b",            /* backslash-separated traversal*/
+        "C:\\windows\\sys",   /* windows drive-letter absolute*/
+        "C:fw.bin",           /* windows drive-relative path  */
+        "fw.bin:stream",      /* ntfs alternate data stream   */
     };
     static const char *good[] = {
         "fw.bin",             /* ordinary name                */
