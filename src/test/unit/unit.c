@@ -202,6 +202,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_recvfrom_short_addrlen);
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_short_addrlen);
     tcase_add_test(tc_utils, test_sock_recvfrom_icmp_short_addrlen);
+    tcase_add_test(tc_utils, test_sock_recvfrom_null_buf_rejected);
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_fifo_alignment);
     tcase_add_test(tc_utils, test_sock_recvfrom_tcp_close_wait_sets_readable);
     tcase_add_test(tc_utils, test_sock_recvfrom_udp_readable_stays_when_queue_nonempty);

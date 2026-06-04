@@ -6149,6 +6149,13 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
     if (!s)
         return -WOLFIP_EINVAL;
 
+    /* A nonzero-length read needs a destination buffer: every socket family
+     * below copies queued data into buf (queue_pop / memcpy). Reject a NULL
+     * buffer here so caller misuse cannot dereference it. len == 0 (a probe)
+     * stays allowed. */
+    if (!buf && len > 0)
+        return -WOLFIP_EINVAL;
+
     if (IS_SOCKET_TCP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;

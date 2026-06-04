@@ -1588,6 +1588,35 @@ START_TEST(test_sock_recvfrom_icmp_short_addrlen)
 }
 END_TEST
 
+/* F-5495: a NULL receive buffer with a nonzero length must be rejected instead
+ * of being copied into. With a datagram already queued, the prior code reached
+ * memcpy(buf=NULL, ...) and crashed. */
+START_TEST(test_sock_recvfrom_null_buf_rejected)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    uint8_t payload[4] = { 1, 2, 3, 4 };
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = ee16(4444);
+
+    /* Queue a datagram so the recvfrom path would otherwise reach the copy. */
+    enqueue_udp_rx(ts, payload, sizeof(payload), 5555);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_sd, NULL, 64, 0, NULL, NULL),
+                     -WOLFIP_EINVAL);
+    /* Rejected before any dequeue: the datagram is still queued. */
+    ck_assert_uint_gt(fifo_len(&ts->sock.udp.rxbuf), 0U);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_udp_fifo_alignment)
 {
     struct wolfIP s;
