@@ -9419,6 +9419,11 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
 {
     if (!s || !dname || !id || !lookup_cb)
         return -22;
+    /* Reject before touching shared callback/type state: dns_send_query's
+     * busy-guard runs too late to stop an in-flight query's callback from
+     * being clobbered by this (rejected) call. */
+    if (s->dns_id != 0)
+        return -16;
     s->dns_lookup_cb = lookup_cb;
     s->dns_ptr_cb = NULL;
     s->dns_query_type = DNS_QUERY_TYPE_A;
@@ -9432,6 +9437,9 @@ int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lo
         return -22;
     if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
         return -22;
+    /* Reject before touching shared callback/type state (see nslookup). */
+    if (s->dns_id != 0)
+        return -16;
     s->dns_ptr_cb = lookup_cb;
     s->dns_lookup_cb = NULL;
     s->dns_ptr_name[0] = DNS_NAME_TERMINATOR;

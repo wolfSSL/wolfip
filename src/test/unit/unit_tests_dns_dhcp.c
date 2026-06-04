@@ -5611,6 +5611,92 @@ START_TEST(test_dns_callback_truncated_response_aborts_query)
 }
 END_TEST
 
+/* F-4946: a second DNS API call while a query is in-flight must not touch the
+ * shared callback/type state. Before the fix, nslookup/wolfIP_dns_ptr_lookup
+ * overwrote dns_lookup_cb/dns_ptr_cb/dns_query_type before dns_send_query's
+ * busy-guard ran, so the in-flight query's response invoked the wrong handler
+ * (A->A hijack) or stalled the resolver (A->PTR flip). */
+START_TEST(test_dns_inflight_query_state_not_clobbered_by_second_call)
+{
+    struct wolfIP s;
+    uint16_t id1 = 0, id2 = 0, id3 = 0;
+    uint8_t response[128];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    const uint8_t ip_bytes[4] = {0x01, 0x02, 0x03, 0x04};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+    dns_lookup_evil_calls = 0;
+
+    /* First lookup goes out: dns_id armed, target callback recorded. */
+    ck_assert_int_eq(nslookup(&s, "target.com", &id1, test_dns_lookup_cb), 0);
+    ck_assert_uint_ne(id1, 0U);
+    ck_assert_uint_eq(s.dns_id, id1);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    /* A->A arm: a second nslookup while in-flight must be rejected as busy
+     * without replacing the recorded callback. */
+    ck_assert_int_eq(nslookup(&s, "evil.com", &id2, test_dns_lookup_evil_cb), -16);
+    ck_assert_uint_eq(s.dns_id, id1);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_ptr_eq(s.dns_ptr_cb, NULL);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    /* A->PTR arm: a PTR lookup while in-flight must not NULL the A callback or
+     * flip the query type. */
+    ck_assert_int_eq(wolfIP_dns_ptr_lookup(&s, 0x08080808U, &id3,
+            test_dns_ptr_cb), -16);
+    ck_assert_uint_eq(s.dns_id, id1);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_ptr_eq(s.dns_ptr_cb, NULL);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    /* The response to the original (still in-flight) query must reach the
+     * original handler, never the rejected second call's handler. */
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(id1);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = sizeof(struct dns_header);
+    response[pos++] = 6; memcpy(&response[pos], "target", 6); pos += 6;
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(DNS_CLASS_IN);
+    pos += sizeof(struct dns_question);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type = ee16(DNS_A);
+    rr->class = ee16(DNS_CLASS_IN);
+    rr->ttl = ee32(60);
+    rr->rdlength = ee16(4);
+    pos += sizeof(struct dns_rr);
+    memcpy(&response[pos], ip_bytes, sizeof(ip_bytes));
+    pos += sizeof(ip_bytes);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0x01020304U);
+    ck_assert_int_eq(dns_lookup_evil_calls, 0);
+    ck_assert_uint_eq(s.dns_id, 0U);
+}
+END_TEST
+
 START_TEST(test_regression_dns_callback_high_bit_octet_ip_no_ub)
 {
     /* The dns_callback() A-record reassembly used to compute

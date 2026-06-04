@@ -139,6 +139,7 @@ static uint16_t socket_cb_last_events;
 static int timer_cb_calls;
 static uint32_t dns_lookup_ip;
 static int dns_lookup_calls;
+static int dns_lookup_evil_calls;
 
 struct tcp_seg_buf {
     struct wolfIP_tcp_seg seg;
@@ -300,6 +301,12 @@ static void test_dns_lookup_cb(uint32_t ip)
 {
     dns_lookup_ip = ip;
     dns_lookup_calls++;
+}
+
+static void test_dns_lookup_evil_cb(uint32_t ip)
+{
+    (void)ip;
+    dns_lookup_evil_calls++;
 }
 
 static void test_dns_ptr_cb(const char *name)
