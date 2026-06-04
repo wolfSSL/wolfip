@@ -927,6 +927,7 @@ Suite *wolf_suite(void)
 
     tcase_add_test(tc_utils, test_transport_checksum);
     tcase_add_test(tc_utils, test_iphdr_set_checksum);
+    tcase_add_test(tc_utils, test_iphdr_set_checksum_idempotent_with_stale_csum);
     tcase_add_test(tc_utils, test_eth_output_add_header);
     tcase_add_test(tc_utils, test_eth_output_add_header_invalid_if);
     tcase_add_test(tc_utils, test_ip_output_add_header);

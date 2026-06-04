@@ -4512,6 +4512,33 @@ START_TEST(test_iphdr_set_checksum) {
 }
 END_TEST
 
+/* F-5490: iphdr_set_checksum must produce a valid checksum regardless of any
+ * stale value already in ip->csum, and must be idempotent under repeated calls
+ * (the setter clears the field itself rather than relying on the caller). */
+START_TEST(test_iphdr_set_checksum_idempotent_with_stale_csum) {
+    struct wolfIP_ip_packet ip;
+    memset(&ip, 0, sizeof(ip));
+
+    ip.ver_ihl = 0x45;
+    ip.tos = 0;
+    ip.len = ee16(20);
+    ip.id = ee16(1);
+    ip.flags_fo = 0;
+    ip.ttl = 64;
+    ip.proto = WI_IPPROTO_TCP;
+    ip.src = ee32(0xc0a80101);
+    ip.dst = ee32(0xc0a80102);
+    ip.csum = ee16(0xBEEF); /* stale, nonzero checksum left by the caller */
+
+    iphdr_set_checksum(&ip);
+    ck_assert_int_eq(iphdr_verify_checksum(&ip), 0);
+
+    /* Running it again over the now-populated header must still verify. */
+    iphdr_set_checksum(&ip);
+    ck_assert_int_eq(iphdr_verify_checksum(&ip), 0);
+}
+END_TEST
+
 // Test for `eth_output_add_header` to add Ethernet headers
 START_TEST(test_eth_output_add_header) {
     struct wolfIP_eth_frame eth_frame;

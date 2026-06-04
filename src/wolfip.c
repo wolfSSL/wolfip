@@ -3859,6 +3859,11 @@ static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
     if (ip_hlen < IP_HEADER_LEN)
         ip_hlen = IP_HEADER_LEN;
 
+    /* Zero the checksum field before summing (RFC 1071) so the result is
+     * correct regardless of any stale value the caller left in ip->csum. This
+     * makes the setter idempotent (set/verify always holds) and removes the
+     * implicit "caller must clear csum first" precondition. */
+    ip->csum = 0;
     for (i = 0; i < ip_hlen; i += 2) {
         uint16_t word;
         memcpy(&word, ptr + i, sizeof(word));
