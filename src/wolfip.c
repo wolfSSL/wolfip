@@ -2627,7 +2627,7 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
 #endif
 
 #if WOLFIP_PACKET_SOCKETS
-static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_eth_frame *eth, uint32_t frame_len)
+static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_eth_frame *eth, uint32_t frame_len, int match_wildcard)
 {
     uint16_t proto = eth->type;
     uint32_t record_len;
@@ -2646,10 +2646,22 @@ static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP
             continue;
         if (p->protocol && p->protocol != proto)
             continue;
-        if ((p->bind_addr.sll_ifindex >= 0) &&
-                (unsigned int)p->bind_addr.sll_ifindex != if_idx &&
-                p->bind_addr.sll_ifindex != 0)
-            continue;
+        if (match_wildcard) {
+            /* Deliver to sockets bound to this interface, plus wildcard
+             * (sll_ifindex == 0) and unbound (sll_ifindex < 0) listeners. */
+            if ((p->bind_addr.sll_ifindex >= 0) &&
+                    (unsigned int)p->bind_addr.sll_ifindex != if_idx &&
+                    p->bind_addr.sll_ifindex != 0)
+                continue;
+        } else {
+            /* Deliver only to sockets bound explicitly to this interface.
+             * Used for the post-VLAN-demux pass so wildcard sockets, which
+             * already saw the original tagged frame on the parent, are not
+             * delivered the tag-stripped copy a second time. */
+            if (p->bind_addr.sll_ifindex < 0 ||
+                    (unsigned int)p->bind_addr.sll_ifindex != if_idx)
+                continue;
+        }
         if (fifo_space(&p->rxbuf) < record_len + sizeof(struct pkt_desc))
             continue;
         if (fifo_push(&p->rxbuf, record, record_len) == 0)
@@ -8855,6 +8867,9 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
 #ifdef ETHERNET
     struct wolfIP_ll_dev *ll;
     struct wolfIP_eth_frame *eth;
+#if WOLFIP_PACKET_SOCKETS
+    int pkt_match_wildcard = 1;
+#endif
 #else
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
 #endif
@@ -8900,6 +8915,15 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
         }
         if (!found)
             return; /* No matching VLAN sub-interface; drop. */
+#if WOLFIP_PACKET_SOCKETS
+        /* Tap the physical (parent) interface with the original, still-tagged
+         * frame so AF_PACKET listeners bound to the parent - and wildcard
+         * sniffers/IDS - observe VLAN traffic in wire form. The post-demux
+         * delivery below then targets only sockets bound explicitly to the
+         * sub-interface, so wildcard sockets are not given the frame twice. */
+        packet_try_recv(s, if_idx, eth, len, 1);
+        pkt_match_wildcard = 0;
+#endif
         /* Strip the 4-byte tag in place: slide MAC headers forward. */
         memmove((uint8_t *)buf + WOLFIP_VLAN_TAG_LEN, buf, 12);
         buf = (uint8_t *)buf + WOLFIP_VLAN_TAG_LEN;
@@ -8911,7 +8935,7 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     }
 #endif /* WOLFIP_VLAN */
 #if WOLFIP_PACKET_SOCKETS
-    packet_try_recv(s, if_idx, eth, len);
+    packet_try_recv(s, if_idx, eth, len, pkt_match_wildcard);
 #endif
     if (eth->type == ee16(ETH_TYPE_IP)) {
         struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)eth;

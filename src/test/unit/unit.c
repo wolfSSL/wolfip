@@ -1529,6 +1529,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_rx_dei_bit_accepted);
     tcase_add_test(tc_proto, test_vlan_rx_tagged_arp_processed);
     tcase_add_test(tc_proto, test_vlan_mtu_inherited);
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_proto, test_vlan_packet_socket_parent_and_sub_delivery);
+    tcase_add_test(tc_proto, test_vlan_packet_socket_wildcard_gets_tagged_once);
+#endif
 #endif /* WOLFIP_VLAN */
 
     suite_add_tcase(s, tc_core);
