@@ -3001,11 +3001,36 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
                 slot = (int)i;
             continue;
         }
-        /* Duplicate range: keep newest bytes and avoid consuming another slot. */
-        if (t->sock.tcp.ooo[i].seq == seq && t->sock.tcp.ooo[i].len == len) {
-            memcpy(t->sock.tcp.ooo[i].data, data, len);
-            tcp_rebuild_rx_sack(t, seq, len);
-            return 0;
+        /* Overlapping range (including an exact duplicate): coalesce into this
+         * slot rather than consuming another. Otherwise an attacker injecting
+         * distinct (seq,len) pairs over the same bytes - or a peer that
+         * re-segments retransmissions - could occupy every slot with overlapping
+         * data and starve later legitimate OOO segments. The union of the two
+         * ranges is stored in place (incoming bytes win in the overlap) when it
+         * fits one slot; if it would not fit, fall through and keep them as
+         * separate slots (tcp_consume_ooo coalesces them on promotion). */
+        {
+            uint32_t cur_seq = t->sock.tcp.ooo[i].seq;
+            uint32_t cur_len = t->sock.tcp.ooo[i].len;
+            uint32_t end_new = tcp_seq_inc(seq, len);
+            uint32_t end_cur = tcp_seq_inc(cur_seq, cur_len);
+            if (tcp_seq_lt(seq, end_cur) && tcp_seq_lt(cur_seq, end_new)) {
+                uint32_t u_start = tcp_seq_lt(seq, cur_seq) ? seq : cur_seq;
+                uint32_t u_end = tcp_seq_lt(end_cur, end_new) ? end_new : end_cur;
+                uint32_t u_len = (uint32_t)tcp_seq_diff(u_end, u_start);
+                if (u_len <= TCP_MSS_MAX) {
+                    uint8_t *buf = t->sock.tcp.ooo[i].data;
+                    uint32_t cur_off = (uint32_t)tcp_seq_diff(cur_seq, u_start);
+                    uint32_t new_off = (uint32_t)tcp_seq_diff(seq, u_start);
+                    if (cur_off != 0)
+                        memmove(buf + cur_off, buf, cur_len);
+                    memcpy(buf + new_off, data, len);
+                    t->sock.tcp.ooo[i].seq = u_start;
+                    t->sock.tcp.ooo[i].len = u_len;
+                    tcp_rebuild_rx_sack(t, u_start, u_len);
+                    return 0;
+                }
+            }
         }
     }
     if (slot < 0)

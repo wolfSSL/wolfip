@@ -650,6 +650,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rebuild_rx_sack_triggering_block_first);
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_trim_and_promote);
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_drop_fully_acked);
+    tcase_add_test(tc_utils, test_tcp_store_ooo_overlap_does_not_exhaust_cache);
     tcase_add_test(tc_utils, test_tcp_ack_sack_early_retransmit_before_three_dupack);
     tcase_add_test(tc_utils, test_tcp_input_listen_syn_without_sack_disables_sack);
     tcase_add_test(tc_utils, test_tcp_input_listen_syn_arms_control_rto);

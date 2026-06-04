@@ -4441,6 +4441,44 @@ START_TEST(test_tcp_consume_ooo_wrap_drop_fully_acked)
 }
 END_TEST
 
+/* F-4949: overlapping out-of-order segments with distinct (seq,len) must not
+ * each consume a slot, or an attacker (or a peer re-segmenting retransmissions)
+ * could exhaust the OOO cache and get all later legitimate OOO data dropped. */
+START_TEST(test_tcp_store_ooo_overlap_does_not_exhaust_cache)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[100] = {0};
+    int i, used;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 1000;
+
+    /* Four overlapping segments covering essentially the same bytes. */
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 1100, 100), 0);
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 1101, 100), 0);
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 1200, 100), 0);
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 1201, 100), 0);
+
+    used = 0;
+    for (i = 0; i < TCP_OOO_MAX_SEGS; i++)
+        if (ts->sock.tcp.ooo[i].used)
+            used++;
+    /* The overlapping cluster must leave free slots for real OOO data. */
+    ck_assert_int_lt(used, TCP_OOO_MAX_SEGS);
+
+    /* Legitimate non-overlapping OOO segments are still accepted (not dropped
+     * by a cache exhausted with overlapping junk). */
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 2000, 100), 0);
+    ck_assert_int_eq(tcp_store_ooo_segment(ts, payload, 2200, 100), 0);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_sack_early_retransmit_before_three_dupack)
 {
     struct wolfIP s;
