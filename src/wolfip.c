@@ -8679,6 +8679,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_RECEIVING, s, if_idx, ip, len) != 0)
         return;
 #if WOLFIP_RAWSOCKETS
+    /* Raw sockets are a passive ingress tap and intentionally observe traffic
+     * before the option/forwarding policy below: this is what makes them
+     * useful for monitoring/IDS (e.g. seeing source-routed attack packets the
+     * stack itself refuses to act on). raw_try_recv only copies the frame to
+     * the socket queue; it never parses IP options or honours a source route,
+     * so tapping ahead of the LSRR/SSRR drop cannot make the stack act on one. */
     raw_try_recv(s, if_idx, ip, len);
 #endif
     /* RFC 7126 section 3.8: drop source-routed (LSRR/SSRR) packets before either
