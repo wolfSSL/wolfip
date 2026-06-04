@@ -396,6 +396,45 @@ START_TEST(test_tcp_parse_options_timestamp_parsed)
 }
 END_TEST
 
+/* Overlong Timestamp option (olen > canonical 10) must be rejected.
+ * RFC 7323 fixes the TS option at length 10; only canonical lengths
+ * should roundtrip. An olen=11 TS must not negotiate ts_enabled. */
+START_TEST(test_tcp_parse_options_timestamp_overlong_ignored)
+{
+    /* TS option with olen=11 (one byte longer than canonical). The 9
+     * trailing bytes still carry a well-formed TSval/TSEcr; only the
+     * length is wrong. */
+    uint8_t opts[] = {
+        TCP_OPTION_TS, 11,
+        0x00, 0x00, 0x01, 0x02, /* TSval = 0x0102 */
+        0x00, 0x00, 0x00, 0x00, /* TSEcr = 0 */
+        0x00,                   /* extra byte: olen=11, not 10 */
+        TCP_OPTION_EOO
+    };
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LISTEN;
+    ts->src_port = 8080;
+    ts->sock.tcp.sack_offer = 1;
+
+    inject_tcp_segment_with_opts(&s, TEST_PRIMARY_IF,
+        0x0A0000A1U, 0x0A000001U, 40000, 8080,
+        1, 0, TCP_FLAG_SYN,
+        opts, (uint8_t)sizeof(opts), NULL, 0);
+
+    ck_assert_int_eq(ts->sock.tcp.ts_enabled, 0);
+}
+END_TEST
+
 /* MSS option value 0 is ignored (falls back to default) */
 START_TEST(test_tcp_parse_options_mss_zero_ignored)
 {

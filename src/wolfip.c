@@ -2878,7 +2878,7 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
                     po->sack_count++;
                 }
             }
-        } else if (kind == TCP_OPTION_TS && olen >= TCP_OPTION_TS_LEN) {
+        } else if (kind == TCP_OPTION_TS && olen == TCP_OPTION_TS_LEN) {
             uint32_t val, ecr;
             memcpy(&val, opt + 2, sizeof(val));
             memcpy(&ecr, opt + 6, sizeof(ecr));
