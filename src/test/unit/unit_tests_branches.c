@@ -569,6 +569,100 @@ START_TEST(test_sock_bind_filter_block_rolls_back)
 }
 END_TEST
 
+/* F-5069: the bind callback must not see a committed src_port. If src_port is
+ * written before WOLFIP_FILT_BINDING runs, a callback that re-enters the stack
+ * (wolfIP_poll) would have an ingress datagram delivered to the socket while
+ * the bind is still being vetted (and even if it is rejected). Capture the
+ * socket's src_port as visible during the callback to prove it is deferred. */
+static struct wolfIP *bind_toctou_stack;
+static unsigned int bind_toctou_idx;
+static int bind_toctou_is_icmp;
+static uint16_t bind_toctou_port_during_cb;
+static int bind_toctou_capture_cb(void *arg, const struct wolfIP_filter_event *event)
+{
+    (void)arg;
+    if (event && event->reason == WOLFIP_FILT_BINDING && bind_toctou_stack) {
+        bind_toctou_port_during_cb = bind_toctou_is_icmp ?
+            bind_toctou_stack->icmpsockets[bind_toctou_idx].src_port :
+            bind_toctou_stack->udpsockets[bind_toctou_idx].src_port;
+    }
+    return 1; /* reject the bind */
+}
+
+START_TEST(test_udp_bind_src_port_deferred_until_filter_approves)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+
+    bind_toctou_stack = &s;
+    bind_toctou_idx = SOCKET_UNMARK(udp_sd);
+    bind_toctou_is_icmp = 0;
+    bind_toctou_port_during_cb = 0xFFFF;
+    wolfIP_filter_set_callback(bind_toctou_capture_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_BINDING));
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(4444);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    /* The port was not committed (matchable) while the filter was deciding. */
+    ck_assert_uint_eq(bind_toctou_port_during_cb, 0);
+    /* A rejected bind leaves the socket unbound. */
+    ck_assert_uint_eq(ts->src_port, 0);
+}
+END_TEST
+
+START_TEST(test_icmp_bind_src_port_deferred_until_filter_approves)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+
+    bind_toctou_stack = &s;
+    bind_toctou_idx = SOCKET_UNMARK(icmp_sd);
+    bind_toctou_is_icmp = 1;
+    bind_toctou_port_during_cb = 0xFFFF;
+    wolfIP_filter_set_callback(bind_toctou_capture_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_BINDING));
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(0x4321); /* ICMP echo id */
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, icmp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -1);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    ck_assert_uint_eq(bind_toctou_port_during_cb, 0);
+    ck_assert_uint_eq(ts->src_port, 0);
+}
+END_TEST
+
 /* ---- wolfIP_sock_sendto extras ---- */
 
 START_TEST(test_sendto_arg_validation)

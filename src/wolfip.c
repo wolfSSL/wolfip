@@ -7106,7 +7106,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->local_ip = prev_ip;
                 return -1;
             }
-            ts->src_port = new_port;
+            /* Commit src_port only after the filter approves the bind (as the
+             * TCP arm does): otherwise the socket is matchable by the ingress
+             * path while the BINDING callback runs, and a callback that
+             * re-enters wolfIP_poll would get a datagram delivered to it even
+             * if the bind is ultimately rejected. */
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
                     ts->local_ip, new_port, IPADDR_ANY, 0) != 0) {
@@ -7114,6 +7118,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->src_port = prev_port;
                 return -1;
             }
+            ts->src_port = new_port;
         }
         ts->bound_local_ip = bind_ip;
         return 0;
@@ -7144,7 +7149,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->local_ip = prev_ip;
                 return -1;
             }
-            ts->src_port = new_id;
+            /* Commit the echo id only after the filter approves (see the UDP
+             * arm): keep the socket unmatchable by icmp_try_recv until then. */
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
                     ts->local_ip, new_id, IPADDR_ANY, 0) != 0) {
@@ -7152,6 +7158,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->src_port = prev_id;
                 return -1;
             }
+            ts->src_port = new_id;
         }
         ts->bound_local_ip = bind_ip;
         return 0;

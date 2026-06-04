@@ -972,6 +972,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sock_bind_icmp_basic_and_rebind);
     tcase_add_test(tc_core, test_sock_bind_icmp_wrong_family);
     tcase_add_test(tc_core, test_sock_bind_filter_block_rolls_back);
+    tcase_add_test(tc_core, test_udp_bind_src_port_deferred_until_filter_approves);
+    tcase_add_test(tc_core, test_icmp_bind_src_port_deferred_until_filter_approves);
     tcase_add_test(tc_core, test_sendto_arg_validation);
     tcase_add_test(tc_core, test_sendto_udp_short_addrlen_and_zero_dest);
     tcase_add_test(tc_core, test_sendto_udp_auto_assigns_src_port);
