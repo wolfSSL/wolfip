@@ -8538,6 +8538,34 @@ int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
      * renumbering active sub-ifaces. */
     memset(slot, 0, sizeof(*slot));
     memset(&s->ipconf[if_idx], 0, sizeof(s->ipconf[if_idx]));
+    /* Purge ARP state tied to this slot. Neighbor entries are keyed only by
+     * (ip, if_idx) with no VID, and wolfIP_vlan_create reuses the freed slot,
+     * so without this a new VLAN on the same if_idx would silently inherit the
+     * deleted VLAN's L2 mappings (and its queued/in-flight ARP state). */
+    {
+        int i;
+        for (i = 0; i < MAX_NEIGHBORS; i++) {
+            if (s->arp.neighbors[i].if_idx == (uint8_t)if_idx) {
+                s->arp.neighbors[i].ip = IPADDR_ANY;
+                s->arp.neighbors[i].if_idx = 0;
+                s->arp.neighbors[i].ts = 0;
+                memset(s->arp.neighbors[i].mac, 0, 6);
+            }
+        }
+        for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+            if (s->arp.pending[i].if_idx == (uint8_t)if_idx) {
+                s->arp.pending[i].ip = IPADDR_ANY;
+                s->arp.pending[i].if_idx = 0;
+                s->arp.pending[i].ts = 0;
+            }
+            if (s->arp_pending[i].if_idx == (uint8_t)if_idx) {
+                s->arp_pending[i].dest = IPADDR_ANY;
+                s->arp_pending[i].len = 0;
+                s->arp_pending[i].if_idx = 0;
+            }
+        }
+        s->arp.last_arp[if_idx] = 0;
+    }
     return 0;
 }
 

@@ -1306,4 +1306,39 @@ START_TEST(test_vlan_mtu_inherited)
 }
 END_TEST
 
+/* F-4948: deleting a VLAN sub-interface must purge the ARP neighbor cache for
+ * that slot. ARP entries are keyed only by (ip, if_idx) with no VID, and
+ * wolfIP_vlan_create reuses the freed slot, so without a purge a new VLAN on
+ * the same if_idx would inherit the deleted VLAN's L2 mappings. */
+START_TEST(test_vlan_delete_purges_arp_neighbor_cache)
+{
+    struct wolfIP s;
+    unsigned int sub100 = 0xFFFFFFFFu, sub200 = 0xFFFFFFFFu;
+    static const uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    const ip4 peer_ip = VLAN_REMOTE_IP;
+    uint8_t mac[6];
+    int ret;
+
+    setup_vlan_stack(&s);
+
+    /* Learn a neighbor on a VID=100 sub-interface. */
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub100);
+    ck_assert_int_eq(ret, 0);
+    arp_store_neighbor(&s, sub100, peer_ip, peer_mac);
+    ck_assert_int_eq(wolfIP_arp_lookup_ex(&s, sub100, peer_ip, mac), 0);
+    ck_assert_mem_eq(mac, peer_mac, 6);
+
+    /* Delete VID=100 and recreate as VID=200 on the same slot. */
+    ck_assert_int_eq(wolfIP_vlan_delete(&s, sub100), 0);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 200, 0, 0, &sub200);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(sub200, sub100); /* slot reused */
+
+    /* The new VLAN must not inherit the deleted VLAN's L2 mapping. */
+    memset(mac, 0, sizeof(mac));
+    ret = wolfIP_arp_lookup_ex(&s, sub200, peer_ip, mac);
+    ck_assert_int_eq(ret, -1);
+}
+END_TEST
+
 #endif /* WOLFIP_VLAN */
