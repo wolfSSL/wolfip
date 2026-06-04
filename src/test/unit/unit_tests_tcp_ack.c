@@ -1410,7 +1410,9 @@ START_TEST(test_ip_recv_forward_ttl_exceeded)
     ip->ttl = 1;
     ip->proto = WI_IPPROTO_UDP;
     ip->len = ee16(IP_HEADER_LEN + 8);
-    ip->src = ee32(primary_ip);
+    /* Legitimate in-subnet host source (not the router's own IP, which is
+     * now dropped as a spoof on the forward path - see F-5697). */
+    ip->src = ee32(0x0A000002U);
     ip->dst = ee32(0xC0A80155U);
     fix_ip_checksum(ip);
 
@@ -1586,7 +1588,9 @@ START_TEST(test_ip_recv_forward_arp_queue_and_flush)
     ip.ttl = 2;
     ip.proto = WI_IPPROTO_TCP;
     ip.len = ee16(IP_HEADER_LEN);
-    ip.src = ee32(primary_ip);
+    /* Legitimate in-subnet host source (not the router's own IP, which is
+     * now dropped as a spoof on the forward path - see F-5697). */
+    ip.src = ee32(0x0A000002U);
     ip.dst = ee32(dest_ip);
     fix_ip_checksum(&ip);
 

@@ -1349,6 +1349,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_ip_recv_forward_arp_hit_sends_immediately);
     tcase_add_test(tc_core, test_ip_recv_forward_unconfigured_iface_skipped);
     tcase_add_test(tc_core, test_ip_recv_forward_link_local_src_rpf_drop);
+    tcase_add_test(tc_core, test_ip_recv_forward_self_ip_src_dropped);
     tcase_add_test(tc_core, test_ip_recv_options_nop_delivered);
     tcase_add_test(tc_core, test_ip_recv_options_rr_stripped_and_delivered);
     tcase_add_test(tc_core, test_ip_recv_options_bad_length_aborts_parse);

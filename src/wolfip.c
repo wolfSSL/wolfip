@@ -8736,6 +8736,23 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             if (!rpf_drop && (src & 0xFFFF0000U) == 0xA9FE0000U) {
                 rpf_drop = 1;
             }
+            /* Spoofed self: a source equal to one of our own configured
+             * interface addresses can only be forged - the router originates
+             * such packets locally, it never receives them from the wire. The
+             * strict-RPF loop below skips the ingress interface (i == if_idx),
+             * so its own address would otherwise pass; check every interface's
+             * own /32 here explicitly. */
+            if (!rpf_drop) {
+                for (i = 0; i < s->if_count; i++) {
+                    struct ipconf *conf = &s->ipconf[i];
+                    if (!conf || conf->ip == IPADDR_ANY)
+                        continue;
+                    if (conf->ip == src) {
+                        rpf_drop = 1;
+                        break;
+                    }
+                }
+            }
             /* Strict RPF: a source that belongs to some other configured
              * interface's local subnet must not arrive on this one. */
             if (!rpf_drop) {
