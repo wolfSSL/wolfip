@@ -429,6 +429,13 @@ fail_close:
         hc->ssl = NULL;
     }
     wolfIP_sock_close(hc->httpd->ipstack, sd);
+    /* wolfIP_sock_close on an ESTABLISHED socket only starts the active close
+     * (FIN_WAIT_1) and returns -EAGAIN; the socket lingers, still carrying this
+     * callback and its arg. Once we zero client_sd the slot is reused by the
+     * next accept, so the lingering socket's callback_arg would dangle onto a
+     * different live connection's state. Deregister it here so a late segment
+     * on the half-closed socket can no longer fire http_recv_cb. */
+    wolfIP_register_callback(hc->httpd->ipstack, sd, NULL, NULL);
     hc->client_sd = 0;
 }
 
