@@ -726,10 +726,14 @@ START_TEST(test_dhcp_parse_ack_ignores_short_unknown_option)
     opt->data[2] = (offer_ip >> 8) & 0xFF;
     opt->data[3] = (offer_ip >> 0) & 0xFF;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_LEASE_TIME; /* mandatory in a DHCPACK */
+    opt->len = 4;
+    opt->data[0] = 0; opt->data[1] = 0; opt->data[2] = 0; opt->data[3] = 120;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
-    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 26), 0);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 32), 0);
     ck_assert_uint_eq(primary->ip, offer_ip);
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
@@ -782,10 +786,14 @@ START_TEST(test_dhcp_parse_ack_ignores_zero_len_unknown_option)
     opt->data[2] = (offer_ip >> 8) & 0xFF;
     opt->data[3] = (offer_ip >> 0) & 0xFF;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_LEASE_TIME; /* mandatory in a DHCPACK */
+    opt->len = 4;
+    opt->data[0] = 0; opt->data[1] = 0; opt->data[2] = 0; opt->data[3] = 120;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
-    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 25), 0);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, DHCP_HEADER_LEN + 31), 0);
     ck_assert_uint_eq(primary->ip, offer_ip);
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(s.dhcp_server_ip, server_ip);

@@ -71,6 +71,14 @@ static void build_dhcp_ack_msg(struct dhcp_msg *msg, uint32_t server_ip, uint32_
     opt->data[2] = (dns_ip >> 8) & 0xFF;
     opt->data[3] = (dns_ip >> 0) & 0xFF;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    /* The IP-address-lease-time option (51) is mandatory in a DHCPACK. */
+    opt->code = DHCP_OPTION_LEASE_TIME;
+    opt->len = 4;
+    opt->data[0] = 0;
+    opt->data[1] = 0;
+    opt->data[2] = 0;
+    opt->data[3] = 120;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 }
@@ -4752,6 +4760,13 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     opt->data[1] = 0x08;
     opt->data[2] = 0x08;
     opt->data[3] = 0x08;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_LEASE_TIME; /* mandatory in a DHCPACK */
+    opt->len = 4;
+    opt->data[0] = 0x00;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x78; /* 120 s */
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_END;
     opt->len = 0;

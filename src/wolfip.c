@@ -7799,7 +7799,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 }
                 if (!saw_end)
                     return -1;
-                if (primary && saw_server_id &&
+                /* RFC 2131: the IP-address-lease-time option (51) is mandatory
+                 * in a DHCPACK. lease_s is only ever set by that option (and a
+                 * short option already returns -1 above), so lease_s != 0 means
+                 * it was present with a valid nonzero duration. Without it the
+                 * lease would be bound with no expiry/renewal timer. */
+                if (primary && saw_server_id && lease_s != 0 &&
                     (primary->ip != 0) && (primary->mask != 0)) {
                     dhcp_cancel_timer(s);
                     s->dhcp_state = DHCP_BOUND;

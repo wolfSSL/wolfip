@@ -1343,6 +1343,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_timer_cb_default_state_noop);
     tcase_add_test(tc_core, test_dhcp_timer_cb_null_arg_noop);
     tcase_add_test(tc_core, test_dhcp_renew_rerandomizes_xid_rejecting_stale_ack);
+    tcase_add_test(tc_core, test_dhcp_parse_ack_without_lease_time_rejected);
     /* --- unit_tests_ip_arp_recv.c (34 tests) --- */
     tcase_add_test(tc_core, test_ip_recv_limited_broadcast_dst_is_local);
     tcase_add_test(tc_core, test_ip_recv_directed_broadcast_dst_is_local);

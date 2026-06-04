@@ -1187,3 +1187,54 @@ START_TEST(test_dhcp_renew_rerandomizes_xid_rejecting_stale_ack)
     ck_assert_uint_eq(primary->gw, good_gw);
 }
 END_TEST
+
+/* F-5482: a DHCPACK is only valid with the mandatory IP-address-lease-time
+ * option (51, RFC 2131). An ACK missing it - or carrying a zero duration -
+ * must be rejected, never bound, otherwise the lease has no expiry/renewal
+ * timer and is silently treated as permanent. */
+START_TEST(test_dhcp_parse_ack_without_lease_time_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    uint8_t *p;
+
+    wolfIP_init(&s);
+    s.dhcp_xid = 0x5482U;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    /* (1) ACK with server-id/offer-ip/mask/router but NO lease time. */
+    build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    p = (uint8_t *)msg.options + 3;
+    append_opt4(&p, DHCP_OPTION_SERVER_ID,   0x0A000001U);
+    append_opt4(&p, DHCP_OPTION_OFFER_IP,    0x0A000064U);
+    append_opt4(&p, DHCP_OPTION_SUBNET_MASK, 0xFFFFFF00U);
+    append_opt4(&p, DHCP_OPTION_ROUTER,      0x0A000001U);
+    append_end(&p);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
+
+    /* (2) ACK that carries lease time == 0 is equally invalid. */
+    build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    p = (uint8_t *)msg.options + 3;
+    append_opt4(&p, DHCP_OPTION_SERVER_ID,   0x0A000001U);
+    append_opt4(&p, DHCP_OPTION_OFFER_IP,    0x0A000064U);
+    append_opt4(&p, DHCP_OPTION_SUBNET_MASK, 0xFFFFFF00U);
+    append_opt4(&p, DHCP_OPTION_LEASE_TIME,  0U);
+    append_end(&p);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
+
+    /* (3) The same ACK with a valid nonzero lease time binds and schedules a
+     * lease timer. */
+    build_full_ack(&s, &msg, 0x0A000001U, 0x0A000064U, 0xFFFFFF00U,
+                   0x0A000001U, 0x08080808U, 120U);
+    s.dhcp_timer = NO_TIMER;
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+}
+END_TEST
