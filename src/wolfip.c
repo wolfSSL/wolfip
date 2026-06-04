@@ -2604,12 +2604,19 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
     if (ip_len > payload_len)
         return;
     payload_len = ip_len;
-    (void)if_idx;
     for (int i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];
         if (!r->used)
             continue;
         if (r->protocol != 0 && r->protocol != ip->proto)
+            continue;
+        /* Honour the bind contract, mirroring the TCP/UDP receive paths: a
+         * socket bound to a specific local IP or interface must not capture
+         * traffic for other destinations or arriving on other interfaces.
+         * bound_local_ip == IPADDR_ANY / if_idx == 0 mean "any". */
+        if (r->bound_local_ip != IPADDR_ANY && r->bound_local_ip != ee32(ip->dst))
+            continue;
+        if (r->if_idx != 0 && r->if_idx != (uint8_t)if_idx)
             continue;
         if (fifo_push(&r->rxbuf, (void *)packet, payload_len) == 0) {
             r->last_pkt_ttl = ip->ttl;

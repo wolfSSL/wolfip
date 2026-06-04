@@ -6540,6 +6540,79 @@ START_TEST(test_raw_socket_recv_captures_ip_header)
 }
 END_TEST
 
+/* F-5070: raw_try_recv must honour a raw socket's bound_local_ip and if_idx,
+ * mirroring the TCP/UDP bind contract. A socket bound to one local IP/interface
+ * must not receive protocol-matching traffic for other destinations or arriving
+ * on other interfaces. The frame is rebuilt before every injection because the
+ * unit build enables forwarding, which rewrites the buffer in place. */
+#define RAW_BIND_FRAME_LEN (ETH_HEADER_LEN + IP_HEADER_LEN + 8)
+static void raw_bind_build_frame(struct wolfIP *s, struct wolfIP_ip_packet *frame,
+        size_t bufsz, uint32_t dst)
+{
+    static const uint8_t payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    memset(frame, 0, bufsz);
+    memcpy(frame->eth.dst, s->ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, "\xaa\xbb\xcc\xdd\xee\xff", 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = 32;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + (uint16_t)sizeof(payload));
+    frame->src = ee32(0x0A000002U);
+    frame->dst = ee32(dst);
+    memcpy(frame->data, payload, sizeof(payload));
+    iphdr_set_checksum(frame);
+}
+
+START_TEST(test_raw_socket_recv_honors_bound_local_ip_and_if)
+{
+    struct wolfIP s;
+    int sd;
+    struct rawsocket *rs;
+    uint8_t frame_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    uint8_t rxbuf[64];
+    const int delivered = IP_HEADER_LEN + 8;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    rs = &s.rawsockets[SOCKET_UNMARK(sd)];
+
+    /* Bound to 10.0.0.1: a packet destined elsewhere must be filtered out. */
+    rs->bound_local_ip = 0x0A000001U;
+    rs->if_idx = 0;
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A0000FEU);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), -WOLFIP_EAGAIN);
+
+    /* Same socket, packet destined to the bound IP: delivered. */
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), delivered);
+
+    /* Catch-all destination but bound to a different interface: filtered. */
+    rs->bound_local_ip = IPADDR_ANY;
+    rs->if_idx = (uint8_t)(TEST_PRIMARY_IF + 1U);
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), -WOLFIP_EAGAIN);
+
+    /* if_idx == 0 means "any interface": delivered on the arriving one. */
+    rs->if_idx = 0;
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), delivered);
+}
+END_TEST
+
 START_TEST(test_raw_socket_send_hdrincl_respected)
 {
     struct wolfIP s;

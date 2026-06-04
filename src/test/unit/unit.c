@@ -775,6 +775,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_try_recv_mismatch_remote_ip);
     tcase_add_test(tc_proto, test_icmp_try_recv_full_fifo_does_not_signal_readable);
     tcase_add_test(tc_proto, test_raw_socket_recv_captures_ip_header);
+    tcase_add_test(tc_proto, test_raw_socket_recv_honors_bound_local_ip_and_if);
     tcase_add_test(tc_proto, test_raw_socket_send_hdrincl_respected);
     tcase_add_test(tc_proto, test_raw_socket_send_builds_ip_header);
     tcase_add_test(tc_proto, test_regression_raw_socket_send_ip_id_network_byte_order);
