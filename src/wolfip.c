@@ -4012,6 +4012,12 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
         return;
     if (igmp[0] != IGMP_TYPE_MEMBERSHIP_QUERY)
         return;
+    /* RFC 3376 §4.1.1 / RFC 2236 §2: IGMP messages carry IP TTL 1 and are
+     * link-local; a query with any other TTL transited a router and cannot be
+     * a legitimate on-link query. Dropping it stops an off-link/spoofed query
+     * from soliciting (and thereby disclosing) the host's membership reports. */
+    if (ip->ttl != 1)
+        return;
     /* RFC 2236 §2 (IGMPv2) and RFC 3376 §4.1 (IGMPv3) both place the Group
      * Address at offset 4 within the message. Read unconditionally so that
      * IGMPv1/v2 group-specific queries (8-byte messages) are not silently
@@ -4019,6 +4025,14 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
     group = get_be32(igmp + 4);
     if (group != IPADDR_ANY && !wolfIP_ip_is_multicast(group))
         return;
+    /* RFC 3376 §4.1.2: a general query is addressed to all-hosts (224.0.0.1)
+     * and a group-specific query to the group itself. Reject a query sent to
+     * any other destination (e.g. our unicast address). */
+    {
+        ip4 dst = ee32(ip->dst);
+        if (dst != IGMP_ALL_HOSTS && dst != group)
+            return;
+    }
 
     for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
         if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)

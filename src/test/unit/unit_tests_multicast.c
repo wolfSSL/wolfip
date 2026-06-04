@@ -314,6 +314,94 @@ START_TEST(test_multicast_igmp_query_bad_checksum_dropped)
 }
 END_TEST
 
+/* F-5904: igmp_input must apply RFC 3376 §4.1 query validation. A query that
+ * could not be a legitimate on-link membership query - TTL != 1 (transited a
+ * router), or a destination that is neither all-hosts (224.0.0.1) nor the
+ * group - must not solicit membership reports (which would disclose the host's
+ * group memberships). */
+START_TEST(test_multicast_igmp_query_spoofed_dropped)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    struct wolfIP_ll_dev *ll;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *igmp = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    ip4 group = 0xE9010207U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+
+    /* (1) Otherwise-valid general query but with TTL != 1 -> dropped. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* (2) TTL == 1 but addressed to our unicast IP (not all-hosts/group) ->
+     * dropped. Sent to our unicast MAC so it reaches igmp_input. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, ll->mac, 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(0x0A000002U); /* our unicast IP */
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* Sanity: a compliant query (TTL 1, all-hosts dst) still solicits a report,
+     * so the guards did not over-block. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+    last_frame_sent_size = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+}
+END_TEST
+
 START_TEST(test_multicast_join_requires_configured_ip)
 {
     struct wolfIP s;
