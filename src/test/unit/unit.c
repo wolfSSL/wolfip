@@ -788,6 +788,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_getsockopt_unsupported_option_returns_einval);
     tcase_add_test(tc_proto, test_packet_socket_recv_frame);
     tcase_add_test(tc_proto, test_packet_socket_send_frame);
+#if WOLFIP_PACKET_SOCKETS
+    tcase_add_test(tc_proto, test_packet_socket_tx_filter_block_does_not_resend);
+#endif
     tcase_add_test(tc_proto, test_packet_socket_sendto_wrong_family_returns_einval);
     tcase_add_test(tc_proto, test_packet_socket_setsockopt_rejected);
     tcase_add_test(tc_proto, test_packet_socket_getsockopt_rejected);

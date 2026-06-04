@@ -9926,7 +9926,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 tx_if = 0;
             if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, tx_if,
                                          (struct wolfIP_eth_frame *)frame, desc->len) != 0) {
-                desc = fifo_next(&p->txbuf, desc);
+                /* The filter vetoed this frame. fifo_pop() only removes the
+                 * tail, so walking forward with fifo_next() here would later
+                 * pop the wrong descriptor and re-send an accepted frame. Drop
+                 * the blocked frame from the head and re-evaluate. */
+                fifo_pop(&p->txbuf);
+                desc = fifo_peek(&p->txbuf);
                 continue;
             }
             wolfIP_ll_send_frame(s, tx_if, frame, desc->len);

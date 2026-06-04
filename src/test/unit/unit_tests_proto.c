@@ -7028,6 +7028,102 @@ START_TEST(test_packet_socket_send_frame)
 }
 END_TEST
 
+#if WOLFIP_PACKET_SOCKETS
+/* F-4501: a SENDING-filter block must not desync the TX walk from fifo_pop().
+ * Frame A (PKT_A_LEN) is blocked; frame B (PKT_B_LEN) is accepted. The filter
+ * counts how many times each length reaches the SENDING hook: the bug walked
+ * with fifo_next() but removed the tail with fifo_pop(), re-peeking and
+ * re-sending B (B seen twice). The fix drops the blocked frame and sends B
+ * exactly once. */
+#define PKT_F4501_A_LEN ((uint32_t)(ETH_HEADER_LEN + 8))
+#define PKT_F4501_B_LEN ((uint32_t)(ETH_HEADER_LEN + 16))
+static int pkt_f4501_block_a_calls;
+static int pkt_f4501_b_send_calls;
+static int pkt_f4501_filter_cb(void *arg, const struct wolfIP_filter_event *event)
+{
+    (void)arg;
+    if (event && event->reason == WOLFIP_FILT_SENDING) {
+        if (event->length == PKT_F4501_A_LEN) {
+            pkt_f4501_block_a_calls++;
+            return 1; /* block frame A */
+        }
+        if (event->length == PKT_F4501_B_LEN)
+            pkt_f4501_b_send_calls++;
+    }
+    return 0;
+}
+
+START_TEST(test_packet_socket_tx_filter_block_does_not_resend)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_ll sll;
+    struct wolfIP_sockaddr_ll bind_sll;
+    uint8_t frame_a[PKT_F4501_A_LEN];
+    uint8_t frame_b[PKT_F4501_B_LEN];
+    struct wolfIP_eth_frame *eth_a = (struct wolfIP_eth_frame *)frame_a;
+    struct wolfIP_eth_frame *eth_b = (struct wolfIP_eth_frame *)frame_b;
+    struct packetsocket *ps;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+    ck_assert_int_ge(sd, 0);
+
+    memset(&bind_sll, 0, sizeof(bind_sll));
+    bind_sll.sll_family = AF_PACKET;
+    bind_sll.sll_protocol = ee16(ETH_TYPE_IP);
+    bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+    bind_sll.sll_halen = 6;
+    memset(bind_sll.sll_addr, 0xFF, 6);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+                (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+
+    memset(&sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = ee16(ETH_TYPE_IP);
+    sll.sll_ifindex = TEST_PRIMARY_IF;
+    sll.sll_halen = 6;
+    memset(sll.sll_addr, 0xFF, 6);
+
+    /* Queue [A, B]; A is shorter so the filter can tell them apart. */
+    memset(frame_a, 0, sizeof(frame_a));
+    memcpy(eth_a->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(eth_a->src, "\x00\x00\x00\x00\x00\x01", 6);
+    eth_a->type = ee16(ETH_TYPE_IP);
+    memset(eth_a->data, 0xAA, sizeof(frame_a) - ETH_HEADER_LEN);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_a, sizeof(frame_a), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)), (int)sizeof(frame_a));
+
+    memset(frame_b, 0, sizeof(frame_b));
+    memcpy(eth_b->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(eth_b->src, "\x00\x00\x00\x00\x00\x02", 6);
+    eth_b->type = ee16(ETH_TYPE_IP);
+    memset(eth_b->data, 0xBB, sizeof(frame_b) - ETH_HEADER_LEN);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_b, sizeof(frame_b), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)), (int)sizeof(frame_b));
+
+    pkt_f4501_block_a_calls = 0;
+    pkt_f4501_b_send_calls = 0;
+    wolfIP_filter_set_callback(pkt_f4501_filter_cb, NULL);
+    wolfIP_filter_set_mask(~0U);
+
+    wolfIP_poll(&s, 1000);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    /* A was filtered (and dropped), B was sent exactly once - not twice. */
+    ck_assert_int_ge(pkt_f4501_block_a_calls, 1);
+    ck_assert_int_eq(pkt_f4501_b_send_calls, 1);
+    /* Both descriptors are gone: the blocked one is dropped, not left behind. */
+    ps = &s.packetsockets[SOCKET_UNMARK(sd)];
+    ck_assert_ptr_eq(fifo_peek(&ps->txbuf), NULL);
+}
+END_TEST
+#endif /* WOLFIP_PACKET_SOCKETS */
+
 START_TEST(test_packet_socket_sendto_wrong_family_returns_einval)
 {
 #if WOLFIP_PACKET_SOCKETS
