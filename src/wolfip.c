@@ -7457,6 +7457,12 @@ static void dhcp_timer_cb(void *arg)
             s->dhcp_state = DHCP_RENEWING;
             s->dhcp_start_tick = s->last_tick;
             s->dhcp_timeout_count = 0;
+            /* RFC 2131: a renewal is a new transaction. Pick a fresh, random
+             * transaction ID so an attacker who observed the initial (broadcast)
+             * DORA xid cannot blindly forge a renewal DHCPACK for the lifetime
+             * of the lease. Retransmissions within this cycle (and the
+             * RENEWING->REBINDING continuation) keep this xid. */
+            s->dhcp_xid = wolfIP_getrandom();
             ret = dhcp_send_request(s);
             if (ret >= 0)
                 s->dhcp_timeout_count++;
