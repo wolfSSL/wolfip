@@ -562,6 +562,7 @@ cov: unit $(COV_UNIT)
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" \
 		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/index.html
 	@$(OPEN_CMD) build/coverage/index.html
@@ -576,6 +577,7 @@ autocov: unit $(COV_UNIT)
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" \
 		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/index.html
 
@@ -587,6 +589,7 @@ autocov-multicast: unit-multicast $(COV_MCAST_UNIT)
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" \
 		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/multicast.html
 
@@ -598,6 +601,7 @@ cov-multicast: unit-multicast $(COV_MCAST_UNIT)
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" \
 		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/multicast.html
 	@$(OPEN_CMD) build/coverage/multicast.html
@@ -620,6 +624,7 @@ cov-vlan: unit-vlan $(COV_VLAN_UNIT)
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" \
 		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/vlan.html
 	@$(OPEN_CMD) build/coverage/vlan.html
@@ -632,6 +637,7 @@ autocov-vlan: unit-vlan $(COV_VLAN_UNIT)
 	@mkdir -p build/coverage
 	@gcovr -r . --exclude "src/test/unit/.*" \
 		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/vlan.html
 

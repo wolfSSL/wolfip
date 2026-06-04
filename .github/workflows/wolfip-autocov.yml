@@ -26,7 +26,7 @@ jobs:
 
       - name: Generate coverage JSON
         run: |
-          gcovr -r . --exclude "src/test/unit/unit.c" --json -o build/coverage/coverage.json
+          gcovr -r . --exclude "src/test/unit/unit.c" --gcov-ignore-parse-errors=all --json -o build/coverage/coverage.json
 
       - name: Enforce 100% function coverage for src/wolfip.c
         run: |
