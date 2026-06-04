@@ -272,6 +272,34 @@ static int wolftftp_build_request(uint8_t *buf, uint16_t max_len, uint16_t opcod
     return 0;
 }
 
+/* Reject filenames that could escape the integrator's namespace: any absolute
+ * path (leading '/' or '\') and any ".." path component. The library hands the
+ * name straight to io.open(), and TFTP is unauthenticated, so a naive
+ * filesystem-backed open() would otherwise be exposed to traversal. The check
+ * is component-aware: a ".." segment between separators (or as the whole name)
+ * is rejected, but dots inside a name ("fw..bin") are fine. */
+static int wolftftp_filename_is_safe(const char *name)
+{
+    const char *seg = name;
+    const char *c;
+
+    if (name[0] == '\0')
+        return 0;
+    if (name[0] == '/' || name[0] == '\\')
+        return 0;
+    for (c = name; ; c++) {
+        if (*c == '/' || *c == '\\' || *c == '\0') {
+            size_t seglen = (size_t)(c - seg);
+            if (seglen == 2U && seg[0] == '.' && seg[1] == '.')
+                return 0;
+            if (*c == '\0')
+                break;
+            seg = c + 1;
+        }
+    }
+    return 1;
+}
+
 static int wolftftp_parse_request(const uint8_t *buf, uint16_t len,
     struct wolftftp_parsed_req *req)
 {
@@ -294,6 +322,8 @@ static int wolftftp_parse_request(const uint8_t *buf, uint16_t len,
         return WOLFTFTP_ERR_PACKET;
     memcpy(req->filename, p, slen);
     req->filename[slen] = '\0';
+    if (!wolftftp_filename_is_safe(req->filename))
+        return WOLFTFTP_ERR_PACKET;
     p += slen + 1U;
     slen = wolftftp_strnlen_local(p, (size_t)(buf + len - (const uint8_t *)p));
     if (slen == 0 || wolftftp_stricmp_local(p, "octet") != 0)
