@@ -850,6 +850,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock_connect_selects_local_ip_multi_if);
     tcase_add_test(tc_proto, test_icmp_socket_send_recv);
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_queues);
+    tcase_add_test(tc_proto, test_icmp_input_echo_reply_wrong_dst_dropped);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_reply_sent);
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_sets_df);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_bad_checksum_dropped);

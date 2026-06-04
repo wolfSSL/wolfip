@@ -1751,9 +1751,62 @@ START_TEST(test_icmp_input_echo_reply_queues)
     icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
+    /* The reply is destined to a configured local IP (10.0.0.1). */
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
     ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
     ck_assert_uint_eq(ts->last_pkt_ttl, 55);
+}
+END_TEST
+
+/* F-5733: icmp_input must only deliver an ECHO_REPLY that is actually addressed
+ * to one of our configured local IPs, mirroring the ECHO_REQUEST guard. A
+ * forged reply to a non-local dst (matching only a wildcard local_ip==0 socket
+ * by a guessed echo id) must be dropped. */
+START_TEST(test_icmp_input_echo_reply_wrong_dst_dropped)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;                 /* wildcard: per-socket dst check skipped */
+    ts->remote_ip = 0;                /* accept from any source */
+    ts->src_port = ee16(0x1234);      /* echo id the attacker guesses */
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    /* Forged reply addressed to an IP that is NOT one of ours: must be dropped
+     * before reaching the socket. */
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000099U);  /* not a configured local IP */
+    icmp.ip.ttl = 55;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REPLY;
+    icmp_set_echo_id(&icmp, ts->src_port);
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    /* The same reply addressed to our configured local IP is delivered. */
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);  /* configured local IP */
+    icmp.ip.ttl = 55;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REPLY;
+    icmp_set_echo_id(&icmp, ts->src_port);
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
 
