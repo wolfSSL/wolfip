@@ -2208,3 +2208,123 @@ START_TEST(test_tcp_input_rst_in_window_not_exact_sends_ack)
     ck_assert_int_ne(ts->proto, 0);
 }
 END_TEST
+
+/*
+ * wolfIP_sock_close() must disarm the callback on EAGAIN teardown paths.
+ * this is the transition ESTABLISHED -> FIN_WAIT_1.
+ * */
+START_TEST(test_sock_close_established_disarms_callback)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip  = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000A1U;
+    uint16_t lport = 9100, rport = 41000;
+    int sd = MARK_TCP_SOCKET;        /* tcpsockets[0] */
+    int callback_arg = 0;            /* stand-in for the app's heap context */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+
+    /* Active close: FIN sent, FIN_WAIT_1, EAGAIN, callback disarmed. */
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+    ck_assert_ptr_null(ts->callback);
+    ck_assert_ptr_null(ts->callback_arg);
+
+    /* The app is now free to release callback_arg. Drive the remote FIN the
+     * report relies on: seq == rcv_nxt, ack == snd_una (does not ack our FIN)
+     * -> FIN_WAIT_1 transitions to CLOSING and raises the close events. */
+    socket_cb_calls = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 200, TCP_FLAG_ACK | TCP_FLAG_FIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
+    ck_assert_uint_ne(ts->events & (CB_EVENT_CLOSED | CB_EVENT_READABLE), 0);
+
+    /* wolfIP_poll() Step 3 must not dispatch the disarmed callback. */
+    (void)wolfIP_poll(&s, 1);
+    ck_assert_int_eq(socket_cb_calls, 0);
+}
+END_TEST
+
+/*
+ * wolfIP_sock_close() must disarm the callback on EAGAIN teardown paths.
+ * this is the transition CLOSE_WAIT -> LAST_ACK.
+ * */
+START_TEST(test_sock_close_close_wait_disarms_callback)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct pkt_desc *desc;
+    ip4 local_ip  = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000A1U;
+    uint16_t lport = 9101, rport = 41001;
+    int sd = MARK_TCP_SOCKET;        /* tcpsockets[0] */
+    int callback_arg = 0;            /* stand-in for the app's heap context */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;   /* remote FIN already received */
+    ts->sock.tcp.ack = 100;                /* rcv_nxt */
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.seq = 120;                /* 20 bytes sent, unacked */
+    ts->sock.tcp.last = 120;
+    ts->sock.tcp.bytes_in_flight = 20;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->local_ip  = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->src_port  = lport;
+    ts->dst_port  = rport;
+    ts->if_idx    = TEST_PRIMARY_IF;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, remote_ip, (uint8_t *)setup_peer_mac);
+
+    /* Stage the 20 bytes of sent-but-unacked data (seq 100..119). */
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 20);
+    seg->hlen   = TCP_HEADER_LEN << 2;
+    seg->seq    = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+
+    /* Active close from CLOSE_WAIT: FIN sent (seq 120), LAST_ACK, EAGAIN,
+     * callback disarmed. */
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+    ck_assert_ptr_null(ts->callback);
+    ck_assert_ptr_null(ts->callback_arg);
+
+    /* Remote ACKs the data (ack=120) but not our FIN (would need 121): the
+     * socket stays in LAST_ACK and tcp_ack raises CB_EVENT_WRITABLE. */
+    socket_cb_calls = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 120, TCP_FLAG_ACK);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+    ck_assert_uint_ne(ts->events & CB_EVENT_WRITABLE, 0);
+
+    /* wolfIP_poll() Step 3 must not dispatch the disarmed callback. */
+    (void)wolfIP_poll(&s, 1);
+    ck_assert_int_eq(socket_cb_calls, 0);
+}
+END_TEST

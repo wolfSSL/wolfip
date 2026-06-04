@@ -7001,6 +7001,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             ts->sock.tcp.ctrl_rto_retries = 0;
             tcp_ctrl_rto_start(ts, s->last_tick);
+            ts->callback = NULL;
+            ts->callback_arg = NULL;
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
             ts->sock.tcp.state = TCP_CLOSED;
@@ -7015,6 +7017,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             ts->sock.tcp.state = TCP_LAST_ACK;
             ts->sock.tcp.ctrl_rto_retries = 0;
             tcp_ctrl_rto_start(ts, s->last_tick);
+            ts->callback = NULL;
+            ts->callback_arg = NULL;
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_CLOSING) {
             return -WOLFIP_EAGAIN;
