@@ -3865,6 +3865,93 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
 }
 END_TEST
 
+/* Regression: an ICMP error message MUST NOT trigger another ICMP error
+ * (RFC 1812 sec 4.3.2.7, RFC 1122 sec 3.2.2). When forwarding an ICMP error
+ * datagram (type 3, 4, 5, 11, 12) whose TTL has reached 1, wolfIP must
+ * silently drop it instead of emitting a Time Exceeded reply to the source. */
+START_TEST(test_regression_forwarding_no_ttl_exceeded_for_icmp_error)
+{
+    struct wolfIP s;
+    uint8_t frame_buf[64];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0xAA, 0xBB, 0xCC};
+    uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x03};
+    uint32_t dest_ip = 0xC0A80110;
+    /* The ICMP error types that must not provoke a Time Exceeded reply. */
+    uint8_t icmp_error_types[5] = {ICMP_DEST_UNREACH, 4 /* Source Quench */,
+            5 /* Redirect */, ICMP_TTL_EXCEEDED, 12 /* Parameter Problem */};
+    unsigned int t;
+
+    for (t = 0; t < 5; t++) {
+        wolfIP_init(&s);
+        mock_link_init(&s);
+        mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
+        wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+        wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
+
+        memset(frame_buf, 0, sizeof(frame_buf));
+        memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+        memcpy(frame->eth.src, src_mac, 6);
+        frame->eth.type = ee16(ETH_TYPE_IP);
+        frame->ver_ihl = 0x45;
+        frame->ttl = 1;
+        frame->proto = WI_IPPROTO_ICMP;
+        frame->len = ee16(IP_HEADER_LEN + 8);
+        frame->src = ee32(0xC0A800AA);
+        frame->dst = ee32(dest_ip);
+        /* Embedded ICMP message: type is the first byte of the IP payload. */
+        frame->data[0] = icmp_error_types[t];
+        frame->csum = 0;
+        iphdr_set_checksum(frame);
+
+        memset(last_frame_sent, 0, sizeof(last_frame_sent));
+        last_frame_sent_size = 0;
+
+        wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                ETH_HEADER_LEN + IP_HEADER_LEN + 8);
+
+        /* No Time Exceeded (or any other frame) may be emitted. */
+        ck_assert_uint_eq(last_frame_sent_size, 0);
+    }
+
+    /* Positive control: a non-error ICMP message (Echo Request, type 8) is a
+     * query, not an error, so a TTL-expired forward of it must STILL produce a
+     * Time Exceeded. This guards against an over-broad fix that suppresses the
+     * reply for every ICMP packet rather than only ICMP error messages. */
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, src_mac, 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = 1;
+    frame->proto = WI_IPPROTO_ICMP;
+    frame->len = ee16(IP_HEADER_LEN + 8);
+    frame->src = ee32(0xC0A800AA);
+    frame->dst = ee32(dest_ip);
+    frame->data[0] = ICMP_ECHO_REQUEST;
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+            ETH_HEADER_LEN + IP_HEADER_LEN + 8);
+
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
+    ck_assert_uint_eq(
+            ((struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent)->type,
+            ICMP_TTL_EXCEEDED);
+}
+END_TEST
+
 START_TEST(test_loopback_dest_not_forwarded)
 {
     struct wolfIP s;

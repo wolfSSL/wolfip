@@ -2181,6 +2181,18 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
         return;
     if (orig_ihl < IP_HEADER_LEN)
         orig_ihl = IP_HEADER_LEN;
+    /* RFC 1812 4.3.2.7 / RFC 1122 3.2.2: an ICMP error message MUST NOT be
+     * originated in response to another ICMP error. If the packet whose TTL
+     * expired is itself an ICMP error (type 3, 4, 5, 11, 12), drop silently.
+     * The caller guarantees orig_ihl + 8 bytes are present, so reading the
+     * embedded ICMP type at offset ETH_HEADER_LEN + orig_ihl is in bounds. */
+    if (orig->proto == WI_IPPROTO_ICMP) {
+        uint8_t orig_type = *(((uint8_t *)orig) + ETH_HEADER_LEN + orig_ihl);
+        if (orig_type == ICMP_DEST_UNREACH || orig_type == ICMP_FRAG_NEEDED ||
+            orig_type == 5 /* Redirect */ || orig_type == ICMP_TTL_EXCEEDED ||
+            orig_type == 12 /* Parameter Problem */)
+            return;
+    }
     orig_copy = orig_ihl + 8;
     if (orig_copy > TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX)
         orig_copy = TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX;
