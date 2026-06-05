@@ -70,13 +70,20 @@ static int upload_handler(struct httpd *httpd, struct http_client *hc, struct ht
 static int run(struct httpd *httpd, const char *raw, size_t len)
 {
     struct http_client hc;
+    /* Copy into a writable scratch buffer that mirrors the production recv
+     * buffer, so the test never hands a read-only string literal to the
+     * parser - safe even if parse_http_request ever normalizes in-place. */
+    uint8_t buf[HTTP_RECV_BUF_LEN];
+    if (len > sizeof(buf))
+        len = sizeof(buf);
+    memcpy(buf, raw, len);
     memset(&hc, 0, sizeof(hc));
     hc.httpd = httpd;
     hc.client_sd = 1;
     hc.ssl = NULL;
     handler_calls = 0;
     handler_body_len = 0;
-    return parse_http_request(&hc, (uint8_t *)raw, len);
+    return parse_http_request(&hc, buf, len);
 }
 
 #define CHECK(cond) do { if (!(cond)) { \

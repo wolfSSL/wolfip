@@ -183,6 +183,7 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
 	build/test-http-smuggle build/test-http-arg-oob \
+	build/test-posix-errno \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
 ifeq ($(UNAME_S),Linux)
