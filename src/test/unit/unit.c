@@ -1260,6 +1260,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_input_rst_in_window_not_exact_sends_ack);
     tcase_add_test(tc_core, test_sock_close_established_disarms_callback);
     tcase_add_test(tc_core, test_sock_close_close_wait_disarms_callback);
+    tcase_add_test(tc_core, test_rst_in_fin_wait_1_delivers_close_event);
+    tcase_add_test(tc_core, test_last_ack_final_ack_delivers_close_event);
     /* --- unit_tests_poll_dispatcher.c (47 tests) --- */
     tcase_add_test(tc_core, test_poll_device_poll_returns_zero_exits_loop);
     tcase_add_test(tc_core, test_poll_device_poll_returns_negative_exits_loop);
