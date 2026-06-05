@@ -1066,6 +1066,8 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #ifndef DHCP_REQUEST_RETRIES
 #define DHCP_REQUEST_RETRIES 3
 #endif
+/* RFC 2131 §4.1: retransmission delay doubles each attempt up to a 64s ceiling. */
+#define DHCP_BACKOFF_MAX_MS 64000U
 
 enum dhcp_state {
     DHCP_OFF = 0,
@@ -7675,13 +7677,30 @@ static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
     s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
 }
 
+/* Exponential-backoff retransmission delay: double the base timeout for each
+ * prior attempt (dhcp_timeout_count), saturating at DHCP_BACKOFF_MAX_MS, plus
+ * the existing small jitter. The shift is clamped first because renew/rebind do
+ * not cap dhcp_timeout_count, so it can grow past the point of UB. */
+static uint64_t dhcp_backoff_delay(const struct wolfIP *s, uint32_t base_ms)
+{
+    uint32_t count = s ? s->dhcp_timeout_count : 0;
+    uint64_t delay;
+
+    if (count > 16)
+        count = 16;
+    delay = (uint64_t)base_ms << count;
+    if (delay > DHCP_BACKOFF_MAX_MS)
+        delay = DHCP_BACKOFF_MAX_MS;
+    return delay + (wolfIP_getrandom() % 200U);
+}
+
 static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
 {
     uint64_t next;
 
     if (!s)
         return;
-    next = s->last_tick + DHCP_REQUEST_TIMEOUT + (wolfIP_getrandom() % 200U);
+    next = s->last_tick + dhcp_backoff_delay(s, DHCP_REQUEST_TIMEOUT);
     if (deadline != 0 && next > deadline)
         next = deadline;
     dhcp_schedule_timer_at(s, next);
@@ -8353,7 +8372,7 @@ static int dhcp_send_discover(struct wolfIP *s)
         dhcp_schedule_timer_at(s, retry_at);
         return ret;
     }
-    dhcp_schedule_timer_at(s, s->last_tick + DHCP_DISCOVER_TIMEOUT + (wolfIP_getrandom() % 200U));
+    dhcp_schedule_timer_at(s, s->last_tick + dhcp_backoff_delay(s, DHCP_DISCOVER_TIMEOUT));
     s->dhcp_state = DHCP_DISCOVER_SENT;
     return 0;
 }
