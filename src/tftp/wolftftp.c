@@ -922,6 +922,19 @@ static int wolftftp_server_send_window(struct wolftftp_server *server,
         if (ret != 0)
             return WOLFTFTP_ERR_IO;
         data_len = out_len;
+        /* Refuse to advance past the configured limit or wrap the
+         * uint32_t offset/total accumulators. io.read takes a uint32_t
+         * offset, so a transfer beyond 4 GiB would silently wrap and
+         * re-read near-start data; terminate instead. Mirrors the WRQ
+         * per-DATA guard in wolftftp_server_accept_wrq_data. */
+        if (session->total_size > (uint32_t)(UINT32_MAX - data_len) ||
+                (server->cfg.max_image_size != 0U &&
+                data_len > server->cfg.max_image_size - session->total_size)) {
+            (void)wolftftp_send_server_error(server, session->local_port,
+                &session->remote, WOLFTFTP_ENOSPACE, "image too large");
+            wolftftp_server_finish(server, session, WOLFTFTP_ERR_SIZE);
+            return WOLFTFTP_ERR_SIZE;
+        }
         ret = wolftftp_build_data(pkt, sizeof(pkt), session->next_block, pkt + 4,
             data_len);
         if (ret < 0)

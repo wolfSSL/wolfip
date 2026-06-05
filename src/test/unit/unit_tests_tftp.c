@@ -1132,6 +1132,84 @@ START_TEST(test_tftp_server_rrq_sends_zero_byte_terminator_on_exact_multiple)
 }
 END_TEST
 
+/* F-5783: the RRQ send path accumulates next_offset/total_size (uint32_t)
+ * with no max_image_size guard, unlike the WRQ receive path. A reader that
+ * keeps returning full blocks would advance past the configured limit and
+ * eventually wrap the uint32_t offset, re-reading near-start data. The
+ * server must instead refuse to send past max_image_size with an ENOSPACE
+ * error, mirroring the WRQ per-DATA guard. */
+START_TEST(test_tftp_server_rrq_max_image_size_enforced_on_send)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg;
+    struct wolftftp_transfer_cfg req_cfg;
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote = tftp_remote(0x0A000060U, 4300);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    uint16_t blksize = 8U;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.blksize = blksize;
+    cfg.timeout_s = 1;
+    cfg.windowsize = 1;
+    cfg.max_retries = 3;
+    /* Exactly two full blocks may be sent; the third must be rejected. */
+    cfg.max_image_size = 2U * blksize;
+
+    memset(&req_cfg, 0, sizeof(req_cfg));
+    req_cfg.blksize = WOLFTFTP_DEFAULT_BLKSIZE;
+    req_cfg.timeout_s = WOLFTFTP_DEFAULT_TIMEOUT_S;
+    req_cfg.windowsize = 1;
+
+    tftp_test_ctx_reset(&ctx);
+    /* A reader that never signals EOF: every read returns a full block. */
+    memset(ctx.read_data, 'A', blksize);
+    memset(ctx.read_data + blksize, 'B', blksize);
+    memset(ctx.read_data + 2 * blksize, 'C', blksize);
+    ctx.read_len[0] = blksize; ctx.read_last[0] = 0;
+    ctx.read_len[1] = blksize; ctx.read_last[1] = 0;
+    ctx.read_len[2] = blksize; ctx.read_last[2] = 0;
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
+        "fw.bin", &req_cfg, 0, &opts, &req_len), 0);
+    ck_assert_uint_eq(opts, 0U);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+    /* Block 1 (total 8 of 16). */
+    ck_assert_int_eq(ctx.send_calls, 1);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0]), WOLFTFTP_OP_DATA);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0] + 2), 1U);
+
+    /* ACK 1 → block 2 (total 16 of 16). */
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_ACK);
+    wolftftp_write_u16(pkt + 2, 1);
+    ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
+        &remote, pkt, 4), 0);
+    ck_assert_int_eq(ctx.send_calls, 2);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[1]), WOLFTFTP_OP_DATA);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[1] + 2), 2U);
+
+    /* ACK 2 → a third full block would push total past max_image_size;
+     * the server must answer with an ENOSPACE error, not more DATA, and
+     * reap the session. Before the fix this sent DATA block 3. */
+    wolftftp_write_u16(pkt, WOLFTFTP_OP_ACK);
+    wolftftp_write_u16(pkt + 2, 2);
+    ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
+        &remote, pkt, 4), WOLFTFTP_ERR_SIZE);
+    ck_assert_int_eq(ctx.send_calls, 3);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[2]), WOLFTFTP_OP_ERROR);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[2] + 2), WOLFTFTP_ENOSPACE);
+    ck_assert_int_eq(server.sessions[0].state, WOLFTFTP_SESSION_FREE);
+}
+END_TEST
+
 START_TEST(test_tftp_server_poll_deadline_is_wrap_safe)
 {
     struct tftp_test_ctx ctx;
@@ -2255,6 +2333,8 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_server_rrq_retransmit_replays_window);
     tcase_add_test(tc_proto, test_tftp_client_poll_deadline_is_wrap_safe);
     tcase_add_test(tc_proto, test_tftp_server_poll_deadline_is_wrap_safe);
+    tcase_add_test(tc_proto,
+        test_tftp_server_rrq_max_image_size_enforced_on_send);
     tcase_add_test(tc_proto,
         test_tftp_server_rrq_sends_zero_byte_terminator_on_exact_multiple);
     tcase_add_test(tc_proto,
