@@ -1494,6 +1494,12 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
     if (entry) {
         int internal_ret;
         int public_fd;
+        uint32_t start_gen;
+        int start_fd;
+        /* Snapshot the listener slot's identity so we can detect a concurrent
+         * close()/reuse across the mutex-drop window in the poll loop below. */
+        start_gen = entry->generation;
+        start_fd = entry->internal_fd;
         if (!want_nonblock)
             want_nonblock = wolfip_fd_is_nonblock(sockfd);
         do {
@@ -1512,8 +1518,15 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
                 pthread_mutex_unlock(&wolfIP_mutex);
                 host_poll(&pfd, 1, -1);
                 pthread_mutex_lock(&wolfIP_mutex);
+                /* While the mutex was dropped a concurrent close() may have
+                 * released this slot, and a subsequent socket()/accept() may
+                 * have reused the same public fd for an unrelated connection.
+                 * The bare in_use check below cannot tell the slot apart from
+                 * the original listener, so verify the snapshotted identity to
+                 * avoid accepting on the wrong internal socket. */
                 entry = wolfip_entry_from_public(sockfd);
-                if (!entry) {
+                if (!entry || entry->generation != start_gen ||
+                        entry->internal_fd != start_fd) {
                     errno = EBADF;
                     pthread_mutex_unlock(&wolfIP_mutex);
                     return -1;
