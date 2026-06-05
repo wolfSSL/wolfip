@@ -142,6 +142,7 @@ struct wolfip_fd_entry {
     uint8_t in_use;
     uint8_t pending_tokens; /* Bitset of queued event bytes in the pipe */
     uint16_t events;   /* Events armed for current poll/select */
+    uint32_t generation; /* Bumped on every alloc; detects slot reuse */
 };
 
 #define WOLFIP_TOKEN_R (1u << 0)
@@ -177,6 +178,7 @@ static void wolfip_drain_pipe_locked(struct wolfip_fd_entry *entry)
 }
 
 static struct wolfip_fd_entry wolfip_fd_entries[WOLFIP_MAX_PUBLIC_FDS];
+static uint32_t wolfip_fd_generation; /* Monotonic; bumped under wolfIP_mutex on each alloc */
 static int tcp_entry_for_slot[MAX_TCPSOCKETS];
 static int udp_entry_for_slot[MAX_UDPSOCKETS];
 static int icmp_entry_for_slot[MAX_ICMPSOCKETS];
@@ -196,6 +198,7 @@ enum wolfip_dns_wait_type {
 struct wolfip_dns_wait_ctx {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
+    int busy;
     int pending;
     enum wolfip_dns_wait_type type;
     int status;
@@ -206,6 +209,7 @@ struct wolfip_dns_wait_ctx {
 static struct wolfip_dns_wait_ctx dns_wait_ctx = {
     PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_COND_INITIALIZER,
+    0,
     0,
     DNS_WAIT_NONE,
     0,
@@ -393,6 +397,7 @@ static int wolfip_fd_alloc(int internal_fd, int nonblock)
     }
     idx = pipefds[0];
     memset(&wolfip_fd_entries[idx], 0, sizeof(wolfip_fd_entries[idx]));
+    wolfip_fd_entries[idx].generation = ++wolfip_fd_generation;
     wolfip_fd_entries[idx].internal_fd = internal_fd;
     wolfip_fd_entries[idx].public_fd = pipefds[0];
     wolfip_fd_entries[idx].pipe_write = pipefds[1];
@@ -449,9 +454,15 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
 {
     struct pollfd pfd;
     char want;
+    uint32_t start_gen;
+    int start_fd;
 
     if (!entry)
         return -EINVAL;
+    /* Snapshot the slot identity so we can detect a concurrent close()/reuse
+     * across the mutex-drop window below. */
+    start_gen = entry->generation;
+    start_fd = entry->internal_fd;
     want = (wait_events & POLLOUT) ? 'w' : 'r';
     entry->events = (uint16_t)wait_events;
     wolfIP_register_callback(IPSTACK, entry->internal_fd, poller_callback, IPSTACK);
@@ -481,6 +492,15 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
             return -EINTR;
         }
         pthread_mutex_lock(&wolfIP_mutex);
+        /* While the mutex was dropped a concurrent close() may have released
+         * this slot, and a subsequent socket()/accept() may have reused the
+         * same public fd for an unrelated connection. The caller still holds
+         * the stale internal_fd it captured before blocking; signal EBADF so
+         * it does not read/write the reused slot's data. */
+        if (!entry->in_use || entry->generation != start_gen ||
+                entry->internal_fd != start_fd) {
+            return -EBADF;
+        }
         if (poll_ret < 0) {
             return -errno;
         }
@@ -518,7 +538,7 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
         if (__wolfip_internal >= 0) { \
             int __wolfip_retval = wolfIP_sock_##call(IPSTACK, __wolfip_internal, ## __VA_ARGS__); \
             if (__wolfip_retval < 0) { \
-                errno = __wolfip_retval; \
+                errno = -__wolfip_retval; \
                 pthread_mutex_unlock(&wolfIP_mutex); \
                 return -1; \
             } \
@@ -565,7 +585,7 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
                 } \
             } while (__wolfip_retval == -EAGAIN); \
             if (__wolfip_retval < 0) { \
-                errno = __wolfip_retval; \
+                errno = -__wolfip_retval; \
                 pthread_mutex_unlock(&wolfIP_mutex); \
                 return -1; \
             } \
@@ -715,10 +735,11 @@ static int wolfip_dns_error_to_eai(int err)
 static int wolfip_dns_begin_wait(enum wolfip_dns_wait_type type)
 {
     pthread_mutex_lock(&dns_wait_ctx.mutex);
-    if (dns_wait_ctx.pending) {
+    if (dns_wait_ctx.busy) {
         pthread_mutex_unlock(&dns_wait_ctx.mutex);
         return EAI_AGAIN;
     }
+    dns_wait_ctx.busy = 1;
     dns_wait_ctx.pending = 1;
     dns_wait_ctx.type = type;
     dns_wait_ctx.status = EAI_FAIL;
@@ -731,6 +752,7 @@ static void wolfip_dns_abort_wait(int status)
 {
     pthread_mutex_lock(&dns_wait_ctx.mutex);
     dns_wait_ctx.pending = 0;
+    dns_wait_ctx.busy = 0;
     dns_wait_ctx.type = DNS_WAIT_NONE;
     dns_wait_ctx.status = status;
     pthread_cond_signal(&dns_wait_ctx.cond);
@@ -748,6 +770,7 @@ static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, cha
         int err = pthread_cond_timedwait(&dns_wait_ctx.cond, &dns_wait_ctx.mutex, &ts);
         if (err == ETIMEDOUT) {
             dns_wait_ctx.pending = 0;
+            dns_wait_ctx.busy = 0;
             dns_wait_ctx.type = DNS_WAIT_NONE;
             pthread_mutex_unlock(&dns_wait_ctx.mutex);
             return EAI_AGAIN;
@@ -755,6 +778,8 @@ static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, cha
     }
     if (dns_wait_ctx.type != type) {
         int status = dns_wait_ctx.status ? dns_wait_ctx.status : EAI_FAIL;
+        dns_wait_ctx.type = DNS_WAIT_NONE;
+        dns_wait_ctx.busy = 0;
         pthread_mutex_unlock(&dns_wait_ctx.mutex);
         return status;
     }
@@ -766,6 +791,7 @@ static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, cha
             wolfip_strlcpy(name_out, dns_wait_ctx.name, name_len);
     }
     dns_wait_ctx.type = DNS_WAIT_NONE;
+    dns_wait_ctx.busy = 0;
     pthread_mutex_unlock(&dns_wait_ctx.mutex);
     return status;
 }
@@ -1476,6 +1502,12 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
     if (entry) {
         int internal_ret;
         int public_fd;
+        uint32_t start_gen;
+        int start_fd;
+        /* Snapshot the listener slot's identity so we can detect a concurrent
+         * close()/reuse across the mutex-drop window in the poll loop below. */
+        start_gen = entry->generation;
+        start_fd = entry->internal_fd;
         if (!want_nonblock)
             want_nonblock = wolfip_fd_is_nonblock(sockfd);
         do {
@@ -1494,8 +1526,15 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
                 pthread_mutex_unlock(&wolfIP_mutex);
                 host_poll(&pfd, 1, -1);
                 pthread_mutex_lock(&wolfIP_mutex);
+                /* While the mutex was dropped a concurrent close() may have
+                 * released this slot, and a subsequent socket()/accept() may
+                 * have reused the same public fd for an unrelated connection.
+                 * The bare in_use check below cannot tell the slot apart from
+                 * the original listener, so verify the snapshotted identity to
+                 * avoid accepting on the wrong internal socket. */
                 entry = wolfip_entry_from_public(sockfd);
-                if (!entry) {
+                if (!entry || entry->generation != start_gen ||
+                        entry->internal_fd != start_fd) {
                     errno = EBADF;
                     pthread_mutex_unlock(&wolfIP_mutex);
                     return -1;
@@ -1505,7 +1544,7 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
             }
         } while (internal_ret == -EAGAIN);
         if (internal_ret < 0) {
-            errno = internal_ret;
+            errno = -internal_ret;
             pthread_mutex_unlock(&wolfIP_mutex);
             return -1;
         }

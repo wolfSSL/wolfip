@@ -458,7 +458,7 @@ static int wolftftp_build_oack(uint8_t *buf, uint16_t max_len,
 }
 
 static int wolftftp_parse_oack(const uint8_t *buf, uint16_t len,
-    struct wolftftp_negotiated *neg)
+    struct wolftftp_negotiated *neg, uint8_t requested_opts)
 {
     const char *p;
     size_t slen;
@@ -486,21 +486,33 @@ static int wolftftp_parse_oack(const uint8_t *buf, uint16_t len,
          * past buf+len. */
         if (slen == 0 || (const uint8_t *)(value + slen) >= buf + len)
             return WOLFTFTP_ERR_PACKET;
+        /* RFC 2347 §2: an OACK may only acknowledge options the client
+         * actually sent. Reject any option absent from requested_opts so a
+         * malicious server cannot install unsolicited timeout/windowsize/
+         * tsize values that were never negotiated. */
         if (wolftftp_stricmp_local(key, "blksize") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_BLKSIZE) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE, &number) != 0 ||
                     number < 8U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->blksize = (uint16_t)number;
         } else if (wolftftp_stricmp_local(key, "timeout") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_TIMEOUT) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, 255U, &number) != 0 || number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->timeout_s = (uint16_t)number;
         } else if (wolftftp_stricmp_local(key, "tsize") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_TSIZE) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, 0xFFFFFFFFUL, &number) != 0)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->tsize = number;
             neg->have_tsize = 1;
         } else if (wolftftp_stricmp_local(key, "windowsize") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_WINDOWSIZE) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, WOLFTFTP_MAX_WINDOWSIZE, &number) != 0 ||
                     number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
@@ -645,8 +657,9 @@ static int wolftftp_client_accept_data(struct wolftftp_client *client,
     int ret;
 
     if (data->block == client->expected_block) {
-        if (client->cfg.max_image_size != 0U &&
-                (client->total_size + data->data_len) > client->cfg.max_image_size) {
+        if (client->total_size > (uint32_t)(UINT32_MAX - data->data_len) ||
+                (client->cfg.max_image_size != 0U &&
+                data->data_len > client->cfg.max_image_size - client->total_size)) {
             (void)wolftftp_send_client_error(client, &client->server,
                 WOLFTFTP_ENOSPACE, "image too large");
             wolftftp_client_finish(client, WOLFTFTP_ERR_SIZE);
@@ -747,7 +760,7 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
         client->server.port = remote->port;
         client->tid_locked = 1;
         wolftftp_neg_defaults(&neg, &client->cfg);
-        ret = wolftftp_parse_oack(buf, len, &neg);
+        ret = wolftftp_parse_oack(buf, len, &neg, client->requested_opts);
         if (ret != 0) {
             wolftftp_client_finish(client, ret);
             return ret;
@@ -873,6 +886,21 @@ static struct wolftftp_server_session *wolftftp_server_find_session(
     return NULL;
 }
 
+static struct wolftftp_server_session *wolftftp_server_find_by_remote(
+    struct wolftftp_server *server, const struct wolftftp_endpoint *remote)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFTFTP_SERVER_MAX_SESSIONS; i++) {
+        if (server->sessions[i].state != WOLFTFTP_SESSION_FREE &&
+                server->sessions[i].remote.ip == remote->ip &&
+                server->sessions[i].remote.port == remote->port) {
+            return &server->sessions[i];
+        }
+    }
+    return NULL;
+}
+
 static struct wolftftp_server_session *wolftftp_server_alloc_session(
     struct wolftftp_server *server)
 {
@@ -921,6 +949,19 @@ static int wolftftp_server_send_window(struct wolftftp_server *server,
         if (ret != 0)
             return WOLFTFTP_ERR_IO;
         data_len = out_len;
+        /* Refuse to advance past the configured limit or wrap the
+         * uint32_t offset/total accumulators. io.read takes a uint32_t
+         * offset, so a transfer beyond 4 GiB would silently wrap and
+         * re-read near-start data; terminate instead. Mirrors the WRQ
+         * per-DATA guard in wolftftp_server_accept_wrq_data. */
+        if (session->total_size > (uint32_t)(UINT32_MAX - data_len) ||
+                (server->cfg.max_image_size != 0U &&
+                data_len > server->cfg.max_image_size - session->total_size)) {
+            (void)wolftftp_send_server_error(server, session->local_port,
+                &session->remote, WOLFTFTP_ENOSPACE, "image too large");
+            wolftftp_server_finish(server, session, WOLFTFTP_ERR_SIZE);
+            return WOLFTFTP_ERR_SIZE;
+        }
         ret = wolftftp_build_data(pkt, sizeof(pkt), session->next_block, pkt + 4,
             data_len);
         if (ret < 0)
@@ -979,6 +1020,17 @@ static int wolftftp_server_start_request(struct wolftftp_server *server,
         session->neg.windowsize = req->windowsize;
     session->neg.have_tsize = (uint8_t)((req->opts & WOLFTFTP_OPT_TSIZE) != 0U);
     session->neg.tsize = req->tsize;
+    /* Reject an advertised tsize that already exceeds the configured limit
+     * before io.open is handed the hint, so a single WRQ cannot force a
+     * 4 GiB pre-allocation. This mirrors the client OACK check and the
+     * later per-DATA enforcement in wolftftp_server_accept_wrq_data. */
+    if (session->neg.have_tsize != 0U && server->cfg.max_image_size != 0U &&
+            session->neg.tsize > server->cfg.max_image_size) {
+        (void)wolftftp_send_server_error(server, session->local_port, remote,
+            WOLFTFTP_ENOSPACE, "image too large");
+        wolftftp_server_finish(server, session, WOLFTFTP_ERR_SIZE);
+        return WOLFTFTP_ERR_SIZE;
+    }
     (void)wolftftp_copy_string(session->filename, sizeof(session->filename),
         req->filename);
 
@@ -1049,8 +1101,9 @@ static int wolftftp_server_accept_wrq_data(struct wolftftp_server *server,
          * trying to replay the OACK now that we have entered the
          * data phase. */
         session->options_sent = 0;
-        if (server->cfg.max_image_size != 0U &&
-                (session->total_size + data->data_len) > server->cfg.max_image_size) {
+        if (session->total_size > (uint32_t)(UINT32_MAX - data->data_len) ||
+                (server->cfg.max_image_size != 0U &&
+                data->data_len > server->cfg.max_image_size - session->total_size)) {
             (void)wolftftp_send_server_error(server, session->local_port,
                 &session->remote, WOLFTFTP_ENOSPACE, "image too large");
             wolftftp_server_finish(server, session, WOLFTFTP_ERR_SIZE);
@@ -1130,6 +1183,14 @@ int wolftftp_server_receive(struct wolftftp_server *server, uint16_t local_port,
         if (ret != 0)
             return wolftftp_send_server_error(server, server->listen_port, remote,
                 WOLFTFTP_EBADOP, "bad request");
+        /* A retransmitted request (the client has not yet seen our reply)
+         * lands back on the listen port while a session for the same remote
+         * endpoint is already active. Coalesce it onto that session instead
+         * of allocating a fresh slot, so a single source cannot pin the whole
+         * pool and a lossy client's retries do not leak slots. The in-progress
+         * session's poll-driven retransmit redelivers the pending reply. */
+        if (wolftftp_server_find_by_remote(server, remote) != NULL)
+            return 0;
         return wolftftp_server_start_request(server, remote, &req);
     }
 
