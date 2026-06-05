@@ -142,6 +142,7 @@ struct wolfip_fd_entry {
     uint8_t in_use;
     uint8_t pending_tokens; /* Bitset of queued event bytes in the pipe */
     uint16_t events;   /* Events armed for current poll/select */
+    uint32_t generation; /* Bumped on every alloc; detects slot reuse */
 };
 
 #define WOLFIP_TOKEN_R (1u << 0)
@@ -177,6 +178,7 @@ static void wolfip_drain_pipe_locked(struct wolfip_fd_entry *entry)
 }
 
 static struct wolfip_fd_entry wolfip_fd_entries[WOLFIP_MAX_PUBLIC_FDS];
+static uint32_t wolfip_fd_generation; /* Monotonic; bumped under wolfIP_mutex on each alloc */
 static int tcp_entry_for_slot[MAX_TCPSOCKETS];
 static int udp_entry_for_slot[MAX_UDPSOCKETS];
 static int icmp_entry_for_slot[MAX_ICMPSOCKETS];
@@ -393,6 +395,7 @@ static int wolfip_fd_alloc(int internal_fd, int nonblock)
     }
     idx = pipefds[0];
     memset(&wolfip_fd_entries[idx], 0, sizeof(wolfip_fd_entries[idx]));
+    wolfip_fd_entries[idx].generation = ++wolfip_fd_generation;
     wolfip_fd_entries[idx].internal_fd = internal_fd;
     wolfip_fd_entries[idx].public_fd = pipefds[0];
     wolfip_fd_entries[idx].pipe_write = pipefds[1];
@@ -449,9 +452,15 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
 {
     struct pollfd pfd;
     char want;
+    uint32_t start_gen;
+    int start_fd;
 
     if (!entry)
         return -EINVAL;
+    /* Snapshot the slot identity so we can detect a concurrent close()/reuse
+     * across the mutex-drop window below. */
+    start_gen = entry->generation;
+    start_fd = entry->internal_fd;
     want = (wait_events & POLLOUT) ? 'w' : 'r';
     entry->events = (uint16_t)wait_events;
     wolfIP_register_callback(IPSTACK, entry->internal_fd, poller_callback, IPSTACK);
@@ -481,6 +490,15 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
             return -EINTR;
         }
         pthread_mutex_lock(&wolfIP_mutex);
+        /* While the mutex was dropped a concurrent close() may have released
+         * this slot, and a subsequent socket()/accept() may have reused the
+         * same public fd for an unrelated connection. The caller still holds
+         * the stale internal_fd it captured before blocking; signal EBADF so
+         * it does not read/write the reused slot's data. */
+        if (!entry->in_use || entry->generation != start_gen ||
+                entry->internal_fd != start_fd) {
+            return -EBADF;
+        }
         if (poll_ret < 0) {
             return -errno;
         }
