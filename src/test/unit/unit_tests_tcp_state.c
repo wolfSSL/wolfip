@@ -466,6 +466,39 @@ START_TEST(test_tcp_parse_options_mss_zero_ignored)
 }
 END_TEST
 
+/* A peer-advertised MSS below the RFC 9293 floor (536) must be clamped up to
+ * TCP_DEFAULT_MSS, so a malicious tiny MSS cannot coerce us into emitting 1-byte
+ * segments (small-MSS DoS amplification). Symmetric with the ICMP PTB floor. */
+START_TEST(test_tcp_parse_options_mss_below_floor_clamped)
+{
+    uint8_t opts[] = {
+        TCP_OPTION_MSS, 4, 0x00, 0x01,  /* MSS=1: below the 536 floor */
+        TCP_OPTION_EOO
+    };
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LISTEN;
+    ts->src_port = 8080;
+
+    inject_tcp_segment_with_opts(&s, TEST_PRIMARY_IF,
+        0x0A0000A1U, 0x0A000001U, 40000, 8080,
+        1, 0, TCP_FLAG_SYN,
+        opts, (uint8_t)sizeof(opts), NULL, 0);
+
+    /* Sub-floor MSS must not drag peer_mss below TCP_DEFAULT_MSS. */
+    ck_assert_uint_ge(ts->sock.tcp.peer_mss, TCP_DEFAULT_MSS);
+}
+END_TEST
+
 /* SACK-permitted option is parsed */
 START_TEST(test_tcp_parse_options_sack_permitted_parsed)
 {

@@ -2620,7 +2620,8 @@ START_TEST(test_tcp_input_synack_negotiates_peer_mss)
     synack.seg.win = ee16(65535);
     synack.mss_opt[0] = TCP_OPTION_MSS;
     synack.mss_opt[1] = TCP_OPTION_MSS_LEN;
-    mss_be = ee16(512);
+    /* Above the RFC 9293 §3.7.1 floor (536), so it is recorded verbatim. */
+    mss_be = ee16(1000);
     memcpy(&synack.mss_opt[2], &mss_be, sizeof(mss_be));
     fix_tcp_checksums(&synack.seg);
 
@@ -2628,7 +2629,7 @@ START_TEST(test_tcp_input_synack_negotiates_peer_mss)
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
 
     ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
-    ck_assert_uint_eq(ts->sock.tcp.peer_mss, 512U);
+    ck_assert_uint_eq(ts->sock.tcp.peer_mss, 1000U);
 }
 END_TEST
 
@@ -2763,7 +2764,10 @@ START_TEST(test_sock_sendto_tcp_respects_negotiated_peer_mss)
     synack.seg.win = ee16(65535);
     synack.mss_opt[0] = TCP_OPTION_MSS;
     synack.mss_opt[1] = TCP_OPTION_MSS_LEN;
-    mss_be = ee16(512);
+    /* Above the RFC 9293 §3.7.1 floor (536) so it is recorded verbatim, yet
+     * below our own interface MSS so it still binds tcp_tx_payload_cap(); a
+     * 1200-byte payload then splits into >=3 segments (ceil(1200/560)=3). */
+    mss_be = ee16(560);
     memcpy(&synack.mss_opt[2], &mss_be, sizeof(mss_be));
     fix_tcp_checksums(&synack.seg);
 
@@ -2791,7 +2795,7 @@ START_TEST(test_sock_sendto_tcp_respects_negotiated_peer_mss)
         base_len = (uint32_t)(sizeof(struct wolfIP_tcp_seg) + opt_len);
         ck_assert_uint_ge(desc->len, base_len);
         seg_payload = desc->len - base_len;
-        ck_assert_uint_le(seg_payload, 512U);
+        ck_assert_uint_le(seg_payload, 560U);
 
         seg_count++;
         desc = fifo_next(&ts->sock.tcp.txbuf, desc);

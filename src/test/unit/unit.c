@@ -1202,6 +1202,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_parse_options_timestamp_parsed);
     tcase_add_test(tc_core, test_tcp_parse_options_timestamp_overlong_ignored);
     tcase_add_test(tc_core, test_tcp_parse_options_mss_zero_ignored);
+    tcase_add_test(tc_core, test_tcp_parse_options_mss_below_floor_clamped);
     tcase_add_test(tc_core, test_tcp_parse_options_sack_permitted_parsed);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_bad_seq_ignored);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen);
