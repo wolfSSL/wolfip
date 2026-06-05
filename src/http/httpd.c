@@ -290,6 +290,26 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
     return len;
 }
 
+/* Case-insensitive check that header line [s, s+len) begins with the field
+ * name `name` immediately followed by ':'. Returns a pointer to the value
+ * (past the colon and any leading spaces/tabs) on match, or NULL otherwise. */
+static const char *http_header_value(const char *s, size_t len, const char *name) {
+    size_t nl = strlen(name);
+    size_t i;
+    if (len < nl + 1)
+        return NULL;
+    for (i = 0; i < nl; i++) {
+        if (tolower((unsigned char)s[i]) != tolower((unsigned char)name[i]))
+            return NULL;
+    }
+    if (s[nl] != ':')
+        return NULL;
+    i = nl + 1;
+    while (i < len && (s[i] == ' ' || s[i] == '\t'))
+        i++;
+    return s + i;
+}
+
 static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) {
     char *p = (char *) buf;
     char *end = p + len;
@@ -297,6 +317,8 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     size_t n;
     int ret;
     int decoded_len;
+    long content_length = -1; /* -1: no Content-Length header seen */
+    int has_te = 0;           /* Transfer-Encoding header present */
     struct http_request req;
     struct http_url *url = NULL;
     memset(&req, 0, sizeof(struct http_request));
@@ -346,19 +368,56 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
             goto bad_request;
         n = q - p;
         if (n == 0) {
+            p = q + 2; /* Skip the blank line; body (if any) starts here */
             break; /* End of headers */
         }
         /* Enforce header maximum length */
         if (n >= sizeof(req.headers))
             goto bad_request;
+        /* Extract framing headers so the body length is derived from the
+         * declared Content-Length rather than from the recv buffer tail. */
+        {
+            const char *v = http_header_value(p, n, "content-length");
+            if (v) {
+                long cl = 0;
+                const char *d = v;
+                if (content_length >= 0) /* duplicate Content-Length */
+                    goto bad_request;
+                if (d >= q || *d < '0' || *d > '9')
+                    goto bad_request;
+                while (d < q && *d >= '0' && *d <= '9') {
+                    cl = cl * 10 + (*d - '0');
+                    if (cl > (long)sizeof(req.body)) /* too large / overflow */
+                        goto bad_request;
+                    d++;
+                }
+                if (d != q) /* trailing garbage after the number */
+                    goto bad_request;
+                content_length = cl;
+            } else if (http_header_value(p, n, "transfer-encoding")) {
+                has_te = 1;
+            }
+        }
         /* Copy header and terminate */
         memcpy(req.headers, p, n);
         req.headers[n] = '\0';
         p = q + 2;
     }
-    /* Parse the body */
-    if (p < end) {
-        n = end - p;
+    /* Parse the body.  The body length is taken from the declared
+     * Content-Length; surplus bytes in the recv buffer are not part of this
+     * request.  Transfer-Encoding (chunked) framing is not supported and a
+     * body present without a Content-Length is malformed - both are rejected
+     * to avoid request-smuggling (CL.0 / TE) ambiguity. */
+    n = end - p;
+    if (has_te)
+        goto bad_request;
+    if (content_length >= 0) {
+        if ((size_t)content_length != n)
+            goto bad_request;
+    } else if (n > 0) {
+        goto bad_request;
+    }
+    if (n > 0) {
         if (n >= sizeof(req.body)) {
             return -1;
         }

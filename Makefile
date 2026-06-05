@@ -182,6 +182,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
+	build/test-http-smuggle \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
 ifeq ($(UNAME_S),Linux)
@@ -394,6 +395,14 @@ build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwardi
 build/test-httpd: $(OBJ) build/test/test_httpd.o build/port/wolfssl_io.o build/certs/server_key.o build/certs/server_cert.o build/http/httpd.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) -lwolfssl $(END_GROUP)
+
+# Standalone regression test for HTTP request framing (F-5259). It #includes
+# httpd.c directly to reach the static parser and stubs the wolfIP/wolfSSL I/O.
+build/test-http-smuggle:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLFIP_ENABLE_HTTP -Isrc/http
+build/test-http-smuggle: src/test/test_http_smuggle.c src/http/httpd.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_smuggle.c $(LDFLAGS) -lwolfssl
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true
