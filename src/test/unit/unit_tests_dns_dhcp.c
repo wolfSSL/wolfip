@@ -4310,6 +4310,91 @@ START_TEST(test_dhcp_timer_cb_paths)
 }
 END_TEST
 
+/* RFC 2131 §4.1: DHCPDISCOVER retransmissions must back off exponentially
+ * (doubling each attempt) instead of repeating on a fixed ~2s cadence.
+ * dhcp_timer_cb() reschedules using the current dhcp_timeout_count, so drive it
+ * at successive counts and capture the scheduled delay; with the fixed-interval
+ * scheme all three are equal, which the growth assertions below reject. */
+START_TEST(test_dhcp_discover_retransmit_backoff)
+{
+    struct wolfIP s;
+    uint64_t delay0, delay1, delay2;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 0;
+    dhcp_timer_cb(&s);
+    ck_assert_uint_eq(s.dhcp_timeout_count, 1U); /* retransmit queued */
+    delay0 = find_timer_expiry(&s, s.dhcp_timer) - now;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 1;
+    dhcp_timer_cb(&s);
+    delay1 = find_timer_expiry(&s, s.dhcp_timer) - now;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 2;
+    dhcp_timer_cb(&s);
+    delay2 = find_timer_expiry(&s, s.dhcp_timer) - now;
+
+    /* Fixed-cadence (current) scheme makes all three equal. */
+    ck_assert_uint_gt(delay1, delay0);
+    ck_assert_uint_gt(delay2, delay1);
+    /* The test RNG is deterministic, so the jitter is identical on every call
+     * and cancels in the deltas: exponential backoff means each step is twice
+     * the previous one. */
+    ck_assert_uint_eq(delay2 - delay1, 2U * (delay1 - delay0));
+}
+END_TEST
+
+/* Same exponential-backoff requirement for DHCPREQUEST retransmissions, which
+ * are scheduled through dhcp_schedule_retry_timer() rather than inline. */
+START_TEST(test_dhcp_request_retransmit_backoff)
+{
+    struct wolfIP s;
+    uint64_t delay0, delay1, delay2;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1;
+
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 0;
+    dhcp_timer_cb(&s);
+    ck_assert_uint_eq(s.dhcp_timeout_count, 1U); /* retransmit queued */
+    delay0 = find_timer_expiry(&s, s.dhcp_timer) - now;
+
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 1;
+    dhcp_timer_cb(&s);
+    delay1 = find_timer_expiry(&s, s.dhcp_timer) - now;
+
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 2;
+    dhcp_timer_cb(&s);
+    delay2 = find_timer_expiry(&s, s.dhcp_timer) - now;
+
+    ck_assert_uint_gt(delay1, delay0);
+    ck_assert_uint_gt(delay2, delay1);
+    ck_assert_uint_eq(delay2 - delay1, 2U * (delay1 - delay0));
+}
+END_TEST
+
 START_TEST(test_regression_dhcp_lease_expiry_deconfigures_address)
 {
     struct wolfIP s;
