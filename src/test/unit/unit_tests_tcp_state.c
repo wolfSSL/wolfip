@@ -2328,3 +2328,115 @@ START_TEST(test_sock_close_close_wait_disarms_callback)
     ck_assert_int_eq(socket_cb_calls, 0);
 }
 END_TEST
+
+/*
+ * A RST that closes a FIN_WAIT_1 socket must deliver CB_EVENT_CLOSED to a
+ * re-armed waiter.
+ */
+START_TEST(test_rst_in_fin_wait_1_delivers_close_event)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip  = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000A1U;
+    uint16_t lport = 9102, rport = 41002;
+    int sd = MARK_TCP_SOCKET;        /* tcpsockets[0] */
+    int callback_arg = 0;            /* stand-in for the app's heap context */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+
+    /* Active close: FIN sent, FIN_WAIT_1, EAGAIN, native callback disarmed. */
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+
+    /* The wrapper re-arms its own callback to wait for CB_EVENT_CLOSED. */
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+    socket_cb_calls = 0;
+    socket_cb_last_events = 0;
+
+    /* Forged/legit RST with SEG.SEQ == RCV.NXT (rcv_nxt == ts->sock.tcp.ack
+     * == 100): the generic RST handler accepts it and calls close_socket(). */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 0, TCP_FLAG_RST);
+
+    /* The connection is correctly torn down... */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+
+    /* ...but the re-armed close waiter must still be notified exactly once
+     * with CB_EVENT_CLOSED. On current code the memset wiped the callback
+     * before Step 3 ran, so these assertions fail (the bug). */
+    (void)wolfIP_poll(&s, 1);
+    ck_assert_int_ge(socket_cb_calls, 1);
+    ck_assert_uint_ne(socket_cb_last_events & CB_EVENT_CLOSED, 0);
+}
+END_TEST
+
+/*
+ * The peer's final ACK that closes a LAST_ACK socket must deliver
+ * CB_EVENT_CLOSED to a re-armed waiter.
+ */
+START_TEST(test_last_ack_final_ack_delivers_close_event)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip  = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000A1U;
+    uint16_t lport = 9103, rport = 41003;
+    int sd = MARK_TCP_SOCKET;        /* tcpsockets[0] */
+    int callback_arg = 0;            /* stand-in for the app's heap context */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;   /* remote FIN already received */
+    ts->sock.tcp.ack = 100;                /* rcv_nxt */
+    ts->sock.tcp.snd_una = 120;
+    ts->sock.tcp.seq = 120;                /* nothing outstanding */
+    ts->sock.tcp.last = 120;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->local_ip  = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->src_port  = lport;
+    ts->dst_port  = rport;
+    ts->if_idx    = TEST_PRIMARY_IF;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, remote_ip, (uint8_t *)setup_peer_mac);
+
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+
+    /* Active close from CLOSE_WAIT: FIN sent (seq 120), LAST_ACK, EAGAIN,
+     * native callback disarmed. */
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+
+    /* The wrapper re-arms its own callback to wait for CB_EVENT_CLOSED. */
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+    socket_cb_calls = 0;
+    socket_cb_last_events = 0;
+
+    /* Peer's final ACK acks our FIN (ack == 121): tcp_ack() LAST_ACK branch
+     * transitions to TCP_CLOSED and calls close_socket(). */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 121, TCP_FLAG_ACK);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+
+    /* The re-armed close waiter must be notified with CB_EVENT_CLOSED. */
+    (void)wolfIP_poll(&s, 1);
+    ck_assert_int_ge(socket_cb_calls, 1);
+    ck_assert_uint_ne(socket_cb_last_events & CB_EVENT_CLOSED, 0);
+}
+END_TEST

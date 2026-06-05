@@ -1178,6 +1178,7 @@ struct tsocket {
     uint8_t if_idx;
     uint8_t recv_ttl;
     uint8_t last_pkt_ttl;
+    uint8_t close_notify_pending; /* slot reserved for a final CB_EVENT_CLOSED */
     uint8_t rxmem[RXBUF_SIZE];
     uint8_t txmem[TXBUF_SIZE];
     tsocket_cb callback;
@@ -5569,6 +5570,10 @@ static struct pkt_desc *tcp_find_pending_retrans(struct tsocket *ts, struct pkt_
 
 static void close_socket(struct tsocket *ts)
 {
+    tsocket_cb cb;
+    void *cb_arg;
+    struct wolfIP *S;
+    int notify;
     if (!ts)
         return;
     if (ts->proto == WI_IPPROTO_TCP) {
@@ -5582,7 +5587,25 @@ static void close_socket(struct tsocket *ts)
     if (ts->proto == WI_IPPROTO_UDP)
         udp_mcast_drop_all(ts);
 #endif
+    /* An armed callback on an involuntarily torn-down TCP socket (RST,
+     * FIN_WAIT_2 / control RTO timeout, final ACK in LAST_ACK) is a waiter
+     * blocked on CB_EVENT_CLOSED. Callbacks may only run from wolfIP_poll()
+     * Step 3, so reserve the slot and defer one final CB_EVENT_CLOSED for the
+     * dispatcher to deliver and reap. App-initiated closes disarm the callback
+     * first, so they take the plain teardown path. */
+    notify = (ts->proto == WI_IPPROTO_TCP) && (ts->callback != NULL);
+    cb = ts->callback;
+    cb_arg = ts->callback_arg;
+    S = ts->S;
     memset(ts, 0, sizeof(struct tsocket));
+    if (notify) {
+        ts->S = S;
+        ts->proto = WI_IPPROTO_TCP;
+        ts->callback = cb;
+        ts->callback_arg = cb_arg;
+        ts->events = CB_EVENT_CLOSED;
+        ts->close_notify_pending = 1;
+    }
 }
 
 #if WOLFIP_RAWSOCKETS
@@ -7009,6 +7032,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             (void)wolfIP_filter_notify_socket_event(
                 WOLFIP_FILT_STOP_LISTENING, s, ts,
                 ts->local_ip, ts->src_port, IPADDR_ANY, 0);
+            ts->callback = NULL;
+            ts->callback_arg = NULL;
             close_socket(ts);
             return 0;
         } else if (ts->sock.tcp.state == TCP_CLOSE_WAIT) {
@@ -7030,6 +7055,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             (void)wolfIP_filter_notify_socket_event(
                 WOLFIP_FILT_CLOSED, s, ts,
                 ts->local_ip, ts->src_port, ts->remote_ip, ts->dst_port);
+            ts->callback = NULL;
+            ts->callback_arg = NULL;
             close_socket(ts);
             return 0;
         } else return -1;
@@ -9899,11 +9926,27 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     /* Step 3: handle DHCP and application callbacks */
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *ts = &s->tcpsockets[i];
+
+        /* close_socket() deferred a final CB_EVENT_CLOSED (involuntary teardown
+         * that ran close_socket() directly from the RX path, e.g. a RST). Reap
+         * the slot first so the callback may safely re-enter the stack, then
+         * deliver the saved event exactly once. */
+        if (ts->close_notify_pending) {
+            tsocket_cb cb = ts->callback;
+            void *cb_arg = ts->callback_arg;
+            uint16_t events = ts->events;
+            memset(ts, 0, sizeof(struct tsocket));
+            if (cb)
+                cb(i | MARK_TCP_SOCKET, events, cb_arg);
+            continue;
+        }
+
         if ((ts->callback == NULL) || (ts->events == 0))
             continue;
+
         /* A socket the RX path moved to TCP_CLOSED is dispatched here only when
-         * it deferred a CB_EVENT_CLOSED for delivery on this shallow stack
-         * (LAST_ACK final ACK, or RST on a half-open accepted socket); the
+         * it deferred a CB_EVENT_CLOSED inline for delivery on this shallow
+         * stack (LAST_ACK final ACK, or RST on a half-open accepted socket); the
          * teardown was deferred too so the callback would not run deep in
          * packet processing. Any other TCP_CLOSED socket is left alone. */
         if ((ts->sock.tcp.state == TCP_CLOSED) && !(ts->events & CB_EVENT_CLOSED))
@@ -9914,10 +9957,15 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             ts->callback(i | MARK_TCP_SOCKET, events, ts->callback_arg);
         }
         /* Now that CB_EVENT_CLOSED has been delivered, reap the deferred-close
-         * socket. A socket closed elsewhere is already memset (callback NULL)
-         * and never reaches this branch. */
-        if (ts->sock.tcp.state == TCP_CLOSED)
+         * socket. Disarm the callback first so close_socket() takes the plain
+         * teardown path instead of re-deferring (it re-arms close_notify_pending
+         * whenever a TCP socket still has a callback). A socket closed elsewhere
+         * is already memset (callback NULL) and never reaches this branch. */
+        if (ts->sock.tcp.state == TCP_CLOSED) {
+            ts->callback = NULL;
+            ts->callback_arg = NULL;
             close_socket(ts);
+        }
     }
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *ts = &s->udpsockets[i];
