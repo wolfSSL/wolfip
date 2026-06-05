@@ -332,6 +332,17 @@ build/packet_ping: $(OBJ) build/port/posix/bsd_socket.o build/test/packet_ping.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
+# F-4950 regression: test_posix_errno.c #includes bsd_socket.c directly, so the
+# shim object must not be linked again here.
+build/test-posix-errno: $(OBJ) build/test/test_posix_errno.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: posix-errno-test
+posix-errno-test: build/test-posix-errno
+	@echo "[RUN] $<"
+	@./build/test-posix-errno
+
 
 build/test-wolfssl:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP
 build/test-httpd:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -Isrc/http

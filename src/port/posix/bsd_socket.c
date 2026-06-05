@@ -538,7 +538,7 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
         if (__wolfip_internal >= 0) { \
             int __wolfip_retval = wolfIP_sock_##call(IPSTACK, __wolfip_internal, ## __VA_ARGS__); \
             if (__wolfip_retval < 0) { \
-                errno = __wolfip_retval; \
+                errno = -__wolfip_retval; \
                 pthread_mutex_unlock(&wolfIP_mutex); \
                 return -1; \
             } \
@@ -585,7 +585,7 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
                 } \
             } while (__wolfip_retval == -EAGAIN); \
             if (__wolfip_retval < 0) { \
-                errno = __wolfip_retval; \
+                errno = -__wolfip_retval; \
                 pthread_mutex_unlock(&wolfIP_mutex); \
                 return -1; \
             } \
@@ -1544,7 +1544,7 @@ static int wolfip_accept_common(int sockfd, struct sockaddr *addr, socklen_t *ad
             }
         } while (internal_ret == -EAGAIN);
         if (internal_ret < 0) {
-            errno = internal_ret;
+            errno = -internal_ret;
             pthread_mutex_unlock(&wolfIP_mutex);
             return -1;
         }
