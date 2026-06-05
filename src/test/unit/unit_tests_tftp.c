@@ -818,6 +818,56 @@ START_TEST(test_tftp_server_session_reaped_after_completion)
 }
 END_TEST
 
+/* F-4765: a retransmitted RRQ from the same remote endpoint (the client has
+ * not yet seen our reply) must be coalesced onto the in-progress session
+ * instead of allocating a fresh slot. Without this a single source can replay
+ * the listen-port request and pin every slot, starving legitimate clients. */
+START_TEST(test_tftp_server_duplicate_rrq_coalesced_to_one_slot)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint atk = tftp_remote(0xC0A80001U, 54321);
+    struct wolftftp_endpoint legit = tftp_remote(0xC0A80002U, 12345);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    unsigned int i;
+    unsigned int occupied;
+
+    tftp_test_ctx_reset(&ctx);
+    memcpy(ctx.read_data, "abcdefg", 7);
+    ctx.read_len[0] = 7;
+    ctx.read_last[0] = 1;
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+
+    /* One source replays the same RRQ once per slot. Only the first must
+     * allocate a session; the rest are duplicates of the live transfer. */
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_RRQ,
+        "fw.bin", &cfg, 0, &opts, &req_len), 0);
+    for (i = 0; i < WOLFTFTP_SERVER_MAX_SESSIONS; i++)
+        ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &atk,
+            pkt, req_len), 0);
+    ck_assert_int_eq(ctx.open_calls, 1);
+
+    occupied = 0;
+    for (i = 0; i < WOLFTFTP_SERVER_MAX_SESSIONS; i++) {
+        if (server.sessions[i].state != WOLFTFTP_SESSION_FREE)
+            occupied++;
+    }
+    ck_assert_uint_eq(occupied, 1);
+
+    /* A legitimate client from a different endpoint still finds a free slot. */
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &legit,
+        pkt, req_len), 0);
+    ck_assert_int_eq(ctx.open_calls, 2);
+}
+END_TEST
+
 START_TEST(test_tftp_client_honors_caller_server_port)
 {
     struct tftp_test_ctx ctx;
@@ -2387,6 +2437,7 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_server_wrq_tsize_exceeds_limit_rejected);
     tcase_add_test(tc_proto, test_tftp_server_request_errors_and_timeouts);
     tcase_add_test(tc_proto, test_tftp_server_session_reaped_after_completion);
+    tcase_add_test(tc_proto, test_tftp_server_duplicate_rrq_coalesced_to_one_slot);
     tcase_add_test(tc_proto, test_tftp_client_honors_caller_server_port);
     tcase_add_test(tc_proto, test_tftp_client_default_port_when_zero);
     tcase_add_test(tc_proto, test_tftp_parse_tsize_rejects_non_numeric);

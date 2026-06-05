@@ -886,6 +886,21 @@ static struct wolftftp_server_session *wolftftp_server_find_session(
     return NULL;
 }
 
+static struct wolftftp_server_session *wolftftp_server_find_by_remote(
+    struct wolftftp_server *server, const struct wolftftp_endpoint *remote)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFTFTP_SERVER_MAX_SESSIONS; i++) {
+        if (server->sessions[i].state != WOLFTFTP_SESSION_FREE &&
+                server->sessions[i].remote.ip == remote->ip &&
+                server->sessions[i].remote.port == remote->port) {
+            return &server->sessions[i];
+        }
+    }
+    return NULL;
+}
+
 static struct wolftftp_server_session *wolftftp_server_alloc_session(
     struct wolftftp_server *server)
 {
@@ -1168,6 +1183,14 @@ int wolftftp_server_receive(struct wolftftp_server *server, uint16_t local_port,
         if (ret != 0)
             return wolftftp_send_server_error(server, server->listen_port, remote,
                 WOLFTFTP_EBADOP, "bad request");
+        /* A retransmitted request (the client has not yet seen our reply)
+         * lands back on the listen port while a session for the same remote
+         * endpoint is already active. Coalesce it onto that session instead
+         * of allocating a fresh slot, so a single source cannot pin the whole
+         * pool and a lossy client's retries do not leak slots. The in-progress
+         * session's poll-driven retransmit redelivers the pending reply. */
+        if (wolftftp_server_find_by_remote(server, remote) != NULL)
+            return 0;
         return wolftftp_server_start_request(server, remote, &req);
     }
 
