@@ -849,6 +849,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_flush_pending_ttl_expired);
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
     tcase_add_test(tc_proto, test_wolfip_forwarding_ttl_expired);
+    tcase_add_test(tc_proto, test_regression_forwarding_no_ttl_exceeded_for_icmp_error);
     tcase_add_test(tc_proto, test_forward_packet_ip_filter_drop);
     tcase_add_test(tc_proto, test_forward_packet_eth_filter_drop);
     tcase_add_test(tc_proto, test_loopback_dest_not_forwarded);
