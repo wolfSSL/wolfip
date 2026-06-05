@@ -1061,8 +1061,9 @@ static int wolftftp_server_accept_wrq_data(struct wolftftp_server *server,
          * trying to replay the OACK now that we have entered the
          * data phase. */
         session->options_sent = 0;
-        if (server->cfg.max_image_size != 0U &&
-                (session->total_size + data->data_len) > server->cfg.max_image_size) {
+        if (session->total_size > (uint32_t)(UINT32_MAX - data->data_len) ||
+                (server->cfg.max_image_size != 0U &&
+                data->data_len > server->cfg.max_image_size - session->total_size)) {
             (void)wolftftp_send_server_error(server, session->local_port,
                 &session->remote, WOLFTFTP_ENOSPACE, "image too large");
             wolftftp_server_finish(server, session, WOLFTFTP_ERR_SIZE);

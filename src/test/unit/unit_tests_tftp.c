@@ -2128,6 +2128,58 @@ START_TEST(test_tftp_server_wrq_hash_failure_and_size_overflow)
 }
 END_TEST
 
+START_TEST(test_tftp_server_wrq_data_size_cap_is_overflow_safe)
+{
+    /* A rogue client that streams ~4 GiB into a WRQ session can push
+     * session->total_size up to near UINT32_MAX. The size-cap guard must
+     * not be defeated by an unsigned wrap of (total_size + data_len): the
+     * next block has to be rejected with ERR_SIZE, not written at a wrapped
+     * offset that seeks back over already-written data. Regression for
+     * F-4253 (server WRQ counterpart of F-4254). */
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote = tftp_remote(0x0A000095U, 7500);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+    int len;
+
+    cfg.max_image_size = 0xFFFFFFFFU;
+    tftp_test_ctx_reset(&ctx);
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt),
+        WOLFTFTP_OP_WRQ, "fw.bin", &cfg, 0, &opts, &req_len), 0);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), 0);
+
+    /* Block 1: full blksize, enters the data phase (16 bytes written). */
+    memcpy(pkt + 4, "0123456789abcdef", 16);
+    len = wolftftp_build_data(pkt, sizeof(pkt), 1, pkt + 4, 16);
+    ck_assert_int_eq(wolftftp_server_receive(&server,
+        server.sessions[0].local_port, &remote, pkt, (uint16_t)len), 0);
+    ck_assert_int_eq(ctx.write_calls, 1);
+
+    /* Fast-forward the accumulated total to just below the 32-bit limit,
+     * as if ~4 GiB had already arrived. Adding the next 16-byte block
+     * would wrap (total_size + 16) back to a small value that slips under
+     * max_image_size, defeating the cap. */
+    server.sessions[0].total_size = 0xFFFFFFF8U;
+    memcpy(pkt + 4, "ghijklmnopqrstuv", 16);
+    len = wolftftp_build_data(pkt, sizeof(pkt), 2, pkt + 4, 16);
+    ck_assert_int_eq(wolftftp_server_receive(&server,
+        server.sessions[0].local_port, &remote, pkt, (uint16_t)len),
+        WOLFTFTP_ERR_SIZE);
+    ck_assert_uint_eq(server.sessions[0].state, WOLFTFTP_SESSION_FREE);
+    /* The wrapped block must never reach the write sink. */
+    ck_assert_int_eq(ctx.write_calls, 1);
+}
+END_TEST
+
 START_TEST(test_tftp_server_rrq_ack_bad_then_recover)
 {
     /* ACK that doesn't match last_acked / (next_block-1) / OACK-ack-0
@@ -2223,5 +2275,6 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_server_retries_exhausted_to_timeout);
     tcase_add_test(tc_proto, test_tftp_server_wrq_full_flow_with_options);
     tcase_add_test(tc_proto, test_tftp_server_wrq_hash_failure_and_size_overflow);
+    tcase_add_test(tc_proto, test_tftp_server_wrq_data_size_cap_is_overflow_safe);
     tcase_add_test(tc_proto, test_tftp_server_rrq_ack_bad_then_recover);
 }
