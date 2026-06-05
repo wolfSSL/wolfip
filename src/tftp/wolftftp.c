@@ -645,8 +645,9 @@ static int wolftftp_client_accept_data(struct wolftftp_client *client,
     int ret;
 
     if (data->block == client->expected_block) {
-        if (client->cfg.max_image_size != 0U &&
-                (client->total_size + data->data_len) > client->cfg.max_image_size) {
+        if (client->total_size > (uint32_t)(UINT32_MAX - data->data_len) ||
+                (client->cfg.max_image_size != 0U &&
+                data->data_len > client->cfg.max_image_size - client->total_size)) {
             (void)wolftftp_send_client_error(client, &client->server,
                 WOLFTFTP_ENOSPACE, "image too large");
             wolftftp_client_finish(client, WOLFTFTP_ERR_SIZE);
