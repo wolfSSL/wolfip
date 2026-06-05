@@ -330,6 +330,62 @@ START_TEST(test_tftp_parse_request_error_paths)
 }
 END_TEST
 
+/* F-5009: an unauthenticated RRQ/WRQ filename must not be able to escape the
+ * integrator's namespace. parse_request rejects any '..' path component and any
+ * absolute path before the name can reach io.open. Benign names that merely
+ * contain dots (but no '..' component) and relative subdirectories still pass. */
+START_TEST(test_tftp_parse_request_rejects_path_traversal)
+{
+    uint8_t pkt[160];
+    struct wolftftp_parsed_req req;
+    static const char *bad[] = {
+        "../../etc/passwd",   /* leading traversal            */
+        "/etc/cron.d/evil",   /* absolute (unix)              */
+        "\\windows\\sys",     /* absolute (dos)               */
+        "..",                 /* whole name is a traversal    */
+        "fw/../../secret",    /* embedded traversal           */
+        "images/..",          /* trailing traversal component */
+        "a/..\\b",            /* backslash-separated traversal*/
+        "C:\\windows\\sys",   /* windows drive-letter absolute*/
+        "C:fw.bin",           /* windows drive-relative path  */
+        "fw.bin:stream",      /* ntfs alternate data stream   */
+    };
+    static const char *good[] = {
+        "fw.bin",             /* ordinary name                */
+        "images/fw.bin",      /* relative subdir is fine      */
+        "fw..bin",            /* dots, but not a '..' component */
+        "v1.2..3.img",        /* same                         */
+        ".config",            /* leading dot, not traversal   */
+    };
+    size_t i, fnlen;
+
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        memset(pkt, 0, sizeof(pkt));
+        wolftftp_write_u16(pkt, WOLFTFTP_OP_RRQ);
+        fnlen = strlen(bad[i]);
+        memcpy(pkt + 2, bad[i], fnlen + 1U);
+        memcpy(pkt + 2 + fnlen + 1U, "octet", 6);
+        ck_assert_int_eq(wolftftp_parse_request(pkt,
+            (uint16_t)(2U + fnlen + 1U + 6U), &req), WOLFTFTP_ERR_PACKET);
+        /* Same rejection on the WRQ (arbitrary-write) path. */
+        wolftftp_write_u16(pkt, WOLFTFTP_OP_WRQ);
+        ck_assert_int_eq(wolftftp_parse_request(pkt,
+            (uint16_t)(2U + fnlen + 1U + 6U), &req), WOLFTFTP_ERR_PACKET);
+    }
+
+    for (i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        memset(pkt, 0, sizeof(pkt));
+        wolftftp_write_u16(pkt, WOLFTFTP_OP_RRQ);
+        fnlen = strlen(good[i]);
+        memcpy(pkt + 2, good[i], fnlen + 1U);
+        memcpy(pkt + 2 + fnlen + 1U, "octet", 6);
+        ck_assert_int_eq(wolftftp_parse_request(pkt,
+            (uint16_t)(2U + fnlen + 1U + 6U), &req), 0);
+        ck_assert_str_eq(req.filename, good[i]);
+    }
+}
+END_TEST
+
 START_TEST(test_tftp_client_rrq_oack_and_data_success)
 {
     struct tftp_test_ctx ctx;
@@ -2045,6 +2101,7 @@ static void add_tftp_tests(TCase *tc_proto)
 {
     tcase_add_test(tc_proto, test_tftp_helpers_and_builders);
     tcase_add_test(tc_proto, test_tftp_parse_request_error_paths);
+    tcase_add_test(tc_proto, test_tftp_parse_request_rejects_path_traversal);
     tcase_add_test(tc_proto, test_tftp_client_rrq_oack_and_data_success);
     tcase_add_test(tc_proto, test_tftp_client_fallback_duplicate_and_tid_errors);
     tcase_add_test(tc_proto, test_tftp_client_error_and_failure_paths);

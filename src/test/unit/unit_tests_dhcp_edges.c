@@ -1127,3 +1127,124 @@ START_TEST(test_dhcp_timer_cb_null_arg_noop)
     dhcp_timer_cb(NULL);
 }
 END_TEST
+
+/* F-5698: each DHCP renewal cycle must use a fresh transaction ID. The xid and
+ * server-id are observable from the initial (broadcast) DORA exchange; if the
+ * renewal DHCPREQUEST reused that xid, a LAN-adjacent attacker could blindly
+ * forge a renewal DHCPACK with the captured xid and hijack the gateway without
+ * ever seeing the (unicast) renewal request. */
+START_TEST(test_dhcp_renew_rerandomizes_xid_rejecting_stale_ack)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    const uint32_t old_xid     = 0xDEADBEEFU; /* captured from initial DORA */
+    const uint32_t new_xid     = 0xC0FFEE11U; /* fresh xid for the renewal */
+    const uint32_t server_ip   = 0x0A000001U;
+    const uint32_t good_gw     = 0x0A000001U;
+    const uint32_t attacker_gw = 0x0A0000FEU;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip   = 0x0A000064U;
+    primary->mask = 0xFFFFFF00U;
+    primary->gw   = good_gw;
+    s.dhcp_server_ip     = server_ip;
+    s.dhcp_ip            = primary->ip;
+    s.dhcp_xid           = old_xid;
+    s.dhcp_state         = DHCP_BOUND;
+    s.dhcp_lease_expires = 0;       /* not expired -> renew, do not deconfigure */
+    s.dhcp_rebind_at     = 2000U;
+    s.last_tick          = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+
+    /* T1 fires: the renewal cycle must adopt a fresh, unpredictable xid. */
+    test_rand_override_enabled = 1;
+    test_rand_override_value   = new_xid;
+    dhcp_timer_cb(&s);
+    test_rand_override_enabled = 0;
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_RENEWING);
+    ck_assert_uint_eq(s.dhcp_xid, new_xid);
+    ck_assert_uint_ne(s.dhcp_xid, old_xid);
+
+    /* A forged ACK replaying the captured DORA xid must be rejected outright,
+     * leaving the gateway untouched. */
+    build_full_ack(&s, &msg, server_ip, primary->ip, primary->mask,
+                   attacker_gw, 0x08080808U, 120U);
+    msg.xid = ee32(old_xid);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_uint_eq(primary->gw, good_gw);
+
+    /* The legitimate renewal ACK carrying the new xid is still accepted. */
+    build_full_ack(&s, &msg, server_ip, primary->ip, primary->mask,
+                   good_gw, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_uint_eq(primary->gw, good_gw);
+}
+END_TEST
+
+/* F-5482: a DHCPACK is only valid with the mandatory IP-address-lease-time
+ * option (51, RFC 2131). An ACK missing it - or carrying a zero duration -
+ * must be rejected, never bound, otherwise the lease has no expiry/renewal
+ * timer and is silently treated as permanent. */
+START_TEST(test_dhcp_parse_ack_without_lease_time_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    uint8_t *p;
+
+    wolfIP_init(&s);
+    s.dhcp_xid = 0x5482U;
+    s.dhcp_server_ip = 0x0A000001U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    /* (1) ACK with server-id/offer-ip/mask/router but NO lease time. */
+    build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    p = (uint8_t *)msg.options + 3;
+    append_opt4(&p, DHCP_OPTION_SERVER_ID,   0x0A000001U);
+    append_opt4(&p, DHCP_OPTION_OFFER_IP,    0x0A000064U);
+    append_opt4(&p, DHCP_OPTION_SUBNET_MASK, 0xFFFFFF00U);
+    append_opt4(&p, DHCP_OPTION_ROUTER,      0x0A000001U);
+    append_end(&p);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
+
+    /* (2) ACK that carries lease time == 0 is equally invalid. */
+    build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    p = (uint8_t *)msg.options + 3;
+    append_opt4(&p, DHCP_OPTION_SERVER_ID,   0x0A000001U);
+    append_opt4(&p, DHCP_OPTION_OFFER_IP,    0x0A000064U);
+    append_opt4(&p, DHCP_OPTION_SUBNET_MASK, 0xFFFFFF00U);
+    append_opt4(&p, DHCP_OPTION_LEASE_TIME,  0U);
+    append_end(&p);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+    ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
+
+    /* (3) The same ACK with a valid nonzero lease time binds and schedules a
+     * lease timer. */
+    build_full_ack(&s, &msg, 0x0A000001U, 0x0A000064U, 0xFFFFFF00U,
+                   0x0A000001U, 0x08080808U, 120U);
+    s.dhcp_timer = NO_TIMER;
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+}
+END_TEST
+
+/* F-5485: the public DHCP helper APIs must tolerate a NULL stack pointer and
+ * return a deterministic value instead of dereferencing it. */
+START_TEST(test_dhcp_public_apis_null_stack_safe)
+{
+    ck_assert_int_eq(dhcp_bound(NULL), 0);
+    ck_assert_int_eq(dhcp_client_is_running(NULL), 0);
+    ck_assert_int_eq(dhcp_client_init(NULL), -WOLFIP_EINVAL);
+}
+END_TEST

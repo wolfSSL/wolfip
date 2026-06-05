@@ -2604,12 +2604,19 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
     if (ip_len > payload_len)
         return;
     payload_len = ip_len;
-    (void)if_idx;
     for (int i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];
         if (!r->used)
             continue;
         if (r->protocol != 0 && r->protocol != ip->proto)
+            continue;
+        /* Honour the bind contract, mirroring the TCP/UDP receive paths: a
+         * socket bound to a specific local IP or interface must not capture
+         * traffic for other destinations or arriving on other interfaces.
+         * bound_local_ip == IPADDR_ANY / if_idx == 0 mean "any". */
+        if (r->bound_local_ip != IPADDR_ANY && r->bound_local_ip != ee32(ip->dst))
+            continue;
+        if (r->if_idx != 0 && r->if_idx != (uint8_t)if_idx)
             continue;
         if (fifo_push(&r->rxbuf, (void *)packet, payload_len) == 0) {
             r->last_pkt_ttl = ip->ttl;
@@ -2620,7 +2627,7 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
 #endif
 
 #if WOLFIP_PACKET_SOCKETS
-static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_eth_frame *eth, uint32_t frame_len)
+static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_eth_frame *eth, uint32_t frame_len, int match_wildcard)
 {
     uint16_t proto = eth->type;
     uint32_t record_len;
@@ -2639,10 +2646,22 @@ static void packet_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP
             continue;
         if (p->protocol && p->protocol != proto)
             continue;
-        if ((p->bind_addr.sll_ifindex >= 0) &&
-                (unsigned int)p->bind_addr.sll_ifindex != if_idx &&
-                p->bind_addr.sll_ifindex != 0)
-            continue;
+        if (match_wildcard) {
+            /* Deliver to sockets bound to this interface, plus wildcard
+             * (sll_ifindex == 0) and unbound (sll_ifindex < 0) listeners. */
+            if ((p->bind_addr.sll_ifindex >= 0) &&
+                    (unsigned int)p->bind_addr.sll_ifindex != if_idx &&
+                    p->bind_addr.sll_ifindex != 0)
+                continue;
+        } else {
+            /* Deliver only to sockets bound explicitly to this interface.
+             * Used for the post-VLAN-demux pass so wildcard sockets, which
+             * already saw the original tagged frame on the parent, are not
+             * delivered the tag-stripped copy a second time. */
+            if (p->bind_addr.sll_ifindex < 0 ||
+                    (unsigned int)p->bind_addr.sll_ifindex != if_idx)
+                continue;
+        }
         if (fifo_space(&p->rxbuf) < record_len + sizeof(struct pkt_desc))
             continue;
         if (fifo_push(&p->rxbuf, record, record_len) == 0)
@@ -2859,7 +2878,7 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
                     po->sack_count++;
                 }
             }
-        } else if (kind == TCP_OPTION_TS && olen >= TCP_OPTION_TS_LEN) {
+        } else if (kind == TCP_OPTION_TS && olen == TCP_OPTION_TS_LEN) {
             uint32_t val, ecr;
             memcpy(&val, opt + 2, sizeof(val));
             memcpy(&ecr, opt + 6, sizeof(ecr));
@@ -2910,7 +2929,8 @@ static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t coun
     return (uint8_t)(out + 1);
 }
 
-static void tcp_rebuild_rx_sack(struct tsocket *t)
+static void tcp_rebuild_rx_sack(struct tsocket *t, uint32_t trig_seq,
+        uint32_t trig_len)
 {
     struct tcp_sack_block blocks[TCP_OOO_MAX_SEGS];
     uint8_t i, count = 0;
@@ -2935,6 +2955,26 @@ static void tcp_rebuild_rx_sack(struct tsocket *t)
     while (count > 0 && t->sock.tcp.rx_sack_count < TCP_SACK_MAX_BLOCKS) {
         count--;
         t->sock.tcp.rx_sack[t->sock.tcp.rx_sack_count++] = blocks[count];
+    }
+
+    /* RFC 2018 sec.4 (2): the first SACK block MUST contain the segment that
+     * triggered this ACK (unless that segment advanced the cumulative ACK, in
+     * which case the caller passes trig_len == 0). The loop above leaves blocks
+     * in descending-sequence order, so the triggering island can be anywhere;
+     * move the merged block holding it to the front. This also guarantees it
+     * survives truncation when the TCP option lacks room for every block. */
+    if (trig_len != 0U) {
+        for (i = 0; i < t->sock.tcp.rx_sack_count; i++) {
+            struct tcp_sack_block *b = &t->sock.tcp.rx_sack[i];
+            if (tcp_seq_leq(b->left, trig_seq) && tcp_seq_lt(trig_seq, b->right)) {
+                struct tcp_sack_block first = t->sock.tcp.rx_sack[i];
+                uint8_t j;
+                for (j = i; j > 0; j--)
+                    t->sock.tcp.rx_sack[j] = t->sock.tcp.rx_sack[j - 1];
+                t->sock.tcp.rx_sack[0] = first;
+                break;
+            }
+        }
     }
 }
 
@@ -2961,11 +3001,36 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
                 slot = (int)i;
             continue;
         }
-        /* Duplicate range: keep newest bytes and avoid consuming another slot. */
-        if (t->sock.tcp.ooo[i].seq == seq && t->sock.tcp.ooo[i].len == len) {
-            memcpy(t->sock.tcp.ooo[i].data, data, len);
-            tcp_rebuild_rx_sack(t);
-            return 0;
+        /* Overlapping range (including an exact duplicate): coalesce into this
+         * slot rather than consuming another. Otherwise an attacker injecting
+         * distinct (seq,len) pairs over the same bytes - or a peer that
+         * re-segments retransmissions - could occupy every slot with overlapping
+         * data and starve later legitimate OOO segments. The union of the two
+         * ranges is stored in place (incoming bytes win in the overlap) when it
+         * fits one slot; if it would not fit, fall through and keep them as
+         * separate slots (tcp_consume_ooo coalesces them on promotion). */
+        {
+            uint32_t cur_seq = t->sock.tcp.ooo[i].seq;
+            uint32_t cur_len = t->sock.tcp.ooo[i].len;
+            uint32_t end_new = tcp_seq_inc(seq, len);
+            uint32_t end_cur = tcp_seq_inc(cur_seq, cur_len);
+            if (tcp_seq_lt(seq, end_cur) && tcp_seq_lt(cur_seq, end_new)) {
+                uint32_t u_start = tcp_seq_lt(seq, cur_seq) ? seq : cur_seq;
+                uint32_t u_end = tcp_seq_lt(end_cur, end_new) ? end_new : end_cur;
+                uint32_t u_len = (uint32_t)tcp_seq_diff(u_end, u_start);
+                if (u_len <= TCP_MSS_MAX) {
+                    uint8_t *buf = t->sock.tcp.ooo[i].data;
+                    uint32_t cur_off = (uint32_t)tcp_seq_diff(cur_seq, u_start);
+                    uint32_t new_off = (uint32_t)tcp_seq_diff(seq, u_start);
+                    if (cur_off != 0)
+                        memmove(buf + cur_off, buf, cur_len);
+                    memcpy(buf + new_off, data, len);
+                    t->sock.tcp.ooo[i].seq = u_start;
+                    t->sock.tcp.ooo[i].len = u_len;
+                    tcp_rebuild_rx_sack(t, u_start, u_len);
+                    return 0;
+                }
+            }
         }
     }
     if (slot < 0)
@@ -2975,7 +3040,7 @@ static int tcp_store_ooo_segment(struct tsocket *t, const uint8_t *data,
     t->sock.tcp.ooo[slot].seq = seq;
     t->sock.tcp.ooo[slot].len = len;
     memcpy(t->sock.tcp.ooo[slot].data, data, len);
-    tcp_rebuild_rx_sack(t);
+    tcp_rebuild_rx_sack(t, seq, len);
     return 0;
 }
 
@@ -3039,8 +3104,10 @@ static void tcp_consume_ooo(struct tsocket *t)
         }
     }
     /* Rebuild advertised SACK blocks from whatever OOO cache remains after
-     * promotion. If all holes closed, this naturally drops SACK reporting. */
-    tcp_rebuild_rx_sack(t);
+     * promotion. If all holes closed, this naturally drops SACK reporting.
+     * Promotion advances the cumulative ACK, so RFC 2018's "first block holds
+     * the triggering segment" rule does not apply here (trig_len == 0). */
+    tcp_rebuild_rx_sack(t, 0, 0);
 }
 
 static uint8_t tcp_build_ack_options(struct tsocket *t, uint8_t *opt, uint8_t max_len)
@@ -3817,6 +3884,11 @@ static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
     if (ip_hlen < IP_HEADER_LEN)
         ip_hlen = IP_HEADER_LEN;
 
+    /* Zero the checksum field before summing (RFC 1071) so the result is
+     * correct regardless of any stale value the caller left in ip->csum. This
+     * makes the setter idempotent (set/verify always holds) and removes the
+     * implicit "caller must clear csum first" precondition. */
+    ip->csum = 0;
     for (i = 0; i < ip_hlen; i += 2) {
         uint16_t word;
         memcpy(&word, ptr + i, sizeof(word));
@@ -3970,6 +4042,12 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
         return;
     if (igmp[0] != IGMP_TYPE_MEMBERSHIP_QUERY)
         return;
+    /* RFC 3376 §4.1.1 / RFC 2236 §2: IGMP messages carry IP TTL 1 and are
+     * link-local; a query with any other TTL transited a router and cannot be
+     * a legitimate on-link query. Dropping it stops an off-link/spoofed query
+     * from soliciting (and thereby disclosing) the host's membership reports. */
+    if (ip->ttl != 1)
+        return;
     /* RFC 2236 §2 (IGMPv2) and RFC 3376 §4.1 (IGMPv3) both place the Group
      * Address at offset 4 within the message. Read unconditionally so that
      * IGMPv1/v2 group-specific queries (8-byte messages) are not silently
@@ -3977,6 +4055,14 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
     group = get_be32(igmp + 4);
     if (group != IPADDR_ANY && !wolfIP_ip_is_multicast(group))
         return;
+    /* RFC 3376 §4.1.2: a general query is addressed to all-hosts (224.0.0.1)
+     * and a group-specific query to the group itself. Reject a query sent to
+     * any other destination (e.g. our unicast address). */
+    {
+        ip4 dst = ee32(ip->dst);
+        if (dst != IGMP_ALL_HOSTS && dst != group)
+            return;
+    }
 
     for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
         if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)
@@ -5560,29 +5646,39 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         return -WOLFIP_EINVAL;
     if (ts->sock.tcp.state == TCP_CLOSED) {
         struct ipconf *conf;
-        ts->sock.tcp.state = TCP_SYN_SENT;
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        ip4 new_remote_ip = ee32(sin->sin_addr.s_addr);
+        uint8_t new_if_idx;
+        ip4 new_local_ip;
+
+        /* Resolve and validate the local binding into locals before mutating
+         * the socket. A failed validation here must not leave the socket in
+         * TCP_SYN_SENT (no SYN queued, no RTO timer), which would make every
+         * later connect return EAGAIN forever. Mirrors the UDP arm above. */
         if (ts->bound_local_ip != IPADDR_ANY) {
             int bound_match = 0;
             unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
             if (!bound_match)
                 return -WOLFIP_EINVAL;
-            ts->if_idx = (uint8_t)bound_if;
-            ts->local_ip = ts->bound_local_ip;
+            new_if_idx = (uint8_t)bound_if;
+            new_local_ip = ts->bound_local_ip;
         } else {
-            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            if_idx = wolfIP_route_for_ip(s, new_remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
-            ts->if_idx = (uint8_t)if_idx;
+            new_if_idx = (uint8_t)if_idx;
             if (conf && conf->ip != IPADDR_ANY)
-                ts->local_ip = conf->ip;
+                new_local_ip = conf->ip;
             else {
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
-                    ts->local_ip = primary->ip;
+                    new_local_ip = primary->ip;
                 else
-                    ts->local_ip = IPADDR_ANY;
+                    new_local_ip = IPADDR_ANY;
             }
         }
+        ts->sock.tcp.state = TCP_SYN_SENT;
+        ts->remote_ip = new_remote_ip;
+        ts->if_idx = new_if_idx;
+        ts->local_ip = new_local_ip;
         if (!ts->src_port)
             ts->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
         if (ts->src_port < 1024)
@@ -6105,6 +6201,13 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         return -WOLFIP_EINVAL;
 
     if (!s)
+        return -WOLFIP_EINVAL;
+
+    /* A nonzero-length read needs a destination buffer: every socket family
+     * below copies queued data into buf (queue_pop / memcpy). Reject a NULL
+     * buffer here so caller misuse cannot dereference it. len == 0 (a probe)
+     * stays allowed. */
+    if (!buf && len > 0)
         return -WOLFIP_EINVAL;
 
     if (IS_SOCKET_TCP(sockfd)) {
@@ -7064,7 +7167,11 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->local_ip = prev_ip;
                 return -1;
             }
-            ts->src_port = new_port;
+            /* Commit src_port only after the filter approves the bind (as the
+             * TCP arm does): otherwise the socket is matchable by the ingress
+             * path while the BINDING callback runs, and a callback that
+             * re-enters wolfIP_poll would get a datagram delivered to it even
+             * if the bind is ultimately rejected. */
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
                     ts->local_ip, new_port, IPADDR_ANY, 0) != 0) {
@@ -7072,6 +7179,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->src_port = prev_port;
                 return -1;
             }
+            ts->src_port = new_port;
         }
         ts->bound_local_ip = bind_ip;
         return 0;
@@ -7102,7 +7210,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->local_ip = prev_ip;
                 return -1;
             }
-            ts->src_port = new_id;
+            /* Commit the echo id only after the filter approves (see the UDP
+             * arm): keep the socket unmatchable by icmp_try_recv until then. */
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_BINDING, s, ts,
                     ts->local_ip, new_id, IPADDR_ANY, 0) != 0) {
@@ -7110,6 +7219,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 ts->src_port = prev_id;
                 return -1;
             }
+            ts->src_port = new_id;
         }
         ts->bound_local_ip = bind_ip;
         return 0;
@@ -7227,6 +7337,20 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     if (wolfIP_filter_notify_icmp(WOLFIP_FILT_RECEIVING, s, if_idx, icmp, len) != 0)
         return;
     if (icmp->type == ICMP_ECHO_REPLY) {
+        ip4 dst = ee32(ip->dst);
+        int dst_match = 0;
+        /* RFC 1122 §3.2.2.6: only accept an echo reply that is actually
+         * addressed to one of our configured local IPs - the same guard the
+         * ECHO_REQUEST path below applies. Without it, an L2-adjacent attacker
+         * can address a frame to our MAC with an arbitrary ip.dst and a guessed
+         * echo id and have a forged reply delivered to an application ICMP
+         * socket (icmp_try_recv skips the per-socket dst check when the socket's
+         * local_ip is 0, e.g. during/after DHCP). */
+        if (wolfIP_ip_is_broadcast(s, dst) || wolfIP_ip_is_multicast(dst))
+            return;
+        (void)wolfIP_if_for_local_ip(s, dst, &dst_match);
+        if (!dst_match)
+            return;
         icmp_try_recv(s, if_idx, icmp, len);
         return;
     }
@@ -7415,6 +7539,12 @@ static void dhcp_timer_cb(void *arg)
             s->dhcp_state = DHCP_RENEWING;
             s->dhcp_start_tick = s->last_tick;
             s->dhcp_timeout_count = 0;
+            /* RFC 2131: a renewal is a new transaction. Pick a fresh, random
+             * transaction ID so an attacker who observed the initial (broadcast)
+             * DORA xid cannot blindly forge a renewal DHCPACK for the lifetime
+             * of the lease. Retransmissions within this cycle (and the
+             * RENEWING->REBINDING continuation) keep this xid. */
+            s->dhcp_xid = wolfIP_getrandom();
             ret = dhcp_send_request(s);
             if (ret >= 0)
                 s->dhcp_timeout_count++;
@@ -7751,7 +7881,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 }
                 if (!saw_end)
                     return -1;
-                if (primary && saw_server_id &&
+                /* RFC 2131: the IP-address-lease-time option (51) is mandatory
+                 * in a DHCPACK. lease_s is only ever set by that option (and a
+                 * short option already returns -1 above), so lease_s != 0 means
+                 * it was present with a valid nonzero duration. Without it the
+                 * lease would be bound with no expiry/renewal timer. */
+                if (primary && saw_server_id && lease_s != 0 &&
                     (primary->ip != 0) && (primary->mask != 0)) {
                     dhcp_cancel_timer(s);
                     s->dhcp_state = DHCP_BOUND;
@@ -7982,6 +8117,8 @@ static int dhcp_send_discover(struct wolfIP *s)
 
 int dhcp_bound(struct wolfIP *s)
 {
+    if (!s)
+        return 0;
     return (s->dhcp_state == DHCP_BOUND ||
             s->dhcp_state == DHCP_RENEWING ||
             s->dhcp_state == DHCP_REBINDING);
@@ -7989,12 +8126,16 @@ int dhcp_bound(struct wolfIP *s)
 
 int dhcp_client_is_running(struct wolfIP *s)
 {
+    if (!s)
+        return 0;
     return DHCP_IS_RUNNING(s);
 }
 
 int dhcp_client_init(struct wolfIP *s)
 {
     struct wolfIP_sockaddr_in sin;
+    if (!s)
+        return -WOLFIP_EINVAL;
     if (s->dhcp_state != DHCP_OFF)
         return -1;
     s->dhcp_xid = wolfIP_getrandom();
@@ -8496,6 +8637,34 @@ int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
      * renumbering active sub-ifaces. */
     memset(slot, 0, sizeof(*slot));
     memset(&s->ipconf[if_idx], 0, sizeof(s->ipconf[if_idx]));
+    /* Purge ARP state tied to this slot. Neighbor entries are keyed only by
+     * (ip, if_idx) with no VID, and wolfIP_vlan_create reuses the freed slot,
+     * so without this a new VLAN on the same if_idx would silently inherit the
+     * deleted VLAN's L2 mappings (and its queued/in-flight ARP state). */
+    {
+        int i;
+        for (i = 0; i < MAX_NEIGHBORS; i++) {
+            if (s->arp.neighbors[i].if_idx == (uint8_t)if_idx) {
+                s->arp.neighbors[i].ip = IPADDR_ANY;
+                s->arp.neighbors[i].if_idx = 0;
+                s->arp.neighbors[i].ts = 0;
+                memset(s->arp.neighbors[i].mac, 0, 6);
+            }
+        }
+        for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+            if (s->arp.pending[i].if_idx == (uint8_t)if_idx) {
+                s->arp.pending[i].ip = IPADDR_ANY;
+                s->arp.pending[i].if_idx = 0;
+                s->arp.pending[i].ts = 0;
+            }
+            if (s->arp_pending[i].if_idx == (uint8_t)if_idx) {
+                s->arp_pending[i].dest = IPADDR_ANY;
+                s->arp_pending[i].len = 0;
+                s->arp_pending[i].if_idx = 0;
+            }
+        }
+        s->arp.last_arp[if_idx] = 0;
+    }
     return 0;
 }
 
@@ -8637,6 +8806,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_RECEIVING, s, if_idx, ip, len) != 0)
         return;
 #if WOLFIP_RAWSOCKETS
+    /* Raw sockets are a passive ingress tap and intentionally observe traffic
+     * before the option/forwarding policy below: this is what makes them
+     * useful for monitoring/IDS (e.g. seeing source-routed attack packets the
+     * stack itself refuses to act on). raw_try_recv only copies the frame to
+     * the socket queue; it never parses IP options or honours a source route,
+     * so tapping ahead of the LSRR/SSRR drop cannot make the stack act on one. */
     raw_try_recv(s, if_idx, ip, len);
 #endif
     /* RFC 7126 section 3.8: drop source-routed (LSRR/SSRR) packets before either
@@ -8694,6 +8869,23 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             if (!rpf_drop && (src & 0xFFFF0000U) == 0xA9FE0000U) {
                 rpf_drop = 1;
             }
+            /* Spoofed self: a source equal to one of our own configured
+             * interface addresses can only be forged - the router originates
+             * such packets locally, it never receives them from the wire. The
+             * strict-RPF loop below skips the ingress interface (i == if_idx),
+             * so its own address would otherwise pass; check every interface's
+             * own /32 here explicitly. */
+            if (!rpf_drop) {
+                for (i = 0; i < s->if_count; i++) {
+                    struct ipconf *conf = &s->ipconf[i];
+                    if (!conf || conf->ip == IPADDR_ANY)
+                        continue;
+                    if (conf->ip == src) {
+                        rpf_drop = 1;
+                        break;
+                    }
+                }
+            }
             /* Strict RPF: a source that belongs to some other configured
              * interface's local subnet must not arrive on this one. */
             if (!rpf_drop) {
@@ -8747,23 +8939,6 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     wolfIP_print_ip(ip);
     #endif /* DEBUG_IP*/
 
-    #ifdef WOLFIP_ESP
-    /* note: esp transport mode only handled here.
-     * ip forwarding would require esp tunnel mode. */
-    if (ip->proto == 0x32) {
-        int err;
-        if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
-            return;
-        }
-        /* proto is ESP 0x32 (50), try to unwrap. */
-        err = esp_transport_unwrap(ip, &len);
-        if (err) {
-            LOG("info: failed to unwrap esp packet, dropping.\n");
-            return;
-        }
-    }
-    #endif /* WOLFIP_ESP */
-
     {
         struct wolfIP_ip_packet *dispatch_ip = ip;
         uint32_t dispatch_len = len;
@@ -8786,6 +8961,28 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             dispatch_ip->csum = 0;
             iphdr_set_checksum(dispatch_ip);
         }
+
+    #ifdef WOLFIP_ESP
+        /* note: esp transport mode only handled here.
+         * ip forwarding would require esp tunnel mode.
+         * Run after the option strip above: esp_transport_unwrap reads the
+         * ESP header at a fixed 20-byte-IP-header offset, so it must be given
+         * a packet whose options have already been removed (IHL == 5).
+         * Otherwise an IHL>5 ESP packet has its SPI read from the option
+         * bytes, the SA lookup fails, and it is silently dropped. */
+        if (dispatch_ip->proto == 0x32) {
+            int err;
+            if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
+                return;
+            }
+            /* proto is ESP 0x32 (50), try to unwrap. */
+            err = esp_transport_unwrap(dispatch_ip, &dispatch_len);
+            if (err) {
+                LOG("info: failed to unwrap esp packet, dropping.\n");
+                return;
+            }
+        }
+    #endif /* WOLFIP_ESP */
 
         if (dispatch_ip->proto == 0x06) {
             struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)dispatch_ip;
@@ -8825,6 +9022,9 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
 #ifdef ETHERNET
     struct wolfIP_ll_dev *ll;
     struct wolfIP_eth_frame *eth;
+#if WOLFIP_PACKET_SOCKETS
+    int pkt_match_wildcard = 1;
+#endif
 #else
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
 #endif
@@ -8870,6 +9070,15 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
         }
         if (!found)
             return; /* No matching VLAN sub-interface; drop. */
+#if WOLFIP_PACKET_SOCKETS
+        /* Tap the physical (parent) interface with the original, still-tagged
+         * frame so AF_PACKET listeners bound to the parent - and wildcard
+         * sniffers/IDS - observe VLAN traffic in wire form. The post-demux
+         * delivery below then targets only sockets bound explicitly to the
+         * sub-interface, so wildcard sockets are not given the frame twice. */
+        packet_try_recv(s, if_idx, eth, len, 1);
+        pkt_match_wildcard = 0;
+#endif
         /* Strip the 4-byte tag in place: slide MAC headers forward. */
         memmove((uint8_t *)buf + WOLFIP_VLAN_TAG_LEN, buf, 12);
         buf = (uint8_t *)buf + WOLFIP_VLAN_TAG_LEN;
@@ -8881,7 +9090,7 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     }
 #endif /* WOLFIP_VLAN */
 #if WOLFIP_PACKET_SOCKETS
-    packet_try_recv(s, if_idx, eth, len);
+    packet_try_recv(s, if_idx, eth, len, pkt_match_wildcard);
 #endif
     if (eth->type == ee16(ETH_TYPE_IP)) {
         struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)eth;
@@ -9396,6 +9605,11 @@ int nslookup(struct wolfIP *s, const char *dname, uint16_t *id, void (*lookup_cb
 {
     if (!s || !dname || !id || !lookup_cb)
         return -22;
+    /* Reject before touching shared callback/type state: dns_send_query's
+     * busy-guard runs too late to stop an in-flight query's callback from
+     * being clobbered by this (rejected) call. */
+    if (s->dns_id != 0)
+        return -16;
     s->dns_lookup_cb = lookup_cb;
     s->dns_ptr_cb = NULL;
     s->dns_query_type = DNS_QUERY_TYPE_A;
@@ -9409,6 +9623,9 @@ int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lo
         return -22;
     if (dns_format_ptr_name(ptr_name, sizeof(ptr_name), ip) < 0)
         return -22;
+    /* Reject before touching shared callback/type state (see nslookup). */
+    if (s->dns_id != 0)
+        return -16;
     s->dns_ptr_cb = lookup_cb;
     s->dns_lookup_cb = NULL;
     s->dns_ptr_name[0] = DNS_NAME_TERMINATOR;
@@ -9888,7 +10105,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                 tx_if = 0;
             if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, tx_if,
                                          (struct wolfIP_eth_frame *)frame, desc->len) != 0) {
-                desc = fifo_next(&p->txbuf, desc);
+                /* The filter vetoed this frame. fifo_pop() only removes the
+                 * tail, so walking forward with fifo_next() here would later
+                 * pop the wrong descriptor and re-send an accepted frame. Drop
+                 * the blocked frame from the head and re-evaluate. */
+                fifo_pop(&p->txbuf);
+                desc = fifo_peek(&p->txbuf);
                 continue;
             }
             wolfIP_ll_send_frame(s, tx_if, frame, desc->len);

@@ -71,6 +71,14 @@ static void build_dhcp_ack_msg(struct dhcp_msg *msg, uint32_t server_ip, uint32_
     opt->data[2] = (dns_ip >> 8) & 0xFF;
     opt->data[3] = (dns_ip >> 0) & 0xFF;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    /* The IP-address-lease-time option (51) is mandatory in a DHCPACK. */
+    opt->code = DHCP_OPTION_LEASE_TIME;
+    opt->len = 4;
+    opt->data[0] = 0;
+    opt->data[1] = 0;
+    opt->data[2] = 0;
+    opt->data[3] = 120;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 }
@@ -1580,6 +1588,35 @@ START_TEST(test_sock_recvfrom_icmp_short_addrlen)
 }
 END_TEST
 
+/* F-5495: a NULL receive buffer with a nonzero length must be rejected instead
+ * of being copied into. With a datagram already queued, the prior code reached
+ * memcpy(buf=NULL, ...) and crashed. */
+START_TEST(test_sock_recvfrom_null_buf_rejected)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    uint8_t payload[4] = { 1, 2, 3, 4 };
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    ts->src_port = ee16(4444);
+
+    /* Queue a datagram so the recvfrom path would otherwise reach the copy. */
+    enqueue_udp_rx(ts, payload, sizeof(payload), 5555);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_sd, NULL, 64, 0, NULL, NULL),
+                     -WOLFIP_EINVAL);
+    /* Rejected before any dequeue: the datagram is still queued. */
+    ck_assert_uint_gt(fifo_len(&ts->sock.udp.rxbuf), 0U);
+}
+END_TEST
+
 START_TEST(test_sock_recvfrom_udp_fifo_alignment)
 {
     struct wolfIP s;
@@ -1743,9 +1780,62 @@ START_TEST(test_icmp_input_echo_reply_queues)
     icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
     frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
 
+    /* The reply is destined to a configured local IP (10.0.0.1). */
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
     icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
     ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
     ck_assert_uint_eq(ts->last_pkt_ttl, 55);
+}
+END_TEST
+
+/* F-5733: icmp_input must only deliver an ECHO_REPLY that is actually addressed
+ * to one of our configured local IPs, mirroring the ECHO_REQUEST guard. A
+ * forged reply to a non-local dst (matching only a wildcard local_ip==0 socket
+ * by a guessed echo id) must be dropped. */
+START_TEST(test_icmp_input_echo_reply_wrong_dst_dropped)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_icmp_packet icmp;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->local_ip = 0;                 /* wildcard: per-socket dst check skipped */
+    ts->remote_ip = 0;                /* accept from any source */
+    ts->src_port = ee16(0x1234);      /* echo id the attacker guesses */
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    /* Forged reply addressed to an IP that is NOT one of ours: must be dropped
+     * before reaching the socket. */
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000099U);  /* not a configured local IP */
+    icmp.ip.ttl = 55;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REPLY;
+    icmp_set_echo_id(&icmp, ts->src_port);
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+
+    /* The same reply addressed to our configured local IP is delivered. */
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);  /* configured local IP */
+    icmp.ip.ttl = 55;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REPLY;
+    icmp_set_echo_id(&icmp, ts->src_port);
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
 
@@ -4753,6 +4843,13 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     opt->data[2] = 0x08;
     opt->data[3] = 0x08;
     opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_LEASE_TIME; /* mandatory in a DHCPACK */
+    opt->len = 4;
+    opt->data[0] = 0x00;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x78; /* 120 s */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
@@ -5608,6 +5705,92 @@ START_TEST(test_dns_callback_truncated_response_aborts_query)
     ck_assert_uint_eq(s.dns_id, 0);
     ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_NONE);
     ck_assert_ptr_eq(s.dns_lookup_cb, NULL);
+}
+END_TEST
+
+/* F-4946: a second DNS API call while a query is in-flight must not touch the
+ * shared callback/type state. Before the fix, nslookup/wolfIP_dns_ptr_lookup
+ * overwrote dns_lookup_cb/dns_ptr_cb/dns_query_type before dns_send_query's
+ * busy-guard ran, so the in-flight query's response invoked the wrong handler
+ * (A->A hijack) or stalled the resolver (A->PTR flip). */
+START_TEST(test_dns_inflight_query_state_not_clobbered_by_second_call)
+{
+    struct wolfIP s;
+    uint16_t id1 = 0, id2 = 0, id3 = 0;
+    uint8_t response[128];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    const uint8_t ip_bytes[4] = {0x01, 0x02, 0x03, 0x04};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+    dns_lookup_evil_calls = 0;
+
+    /* First lookup goes out: dns_id armed, target callback recorded. */
+    ck_assert_int_eq(nslookup(&s, "target.com", &id1, test_dns_lookup_cb), 0);
+    ck_assert_uint_ne(id1, 0U);
+    ck_assert_uint_eq(s.dns_id, id1);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    /* A->A arm: a second nslookup while in-flight must be rejected as busy
+     * without replacing the recorded callback. */
+    ck_assert_int_eq(nslookup(&s, "evil.com", &id2, test_dns_lookup_evil_cb), -16);
+    ck_assert_uint_eq(s.dns_id, id1);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_ptr_eq(s.dns_ptr_cb, NULL);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    /* A->PTR arm: a PTR lookup while in-flight must not NULL the A callback or
+     * flip the query type. */
+    ck_assert_int_eq(wolfIP_dns_ptr_lookup(&s, 0x08080808U, &id3,
+            test_dns_ptr_cb), -16);
+    ck_assert_uint_eq(s.dns_id, id1);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+    ck_assert_ptr_eq(s.dns_ptr_cb, NULL);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+
+    /* The response to the original (still in-flight) query must reach the
+     * original handler, never the rejected second call's handler. */
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(id1);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = sizeof(struct dns_header);
+    response[pos++] = 6; memcpy(&response[pos], "target", 6); pos += 6;
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(DNS_CLASS_IN);
+    pos += sizeof(struct dns_question);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type = ee16(DNS_A);
+    rr->class = ee16(DNS_CLASS_IN);
+    rr->ttl = ee32(60);
+    rr->rdlength = ee16(4);
+    pos += sizeof(struct dns_rr);
+    memcpy(&response[pos], ip_bytes, sizeof(ip_bytes));
+    pos += sizeof(ip_bytes);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0x01020304U);
+    ck_assert_int_eq(dns_lookup_evil_calls, 0);
+    ck_assert_uint_eq(s.dns_id, 0U);
 }
 END_TEST
 

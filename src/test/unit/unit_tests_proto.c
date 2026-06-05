@@ -4512,6 +4512,33 @@ START_TEST(test_iphdr_set_checksum) {
 }
 END_TEST
 
+/* F-5490: iphdr_set_checksum must produce a valid checksum regardless of any
+ * stale value already in ip->csum, and must be idempotent under repeated calls
+ * (the setter clears the field itself rather than relying on the caller). */
+START_TEST(test_iphdr_set_checksum_idempotent_with_stale_csum) {
+    struct wolfIP_ip_packet ip;
+    memset(&ip, 0, sizeof(ip));
+
+    ip.ver_ihl = 0x45;
+    ip.tos = 0;
+    ip.len = ee16(20);
+    ip.id = ee16(1);
+    ip.flags_fo = 0;
+    ip.ttl = 64;
+    ip.proto = WI_IPPROTO_TCP;
+    ip.src = ee32(0xc0a80101);
+    ip.dst = ee32(0xc0a80102);
+    ip.csum = ee16(0xBEEF); /* stale, nonzero checksum left by the caller */
+
+    iphdr_set_checksum(&ip);
+    ck_assert_int_eq(iphdr_verify_checksum(&ip), 0);
+
+    /* Running it again over the now-populated header must still verify. */
+    iphdr_set_checksum(&ip);
+    ck_assert_int_eq(iphdr_verify_checksum(&ip), 0);
+}
+END_TEST
+
 // Test for `eth_output_add_header` to add Ethernet headers
 START_TEST(test_eth_output_add_header) {
     struct wolfIP_eth_frame eth_frame;
@@ -6540,6 +6567,79 @@ START_TEST(test_raw_socket_recv_captures_ip_header)
 }
 END_TEST
 
+/* F-5070: raw_try_recv must honour a raw socket's bound_local_ip and if_idx,
+ * mirroring the TCP/UDP bind contract. A socket bound to one local IP/interface
+ * must not receive protocol-matching traffic for other destinations or arriving
+ * on other interfaces. The frame is rebuilt before every injection because the
+ * unit build enables forwarding, which rewrites the buffer in place. */
+#define RAW_BIND_FRAME_LEN (ETH_HEADER_LEN + IP_HEADER_LEN + 8)
+static void raw_bind_build_frame(struct wolfIP *s, struct wolfIP_ip_packet *frame,
+        size_t bufsz, uint32_t dst)
+{
+    static const uint8_t payload[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    memset(frame, 0, bufsz);
+    memcpy(frame->eth.dst, s->ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, "\xaa\xbb\xcc\xdd\xee\xff", 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = 32;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + (uint16_t)sizeof(payload));
+    frame->src = ee32(0x0A000002U);
+    frame->dst = ee32(dst);
+    memcpy(frame->data, payload, sizeof(payload));
+    iphdr_set_checksum(frame);
+}
+
+START_TEST(test_raw_socket_recv_honors_bound_local_ip_and_if)
+{
+    struct wolfIP s;
+    int sd;
+    struct rawsocket *rs;
+    uint8_t frame_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    uint8_t rxbuf[64];
+    const int delivered = IP_HEADER_LEN + 8;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    rs = &s.rawsockets[SOCKET_UNMARK(sd)];
+
+    /* Bound to 10.0.0.1: a packet destined elsewhere must be filtered out. */
+    rs->bound_local_ip = 0x0A000001U;
+    rs->if_idx = 0;
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A0000FEU);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), -WOLFIP_EAGAIN);
+
+    /* Same socket, packet destined to the bound IP: delivered. */
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), delivered);
+
+    /* Catch-all destination but bound to a different interface: filtered. */
+    rs->bound_local_ip = IPADDR_ANY;
+    rs->if_idx = (uint8_t)(TEST_PRIMARY_IF + 1U);
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), -WOLFIP_EAGAIN);
+
+    /* if_idx == 0 means "any interface": delivered on the arriving one. */
+    rs->if_idx = 0;
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                NULL, 0), delivered);
+}
+END_TEST
+
 START_TEST(test_raw_socket_send_hdrincl_respected)
 {
     struct wolfIP s;
@@ -6954,6 +7054,102 @@ START_TEST(test_packet_socket_send_frame)
 #endif
 }
 END_TEST
+
+#if WOLFIP_PACKET_SOCKETS
+/* F-4501: a SENDING-filter block must not desync the TX walk from fifo_pop().
+ * Frame A (PKT_A_LEN) is blocked; frame B (PKT_B_LEN) is accepted. The filter
+ * counts how many times each length reaches the SENDING hook: the bug walked
+ * with fifo_next() but removed the tail with fifo_pop(), re-peeking and
+ * re-sending B (B seen twice). The fix drops the blocked frame and sends B
+ * exactly once. */
+#define PKT_F4501_A_LEN ((uint32_t)(ETH_HEADER_LEN + 8))
+#define PKT_F4501_B_LEN ((uint32_t)(ETH_HEADER_LEN + 16))
+static int pkt_f4501_block_a_calls;
+static int pkt_f4501_b_send_calls;
+static int pkt_f4501_filter_cb(void *arg, const struct wolfIP_filter_event *event)
+{
+    (void)arg;
+    if (event && event->reason == WOLFIP_FILT_SENDING) {
+        if (event->length == PKT_F4501_A_LEN) {
+            pkt_f4501_block_a_calls++;
+            return 1; /* block frame A */
+        }
+        if (event->length == PKT_F4501_B_LEN)
+            pkt_f4501_b_send_calls++;
+    }
+    return 0;
+}
+
+START_TEST(test_packet_socket_tx_filter_block_does_not_resend)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_ll sll;
+    struct wolfIP_sockaddr_ll bind_sll;
+    uint8_t frame_a[PKT_F4501_A_LEN];
+    uint8_t frame_b[PKT_F4501_B_LEN];
+    struct wolfIP_eth_frame *eth_a = (struct wolfIP_eth_frame *)frame_a;
+    struct wolfIP_eth_frame *eth_b = (struct wolfIP_eth_frame *)frame_b;
+    struct packetsocket *ps;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+    ck_assert_int_ge(sd, 0);
+
+    memset(&bind_sll, 0, sizeof(bind_sll));
+    bind_sll.sll_family = AF_PACKET;
+    bind_sll.sll_protocol = ee16(ETH_TYPE_IP);
+    bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+    bind_sll.sll_halen = 6;
+    memset(bind_sll.sll_addr, 0xFF, 6);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+                (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+
+    memset(&sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = ee16(ETH_TYPE_IP);
+    sll.sll_ifindex = TEST_PRIMARY_IF;
+    sll.sll_halen = 6;
+    memset(sll.sll_addr, 0xFF, 6);
+
+    /* Queue [A, B]; A is shorter so the filter can tell them apart. */
+    memset(frame_a, 0, sizeof(frame_a));
+    memcpy(eth_a->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(eth_a->src, "\x00\x00\x00\x00\x00\x01", 6);
+    eth_a->type = ee16(ETH_TYPE_IP);
+    memset(eth_a->data, 0xAA, sizeof(frame_a) - ETH_HEADER_LEN);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_a, sizeof(frame_a), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)), (int)sizeof(frame_a));
+
+    memset(frame_b, 0, sizeof(frame_b));
+    memcpy(eth_b->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(eth_b->src, "\x00\x00\x00\x00\x00\x02", 6);
+    eth_b->type = ee16(ETH_TYPE_IP);
+    memset(eth_b->data, 0xBB, sizeof(frame_b) - ETH_HEADER_LEN);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_b, sizeof(frame_b), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)), (int)sizeof(frame_b));
+
+    pkt_f4501_block_a_calls = 0;
+    pkt_f4501_b_send_calls = 0;
+    wolfIP_filter_set_callback(pkt_f4501_filter_cb, NULL);
+    wolfIP_filter_set_mask(~0U);
+
+    wolfIP_poll(&s, 1000);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+
+    /* A was filtered (and dropped), B was sent exactly once - not twice. */
+    ck_assert_int_ge(pkt_f4501_block_a_calls, 1);
+    ck_assert_int_eq(pkt_f4501_b_send_calls, 1);
+    /* Both descriptors are gone: the blocked one is dropped, not left behind. */
+    ps = &s.packetsockets[SOCKET_UNMARK(sd)];
+    ck_assert_ptr_eq(fifo_peek(&ps->txbuf), NULL);
+}
+END_TEST
+#endif /* WOLFIP_PACKET_SOCKETS */
 
 START_TEST(test_packet_socket_sendto_wrong_family_returns_einval)
 {

@@ -948,6 +948,125 @@ START_TEST(test_vlan_rx_untagged_on_physical_ok)
 }
 END_TEST
 
+#if WOLFIP_PACKET_SOCKETS
+/* F-5011: a tagged frame is rebased onto the sub-interface before
+ * packet_try_recv ran, so an AF_PACKET socket bound to the parent saw nothing.
+ * After the fix the parent (and wildcard) listeners observe the original tagged
+ * frame, while a socket bound to the sub-interface still gets the tag-stripped
+ * copy. */
+START_TEST(test_vlan_packet_socket_parent_and_sub_delivery)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    int sd_parent, sd_sub;
+    uint8_t plain[ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN];
+    uint8_t tagged[ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN + 4];
+    uint32_t plain_len, tagged_len;
+    uint8_t rxbuf[sizeof(tagged) + 4];
+    struct wolfIP_sockaddr_ll from;
+    socklen_t from_len;
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+
+    /* protocol 0 == ETH_P_ALL so both the 0x8100 (tagged) and 0x0800
+     * (stripped) views match. */
+    sd_parent = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, 0);
+    ck_assert_int_ge(sd_parent, 0);
+    s.packetsockets[SOCKET_UNMARK(sd_parent)].bind_addr.sll_ifindex =
+        (int)TEST_PRIMARY_IF;
+    sd_sub = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, 0);
+    ck_assert_int_ge(sd_sub, 0);
+    s.packetsockets[SOCKET_UNMARK(sd_sub)].bind_addr.sll_ifindex = (int)sub_idx;
+
+    plain_len = build_icmp_echo_request(plain, sizeof(plain), phys->mac,
+                                        VLAN_REMOTE_IP, VLAN_SUB100_IP);
+    ck_assert_uint_gt(plain_len, 0u);
+    tagged_len = insert_vlan_tag(tagged, sizeof(tagged), plain, plain_len,
+                                 100, 0, 0);
+    ck_assert_uint_gt(tagged_len, 0u);
+
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, tagged, tagged_len);
+
+    /* Parent-bound socket: original tagged frame, stamped with the parent. */
+    memset(&from, 0, sizeof(from));
+    from_len = sizeof(from);
+    ret = wolfIP_sock_recvfrom(&s, sd_parent, rxbuf, sizeof(rxbuf), 0,
+                               (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)tagged_len);
+    ck_assert_uint_eq(rxbuf[12], 0x81u);   /* VLAN TPID still present */
+    ck_assert_uint_eq(rxbuf[13], 0x00u);
+    ck_assert_int_eq(from.sll_ifindex, (int)TEST_PRIMARY_IF);
+
+    /* Sub-interface-bound socket: tag-stripped frame, stamped with the sub. */
+    memset(&from, 0, sizeof(from));
+    from_len = sizeof(from);
+    ret = wolfIP_sock_recvfrom(&s, sd_sub, rxbuf, sizeof(rxbuf), 0,
+                               (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)(tagged_len - 4));
+    ck_assert_uint_eq(rxbuf[12], 0x08u);   /* inner IPv4 ethertype, tag gone */
+    ck_assert_uint_eq(rxbuf[13], 0x00u);
+    ck_assert_int_eq(from.sll_ifindex, (int)sub_idx);
+}
+END_TEST
+
+/* F-5011: a wildcard (sll_ifindex == 0) sniffer must receive the original
+ * tagged frame exactly once - stamped with the parent - not the tag-stripped
+ * sub-interface copy, and not both. */
+START_TEST(test_vlan_packet_socket_wildcard_gets_tagged_once)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    int sd;
+    uint8_t plain[ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN];
+    uint8_t tagged[ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN + 4];
+    uint32_t plain_len, tagged_len;
+    uint8_t rxbuf[sizeof(tagged) + 4];
+    struct wolfIP_sockaddr_ll from;
+    socklen_t from_len;
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, 0);
+    ck_assert_int_ge(sd, 0);
+    s.packetsockets[SOCKET_UNMARK(sd)].bind_addr.sll_ifindex = 0; /* wildcard */
+
+    plain_len = build_icmp_echo_request(plain, sizeof(plain), phys->mac,
+                                        VLAN_REMOTE_IP, VLAN_SUB100_IP);
+    ck_assert_uint_gt(plain_len, 0u);
+    tagged_len = insert_vlan_tag(tagged, sizeof(tagged), plain, plain_len,
+                                 100, 0, 0);
+    ck_assert_uint_gt(tagged_len, 0u);
+
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, tagged, tagged_len);
+
+    /* First (and only) delivery: the tagged wire frame on the parent. */
+    memset(&from, 0, sizeof(from));
+    from_len = sizeof(from);
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+                               (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)tagged_len);
+    ck_assert_uint_eq(rxbuf[12], 0x81u);
+    ck_assert_int_eq(from.sll_ifindex, (int)TEST_PRIMARY_IF);
+
+    /* No duplicate tag-stripped copy. */
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, 0);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+#endif /* WOLFIP_PACKET_SOCKETS */
+
 START_TEST(test_vlan_rx_runt_tagged_dropped)
 {
     struct wolfIP s;
@@ -1184,6 +1303,41 @@ START_TEST(test_vlan_mtu_inherited)
 
     /* Sub-interface MTU must be exactly 4 bytes less than parent MTU */
     ck_assert_uint_eq(sub_mtu + 4u, phys_mtu);
+}
+END_TEST
+
+/* F-4948: deleting a VLAN sub-interface must purge the ARP neighbor cache for
+ * that slot. ARP entries are keyed only by (ip, if_idx) with no VID, and
+ * wolfIP_vlan_create reuses the freed slot, so without a purge a new VLAN on
+ * the same if_idx would inherit the deleted VLAN's L2 mappings. */
+START_TEST(test_vlan_delete_purges_arp_neighbor_cache)
+{
+    struct wolfIP s;
+    unsigned int sub100 = 0xFFFFFFFFu, sub200 = 0xFFFFFFFFu;
+    static const uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    const ip4 peer_ip = VLAN_REMOTE_IP;
+    uint8_t mac[6];
+    int ret;
+
+    setup_vlan_stack(&s);
+
+    /* Learn a neighbor on a VID=100 sub-interface. */
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub100);
+    ck_assert_int_eq(ret, 0);
+    arp_store_neighbor(&s, sub100, peer_ip, peer_mac);
+    ck_assert_int_eq(wolfIP_arp_lookup_ex(&s, sub100, peer_ip, mac), 0);
+    ck_assert_mem_eq(mac, peer_mac, 6);
+
+    /* Delete VID=100 and recreate as VID=200 on the same slot. */
+    ck_assert_int_eq(wolfIP_vlan_delete(&s, sub100), 0);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 200, 0, 0, &sub200);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(sub200, sub100); /* slot reused */
+
+    /* The new VLAN must not inherit the deleted VLAN's L2 mapping. */
+    memset(mac, 0, sizeof(mac));
+    ret = wolfIP_arp_lookup_ex(&s, sub200, peer_ip, mac);
+    ck_assert_int_eq(ret, -1);
 }
 END_TEST
 

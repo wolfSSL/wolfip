@@ -143,6 +143,12 @@ struct wolftftp_negotiated {
 
 typedef int (*wolftftp_udp_send_cb)(void *arg, uint16_t local_port,
     const struct wolftftp_endpoint *remote, const uint8_t *buf, uint16_t len);
+/* wolftftp_open_cb:
+ *   `name` is the wire-supplied request filename. The server rejects absolute
+ *   paths and any ".." path component before this callback runs, so `name`
+ *   cannot escape upward from a relative root. It may still contain relative
+ *   subdirectories ("a/b/fw.bin"); a filesystem-backed open() should resolve it
+ *   against a confined root (chroot / fixed base dir) rather than the cwd. */
 typedef int (*wolftftp_open_cb)(void *arg, const char *name, int is_write,
     uint32_t *size_hint, void **handle);
 /* wolftftp_read_cb:

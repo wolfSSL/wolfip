@@ -322,6 +322,66 @@ START_TEST(test_ip_recv_forward_link_local_src_rpf_drop)
 END_TEST
 
 /* =========================================================================
+ * F-5697: a packet whose source is the router's OWN IP on the ingress
+ * interface must never be forwarded.
+ * =========================================================================
+ * The strict-RPF loop skips i == if_idx, so the ingress interface's own
+ * address was never compared against the source. An L2-adjacent attacker
+ * could spoof the router's LAN IP and have it forwarded out another
+ * interface. A legitimate host in the same ingress subnet must still be
+ * forwarded (the fix only matches the exact own /32, not the subnet).
+ */
+START_TEST(test_ip_recv_forward_self_ip_src_dropped)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;   /* 10.0.0.1   — router LAN IP (if1) */
+    ip4 secondary_ip = 0xC0A80101U;   /* 192.168.1.1 — router WAN IP (if2) */
+    ip4 dest_ip      = 0xC0A80155U;   /* 192.168.1.85 — local to if2 */
+    static const uint8_t dest_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    /* ARP hit so that, absent the drop, the packet would be forwarded now. */
+    arp_store_neighbor(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(primary_ip);   /* spoof: the router's own LAN IP */
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+    {
+        uint16_t *udp = (uint16_t *)(frame + ETH_HEADER_LEN + IP_HEADER_LEN);
+        udp[0] = ee16(9999); udp[1] = ee16(53);
+        udp[2] = ee16(UDP_HEADER_LEN); udp[3] = 0;
+    }
+
+    last_frame_sent_size = 0;
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Self-IP source must be dropped: nothing forwarded, nothing queued. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_eq(s.arp_pending[0].dest, IPADDR_ANY);
+
+    /* Sanity: a real host in the same ingress subnet is still forwarded
+     * (the drop targets the exact own address, not the whole subnet). */
+    ip->src = ee32(0x0A000002U);       /* 10.0.0.2 — legitimate LAN host */
+    fix_ip_checksum(ip);
+    last_frame_sent_size = 0;
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 0, dest_mac, 6);
+}
+END_TEST
+
+/* =========================================================================
  * ip_recv: IP with NOP options — options parsed, payload delivered
  * =========================================================================
  * Branch: type == 1 (NOP) inside option parser → opt++ continue
