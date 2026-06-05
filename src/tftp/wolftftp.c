@@ -458,7 +458,7 @@ static int wolftftp_build_oack(uint8_t *buf, uint16_t max_len,
 }
 
 static int wolftftp_parse_oack(const uint8_t *buf, uint16_t len,
-    struct wolftftp_negotiated *neg)
+    struct wolftftp_negotiated *neg, uint8_t requested_opts)
 {
     const char *p;
     size_t slen;
@@ -486,21 +486,33 @@ static int wolftftp_parse_oack(const uint8_t *buf, uint16_t len,
          * past buf+len. */
         if (slen == 0 || (const uint8_t *)(value + slen) >= buf + len)
             return WOLFTFTP_ERR_PACKET;
+        /* RFC 2347 §2: an OACK may only acknowledge options the client
+         * actually sent. Reject any option absent from requested_opts so a
+         * malicious server cannot install unsolicited timeout/windowsize/
+         * tsize values that were never negotiated. */
         if (wolftftp_stricmp_local(key, "blksize") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_BLKSIZE) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, WOLFTFTP_MAX_BLKSIZE, &number) != 0 ||
                     number < 8U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->blksize = (uint16_t)number;
         } else if (wolftftp_stricmp_local(key, "timeout") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_TIMEOUT) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, 255U, &number) != 0 || number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->timeout_s = (uint16_t)number;
         } else if (wolftftp_stricmp_local(key, "tsize") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_TSIZE) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, 0xFFFFFFFFUL, &number) != 0)
                 return WOLFTFTP_ERR_UNSUPPORTED;
             neg->tsize = number;
             neg->have_tsize = 1;
         } else if (wolftftp_stricmp_local(key, "windowsize") == 0) {
+            if ((requested_opts & WOLFTFTP_OPT_WINDOWSIZE) == 0U)
+                return WOLFTFTP_ERR_UNSUPPORTED;
             if (wolftftp_parse_u32(value, WOLFTFTP_MAX_WINDOWSIZE, &number) != 0 ||
                     number == 0U)
                 return WOLFTFTP_ERR_UNSUPPORTED;
@@ -748,7 +760,7 @@ int wolftftp_client_receive(struct wolftftp_client *client, uint16_t local_port,
         client->server.port = remote->port;
         client->tid_locked = 1;
         wolftftp_neg_defaults(&neg, &client->cfg);
-        ret = wolftftp_parse_oack(buf, len, &neg);
+        ret = wolftftp_parse_oack(buf, len, &neg, client->requested_opts);
         if (ret != 0) {
             wolftftp_client_finish(client, ret);
             return ret;
