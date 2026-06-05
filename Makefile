@@ -182,7 +182,7 @@ endif
 EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
-	build/test-http-smuggle \
+	build/test-http-smuggle build/test-http-arg-oob \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
 ifeq ($(UNAME_S),Linux)
@@ -403,6 +403,13 @@ build/test-http-smuggle: src/test/test_http_smuggle.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ src/test/test_http_smuggle.c $(LDFLAGS) -lwolfssl
+
+# Standalone regression test for the httpd_get_request_arg OOB read (F-5258).
+build/test-http-arg-oob:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLFIP_ENABLE_HTTP -Isrc/http
+build/test-http-arg-oob: src/test/test_http_arg_oob.c src/http/httpd.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_arg_oob.c $(LDFLAGS) -lwolfssl
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true

@@ -560,6 +560,8 @@ int httpd_get_request_arg(struct http_request *req, const char *name, char *valu
                 return 0;
             }
         }
+        if (*q == '\0') // Reached the terminator: do not step past the buffer
+            break;
         p = q + 1; // Move to next key-value pair
     }
     return -1; // Key not found
