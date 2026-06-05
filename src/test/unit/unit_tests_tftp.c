@@ -670,14 +670,53 @@ START_TEST(test_tftp_server_wrq_success_and_failures)
     transport = tftp_transport_ops(&ctx);
     io = tftp_io_ops(&ctx);
     wolftftp_server_init(&server, &transport, &io, &cfg);
+    /* Advertise tsize=0 (size unknown) so the request is accepted and the
+     * oversized-payload rejection is exercised on the DATA path rather than
+     * up front against the advertised tsize. */
     ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_WRQ,
-        "fw.bin", &cfg, 10, &opts, &req_len), 0);
+        "fw.bin", &cfg, 0, &opts, &req_len), 0);
     ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
         pkt, req_len), 0);
     memcpy(pkt + 4, "toolong", 7);
     len = wolftftp_build_data(pkt, sizeof(pkt), 1, pkt + 4, 7);
     ck_assert_int_eq(wolftftp_server_receive(&server, server.sessions[0].local_port,
         &remote, pkt, (uint16_t)len), WOLFTFTP_ERR_SIZE);
+}
+END_TEST
+
+/* F-4389: a WRQ advertising tsize greater than cfg.max_image_size must be
+ * rejected before io.open is handed the size_hint, so a single datagram
+ * cannot force a huge pre-allocation. */
+START_TEST(test_tftp_server_wrq_tsize_exceeds_limit_rejected)
+{
+    struct tftp_test_ctx ctx;
+    struct wolftftp_server server;
+    struct wolftftp_transfer_cfg cfg = tftp_cfg_defaults();
+    struct wolftftp_transport_ops transport;
+    struct wolftftp_io_ops io;
+    struct wolftftp_endpoint remote = tftp_remote(0x0A000012U, 5000);
+    uint8_t pkt[WOLFTFTP_PKT_MAX];
+    uint16_t req_len = 0;
+    uint8_t opts = 0;
+
+    tftp_test_ctx_reset(&ctx);
+    cfg.max_image_size = 128;
+    transport = tftp_transport_ops(&ctx);
+    io = tftp_io_ops(&ctx);
+    wolftftp_server_init(&server, &transport, &io, &cfg);
+
+    /* WRQ with tsize = UINT32_MAX, far above max_image_size. */
+    ck_assert_int_eq(wolftftp_build_request(pkt, sizeof(pkt), WOLFTFTP_OP_WRQ,
+        "fw.bin", &cfg, 0xFFFFFFFFU, &opts, &req_len), 0);
+    ck_assert_int_eq(wolftftp_server_receive(&server, WOLFTFTP_PORT, &remote,
+        pkt, req_len), WOLFTFTP_ERR_SIZE);
+    /* io.open must never have been reached with the oversized hint, and the
+     * session slot must be reaped. */
+    ck_assert_int_eq(ctx.open_calls, 0);
+    ck_assert_int_eq(server.sessions[0].state, WOLFTFTP_SESSION_FREE);
+    /* The peer must have received an ENOSPACE error datagram. */
+    ck_assert_int_eq(ctx.send_calls, 1);
+    ck_assert_uint_eq(wolftftp_read_u16(ctx.sent[0]), WOLFTFTP_OP_ERROR);
 }
 END_TEST
 
@@ -2108,6 +2147,7 @@ static void add_tftp_tests(TCase *tc_proto)
     tcase_add_test(tc_proto, test_tftp_client_poll_and_status_paths);
     tcase_add_test(tc_proto, test_tftp_server_rrq_success_and_poll);
     tcase_add_test(tc_proto, test_tftp_server_wrq_success_and_failures);
+    tcase_add_test(tc_proto, test_tftp_server_wrq_tsize_exceeds_limit_rejected);
     tcase_add_test(tc_proto, test_tftp_server_request_errors_and_timeouts);
     tcase_add_test(tc_proto, test_tftp_server_session_reaped_after_completion);
     tcase_add_test(tc_proto, test_tftp_client_honors_caller_server_port);

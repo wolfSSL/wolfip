@@ -979,6 +979,17 @@ static int wolftftp_server_start_request(struct wolftftp_server *server,
         session->neg.windowsize = req->windowsize;
     session->neg.have_tsize = (uint8_t)((req->opts & WOLFTFTP_OPT_TSIZE) != 0U);
     session->neg.tsize = req->tsize;
+    /* Reject an advertised tsize that already exceeds the configured limit
+     * before io.open is handed the hint, so a single WRQ cannot force a
+     * 4 GiB pre-allocation. This mirrors the client OACK check and the
+     * later per-DATA enforcement in wolftftp_server_accept_wrq_data. */
+    if (session->neg.have_tsize != 0U && server->cfg.max_image_size != 0U &&
+            session->neg.tsize > server->cfg.max_image_size) {
+        (void)wolftftp_send_server_error(server, session->local_port, remote,
+            WOLFTFTP_ENOSPACE, "image too large");
+        wolftftp_server_finish(server, session, WOLFTFTP_ERR_SIZE);
+        return WOLFTFTP_ERR_SIZE;
+    }
     (void)wolftftp_copy_string(session->filename, sizeof(session->filename),
         req->filename);
 
