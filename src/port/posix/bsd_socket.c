@@ -198,6 +198,7 @@ enum wolfip_dns_wait_type {
 struct wolfip_dns_wait_ctx {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
+    int busy;
     int pending;
     enum wolfip_dns_wait_type type;
     int status;
@@ -208,6 +209,7 @@ struct wolfip_dns_wait_ctx {
 static struct wolfip_dns_wait_ctx dns_wait_ctx = {
     PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_COND_INITIALIZER,
+    0,
     0,
     DNS_WAIT_NONE,
     0,
@@ -733,10 +735,11 @@ static int wolfip_dns_error_to_eai(int err)
 static int wolfip_dns_begin_wait(enum wolfip_dns_wait_type type)
 {
     pthread_mutex_lock(&dns_wait_ctx.mutex);
-    if (dns_wait_ctx.pending) {
+    if (dns_wait_ctx.busy) {
         pthread_mutex_unlock(&dns_wait_ctx.mutex);
         return EAI_AGAIN;
     }
+    dns_wait_ctx.busy = 1;
     dns_wait_ctx.pending = 1;
     dns_wait_ctx.type = type;
     dns_wait_ctx.status = EAI_FAIL;
@@ -749,6 +752,7 @@ static void wolfip_dns_abort_wait(int status)
 {
     pthread_mutex_lock(&dns_wait_ctx.mutex);
     dns_wait_ctx.pending = 0;
+    dns_wait_ctx.busy = 0;
     dns_wait_ctx.type = DNS_WAIT_NONE;
     dns_wait_ctx.status = status;
     pthread_cond_signal(&dns_wait_ctx.cond);
@@ -766,6 +770,7 @@ static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, cha
         int err = pthread_cond_timedwait(&dns_wait_ctx.cond, &dns_wait_ctx.mutex, &ts);
         if (err == ETIMEDOUT) {
             dns_wait_ctx.pending = 0;
+            dns_wait_ctx.busy = 0;
             dns_wait_ctx.type = DNS_WAIT_NONE;
             pthread_mutex_unlock(&dns_wait_ctx.mutex);
             return EAI_AGAIN;
@@ -773,6 +778,8 @@ static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, cha
     }
     if (dns_wait_ctx.type != type) {
         int status = dns_wait_ctx.status ? dns_wait_ctx.status : EAI_FAIL;
+        dns_wait_ctx.type = DNS_WAIT_NONE;
+        dns_wait_ctx.busy = 0;
         pthread_mutex_unlock(&dns_wait_ctx.mutex);
         return status;
     }
@@ -784,6 +791,7 @@ static int wolfip_dns_wait(enum wolfip_dns_wait_type type, uint32_t *ip_out, cha
             wolfip_strlcpy(name_out, dns_wait_ctx.name, name_len);
     }
     dns_wait_ctx.type = DNS_WAIT_NONE;
+    dns_wait_ctx.busy = 0;
     pthread_mutex_unlock(&dns_wait_ctx.mutex);
     return status;
 }
