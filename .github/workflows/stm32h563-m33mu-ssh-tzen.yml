@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y sudo dnsmasq iproute2 netcat-openbsd git \
+          apt-get install -y dnsmasq iproute2 netcat-openbsd git \
             openssh-client sshpass
 
       - name: Fetch wolfSSL/wolfSSH/wolfBoot
@@ -34,9 +34,9 @@ jobs:
             git clone --depth 1 --branch master https://github.com/wolfSSL/wolfssh.git ../wolfssh
           fi
           if [ ! -d ../wolfboot ]; then
-            git clone --depth 1 --branch stm32tz https://github.com/dgarske/wolfboot.git ../wolfboot
-            git -C ../wolfboot submodule update --init --single-branch
+            git clone --depth 1 https://github.com/wolfSSL/wolfBoot.git ../wolfboot
           fi
+          git -C ../wolfboot submodule update --init --single-branch
 
       - name: Build wolfBoot (stm32h5-tz)
         run: |
@@ -63,19 +63,19 @@ jobs:
           cleanup() {
             set +e
             if [ -f /tmp/m33mu.pid ]; then
-              sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
             fi
-            sudo pkill -x m33mu 2>/dev/null || true
+            pkill -x m33mu 2>/dev/null || true
             if [ -f /tmp/dnsmasq.pid ]; then
-              sudo kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
             fi
-            sudo ip link del tap0 2>/dev/null || true
+            ip link del tap0 2>/dev/null || true
           }
           trap cleanup EXIT
 
-          sudo ip tuntap add dev tap0 mode tap
-          sudo ip addr add 192.168.12.1/24 dev tap0
-          sudo ip link set tap0 up
+          ip tuntap add dev tap0 mode tap
+          ip addr add 192.168.12.1/24 dev tap0
+          ip link set tap0 up
 
           cat > /tmp/dnsmasq.conf <<'CONF'
           interface=tap0
@@ -84,12 +84,9 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           CONF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
-          # wolfBoot does a full software ECC256 verify of the 300 KB
-          # signed NS image before it BLXNSes into wolfIP. End-to-end the
-          # m33mu run takes ~3 minutes; 360s gives ~2x headroom.
-          sudo m33mu \
+          /usr/local/bin/m33mu \
             ../wolfboot/wolfboot.bin \
             src/port/stm32h563/app_v1_signed.bin:0x60000 \
             --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 360 --quit-on-faults \
@@ -142,5 +139,5 @@ jobs:
           fi
           echo "SSH test succeeded."
           if [ -f /tmp/m33mu.pid ]; then
-            sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
           fi

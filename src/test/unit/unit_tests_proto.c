@@ -3555,6 +3555,121 @@ START_TEST(test_wolfip_ipconfig_ex_per_interface)
 }
 END_TEST
 
+#if WOLFIP_ENABLE_FORWARDING
+START_TEST(test_wolfip_route_table_longest_prefix_match)
+{
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0A000001U, 0xFF000000U, 0x0A0000FEU);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0xC0A801FEU);
+
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_PRIMARY_IF, 0x0A000000U, 8U, 0x0A0000FEU), 0);
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_SECOND_IF, 0x0A010200U, 24U, 0xC0A801FEU), 0);
+    ck_assert_uint_eq(wolfIP_route_count(&s), 2U);
+
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0x0A010203U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(nexthop, 0xC0A801FEU);
+}
+END_TEST
+
+START_TEST(test_wolfip_route_table_default_route_delete_and_fallback)
+{
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0A000001U, 0xFFFFFF00U, 0x0A0000FEU);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0xC0A801FEU);
+
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_SECOND_IF, 0U, 0U, 0xC0A801FEU), 0);
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0x08080808U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(nexthop, 0xC0A801FEU);
+
+    ck_assert_int_eq(wolfIP_route_delete(&s, TEST_SECOND_IF, 0U, 0U), 0);
+    ck_assert_uint_eq(wolfIP_route_count(&s), 0U);
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0x08080808U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(nexthop, 0x0A0000FEU);
+}
+END_TEST
+
+START_TEST(test_wolfip_route_table_update_replaces_gateway_without_duplication)
+{
+    struct wolfIP s;
+    struct wolfIP_route_info info;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0A000001U, 0xFFFFFF00U, 0x0A0000FEU);
+
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_PRIMARY_IF, 0xAC100000U, 12U, 0x0A0000FEU), 0);
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_PRIMARY_IF, 0xAC100000U, 12U, 0x0A0000FDU), 0);
+    ck_assert_uint_eq(wolfIP_route_count(&s), 1U);
+    ck_assert_int_eq(wolfIP_route_get(&s, 0U, &info), 0);
+    ck_assert_uint_eq(info.gateway, 0x0A0000FDU);
+
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0xAC100123U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(nexthop, 0x0A0000FDU);
+}
+END_TEST
+
+START_TEST(test_wolfip_route_table_connected_subnet_beats_broader_static_route)
+{
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0xC0A80101U, 0xFFFFFF00U, 0xC0A801FEU);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0x0A000001U, 0xFF000000U, 0x0A0000FEU);
+
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_SECOND_IF, 0xC0A80000U, 16U, 0x0A0000FEU), 0);
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0xC0A80163U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(nexthop, 0xC0A80163U);
+}
+END_TEST
+#endif
+
+START_TEST(test_wolfip_dns_server_get_returns_value_and_validates_args)
+{
+    struct wolfIP s;
+    ip4 dns = 0xDEADBEEFU;
+
+    wolfIP_init(&s);
+
+    /* NULL stack -> EINVAL, output is untouched. */
+    ck_assert_int_eq(wolfIP_dns_server_get(NULL, &dns), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(dns, 0xDEADBEEFU);
+
+    /* NULL out pointer -> EINVAL. */
+    ck_assert_int_eq(wolfIP_dns_server_get(&s, NULL), -WOLFIP_EINVAL);
+
+    /* Fresh stack: DNS server is zero by default. */
+    dns = 0xDEADBEEFU;
+    ck_assert_int_eq(wolfIP_dns_server_get(&s, &dns), 0);
+    ck_assert_uint_eq(dns, 0U);
+
+    /* After a value has been stashed (DHCP would do this), the getter
+     * faithfully returns it. */
+    s.dns_server = 0x08080808U;
+    ck_assert_int_eq(wolfIP_dns_server_get(&s, &dns), 0);
+    ck_assert_uint_eq(dns, 0x08080808U);
+}
+END_TEST
+
 START_TEST(test_wolfip_recv_ex_multi_interface_arp_reply)
 {
     struct wolfIP s;

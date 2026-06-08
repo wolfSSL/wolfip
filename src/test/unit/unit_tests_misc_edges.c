@@ -414,26 +414,37 @@ START_TEST(test_wolfip_ip_is_broadcast_full_mask_skipped)
 END_TEST
 
 /* =====================================================================
- * wolfIP_select_nexthop -- NULL conf, broadcast branches
+ * wolfIP_select_nexthop_ex -- NULL state, broadcast branches
  * ===================================================================== */
 START_TEST(test_wolfip_select_nexthop_null_conf)
 {
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
     ip4 dest = 0x0a000002U;
-    ip4 ret = wolfIP_select_nexthop(NULL, dest);
+    ip4 ret;
+
+    memset(&s, 0, sizeof(s));
+    ret = wolfIP_select_nexthop_ex(NULL, NULL, dest);
+    ck_assert_uint_eq(ret, dest);
+
+    ret = wolfIP_select_nexthop_ex(&s, &if_idx, dest);
     ck_assert_uint_eq(ret, dest);
 }
 END_TEST
 
 START_TEST(test_wolfip_select_nexthop_broadcast)
 {
-    struct ipconf conf;
+    struct wolfIP s;
+    unsigned int if_idx = TEST_PRIMARY_IF;
     ip4 ret;
-    memset(&conf, 0, sizeof(conf));
-    conf.ip   = 0x0a000001U;
-    conf.mask = 0xffffff00U;
-    conf.gw   = 0x0a0000feU;
-    ret = wolfIP_select_nexthop(&conf, 0xFFFFFFFFU);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0a000001U, 0xffffff00U,
+                           0x0a0000feU);
+    ret = wolfIP_select_nexthop_ex(&s, &if_idx, 0xFFFFFFFFU);
     ck_assert_uint_eq(ret, 0xFFFFFFFFU);
+    ck_assert_uint_eq(if_idx, TEST_PRIMARY_IF);
 }
 END_TEST
 

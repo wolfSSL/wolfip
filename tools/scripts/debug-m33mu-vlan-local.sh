@@ -35,6 +35,16 @@ Outputs:
 EOF
 }
 
+resolve_m33mu_bin() {
+  if [ -x /workspace/m33mu/build/m33mu ]; then
+    printf '%s\n' /workspace/m33mu/build/m33mu
+  elif [ -x /usr/local/bin/m33mu ]; then
+    printf '%s\n' /usr/local/bin/m33mu
+  else
+    printf '%s\n' m33mu
+  fi
+}
+
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
@@ -62,14 +72,14 @@ cleanup() {
   local rc=$?
   set +e
   if [ -f /tmp/m33mu-vlan.pid ]; then
-    sudo kill "$(cat /tmp/m33mu-vlan.pid)" 2>/dev/null || true
+    kill "$(cat /tmp/m33mu-vlan.pid)" 2>/dev/null || true
   fi
   if [ -f /tmp/tcpdump-vlan.pid ]; then
-    sudo kill "$(cat /tmp/tcpdump-vlan.pid)" 2>/dev/null || true
+    kill "$(cat /tmp/tcpdump-vlan.pid)" 2>/dev/null || true
   fi
-  sudo pkill -x m33mu 2>/dev/null || true
-  sudo ip link del "tap0.${vid}" 2>/dev/null || true
-  sudo ip link del tap0 2>/dev/null || true
+  pkill -x m33mu 2>/dev/null || true
+  ip link del "tap0.${vid}" 2>/dev/null || true
+  ip link del tap0 2>/dev/null || true
   exit "${rc}"
 }
 trap cleanup EXIT
@@ -89,19 +99,19 @@ make -C src/port/stm32h563 \
 echo "==> Setting up tap0 + tap0.${vid} VLAN sub-interface"
 # Use ${USER:-root} so the script works both on a multi-user dev box (where
 # $USER is set) and inside a GitHub Actions container (where it may not be).
-sudo ip tuntap add dev tap0 mode tap user "${USER:-root}"
-sudo ip link set tap0 up
-sudo ip link add link tap0 name "tap0.${vid}" type vlan id "${vid}"
-sudo ip addr add "${host_ip}/24" dev "tap0.${vid}"
-sudo ip link set "tap0.${vid}" up
+ip tuntap add dev tap0 mode tap user "${USER:-root}"
+ip link set tap0 up
+ip link add link tap0 name "tap0.${vid}" type vlan id "${vid}"
+ip addr add "${host_ip}/24" dev "tap0.${vid}"
+ip link set "tap0.${vid}" up
 
 echo "==> Starting tcpdump on tap0 (parent; sees tagged frames)"
-sudo tcpdump -i tap0 -nn -U -w /tmp/m33mu-vlan.pcap > /dev/null 2>&1 &
+tcpdump -i tap0 -nn -U -w /tmp/m33mu-vlan.pcap > /dev/null 2>&1 &
 printf '%s\n' "$!" > /tmp/tcpdump-vlan.pid
 sleep 1
 
 echo "==> Starting m33mu"
-sudo m33mu src/port/stm32h563/app.bin \
+"$(resolve_m33mu_bin)" src/port/stm32h563/app.bin \
   --cpu stm32h563 --tap:tap0 --uart-stdout \
   --timeout "${m33mu_timeout}" --quit-on-faults \
   > /tmp/m33mu-vlan.log 2>&1 &
@@ -149,7 +159,7 @@ echo "ECHO_RECV=${echo_recv}"
 
 # Give tcpdump a moment to flush
 sleep 2
-sudo kill "$(cat /tmp/tcpdump-vlan.pid)" 2>/dev/null || true
+kill "$(cat /tmp/tcpdump-vlan.pid)" 2>/dev/null || true
 sleep 1
 
 echo "==> Asserting 802.1Q tagged traffic on VID=${vid}"

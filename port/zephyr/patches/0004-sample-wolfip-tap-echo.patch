@@ -1,0 +1,393 @@
+Subject: [PATCH 4/4] sample: wolfip_tap_echo (native_sim + TAP)
+
+TCP + UDP echo server sample bound to 192.0.2.1:4242, runnable under
+native_sim against a TAP interface. Demonstrates wolfip_attach_iface +
+wolfip_ctrl_set_addr boot wiring. Depends on patches 0001 + 0002.
+
+---
+
+diff --git a/samples/net/sockets/wolfip_tap_echo/CMakeLists.txt b/samples/net/sockets/wolfip_tap_echo/CMakeLists.txt
+new file mode 100644
+index 00000000..11f7d664
+--- /dev/null
++++ b/samples/net/sockets/wolfip_tap_echo/CMakeLists.txt
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: Apache-2.0
++
++cmake_minimum_required(VERSION 3.20.0)
++find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
++project(wolfip_tap_echo)
++
++target_sources(app PRIVATE src/main.c)
+diff --git a/samples/net/sockets/wolfip_tap_echo/README.rst b/samples/net/sockets/wolfip_tap_echo/README.rst
+new file mode 100644
+index 00000000..2e755e50
+--- /dev/null
++++ b/samples/net/sockets/wolfip_tap_echo/README.rst
+@@ -0,0 +1,60 @@
++wolfIP TAP Echo Smoke Test
++##########################
++
++Overview
++********
++
++This sample runs on ``native_sim`` with the native TAP Ethernet driver and
++opts the default Zephyr network interface into the ``wolfIP`` adapter. It then
++opens normal IPv4 TCP and UDP echo sockets through the standard Zephyr socket
++API.
++
++The purpose is to verify the Zephyr-to-``wolfIP`` integration seam end to end:
++
++* TAP driver RX enters Zephyr
++* the ``wolfIP`` ingress hook consumes IPv4 traffic on the selected interface
++* application sockets still use the regular Zephyr/POSIX IPv4 API
++* ``wolfIP`` TX exits through the unchanged Zephyr TAP driver path
++
++Host setup
++**********
++
++Bring the host-side TAP interface up and assign the peer IPv4 address:
++
++.. code-block:: console
++
++   sudo ip link set dev zeth up
++   sudo ip addr add 192.0.2.2/24 dev zeth
++
++Build and run
++*************
++
++.. zephyr-app-commands::
++   :zephyr-app: samples/net/sockets/wolfip_tap_echo
++   :host-os: unix
++   :board: native_sim
++   :goals: build run
++   :compact:
++
++Expected boot log includes:
++
++* ``wolfIP enabled on iface``
++* ``TCP echo listening on 192.0.2.1:4242``
++* ``UDP echo listening on 192.0.2.1:4242``
++
++Manual smoke test
++*****************
++
++TCP:
++
++.. code-block:: console
++
++   printf 'wolfip-tcp\n' | nc 192.0.2.1 4242
++
++UDP:
++
++.. code-block:: console
++
++   printf 'wolfip-udp\n' | nc -u -w 1 192.0.2.1 4242
++
++Each command should return the same payload.
+diff --git a/samples/net/sockets/wolfip_tap_echo/boards/native_sim.conf b/samples/net/sockets/wolfip_tap_echo/boards/native_sim.conf
+new file mode 100644
+index 00000000..fe5796a3
+--- /dev/null
++++ b/samples/net/sockets/wolfip_tap_echo/boards/native_sim.conf
+@@ -0,0 +1,3 @@
++CONFIG_ETH_NATIVE_TAP_RANDOM_MAC=n
++CONFIG_ETH_NATIVE_TAP_MAC_ADDR="02:00:5e:00:53:61"
++CONFIG_ETH_NATIVE_TAP_DRV_NAME="zeth"
+diff --git a/samples/net/sockets/wolfip_tap_echo/prj.conf b/samples/net/sockets/wolfip_tap_echo/prj.conf
+new file mode 100644
+index 00000000..bf8bf3e3
+--- /dev/null
++++ b/samples/net/sockets/wolfip_tap_echo/prj.conf
+@@ -0,0 +1,38 @@
++# Networking core
++CONFIG_NETWORKING=y
++CONFIG_NET_SOCKETS=y
++CONFIG_POSIX_API=y
++
++# Zephyr native IPv4/TCP/UDP are off — wolfIP owns the L3+ stack.
++CONFIG_NET_IPV6=n
++
++# L2 stack
++CONFIG_NET_L2_ETHERNET=y
++CONFIG_NET_L2_WOLFIP=y
++CONFIG_ETH_NATIVE_TAP=y
++
++# wolfIP
++CONFIG_WOLFIP=y
++CONFIG_WOLFIP_DHCPV4=n
++CONFIG_WOLFIP_MAX_INTERFACES=1
++
++# Application bits
++CONFIG_LOG=y
++CONFIG_PRINTK=y
++CONFIG_MAIN_STACK_SIZE=4096
++CONFIG_HEAP_MEM_POOL_SIZE=32768
++CONFIG_ENTROPY_GENERATOR=y
++CONFIG_TEST_RANDOM_GENERATOR=y
++
++# Net packet buffers (still used for raw L2 frames)
++CONFIG_NET_PKT_RX_COUNT=24
++CONFIG_NET_PKT_TX_COUNT=24
++CONFIG_NET_BUF_RX_COUNT=96
++CONFIG_NET_BUF_TX_COUNT=96
++
++# Sockets
++CONFIG_ZVFS_OPEN_MAX=32
++
++# Shell (for manual inspection / debugging)
++CONFIG_SHELL=y
++CONFIG_NET_SHELL=y
+diff --git a/samples/net/sockets/wolfip_tap_echo/sample.yaml b/samples/net/sockets/wolfip_tap_echo/sample.yaml
+new file mode 100644
+index 00000000..1f3b5f50
+--- /dev/null
++++ b/samples/net/sockets/wolfip_tap_echo/sample.yaml
+@@ -0,0 +1,11 @@
++sample:
++  name: wolfIP TAP echo smoke test
++tests:
++  sample.net.sockets.wolfip_tap_echo:
++    platform_allow:
++      - native_sim
++      - native_sim/native/64
++    tags:
++      - net
++      - socket
++      - wolfip
+diff --git a/samples/net/sockets/wolfip_tap_echo/src/main.c b/samples/net/sockets/wolfip_tap_echo/src/main.c
+new file mode 100644
+index 00000000..874c4e4e
+--- /dev/null
++++ b/samples/net/sockets/wolfip_tap_echo/src/main.c
+@@ -0,0 +1,230 @@
++/*
++ * Copyright (c) 2026
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <zephyr/kernel.h>
++#include <zephyr/logging/log.h>
++#include <zephyr/net/net_if.h>
++#include <zephyr/net/net_ip.h>
++#include <zephyr/net/wolfip.h>
++
++#include <errno.h>
++#include <stdio.h>
++#include <string.h>
++
++#include <zephyr/posix/sys/socket.h>
++#include <zephyr/posix/unistd.h>
++#include <zephyr/sys/byteorder.h>
++
++LOG_MODULE_REGISTER(wolfip_tap_echo, LOG_LEVEL_INF);
++
++#define ECHO_PORT 4242
++#define BUF_SIZE 512
++#define STACK_SIZE 2048
++#define THREAD_PRIO 7
++
++#define SAMPLE_LOCAL_IPV4    "192.0.2.1"
++#define SAMPLE_LOCAL_NETMASK "255.255.255.0"
++#define SAMPLE_LOCAL_GW      "192.0.2.2"
++
++K_THREAD_STACK_DEFINE(tcp_stack, STACK_SIZE);
++K_THREAD_STACK_DEFINE(udp_stack, STACK_SIZE);
++static struct k_thread tcp_thread;
++static struct k_thread udp_thread;
++
++static void sockaddr_to_str(const struct sockaddr_in *addr, char *buf, size_t len)
++{
++	(void)snprintk(buf, len, "%u.%u.%u.%u:%u",
++		       addr->sin_addr.s4_addr[0], addr->sin_addr.s4_addr[1],
++		       addr->sin_addr.s4_addr[2], addr->sin_addr.s4_addr[3],
++		       ntohs(addr->sin_port));
++}
++
++static void setup_bind_addr(struct sockaddr_in *addr)
++{
++	memset(addr, 0, sizeof(*addr));
++	addr->sin_family = AF_INET;
++	addr->sin_port = htons(ECHO_PORT);
++	net_addr_pton(AF_INET, SAMPLE_LOCAL_IPV4, &addr->sin_addr);
++}
++
++static void tcp_server(void *arg1, void *arg2, void *arg3)
++{
++	struct sockaddr_in bind_addr;
++	int listen_fd;
++
++	ARG_UNUSED(arg1);
++	ARG_UNUSED(arg2);
++	ARG_UNUSED(arg3);
++
++	setup_bind_addr(&bind_addr);
++
++	listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
++	if (listen_fd < 0) {
++		LOG_ERR("TCP socket failed: %d", errno);
++		return;
++	}
++
++	if (bind(listen_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
++		LOG_ERR("TCP bind failed: %d", errno);
++		close(listen_fd);
++		return;
++	}
++
++	if (listen(listen_fd, 1) < 0) {
++		LOG_ERR("TCP listen failed: %d", errno);
++		close(listen_fd);
++		return;
++	}
++
++	LOG_INF("TCP echo listening on %s:%d", SAMPLE_LOCAL_IPV4, ECHO_PORT);
++
++	while (true) {
++		struct sockaddr_in peer;
++		socklen_t peer_len = sizeof(peer);
++		char peer_buf[32];
++		int client_fd;
++
++		client_fd = accept(listen_fd, (struct sockaddr *)&peer, &peer_len);
++		if (client_fd < 0) {
++			LOG_ERR("TCP accept failed: %d", errno);
++			k_sleep(K_MSEC(100));
++			continue;
++		}
++
++		sockaddr_to_str(&peer, peer_buf, sizeof(peer_buf));
++		LOG_INF("TCP client %s connected", peer_buf);
++
++		while (true) {
++			char buf[BUF_SIZE];
++			ssize_t received;
++
++			received = recv(client_fd, buf, sizeof(buf), 0);
++			if (received == 0) {
++				LOG_INF("TCP client %s closed", peer_buf);
++				break;
++			}
++
++			if (received < 0) {
++				LOG_ERR("TCP recv failed: %d", errno);
++				break;
++			}
++
++			if (send(client_fd, buf, received, 0) < 0) {
++				LOG_ERR("TCP send failed: %d", errno);
++				break;
++			}
++		}
++
++		close(client_fd);
++	}
++}
++
++static void udp_server(void *arg1, void *arg2, void *arg3)
++{
++	struct sockaddr_in bind_addr;
++	int sock_fd;
++
++	ARG_UNUSED(arg1);
++	ARG_UNUSED(arg2);
++	ARG_UNUSED(arg3);
++
++	setup_bind_addr(&bind_addr);
++
++	sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++	if (sock_fd < 0) {
++		LOG_ERR("UDP socket failed: %d", errno);
++		return;
++	}
++
++	if (bind(sock_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
++		LOG_ERR("UDP bind failed: %d", errno);
++		close(sock_fd);
++		return;
++	}
++
++	LOG_INF("UDP echo listening on %s:%d", SAMPLE_LOCAL_IPV4, ECHO_PORT);
++
++	while (true) {
++		struct sockaddr_in peer;
++		socklen_t peer_len = sizeof(peer);
++		char buf[BUF_SIZE];
++		ssize_t received;
++
++		received = recvfrom(sock_fd, buf, sizeof(buf), 0,
++				   (struct sockaddr *)&peer, &peer_len);
++		if (received < 0) {
++			LOG_ERR("UDP recvfrom failed: %d", errno);
++			k_sleep(K_MSEC(100));
++			continue;
++		}
++
++		if (sendto(sock_fd, buf, received, 0,
++			   (struct sockaddr *)&peer, peer_len) < 0) {
++			LOG_ERR("UDP sendto failed: %d", errno);
++		}
++	}
++}
++
++int main(void)
++{
++	struct net_if *iface;
++	int ret;
++
++	iface = net_if_get_default();
++	if (iface == NULL) {
++		LOG_ERR("No default network interface");
++		return 0;
++	}
++
++	ret = wolfip_enable_iface(iface);
++	if (ret < 0) {
++		LOG_ERR("wolfIP enable failed: %d", ret);
++		return 0;
++	}
++
++	LOG_INF("wolfIP enabled on iface %d", net_if_get_by_iface(iface));
++
++	unsigned int if_idx;
++
++	ret = wolfip_zephyr_get_if_idx(iface, &if_idx);
++	if (ret < 0) {
++		LOG_ERR("wolfIP: cannot map iface to if_idx: %d", ret);
++		return 0;
++	}
++
++	struct in_addr ip_in, mask_in, gw_in;
++	ip4 ip_w, mask_w, gw_w;
++
++	net_addr_pton(AF_INET, SAMPLE_LOCAL_IPV4, &ip_in);
++	net_addr_pton(AF_INET, SAMPLE_LOCAL_NETMASK, &mask_in);
++	net_addr_pton(AF_INET, SAMPLE_LOCAL_GW, &gw_in);
++	ip_w   = sys_be32_to_cpu(ip_in.s_addr);
++	mask_w = sys_be32_to_cpu(mask_in.s_addr);
++	gw_w   = sys_be32_to_cpu(gw_in.s_addr);
++
++	ret = wolfip_ctrl_set_addr(if_idx, ip_w, mask_w, gw_w);
++	if (ret < 0) {
++		LOG_ERR("wolfIP: set_addr failed: %d", ret);
++		return 0;
++	}
++
++	LOG_INF("wolfIP: configured %s/%s gw %s",
++		SAMPLE_LOCAL_IPV4, SAMPLE_LOCAL_NETMASK, SAMPLE_LOCAL_GW);
++
++	k_thread_create(&tcp_thread, tcp_stack, K_THREAD_STACK_SIZEOF(tcp_stack),
++			tcp_server, NULL, NULL, NULL, THREAD_PRIO, 0, K_NO_WAIT);
++	k_thread_name_set(&tcp_thread, "wolfip_tcp");
++
++	k_thread_create(&udp_thread, udp_stack, K_THREAD_STACK_SIZEOF(udp_stack),
++			udp_server, NULL, NULL, NULL, THREAD_PRIO, 0, K_NO_WAIT);
++	k_thread_name_set(&udp_thread, "wolfip_udp");
++
++	while (true) {
++		k_sleep(K_SECONDS(1));
++	}
++
++	return 0;
++}
