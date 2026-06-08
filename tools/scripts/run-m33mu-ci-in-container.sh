@@ -10,16 +10,10 @@ EOF
 resolve_m33mu_bin() {
   if [ -x /workspace/m33mu/build/m33mu ]; then
     printf '%s\n' /workspace/m33mu/build/m33mu
+  elif [ -x /usr/local/bin/m33mu ]; then
+    printf '%s\n' /usr/local/bin/m33mu
   else
     printf '%s\n' m33mu
-  fi
-}
-
-run_root() {
-  if [ "$(id -u)" -eq 0 ]; then
-    "$@"
-  else
-    sudo "$@"
   fi
 }
 
@@ -31,9 +25,9 @@ require_repo_root() {
 }
 
 install_host_tools() {
-  run_root apt-get update
-  run_root apt-get install -y \
-    sudo dnsmasq iproute2 netcat-openbsd curl git tcpdump \
+  apt-get update
+  apt-get install -y \
+    dnsmasq iproute2 netcat-openbsd curl git tcpdump \
     mosquitto-clients openssh-client sshpass openssl
 }
 
@@ -45,15 +39,9 @@ ensure_repo() {
   fi
 }
 
-ensure_repo_at() {
-  local path="$1"
-  local url="$2"
-  if [ ! -d "${path}/.git" ]; then
-    git clone --depth 1 "${url}" "${path}"
-  fi
-}
-
 build_echo() {
+  make -C src/port/stm32h563 clean \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   make -C src/port/stm32h563 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
 }
@@ -62,6 +50,8 @@ build_full() {
   ensure_repo wolfssl https://github.com/wolfSSL/wolfssl.git
   ensure_repo wolfssh https://github.com/wolfSSL/wolfssh.git
   ensure_repo wolfmqtt https://github.com/wolfSSL/wolfmqtt.git
+  make -C src/port/stm32h563 clean \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   make -C src/port/stm32h563 \
     WOLFSSL_ROOT=../../../../wolfssl \
     ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_SSH=1 \
@@ -120,23 +110,23 @@ build_ssh_tzen() {
 cleanup_runtime() {
   set +e
   if [ -f /tmp/m33mu.pid ]; then
-    run_root kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+    kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
   fi
   if [ -f /tmp/tcpdump.pid ]; then
-    run_root kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
+    kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
   fi
-  run_root pkill -x m33mu 2>/dev/null || true
+  pkill -x m33mu 2>/dev/null || true
   if [ -f /tmp/dnsmasq.pid ]; then
-    run_root kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+    kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
   fi
-  run_root ip link del tap0 2>/dev/null || true
+  ip link del tap0 2>/dev/null || true
 }
 
 setup_tap_and_dnsmasq() {
   rm -f /tmp/dnsmasq.leases /tmp/m33mu.log /tmp/curl.log /tmp/ssh.log /tmp/tcpdump.log /tmp/https-test.pcap
-  run_root ip tuntap add dev tap0 mode tap
-  run_root ip addr add 192.168.12.1/24 dev tap0
-  run_root ip link set tap0 up
+  ip tuntap add dev tap0 mode tap
+  ip addr add 192.168.12.1/24 dev tap0
+  ip link set tap0 up
 
   cat > /tmp/dnsmasq.conf <<'EOF'
 interface=tap0
@@ -145,7 +135,7 @@ dhcp-range=192.168.12.50,192.168.12.100,255.255.255.0,12h
 dhcp-leasefile=/tmp/dnsmasq.leases
 log-dhcp
 EOF
-  run_root dnsmasq --no-poll --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+  dnsmasq --no-poll --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 }
 
 start_m33mu() {
@@ -153,7 +143,7 @@ start_m33mu() {
   local m33mu_bin
   shift
   m33mu_bin="$(resolve_m33mu_bin)"
-  run_root "${m33mu_bin}" src/port/stm32h563/app.bin \
+  "${m33mu_bin}" src/port/stm32h563/app.bin \
     --cpu stm32h563 --tap:tap0 --uart-stdout --timeout "${timeout_s}" "$@" \
     2>&1 | tee /tmp/m33mu.log &
   sleep 1
@@ -165,7 +155,7 @@ start_m33mu() {
 }
 
 start_tcpdump() {
-  run_root tcpdump -i tap0 -nn -U -w /tmp/https-test.pcap > /tmp/tcpdump.log 2>&1 &
+  tcpdump -i tap0 -nn -U -w /tmp/https-test.pcap > /tmp/tcpdump.log 2>&1 &
   printf '%s\n' "$!" > /tmp/tcpdump.pid
 }
 

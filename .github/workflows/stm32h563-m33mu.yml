@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:latest
       options: --privileged
 
     steps:
@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y sudo dnsmasq iproute2 netcat-openbsd
+          apt-get install -y dnsmasq iproute2 netcat-openbsd
 
       - name: Build STM32H563 echo firmware
         run: |
@@ -36,19 +36,19 @@ jobs:
           cleanup() {
             set +e
             if [ -f /tmp/m33mu.pid ]; then
-              sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
             fi
-            sudo pkill -x m33mu 2>/dev/null || true
+            pkill -x m33mu 2>/dev/null || true
             if [ -f /tmp/dnsmasq.pid ]; then
-              sudo kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
             fi
-            sudo ip link del tap0 2>/dev/null || true
+            ip link del tap0 2>/dev/null || true
           }
           trap cleanup EXIT
 
-          sudo ip tuntap add dev tap0 mode tap
-          sudo ip addr add 192.168.12.1/24 dev tap0
-          sudo ip link set tap0 up
+          ip tuntap add dev tap0 mode tap
+          ip addr add 192.168.12.1/24 dev tap0
+          ip link set tap0 up
 
           cat > /tmp/dnsmasq.conf <<'EOF'
           interface=tap0
@@ -57,9 +57,9 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           EOF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
-          sudo m33mu src/port/stm32h563/app.bin \
+          /usr/local/bin/m33mu src/port/stm32h563/app.bin \
             --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 120 \
             2>&1 | tee /tmp/m33mu.log &
           sleep 1
@@ -68,6 +68,7 @@ jobs:
             echo "${m33mu_pid}" > /tmp/m33mu.pid
           fi
 
+          # Wait for DHCP lease
           ip=""
           for _ in $(seq 1 60); do
             if [ -s /tmp/dnsmasq.leases ]; then
@@ -107,14 +108,14 @@ jobs:
           fi
           echo "Echo test succeeded."
           if [ -f /tmp/m33mu.pid ]; then
-            sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
           fi
 
   stm32h563_m33mu_full:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:latest
       options: --privileged
 
     steps:
@@ -132,7 +133,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y sudo dnsmasq iproute2 netcat-openbsd \
+          apt-get install -y dnsmasq iproute2 netcat-openbsd \
                              curl mosquitto-clients openssh-client
 
       - name: Build STM32H563 full firmware
@@ -152,19 +153,19 @@ jobs:
           cleanup() {
             set +e
             if [ -f /tmp/m33mu.pid ]; then
-              sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
             fi
-            sudo pkill -x m33mu 2>/dev/null || true
+            pkill -x m33mu 2>/dev/null || true
             if [ -f /tmp/dnsmasq.pid ]; then
-              sudo kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
             fi
-            sudo ip link del tap0 2>/dev/null || true
+            ip link del tap0 2>/dev/null || true
           }
           trap cleanup EXIT
 
-          sudo ip tuntap add dev tap0 mode tap
-          sudo ip addr add 192.168.12.1/24 dev tap0
-          sudo ip link set tap0 up
+          ip tuntap add dev tap0 mode tap
+          ip addr add 192.168.12.1/24 dev tap0
+          ip link set tap0 up
 
           cat > /tmp/dnsmasq.conf <<'EOF'
           interface=tap0
@@ -173,9 +174,9 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           EOF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
-          sudo m33mu src/port/stm32h563/app.bin \
+          /usr/local/bin/m33mu src/port/stm32h563/app.bin \
             --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 240 \
             2>&1 | tee /tmp/m33mu.log &
           sleep 1
@@ -316,14 +317,14 @@ jobs:
           echo ""
           echo "=== All tests passed ==="
           if [ -f /tmp/m33mu.pid ]; then
-            sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
           fi
 
   stm32h563_m33mu_https_tls13:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     container:
-      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:latest
       options: --privileged
 
     steps:
@@ -333,7 +334,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y sudo dnsmasq iproute2 curl git tcpdump
+          apt-get install -y dnsmasq iproute2 curl git tcpdump
 
       - name: Fetch wolfSSL
         run: |
@@ -361,22 +362,22 @@ jobs:
           cleanup() {
             set +e
             if [ -f /tmp/m33mu.pid ]; then
-              sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
             fi
             if [ -f /tmp/tcpdump.pid ]; then
-              sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
             fi
-            sudo pkill -x m33mu 2>/dev/null || true
+            pkill -x m33mu 2>/dev/null || true
             if [ -f /tmp/dnsmasq.pid ]; then
-              sudo kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
+              kill "$(cat /tmp/dnsmasq.pid)" 2>/dev/null || true
             fi
-            sudo ip link del tap0 2>/dev/null || true
+            ip link del tap0 2>/dev/null || true
           }
           trap cleanup EXIT
 
-          sudo ip tuntap add dev tap0 mode tap
-          sudo ip addr add 192.168.12.1/24 dev tap0
-          sudo ip link set tap0 up
+          ip tuntap add dev tap0 mode tap
+          ip addr add 192.168.12.1/24 dev tap0
+          ip link set tap0 up
 
           cat > /tmp/dnsmasq.conf <<'CONF'
           interface=tap0
@@ -385,12 +386,12 @@ jobs:
           dhcp-leasefile=/tmp/dnsmasq.leases
           log-dhcp
           CONF
-          sudo dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
+          dnsmasq --conf-file=/tmp/dnsmasq.conf --pid-file=/tmp/dnsmasq.pid
 
-          sudo tcpdump -i tap0 -nn -U -w /tmp/https-test.pcap > /tmp/tcpdump.log 2>&1 &
+          tcpdump -i tap0 -nn -U -w /tmp/https-test.pcap > /tmp/tcpdump.log 2>&1 &
           echo $! > /tmp/tcpdump.pid
 
-          sudo m33mu src/port/stm32h563/app.bin \
+          /usr/local/bin/m33mu src/port/stm32h563/app.bin \
             --cpu stm32h563 --tap:tap0 --uart-stdout --timeout 180 --quit-on-faults \
             2>&1 | tee /tmp/m33mu.log &
           sleep 1
@@ -444,17 +445,17 @@ jobs:
           fi
           echo "HTTPS test succeeded."
           if [ -f /tmp/m33mu.pid ]; then
-            sudo kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
+            kill "$(cat /tmp/m33mu.pid)" 2>/dev/null || true
           fi
           if [ -f /tmp/tcpdump.pid ]; then
-            sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
+            kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
           fi
 
   stm32h563_m33mu_vlan:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
-      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:v1.2
+      image: ghcr.io/wolfssl/wolfboot-ci-m33mu:latest
       options: --privileged
 
     steps:
@@ -464,11 +465,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          # iproute2: 'ip' command (tap, vlan link-add)
-          # tcpdump:  packet capture on tap0
-          # tshark:   filter/parse the pcap for VID + direction assertions
-          # sudo:     the integration script wraps privileged ops with sudo
-          apt-get install -y sudo iproute2 tcpdump tshark
+          apt-get install -y iproute2 tcpdump tshark
 
       - name: Run VLAN integration test (TCP echo over 802.1Q)
         timeout-minutes: 15
@@ -478,10 +475,6 @@ jobs:
           M33MU_TIMEOUT: "60"
         run: |
           set -euo pipefail
-          # The script builds the firmware with ENABLE_VLAN=1, sets up tap0
-          # + tap0.${VLAN_VID}, boots m33mu, probes the TCP echo service on
-          # port 7 over the VLAN, and asserts via tshark that 802.1Q frames
-          # flowed in both directions on VID=${VLAN_VID}.
           bash tools/scripts/debug-m33mu-vlan-local.sh
 
       - name: Upload VLAN artifacts on failure
