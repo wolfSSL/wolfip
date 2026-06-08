@@ -286,14 +286,18 @@ typedef uint32_t socklen_t;
 
 /* Pull in the system socket types when available, but only declare
  * WOLFIP_HAVE_POSIX_TYPES once BOTH <sys/socket.h> AND <sys/uio.h> are
- * confirmed present — wolfIP needs iovec/msghdr (from <sys/uio.h>) just
- * as much as the socket types. If <sys/uio.h> is missing we fall through
- * to the local iovec/msghdr definitions below so the build still works.
+ * confirmed present. Zephyr is a special case: its POSIX socket layer
+ * provides iovec/msghdr via macros from <sys/socket.h>, even though it
+ * does not ship <sys/uio.h>.
  */
+#ifdef __ZEPHYR__
+#define WOLFIP_HAVE_POSIX_TYPES 1
+#endif
+
 #if defined(__has_include)
 #if __has_include(<sys/socket.h>)
 #include <sys/socket.h>
-#if __has_include(<sys/uio.h>)
+#if !defined(WOLFIP_HAVE_POSIX_TYPES) && __has_include(<sys/uio.h>)
 #include <sys/uio.h>
 #define WOLFIP_HAVE_POSIX_TYPES 1
 #endif
