@@ -605,11 +605,20 @@ START_TEST(test_tcp_input_syn_rcvd_rst_good_seq_nonlistener_closes)
     socket_cb_calls = 0;
     socket_cb_last_events = 0;
 
-    /* RST with seq == rcv_nxt: socket must be destroyed, not reverted */
+    /* RST with seq == rcv_nxt: socket must be destroyed, not reverted. The
+     * teardown + CB_EVENT_CLOSED are deferred from the RX path to poll Step 3
+     * so the callback runs on a shallow stack. */
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
         rport, lport, 2, 0, TCP_FLAG_RST);
 
-    ck_assert_int_eq(ts->proto, 0);  /* socket destroyed */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_int_ne(ts->proto, 0);  /* not reverted to LISTEN, not yet reaped */
+    ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
+    ck_assert_int_eq(socket_cb_calls, 0);
+
+    (void)wolfIP_poll(&s, 1);
+
+    ck_assert_int_eq(ts->proto, 0);  /* socket destroyed after event delivered */
     ck_assert_int_eq(socket_cb_calls, 1);
     ck_assert_uint_ne(socket_cb_last_events & CB_EVENT_CLOSED, 0);
 }

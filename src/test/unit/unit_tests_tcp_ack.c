@@ -3826,9 +3826,11 @@ START_TEST(test_tcp_last_ack_closes_socket)
 }
 END_TEST
 
-/* LAST_ACK final ACK must deliver CB_EVENT_CLOSED to a registered callback
- * before close_socket() memsets it away, otherwise a caller blocked on the
- * socket close (e.g. the FreeRTOS BSD close()) deadlocks. */
+/* LAST_ACK final ACK must deliver CB_EVENT_CLOSED to a registered callback so a
+ * caller blocked on the socket close (e.g. the FreeRTOS BSD close()) is woken.
+ * Delivery + teardown are deferred from the RX path to wolfIP_poll() Step 3 so
+ * the callback runs on a shallow stack (a callback that reaches into the C
+ * library from deep in packet processing overflowed the poll task stack). */
 START_TEST(test_tcp_last_ack_closes_socket_delivers_closed_event)
 {
     struct wolfIP s;
@@ -3864,12 +3866,21 @@ START_TEST(test_tcp_last_ack_closes_socket_delivers_closed_event)
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
             10, 10, TCP_FLAG_ACK);
 
-    /* Socket torn down ... */
-    ck_assert_int_eq(ts->proto, 0);
-    /* ... but only after CB_EVENT_CLOSED was delivered to the waiter. */
+    /* RX path moved it to TCP_CLOSED and queued CB_EVENT_CLOSED, but deferred
+     * the callback + teardown: the socket still exists and the callback has not
+     * fired yet. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_int_ne(ts->proto, 0);
+    ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
+    ck_assert_int_eq(socket_cb_calls, 0);
+
+    /* poll Step 3 delivers CB_EVENT_CLOSED on a shallow stack, then reaps. */
+    (void)wolfIP_poll(&s, 1);
+
     ck_assert_int_eq(socket_cb_calls, 1);
     ck_assert_int_eq(socket_cb_last_fd, 0 | MARK_TCP_SOCKET);
     ck_assert_uint_eq(socket_cb_last_events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
+    ck_assert_int_eq(ts->proto, 0);  /* torn down after the event was delivered */
 }
 END_TEST
 
