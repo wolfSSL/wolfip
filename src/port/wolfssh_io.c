@@ -94,10 +94,15 @@ static int wolfssh_io_send(WOLFSSH *ssh, void *buf, word32 sz, void *ctx)
     }
 
     ret = wolfIP_sock_send(desc->stack, desc->fd, buf, (int)sz, 0);
-    if (ret == -WOLFIP_EAGAIN || ret == -1) {
+    /* Only -WOLFIP_EAGAIN means "would block" (TX buffer full, nothing
+     * queued). A -1 is the "not established" / torn-down case from
+     * wolfIP_sock_sendto (peer RST) and must be reported as a fatal close,
+     * otherwise wolfSSH retries the dead connection forever and its io_desc
+     * slot is never released. */
+    if (ret == -WOLFIP_EAGAIN) {
         return WS_CBIO_ERR_WANT_WRITE;
     }
-    if (ret == 0) {
+    if (ret == 0 || ret == -1) {
         return WS_CBIO_ERR_CONN_CLOSE;
     }
     if (ret < 0) {

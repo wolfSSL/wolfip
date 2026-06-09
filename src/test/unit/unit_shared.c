@@ -247,6 +247,68 @@ static int test_wolfIP_sock_send(struct wolfIP *s, int fd, const void *buf, int 
 #undef wolfIP_sock_recv
 #undef wolfIP_sock_send
 
+/* wolfSSH IO glue mocks. */
+#include <wolfssh/ssh.h>
+
+void wolfSSH_SetIORecv(WOLFSSH_CTX *ctx, WS_CallbackIORecv cb)
+{
+    (void)ctx;
+    (void)cb;
+}
+
+void wolfSSH_SetIOSend(WOLFSSH_CTX *ctx, WS_CallbackIOSend cb)
+{
+    (void)ctx;
+    (void)cb;
+}
+
+void wolfSSH_SetIOReadCtx(WOLFSSH *ssh, void *ctx)
+{
+    if (ssh)
+        ssh->rctx = ctx;
+}
+
+void wolfSSH_SetIOWriteCtx(WOLFSSH *ssh, void *ctx)
+{
+    if (ssh)
+        ssh->wctx = ctx;
+}
+
+void *wolfSSH_GetIOReadCtx(WOLFSSH *ssh)
+{
+    if (!ssh)
+        return NULL;
+    return ssh->rctx;
+}
+
+/* wolfssh_io.c reuses the same static names (io_descs / io_desc_alloc /
+ * io_desc_free) as wolfssl_io.c above; rename them to avoid a collision in
+ * this single translation unit, and route its socket IO to the same mocks. */
+#define io_descs wolfssh_io_descs
+#define io_desc_alloc wolfssh_io_desc_alloc
+#define io_desc_free wolfssh_io_desc_free
+#define wolfIP_sock_recv test_wolfIP_sock_recv
+#define wolfIP_sock_send test_wolfIP_sock_send
+#include "../../port/wolfssh_io.c"
+#undef wolfIP_sock_recv
+#undef wolfIP_sock_send
+#undef io_descs
+#undef io_desc_alloc
+#undef io_desc_free
+
+static void reset_wolfssh_io_state(void)
+{
+    memset(wolfssh_io_descs, 0, sizeof(wolfssh_io_descs));
+    test_recv_ret = 0;
+    test_send_ret = 0;
+    test_recv_fill_len = 0;
+    test_send_capture_len = 0;
+    test_send_last_len = 0;
+    test_recv_steps_len = 0;
+    test_recv_step = 0;
+    test_recv_step_total = 0;
+}
+
 static void reset_wolfssl_io_state(void)
 {
     memset(ctx_map, 0, sizeof(ctx_map));
