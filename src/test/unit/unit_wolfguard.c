@@ -1980,6 +1980,40 @@ START_TEST(test_staged_packets_zeroed_after_send)
 }
 END_TEST
 
+/* Staged packets must survive a drain that cannot transmit (no current
+ * keypair, e.g. a responder whose session is still in 'next'). */
+START_TEST(test_staged_packets_preserved_when_no_keypair)
+{
+    struct wg_device dev_a, dev_b;
+    struct wg_peer peer_a, peer_b;
+    uint8_t test_pkt[64];
+    int i;
+
+    setup_paired_devices(&dev_a, &dev_b, &peer_a, &peer_b);
+
+    /* Force the "cannot send yet" condition: no current keypair.  Set a
+     * non-zeroed handshake state so wg_packet_send only re-stages without
+     * kicking off a fresh initiation. */
+    peer_b.keypairs.current = NULL;
+    peer_b.handshake.state = WG_HANDSHAKE_CREATED_INITIATION;
+
+    for (i = 0; i < 64; i++)
+        test_pkt[i] = (uint8_t)(i + 1);
+
+    memcpy(peer_b.staged_packets[0], test_pkt, 64);
+    peer_b.staged_packet_lens[0] = 64;
+    peer_b.staged_count = 1;
+
+    wg_packet_send_staged(&dev_b, &peer_b);
+
+    /* The packet could not be transmitted, so it must remain staged for a
+     * later drain — not be silently zeroed/dropped. */
+    ck_assert_uint_eq(peer_b.staged_count, 1);
+    ck_assert_uint_eq(peer_b.staged_packet_lens[0], 64);
+    ck_assert_int_eq(memcmp(peer_b.staged_packets[0], test_pkt, 64), 0);
+}
+END_TEST
+
 /* Rate-limiting: rapid initiations from same peer rejected */
 START_TEST(test_initiation_rate_limit)
 {
@@ -2312,6 +2346,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_packet_key_agreement);
     tcase_add_test(tc, test_endpoint_unchanged_on_bad_response);
     tcase_add_test(tc, test_staged_packets_zeroed_after_send);
+    tcase_add_test(tc, test_staged_packets_preserved_when_no_keypair);
     tcase_add_test(tc, test_keepalive_rejected_expired_key);
     tcase_add_test(tc, test_allowed_ip_source_rejected);
     tcase_add_test(tc, test_output_rejects_non_ipv4);
