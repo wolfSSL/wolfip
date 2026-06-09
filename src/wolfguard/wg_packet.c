@@ -430,13 +430,17 @@ static void wg_handle_data(struct wg_device *dev, const uint8_t *data,
     if (plaintext_len == 0)
         goto out;
 
-    /* Validate inner source IP against allowed IPs */
-    if (plaintext_len >= 20) {
-        memcpy(&inner_src_ip, plaintext + 12, 4); /* IPv4 src addr offset */
-        peer_idx = wg_allowedips_lookup(dev, inner_src_ip);
-        if (peer_idx < 0 || &dev->peers[peer_idx] != peer)
-            goto out; /* Source IP not allowed for this peer */
-    }
+    /* Validate the decrypted inner packet before injecting it into wg0.
+     * wolfguard is IPv4-only: require a full IPv4 header, a total-length that
+     * fits what we decrypted, and a source within this peer's AllowedIPs. */
+    if (plaintext_len < 20 || (plaintext[0] >> 4) != 4)
+        goto out;
+    if ((uint16_t)((plaintext[2] << 8) | plaintext[3]) > plaintext_len)
+        goto out;
+    memcpy(&inner_src_ip, plaintext + 12, 4); /* IPv4 src addr offset */
+    peer_idx = wg_allowedips_lookup(dev, inner_src_ip);
+    if (peer_idx < 0 || &dev->peers[peer_idx] != peer)
+        goto out; /* Source IP not allowed for this peer */
 
     /* Inject decrypted packet into the wg0 interface */
     wolfIP_recv_ex(dev->stack, dev->wg_if_idx, (void *)plaintext,
