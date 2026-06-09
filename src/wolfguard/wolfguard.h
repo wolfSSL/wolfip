@@ -412,7 +412,7 @@ void wg_cookie_init(struct wg_cookie *cookie,
                     const uint8_t *peer_public_key);
 
 int wg_cookie_add_macs(struct wg_peer *peer, void *msg, size_t msg_len,
-                       size_t mac_offset);
+                       size_t mac_offset, uint64_t now);
 
 enum wg_cookie_mac_state wg_cookie_validate(
     struct wg_cookie_checker *checker, void *msg, size_t msg_len,
@@ -423,7 +423,8 @@ int wg_cookie_create_reply(struct wg_device *dev, struct wg_msg_cookie *reply,
                            uint32_t sender_index,
                            uint32_t src_ip, uint16_t src_port);
 
-int wg_cookie_consume_reply(struct wg_peer *peer, struct wg_msg_cookie *msg);
+int wg_cookie_consume_reply(struct wg_peer *peer, struct wg_msg_cookie *msg,
+                            uint64_t now);
 
 /*
  * Allowed IPs, implemented in wg_allowedips.c

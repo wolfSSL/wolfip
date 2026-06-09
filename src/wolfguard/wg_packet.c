@@ -190,7 +190,7 @@ int wg_packet_send(struct wg_device *dev, struct wg_peer *peer,
             if (ret == 0) {
                 size_t mac_off = offsetof(struct wg_msg_initiation, macs);
                 wg_cookie_add_macs(peer, &init_msg, sizeof(init_msg),
-                                   mac_off);
+                                   mac_off, dev->now);
                 memset(&dst, 0, sizeof(dst));
                 dst.sin_family = AF_INET;
                 dst.sin_addr.s_addr = peer->endpoint_ip;
@@ -263,7 +263,7 @@ int wg_packet_send(struct wg_device *dev, struct wg_peer *peer,
             if (wg_noise_create_initiation(dev, peer, &init_msg) == 0) {
                 size_t mac_off = offsetof(struct wg_msg_initiation, macs);
                 wg_cookie_add_macs(peer, &init_msg, sizeof(init_msg),
-                                   mac_off);
+                                   mac_off, dev->now);
                 memset(&dst, 0, sizeof(dst));
                 dst.sin_family = AF_INET;
                 dst.sin_addr.s_addr = peer->endpoint_ip;
@@ -518,7 +518,7 @@ static void wg_handle_initiation(struct wg_device *dev, const uint8_t *data,
 
     /* Add MACs to response */
     mac_off = offsetof(struct wg_msg_response, macs);
-    wg_cookie_add_macs(peer, &resp, sizeof(resp), mac_off);
+    wg_cookie_add_macs(peer, &resp, sizeof(resp), mac_off, dev->now);
 
     /* Send response */
     memset(&dst, 0, sizeof(dst));
@@ -657,7 +657,7 @@ static void wg_handle_cookie(struct wg_device *dev, const uint8_t *data,
     if (peer == NULL)
         return;
 
-    wg_cookie_consume_reply(peer, msg);
+    wg_cookie_consume_reply(peer, msg, dev->now);
 }
 
 /*

@@ -540,7 +540,7 @@ START_TEST(test_dos_cookie_mechanism)
     memset(&init_msg, 0xAA, sizeof(init_msg));
     mac_off = offsetof(struct wg_msg_initiation, macs);
 
-    ret = wg_cookie_add_macs(&peer, &init_msg, sizeof(init_msg), mac_off);
+    ret = wg_cookie_add_macs(&peer, &init_msg, sizeof(init_msg), mac_off, dev.now);
     ck_assert_int_eq(ret, 0);
 
     /* Verify mac2 is zero (no cookie available) */
@@ -560,13 +560,13 @@ START_TEST(test_dos_cookie_mechanism)
     ck_assert_int_eq(ret, 0);
 
     /* Step 4: Peer consumes cookie reply */
-    ret = wg_cookie_consume_reply(&peer, &cookie_reply);
+    ret = wg_cookie_consume_reply(&peer, &cookie_reply, dev.now);
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(peer.cookie.is_valid, 1);
 
     /* Step 5: Re-create initiation with mac1 + mac2 (using cookie) */
     memset(&init_msg, 0xBB, sizeof(init_msg));
-    ret = wg_cookie_add_macs(&peer, &init_msg, sizeof(init_msg), mac_off);
+    ret = wg_cookie_add_macs(&peer, &init_msg, sizeof(init_msg), mac_off, dev.now);
     ck_assert_int_eq(ret, 0);
 
     /* Verify mac2 is NOT zero anymore */

@@ -658,7 +658,7 @@ START_TEST(test_cookie_mac1_valid)
     memset(&msg, 0xAA, sizeof(msg));
     mac_off = offsetof(struct wg_msg_initiation, macs);
 
-    ret = wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off);
+    ret = wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off, dev.now);
     ck_assert_int_eq(ret, 0);
 
     /* Validate */
@@ -688,7 +688,7 @@ START_TEST(test_cookie_mac1_invalid)
 
     memset(&msg, 0xBB, sizeof(msg));
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off);
+    wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off, dev.now);
 
     /* Tamper with mac1 */
     msg.macs.mac1[0] ^= 0xFF;
@@ -724,7 +724,7 @@ START_TEST(test_cookie_reply)
     /* Create trigger message with MACs */
     memset(&trigger, 0xCC, sizeof(trigger));
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(&peer, &trigger, sizeof(trigger), mac_off);
+    wg_cookie_add_macs(&peer, &trigger, sizeof(trigger), mac_off, dev.now);
 
     /* Create cookie reply */
     ret = wg_cookie_create_reply(&dev, &cookie_reply, &trigger,
@@ -734,7 +734,7 @@ START_TEST(test_cookie_reply)
     ck_assert_int_eq(ret, 0);
 
     /* Consume cookie reply */
-    ret = wg_cookie_consume_reply(&peer, &cookie_reply);
+    ret = wg_cookie_consume_reply(&peer, &cookie_reply, dev.now);
     ck_assert_int_eq(ret, 0);
     ck_assert_int_eq(peer.cookie.is_valid, 1);
 
@@ -742,8 +742,67 @@ START_TEST(test_cookie_reply)
     ck_assert_int_eq(peer.cookie.have_sent_mac1, 0);
 
     /* Replaying the same cookie reply should be rejected */
-    ret = wg_cookie_consume_reply(&peer, &cookie_reply);
+    ret = wg_cookie_consume_reply(&peer, &cookie_reply, dev.now);
     ck_assert_int_ne(ret, 0);
+}
+END_TEST
+
+/*
+ * wg_cookie_consume_reply must record peer->cookie.birthdate, and
+ * wg_cookie_add_macs must stop attaching mac2 once the cookie is older than
+ * the responder's secret-rotation window. Without this, a stale (or on-path
+ * forged) cookie is used to compute mac2 indefinitely.
+ */
+START_TEST(test_cookie_expiry)
+{
+    struct wg_device dev;
+    struct wg_peer peer;
+    struct wg_msg_initiation trigger;
+    struct wg_msg_cookie cookie_reply;
+    size_t mac_off;
+    uint8_t zero_mac[WG_COOKIE_LEN];
+    int ret;
+
+    init_test_rng();
+
+    memset(&dev, 0, sizeof(dev));
+    memset(&peer, 0, sizeof(peer));
+    memset(zero_mac, 0, sizeof(zero_mac));
+
+    wg_dh_generate(dev.static_private, dev.static_public, &test_rng);
+    memcpy(&dev.rng, &test_rng, sizeof(WC_RNG));
+    dev.now = 5000;
+
+    wg_cookie_checker_init(&dev.cookie_checker, dev.static_public);
+    wg_cookie_init(&peer.cookie, dev.static_public);
+
+    /* Establish a cookie at t = dev.now */
+    memset(&trigger, 0xCC, sizeof(trigger));
+    mac_off = offsetof(struct wg_msg_initiation, macs);
+    wg_cookie_add_macs(&peer, &trigger, sizeof(trigger), mac_off, dev.now);
+
+    ret = wg_cookie_create_reply(&dev, &cookie_reply, &trigger, mac_off,
+                                 trigger.sender_index, 0x0A0A0A01, 12345);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wg_cookie_consume_reply(&peer, &cookie_reply, dev.now);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(peer.cookie.is_valid, 1);
+
+    /* consume_reply must record the cookie birthdate */
+    ck_assert_uint_eq(peer.cookie.birthdate, dev.now);
+
+    /* At exactly the max age the cookie is still usable: mac2 attached */
+    memset(&trigger, 0xBB, sizeof(trigger));
+    wg_cookie_add_macs(&peer, &trigger, sizeof(trigger), mac_off,
+                       dev.now + (uint64_t)WG_COOKIE_SECRET_MAX_AGE * 1000ULL);
+    ck_assert_int_ne(memcmp(trigger.macs.mac2, zero_mac, WG_COOKIE_LEN), 0);
+
+    /* One ms past the max age the cookie is expired: mac2 must be zero */
+    memset(&trigger, 0xBB, sizeof(trigger));
+    wg_cookie_add_macs(&peer, &trigger, sizeof(trigger), mac_off,
+                       dev.now + (uint64_t)WG_COOKIE_SECRET_MAX_AGE * 1000ULL + 1);
+    ck_assert_int_eq(memcmp(trigger.macs.mac2, zero_mac, WG_COOKIE_LEN), 0);
 }
 END_TEST
 
@@ -780,7 +839,7 @@ START_TEST(test_cookie_zero_secret_no_mac2_bypass)
 
     memset(&msg, 0xAA, sizeof(msg));
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    ck_assert_int_eq(wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off), 0);
+    ck_assert_int_eq(wg_cookie_add_macs(&peer, &msg, sizeof(msg), mac_off, dev.now), 0);
 
     /* Forge mac2 from the known all-zero secret, exactly as validate() would
      * derive the cookie for this source */
@@ -1021,14 +1080,14 @@ static void setup_paired_devices(struct wg_device *dev_a,
     /* Perform handshake */
     ck_assert_int_eq(wg_noise_create_initiation(dev_a, peer_a, &init_msg), 0);
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(peer_a, &init_msg, sizeof(init_msg), mac_off);
+    wg_cookie_add_macs(peer_a, &init_msg, sizeof(init_msg), mac_off, dev_a->now);
 
     found = wg_noise_consume_initiation(dev_b, &init_msg);
     ck_assert_ptr_nonnull(found);
 
     ck_assert_int_eq(wg_noise_create_response(dev_b, found, &resp_msg), 0);
     mac_off = offsetof(struct wg_msg_response, macs);
-    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off);
+    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off, dev_b->now);
 
     ck_assert_int_eq(wg_noise_consume_response(dev_a, peer_a, &resp_msg), 0);
 
@@ -1344,14 +1403,14 @@ static void setup_tick_devices(struct wg_device *dev_a,
     ck_assert_int_eq(wg_noise_create_initiation(dev_a, &dev_a->peers[0],
                                                  &init_msg), 0);
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(&dev_a->peers[0], &init_msg, sizeof(init_msg), mac_off);
+    wg_cookie_add_macs(&dev_a->peers[0], &init_msg, sizeof(init_msg), mac_off, dev_a->now);
 
     found = wg_noise_consume_initiation(dev_b, &init_msg);
     ck_assert_ptr_nonnull(found);
 
     ck_assert_int_eq(wg_noise_create_response(dev_b, found, &resp_msg), 0);
     mac_off = offsetof(struct wg_msg_response, macs);
-    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off);
+    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off, dev_b->now);
 
     ck_assert_int_eq(wg_noise_consume_response(dev_a, &dev_a->peers[0],
                                                 &resp_msg), 0);
@@ -1686,14 +1745,14 @@ START_TEST(test_endpoint_unchanged_on_bad_response)
                             dev_b.static_public, NULL, &dev_a.rng);
     ck_assert_int_eq(wg_noise_create_initiation(&dev_a, &peer_a, &init_msg), 0);
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off);
+    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off, dev_a.now);
 
     /* B consumes and creates response */
     found = wg_noise_consume_initiation(&dev_b, &init_msg);
     ck_assert_ptr_nonnull(found);
     ck_assert_int_eq(wg_noise_create_response(&dev_b, found, &resp_msg), 0);
     mac_off = offsetof(struct wg_msg_response, macs);
-    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off);
+    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off, dev_b.now);
 
     /* Tamper with the response to make auth fail */
     resp_msg.encrypted_nothing[0] ^= 0xFF;
@@ -1731,7 +1790,7 @@ START_TEST(test_cookie_enforcement_under_load)
     dev_a.now = 30000;
     ck_assert_int_eq(wg_noise_create_initiation(&dev_a, &peer_a, &init_msg), 0);
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off);
+    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off, dev_a.now);
 
     /* Verify mac2 is zero (no cookie yet) */
     memset(zero_mac, 0, sizeof(zero_mac));
@@ -1770,7 +1829,7 @@ START_TEST(test_response_under_load_threshold)
                             dev_b.static_public, NULL, &dev_a.rng);
     ck_assert_int_eq(wg_noise_create_initiation(&dev_a, &peer_a, &init_msg), 0);
     mac_off = offsetof(struct wg_msg_initiation, macs);
-    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off);
+    wg_cookie_add_macs(&peer_a, &init_msg, sizeof(init_msg), mac_off, dev_a.now);
 
     found = wg_noise_consume_initiation(&dev_b, &init_msg);
     ck_assert_ptr_nonnull(found);
@@ -1778,7 +1837,7 @@ START_TEST(test_response_under_load_threshold)
 
     resp_msg.receiver_index = 0xDEADBEEFu;
     mac_off = offsetof(struct wg_msg_response, macs);
-    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off);
+    wg_cookie_add_macs(found, &resp_msg, sizeof(resp_msg), mac_off, dev_b.now);
 
     wolfguard_poll(&dev_a, 30000);
     ck_assert_int_eq(dev_a.under_load, 0);
@@ -2221,6 +2280,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_cookie_mac1_valid);
     tcase_add_test(tc, test_cookie_mac1_invalid);
     tcase_add_test(tc, test_cookie_reply);
+    tcase_add_test(tc, test_cookie_expiry);
     tcase_add_test(tc, test_cookie_zero_secret_no_mac2_bypass);
     tcase_add_test(tc, test_cookie_enforcement_under_load);
     tcase_add_test(tc, test_response_under_load_threshold);

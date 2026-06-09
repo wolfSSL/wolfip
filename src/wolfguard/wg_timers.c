@@ -129,7 +129,7 @@ void wg_timers_tick(struct wg_device *dev, uint64_t now_ms)
                 if (wg_noise_create_initiation(dev, peer, &msg) == 0) {
                     size_t mac_off =
                         offsetof(struct wg_msg_initiation, macs);
-                    wg_cookie_add_macs(peer, &msg, sizeof(msg), mac_off);
+                    wg_cookie_add_macs(peer, &msg, sizeof(msg), mac_off, now_ms);
 
                     memset(&dst, 0, sizeof(dst));
                     dst.sin_family = AF_INET;
@@ -180,7 +180,7 @@ void wg_timers_tick(struct wg_device *dev, uint64_t now_ms)
 
             if (wg_noise_create_initiation(dev, peer, &msg) == 0) {
                 size_t mac_off = offsetof(struct wg_msg_initiation, macs);
-                wg_cookie_add_macs(peer, &msg, sizeof(msg), mac_off);
+                wg_cookie_add_macs(peer, &msg, sizeof(msg), mac_off, now_ms);
 
                 memset(&dst, 0, sizeof(dst));
                 dst.sin_family = AF_INET;
@@ -222,7 +222,7 @@ void wg_timers_tick(struct wg_device *dev, uint64_t now_ms)
                 if (wg_noise_create_initiation(dev, peer, &msg) == 0) {
                     size_t mac_off =
                         offsetof(struct wg_msg_initiation, macs);
-                    wg_cookie_add_macs(peer, &msg, sizeof(msg), mac_off);
+                    wg_cookie_add_macs(peer, &msg, sizeof(msg), mac_off, now_ms);
 
                     memset(&dst, 0, sizeof(dst));
                     dst.sin_family = AF_INET;
