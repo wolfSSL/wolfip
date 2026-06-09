@@ -204,6 +204,14 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define RNG_SR_CECS         (1u << 1)
 #define RNG_SR_SECS         (1u << 2)
 
+/* Cortex-M7 DWT cycle counter (used to seed the RNG fallback with runtime
+ * entropy so a degraded device does not emit a globally-identical sequence) */
+#define DWT_CTRL            (*(volatile uint32_t *)0xE0001000UL)
+#define DWT_CYCCNT          (*(volatile uint32_t *)0xE0001004UL)
+#define DWT_CTRL_CYCCNTENA  (1u << 0)
+#define CM_DEMCR            (*(volatile uint32_t *)0xE000EDFCUL)
+#define CM_DEMCR_TRCENA     (1u << 24)
+
 /* USART3 for debug output (ST-Link VCP on NUCLEO-H753ZI: PD8=TX, PD9=RX) */
 #define USART3_BASE         0x40004800UL
 #define USART3_CR1          (*(volatile uint32_t *)(USART3_BASE + 0x00))
@@ -369,8 +377,21 @@ uint32_t wolfIP_getrandom(void)
     uint32_t val;
     if (rng_get_word(&val) == 0)
         return val;
-    /* Fallback LFSR if HW RNG fails */
-    static uint32_t lfsr = 0x1A2B3C4DU;
+    /* HW RNG failed: fall back to an xorshift LFSR seeded from runtime state
+     * rather than a compile-time constant, so a degraded device does not emit
+     * the same globally-known sequence (and thus predictable TCP ISNs) on
+     * every unit.  The DWT cycle counter (CPU clock, free running once the
+     * stack is up) and any residual RNG_DR bits vary per device and power-up.
+     * Not a cryptographic RNG. */
+    static uint32_t lfsr = 0u;
+    if (lfsr == 0u) {
+        CM_DEMCR |= CM_DEMCR_TRCENA;
+        DWT_CTRL |= DWT_CTRL_CYCCNTENA;
+        lfsr = DWT_CYCCNT ^ RNG_DR ^ 0x1A2B3C4DU;
+        if (lfsr == 0u)
+            lfsr = 0x1A2B3C4DU;  /* LFSR seed must never be zero */
+    }
+    lfsr ^= DWT_CYCCNT;          /* mix in timing jitter on each call */
     lfsr ^= lfsr << 13;
     lfsr ^= lfsr >> 17;
     lfsr ^= lfsr << 5;
