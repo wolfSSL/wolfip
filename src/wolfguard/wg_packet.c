@@ -288,17 +288,28 @@ void wg_packet_send_staged(struct wg_device *dev, struct wg_peer *peer)
 {
     int i;
     uint8_t count = peer->staged_count;
+    uint8_t local[LINK_MTU];
 
     peer->staged_count = 0;
 
     for (i = 0; i < count; i++) {
-        wg_packet_send(dev, peer,
-                       peer->staged_packets[i],
-                       peer->staged_packet_lens[i]);
-        wg_memzero(peer->staged_packets[i],
-                peer->staged_packet_lens[i]);
+        size_t len = peer->staged_packet_lens[i];
+
+        /* Copy out and clear the source slot before sending: if
+         * wg_packet_send cannot transmit (no current keypair, e.g. a
+         * responder whose session is still in 'next', or an expired
+         * keypair) it re-stages the payload into staged_packets[], which
+         * after the reset above aliases the slots we are draining.  Zeroing
+         * the source up front means a re-staged packet is preserved instead
+         * of being clobbered. */
+        memcpy(local, peer->staged_packets[i], len);
+        wg_memzero(peer->staged_packets[i], len);
         peer->staged_packet_lens[i] = 0;
+
+        wg_packet_send(dev, peer, local, len);
     }
+
+    wg_memzero(local, sizeof(local));
 }
 
 /*
