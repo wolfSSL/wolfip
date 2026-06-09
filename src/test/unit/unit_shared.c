@@ -79,12 +79,14 @@ static uint32_t memsz = 8 * 1024;
 static const uint8_t ifmac[] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
 static uint8_t last_frame_sent[LINK_MTU];
 static uint32_t last_frame_sent_size = 0;
+static uint32_t last_frame_sent_count = 0;
 
 static int mock_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t  len)
 {
     (void)dev;
     memcpy(last_frame_sent, frame, len);
     last_frame_sent_size = len;
+    last_frame_sent_count++;
     return 0;
 }
 

@@ -798,6 +798,12 @@ struct wolfIP_mcast_membership {
     ip4 group;
     uint8_t if_idx;
     uint8_t refs;
+    /* RFC 3376 §5.2: a query response is deferred by a random delay rather
+     * than sent synchronously. tmr_report is the pending report timer (or
+     * NO_TIMER when none is scheduled); S is the owning stack, needed because
+     * the timer callback only receives this membership as its argument. */
+    uint32_t tmr_report;
+    struct wolfIP *S;
 };
 #endif
 
@@ -4201,6 +4207,42 @@ static int igmp_send_report(struct wolfIP *s, unsigned int if_idx, ip4 group,
     return wolfIP_ll_send_frame(s, if_idx, frame, sizeof(frame));
 }
 
+/* RFC 3376 §4.1.1: decode the Max Resp Code byte of a query into a Maximum
+ * Response Time in milliseconds. Values < 128 are a direct count of tenths of
+ * a second (this also covers an IGMPv2 query, whose byte is the Max Resp Time
+ * directly, and an IGMPv1 query, whose byte is 0). Values >= 128 carry a
+ * floating-point mantissa/exponent: mant|0x10 shifted left by exp+3 tenths. */
+static uint32_t igmp_max_resp_ms(uint8_t code)
+{
+    uint32_t tenths;
+
+    if (code < 128) {
+        tenths = code;
+    } else {
+        uint32_t mant = code & 0x0FU;
+        uint32_t exp = (code >> 4) & 0x07U;
+        tenths = (mant | 0x10U) << (exp + 3);
+    }
+    return tenths * 100U;
+}
+
+/* Timer callback: the random response delay for a membership has elapsed, so
+ * emit the deferred Current-State Report. arg is the membership; it carries a
+ * back-pointer to the owning stack because the timer API passes only one arg.
+ * A membership released during the delay window (refs == 0) is skipped; its
+ * timer is cancelled at drop time, so this is belt-and-suspenders. */
+static void igmp_report_timer_cb(void *arg)
+{
+    struct wolfIP_mcast_membership *m = (struct wolfIP_mcast_membership *)arg;
+
+    if (!m)
+        return;
+    m->tmr_report = NO_TIMER;
+    if (!m->S || m->refs == 0)
+        return;
+    (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
+}
+
 static void igmp_input(struct wolfIP *s, unsigned int if_idx,
                        struct wolfIP_ip_packet *ip, uint32_t frame_len)
 {
@@ -4244,13 +4286,35 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
             return;
     }
 
-    for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
-        if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)
-            continue;
-        if (group != IPADDR_ANY && group != s->mcast[i].group)
-            continue;
-        (void)igmp_send_report(s, if_idx, s->mcast[i].group,
-                               IGMPV3_REC_MODE_IS_EXCLUDE);
+    /* RFC 3376 §5.2: do not answer synchronously. Schedule a Current-State
+     * Report after a delay drawn uniformly from (0, Max Resp Time], so many
+     * hosts answering one query do not implode, and so an attacker spraying
+     * queries cannot force one report per query out of a constrained host. */
+    {
+        uint32_t max_ms = igmp_max_resp_ms(igmp[1]);
+
+        for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+            struct wolfIP_timer tmr = {0};
+            uint32_t delay;
+
+            if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)
+                continue;
+            if (group != IPADDR_ANY && group != s->mcast[i].group)
+                continue;
+            /* §5.2 rule 1: a query arriving while a response is already pending
+             * for this membership schedules nothing further. This coalesces a
+             * query flood into a single deferred report per group. */
+            if (s->mcast[i].tmr_report != NO_TIMER)
+                continue;
+            /* Floor at 1 ms: a zero window (IGMPv1 query) still fires on the
+             * next poll, and expires must stay non-zero because the timer heap
+             * treats expires == 0 as a cancelled slot. */
+            delay = max_ms ? (wolfIP_getrandom() % max_ms) + 1U : 1U;
+            tmr.expires = s->last_tick + delay;
+            tmr.arg = &s->mcast[i];
+            tmr.cb = igmp_report_timer_cb;
+            s->mcast[i].tmr_report = timers_binheap_insert(&s->timers, tmr);
+        }
     }
 }
 #endif
@@ -6706,6 +6770,8 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
                 m = &s->mcast[j];
                 m->group = group;
                 m->if_idx = (uint8_t)if_idx;
+                m->tmr_report = NO_TIMER;
+                m->S = s;
                 break;
             }
         }
@@ -6744,6 +6810,10 @@ static int udp_mcast_drop(struct wolfIP *s, struct tsocket *ts, ip4 group,
     if (m && m->refs > 0) {
         m->refs--;
         if (m->refs == 0) {
+            /* Cancel any deferred query response before the slot is zeroed,
+             * else its timer would fire into a freed membership. */
+            if (m->tmr_report != NO_TIMER)
+                timer_binheap_cancel(&s->timers, m->tmr_report);
             (void)igmp_send_report(s, if_idx, group,
                                    IGMPV3_REC_CHANGE_TO_INCLUDE);
             memset(m, 0, sizeof(*m));
