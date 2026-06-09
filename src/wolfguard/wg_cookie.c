@@ -66,7 +66,7 @@ void wg_cookie_init(struct wg_cookie *cookie,
  * */
 
 int wg_cookie_add_macs(struct wg_peer *peer, void *msg, size_t msg_len,
-                       size_t mac_offset)
+                       size_t mac_offset, uint64_t now)
 {
     uint8_t *msg_bytes = (uint8_t *)msg;
     struct wg_msg_macs *macs;
@@ -87,8 +87,12 @@ int wg_cookie_add_macs(struct wg_peer *peer, void *msg, size_t msg_len,
     memcpy(peer->cookie.last_mac1_sent, macs->mac1, WG_COOKIE_LEN);
     peer->cookie.have_sent_mac1 = 1;
 
-    /* mac2: only if we have a valid cookie */
-    if (peer->cookie.is_valid) {
+    /* mac2: only if we have a valid, non-expired cookie. A cookie is only
+     * usable for WG_COOKIE_SECRET_MAX_AGE (matching the responder's secret
+     * rotation); past that the responder's cookie no longer validates, so
+     * stop attaching mac2 (WireGuard spec section 5.4.4 / COOKIE_TIMEOUT). */
+    if (peer->cookie.is_valid &&
+        now - peer->cookie.birthdate <= WG_COOKIE_SECRET_MAX_AGE * 1000ULL) {
         ret = wg_mac(macs->mac2, peer->cookie.cookie, WG_COOKIE_LEN,
                      msg_bytes, mac_offset + WG_COOKIE_LEN);
         if (ret != 0)
@@ -232,7 +236,8 @@ int wg_cookie_create_reply(struct wg_device *dev, struct wg_msg_cookie *reply,
  * Consume cookie reply message
  * */
 
-int wg_cookie_consume_reply(struct wg_peer *peer, struct wg_msg_cookie *msg)
+int wg_cookie_consume_reply(struct wg_peer *peer, struct wg_msg_cookie *msg,
+                            uint64_t now)
 {
     uint8_t cookie[WG_COOKIE_LEN];
     int ret;
@@ -252,6 +257,7 @@ int wg_cookie_consume_reply(struct wg_peer *peer, struct wg_msg_cookie *msg)
 
     memcpy(peer->cookie.cookie, cookie, WG_COOKIE_LEN);
     peer->cookie.is_valid = 1;
+    peer->cookie.birthdate = now;
     peer->cookie.have_sent_mac1 = 0;
 
     wg_memzero(cookie, sizeof(cookie));
