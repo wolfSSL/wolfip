@@ -176,6 +176,13 @@ int wolfSSL_SetIOWriteCtx(WOLFSSL *ssl, void *ctx)
     return 0;
 }
 
+void *wolfSSL_GetIOReadCtx(WOLFSSL *ssl)
+{
+    if (!ssl)
+        return NULL;
+    return ssl->rctx;
+}
+
 WOLFSSL_CTX *wolfSSL_get_SSL_CTX(WOLFSSL *ssl)
 {
     if (!ssl)

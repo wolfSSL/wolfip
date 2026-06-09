@@ -56,6 +56,8 @@ int wolfSSL_SetIO_wolfIP(WOLFSSL *ssl, int fd)
 { (void)ssl; (void)fd; return 0; }
 int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s)
 { (void)ctx; (void)s; return 0; }
+void wolfSSL_CleanupIO_wolfIP(WOLFSSL *ssl)
+{ (void)ssl; }
 
 #define CHECK(cond) do { if (!(cond)) { \
     printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)

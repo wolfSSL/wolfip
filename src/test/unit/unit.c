@@ -950,6 +950,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_invalid_ctx);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_invalid_fd);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_no_stack);
+    tcase_add_test(tc_wolfssl, test_wolfssl_io_cleanup_frees_slot);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_recv_behaviors);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_recv_invalid_desc);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_recv_fragmented_sequence);

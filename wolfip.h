@@ -526,6 +526,7 @@ static inline void iptoa(ip4 ip, char *buf)
     #include <wolfssl/ssl.h>
     int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd);
     int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
+    void wolfSSL_CleanupIO_wolfIP(WOLFSSL* ssl);
 
     #ifdef  WOLFIP_ESP
         #include <wolfssl/wolfcrypt/aes.h>
