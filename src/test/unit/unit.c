@@ -597,6 +597,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rst_syn_rcvd_returns_to_listen);
     tcase_add_test(tc_utils, test_tcp_fin_wait_1_to_closing);
     tcase_add_test(tc_utils, test_tcp_last_ack_closes_socket);
+    tcase_add_test(tc_utils, test_tcp_last_ack_closes_socket_delivers_closed_event);
     tcase_add_test(tc_utils, test_tcp_last_ack_partial_ack_keeps_socket_and_timer);
     tcase_add_test(tc_utils, test_tcp_ack_acks_data_and_sets_writable);
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_resend_clears_sent);
@@ -949,6 +950,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_invalid_ctx);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_invalid_fd);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_no_stack);
+    tcase_add_test(tc_wolfssl, test_wolfssl_io_cleanup_frees_slot);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_recv_behaviors);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_recv_invalid_desc);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_recv_fragmented_sequence);
@@ -958,6 +960,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_behaviors);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_invalid_desc);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_want_write_keeps_buffer);
+    tcase_add_test(tc_wolfssl, test_wolfssh_io_send_behaviors);
+    tcase_add_test(tc_wolfssl, test_wolfssh_io_recv_behaviors);
 
     /* Branch-coverage tests backported from the trimmed wolfIP suite. */
     tcase_add_test(tc_core, test_socket_from_fd_invalid_inputs);
@@ -1200,6 +1204,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_parse_options_sack_permitted_parsed);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_bad_seq_ignored);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen);
+    tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_nonlistener_closes);
     tcase_add_test(tc_core, test_tcp_input_time_wait_sends_ack_on_any_segment);
     tcase_add_test(tc_core, test_tcp_input_last_ack_unacceptable_sends_ack);
     tcase_add_test(tc_core, test_tcp_input_last_ack_syn_sends_challenge_ack);
@@ -1283,6 +1288,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_tx_udp_sends_on_arp_hit);
     tcase_add_test(tc_core, test_poll_tx_udp_filter_ip_blocks_send);
     tcase_add_test(tc_core, test_poll_tx_udp_eagain_retains_queue);
+    tcase_add_test(tc_core, test_poll_tx_udp_drain_sets_writable);
     tcase_add_test(tc_core, test_poll_tx_udp_broadcast_sets_ff_mac);
     tcase_add_test(tc_core, test_poll_tx_udp_loopback_path_no_crash);
     tcase_add_test(tc_core, test_poll_tx_icmp_sends_on_arp_hit);

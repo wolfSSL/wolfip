@@ -78,6 +78,7 @@ static void tls_client_handle_data(tls_client_t *client, uint16_t event);
 /* External functions from wolfssl_io.c */
 extern int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 extern int wolfSSL_SetIO_wolfIP(WOLFSSL *ssl, int fd);
+extern void wolfSSL_CleanupIO_wolfIP(WOLFSSL *ssl);
 
 /* Debug output helper */
 static void debug_print(const char *msg)
@@ -237,6 +238,7 @@ static void tls_client_free(tls_client_t *client)
 {
     if (client->ssl) {
         wolfSSL_shutdown(client->ssl);
+        wolfSSL_CleanupIO_wolfIP(client->ssl);
         wolfSSL_free(client->ssl);
         client->ssl = NULL;
     }
@@ -319,7 +321,14 @@ static void tls_listen_cb(int fd, uint16_t event, void *arg)
     }
 
     /* Associate SSL with socket */
-    wolfSSL_SetIO_wolfIP(client->ssl, client_fd);
+    if (wolfSSL_SetIO_wolfIP(client->ssl, client_fd) != 0) {
+        debug_print("TLS: SetIO failed\n");
+        wolfSSL_free(client->ssl);
+        client->ssl = NULL;
+        wolfIP_sock_close(server.stack, client_fd);
+        client->state = TLS_CLIENT_STATE_FREE;
+        return;
+    }
 
     client->fd = client_fd;
     client->state = TLS_CLIENT_STATE_HANDSHAKE;

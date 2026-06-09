@@ -183,6 +183,8 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
 	build/test-http-smuggle build/test-http-arg-oob \
+	build/test-http-close-notify \
+	build/test-freertos-close-last-ack \
 	build/test-posix-errno \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
@@ -422,6 +424,22 @@ build/test-http-arg-oob: src/test/test_http_arg_oob.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ src/test/test_http_arg_oob.c $(LDFLAGS) -lwolfssl
+
+# Standalone regression test for TLS close_notify on every close path (F-5732).
+# It #includes httpd.c directly and stubs the wolfSSL teardown calls to record
+# their order, so it does not link the real wolfSSL library.
+build/test-http-close-notify:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLFIP_ENABLE_HTTP -Isrc/http
+build/test-http-close-notify: src/test/test_http_close_notify.c src/http/httpd.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_close_notify.c $(LDFLAGS)
+
+# Standalone regression test for the FreeRTOS BSD close() wrapper when
+# CB_EVENT_CLOSED is delivered synchronously during LAST_ACK teardown.
+build/test-freertos-close-last-ack: src/test/test_freertos_close_last_ack.c src/port/freeRTOS/bsd_socket.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -o $@ src/test/test_freertos_close_last_ack.c $(LDFLAGS)
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true

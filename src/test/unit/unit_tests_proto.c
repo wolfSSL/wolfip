@@ -4200,6 +4200,43 @@ START_TEST(test_wolfssl_io_setio_no_stack)
 }
 END_TEST
 
+/* Regression for F-5781: io_descs[] slots must be released on teardown, or the
+ * static pool is exhausted after MAX_WOLFIP_CTX sessions and every later TLS
+ * handshake fails (unauthenticated DoS). */
+START_TEST(test_wolfssl_io_cleanup_frees_slot)
+{
+    struct wolfIP s;
+    WOLFSSL_CTX ctx;
+    WOLFSSL ssl[MAX_WOLFIP_CTX];
+    WOLFSSL extra;
+    int i;
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(ssl, 0, sizeof(ssl));
+    memset(&extra, 0, sizeof(extra));
+    reset_wolfssl_io_state();
+    wolfSSL_SetIO_wolfIP_CTX(&ctx, &s);
+
+    /* Fill every slot in the pool. */
+    for (i = 0; i < MAX_WOLFIP_CTX; i++) {
+        ssl[i].ctx = &ctx;
+        ck_assert_int_eq(wolfSSL_SetIO_wolfIP(&ssl[i], 10 + i), 0);
+    }
+
+    /* Pool exhausted: a new session cannot be set up. */
+    extra.ctx = &ctx;
+    ck_assert_int_eq(wolfSSL_SetIO_wolfIP(&extra, 99), -1);
+
+    /* Tearing down one session must release its slot and clear its IO ctx. */
+    wolfSSL_CleanupIO_wolfIP(&ssl[0]);
+    ck_assert_ptr_null(ssl[0].rctx);
+    ck_assert_ptr_null(ssl[0].wctx);
+
+    /* The freed slot is now reusable. */
+    ck_assert_int_eq(wolfSSL_SetIO_wolfIP(&extra, 99), 0);
+}
+END_TEST
+
 START_TEST(test_wolfssl_io_recv_behaviors)
 {
     struct wolfIP s;
@@ -4215,9 +4252,11 @@ START_TEST(test_wolfssl_io_recv_behaviors)
     ret = wolfIP_io_recv(NULL, buf, sizeof(buf), &desc);
     ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_WANT_READ);
 
+    /* -1 is the torn-down ("not established") case: it must be a fatal close,
+     * not a retryable WANT_READ, or wolfSSL spins on a dead connection. */
     test_recv_ret = -1;
     ret = wolfIP_io_recv(NULL, buf, sizeof(buf), &desc);
-    ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_WANT_READ);
+    ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_CONN_CLOSE);
 
     test_recv_ret = 0;
     ret = wolfIP_io_recv(NULL, buf, sizeof(buf), &desc);
@@ -4380,9 +4419,11 @@ START_TEST(test_wolfssl_io_send_behaviors)
     ret = wolfIP_io_send(NULL, buf, 4, &desc);
     ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_WANT_WRITE);
 
+    /* -1 is the torn-down ("not established") case: it must be a fatal close,
+     * not a retryable WANT_WRITE, or wolfSSL spins on a dead connection. */
     test_send_ret = -1;
     ret = wolfIP_io_send(NULL, buf, 4, &desc);
-    ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_WANT_WRITE);
+    ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_CONN_CLOSE);
 
     test_send_ret = 0;
     ret = wolfIP_io_send(NULL, buf, 4, &desc);
@@ -4424,6 +4465,76 @@ START_TEST(test_wolfssl_io_send_invalid_desc)
     reset_wolfssl_io_state();
     ret = wolfIP_io_send(NULL, buf, sizeof(buf), NULL);
     ck_assert_int_eq(ret, WOLFSSL_CBIO_ERR_GENERAL);
+}
+END_TEST
+
+START_TEST(test_wolfssh_io_send_behaviors)
+{
+    struct wolfIP s;
+    struct wolfssh_io_desc desc;
+    char buf[4] = {0x11, 0x22, 0x33, 0x44};
+    int ret;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.stack = &s;
+    desc.fd = 4;
+    desc.in_use = 1;
+
+    reset_wolfssh_io_state();
+    test_send_ret = -WOLFIP_EAGAIN;
+    ret = wolfssh_io_send(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_WANT_WRITE);
+
+    /* -1 is the torn-down ("not established", peer RST) case from
+     * wolfIP_sock_sendto: it must be a fatal close, not a retryable
+     * WANT_WRITE, or wolfSSH spins on a dead connection and never frees the
+     * io_desc slot (unauthenticated DoS). */
+    test_send_ret = -1;
+    ret = wolfssh_io_send(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_CONN_CLOSE);
+
+    test_send_ret = 0;
+    ret = wolfssh_io_send(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_CONN_CLOSE);
+
+    test_send_ret = 4;
+    ret = wolfssh_io_send(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, 4);
+}
+END_TEST
+
+START_TEST(test_wolfssh_io_recv_behaviors)
+{
+    struct wolfIP s;
+    struct wolfssh_io_desc desc;
+    char buf[4];
+    int ret;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.stack = &s;
+    desc.fd = 4;
+    desc.in_use = 1;
+
+    reset_wolfssh_io_state();
+    test_recv_ret = -WOLFIP_EAGAIN;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_WANT_READ);
+
+    /* -1 is the torn-down ("not established", peer RST) case from
+     * wolfIP_sock_recvfrom: it must be a fatal close, not a retryable
+     * WANT_READ, or wolfSSH spins on a dead connection and the SSH handshake
+     * state machine is wedged in KEY_EXCHANGE forever (unauthenticated DoS). */
+    test_recv_ret = -1;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_CONN_CLOSE);
+
+    test_recv_ret = 0;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_CONN_CLOSE);
+
+    test_recv_ret = 4;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, 4);
 }
 END_TEST
 

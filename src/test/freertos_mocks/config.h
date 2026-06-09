@@ -1,0 +1,3 @@
+#ifndef TEST_FREERTOS_CONFIG_H
+#define TEST_FREERTOS_CONFIG_H
+#endif

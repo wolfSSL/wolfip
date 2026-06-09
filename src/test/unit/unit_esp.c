@@ -1505,6 +1505,78 @@ START_TEST(test_wrap_rejects_ip_len_below_header)
 }
 END_TEST
 
+/*
+ * esp_transport_wrap must honour the actual IHL for packets carrying IP
+ * options (IHL > 5), e.g. the Router-Alert option emitted by
+ * igmp_send_report (ver_ihl = 0x46). rfc4303 sec 3.1.1 inserts the ESP
+ * header after the IP header AND its options, so option bytes must stay in
+ * the clear in front of the ESP header and must not be counted as payload.
+ *
+ * Regression for the IP_HEADER_LEN=20 constant: with the bug the SPI is
+ * written over the option bytes at ip->data[0] and the 4 option bytes are
+ * dragged into the (over-counted) ESP payload.
+ */
+START_TEST(test_wrap_preserves_ip_options)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    /* IPv4 Router-Alert option (type 0x94, len 4). */
+    static const uint8_t opt[4] = { 0x94, 0x04, 0x00, 0x00 };
+    uint8_t ref[32];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint16_t ip_len;
+    uint16_t orig_ip_len;
+    uint32_t i;
+    int ret;
+
+    for (i = 0U; i < sizeof(ref); i++)
+        ref[i] = (uint8_t)(0x40U + (i & 0x3FU));
+
+    esp_setup();
+
+    /* HMAC-only outbound SA so the wrapped layout stays in cleartext and is
+     * inspectable (iv_len == 0, no encryption). */
+    ret = wolfIP_esp_sa_new_hmac(0, (uint8_t *)spi_rt,
+                                 atoip4(T_SRC), atoip4(T_DST),
+                                 ESP_AUTH_SHA256_RFC4868, k_auth16,
+                                 sizeof(k_auth16), ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    /* Build an IHL=6 packet by hand: 20-byte header + 4 option bytes. */
+    memset(buf, 0, sizeof(buf));
+    ip->eth.type = ee16(0x0800U);
+    ip->ver_ihl  = 0x46U; /* IPv4, 24-byte header */
+    ip->tos      = 0U;
+    orig_ip_len  = (uint16_t)(IP_HEADER_LEN + sizeof(opt) + sizeof(ref));
+    ip->len      = ee16(orig_ip_len);
+    ip->ttl      = 64U;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->src      = ee32(atoip4(T_SRC));
+    ip->dst      = ee32(atoip4(T_DST));
+    memcpy(ip->data, opt, sizeof(opt));
+    memcpy(ip->data + sizeof(opt), ref, sizeof(ref));
+    ip->csum = 0U;
+    iphdr_set_checksum(ip);
+
+    ip_len = orig_ip_len;
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+
+    /* IHL must be unchanged: the IP header (incl. options) is preserved. */
+    ck_assert_uint_eq(ip->ver_ihl, 0x46U);
+
+    /* Option bytes must remain in the clear, in front of the ESP header. */
+    ck_assert_mem_eq(ip->data, opt, sizeof(opt));
+
+    /* The ESP SPI must follow the options, not overwrite them. */
+    ck_assert_mem_eq(ip->data + sizeof(opt), spi_rt, ESP_SPI_LEN);
+
+    /* ip->len / *ip_len must be measured from the real header length. */
+    ck_assert_uint_eq((uint16_t)(ip_len - (IP_HEADER_LEN + sizeof(opt))),
+                      (uint16_t)(ee16(ip->len) - (IP_HEADER_LEN + sizeof(opt))));
+    ck_assert_uint_eq(ee16(ip->len), ip_len);
+}
+END_TEST
+
 START_TEST(test_ip_recv_esp_transport_delivers_udp_payload)
 {
     static uint8_t buf[LINK_MTU + 256];
@@ -2031,6 +2103,7 @@ static Suite *esp_suite(void)
     tc = tcase_create("no_sa");
     tcase_add_test(tc, test_wrap_no_matching_sa);
     tcase_add_test(tc, test_wrap_rejects_ip_len_below_header);
+    tcase_add_test(tc, test_wrap_preserves_ip_options);
     suite_add_tcase(s, tc);
 
     /* TCP immediate-send ESP regression */

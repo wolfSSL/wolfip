@@ -3826,6 +3826,64 @@ START_TEST(test_tcp_last_ack_closes_socket)
 }
 END_TEST
 
+/* LAST_ACK final ACK must deliver CB_EVENT_CLOSED to a registered callback so a
+ * caller blocked on the socket close (e.g. the FreeRTOS BSD close()) is woken.
+ * Delivery + teardown are deferred from the RX path to wolfIP_poll() Step 3 so
+ * the callback runs on a shallow stack (a callback that reaches into the C
+ * library from deep in packet processing overflowed the poll task stack). */
+START_TEST(test_tcp_last_ack_closes_socket_delivers_closed_event)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000E3U;
+    uint16_t local_port = 6668;
+    uint16_t remote_port = 7779;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.last = 9;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->src_port = local_port;
+    ts->dst_port = remote_port;
+    ts->sock.tcp.ack = 10;
+    ts->callback = test_socket_cb;
+    ts->callback_arg = NULL;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+
+    socket_cb_calls = 0;
+    socket_cb_last_fd = -1;
+    socket_cb_last_events = 0;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
+            10, 10, TCP_FLAG_ACK);
+
+    /* RX path moved it to TCP_CLOSED and queued CB_EVENT_CLOSED, but deferred
+     * the callback + teardown: the socket still exists and the callback has not
+     * fired yet. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_int_ne(ts->proto, 0);
+    ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
+    ck_assert_int_eq(socket_cb_calls, 0);
+
+    /* poll Step 3 delivers CB_EVENT_CLOSED on a shallow stack, then reaps. */
+    (void)wolfIP_poll(&s, 1);
+
+    ck_assert_int_eq(socket_cb_calls, 1);
+    ck_assert_int_eq(socket_cb_last_fd, 0 | MARK_TCP_SOCKET);
+    ck_assert_uint_eq(socket_cb_last_events & CB_EVENT_CLOSED, CB_EVENT_CLOSED);
+    ck_assert_int_eq(ts->proto, 0);  /* torn down after the event was delivered */
+}
+END_TEST
+
 START_TEST(test_tcp_last_ack_partial_ack_keeps_socket_and_timer)
 {
     struct wolfIP s;

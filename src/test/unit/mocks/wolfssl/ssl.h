@@ -30,6 +30,7 @@ int wolfSSL_SetIORecv(WOLFSSL_CTX *ctx, CallbackIORecv cb);
 int wolfSSL_SetIOSend(WOLFSSL_CTX *ctx, CallbackIOSend cb);
 int wolfSSL_SetIOReadCtx(WOLFSSL *ssl, void *ctx);
 int wolfSSL_SetIOWriteCtx(WOLFSSL *ssl, void *ctx);
+void *wolfSSL_GetIOReadCtx(WOLFSSL *ssl);
 WOLFSSL_CTX *wolfSSL_get_SSL_CTX(WOLFSSL *ssl);
 
 #ifdef __cplusplus

@@ -83,20 +83,31 @@ static int client_fd = -1;
 /* wolfIP random number generator (required by stack)                        */
 /* ========================================================================= */
 
+/* SysTick Current Value Register: 24-bit free-running down-counter reloaded
+ * every 1ms (reload = SYSCLK/1000 = 100000 at 100MHz), so each read yields
+ * ~17 bits of fast-varying timing jitter. */
+#define SYST_CVR            (*(volatile uint32_t *)0xE000E018UL)
+
 uint32_t wolfIP_getrandom(void)
 {
     static uint32_t lfsr;
     static int seeded = 0;
 
     if (!seeded) {
-        /* Seed from boot time so ISNs and ephemeral ports vary per power-up.
-         * HAL_time_ms at first wolfIP call is typically 1-5 s into boot.
-         * Note: not cryptographically secure; suitable for embedded demo use. */
-        lfsr = (uint32_t)HAL_time_ms;
+        /* Seed from boot time mixed with the SysTick current value so the
+         * initial state is not confined to the trivially-enumerable boot
+         * window (HAL_time_ms at first wolfIP call is typically 1-5 s into
+         * boot).  Note: not cryptographically secure; suitable for embedded
+         * demo use. */
+        lfsr = (uint32_t)HAL_time_ms ^ (SYST_CVR << 8);
         if (lfsr == 0U)
             lfsr = 0x1A2B3C4DU;  /* LFSR must never be zero */
         seeded = 1;
     }
+    /* Mix in SysTick timing jitter each call so a single observed output
+     * cannot be inverted to predict subsequent ISNs/ports/xids (xorshift32
+     * on its own is bijective). */
+    lfsr ^= SYST_CVR;
     lfsr ^= lfsr << 13;
     lfsr ^= lfsr >> 17;
     lfsr ^= lfsr << 5;

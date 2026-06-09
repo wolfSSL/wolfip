@@ -72,7 +72,12 @@ static int wolfIP_io_recv(WOLFSSL* ssl, char* buf, int sz, void* ctx)
         return WOLFSSL_CBIO_ERR_GENERAL;
 
     ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, sz, 0);
-    if (ret == -WOLFIP_EAGAIN || ret == -1)
+    /* Only -WOLFIP_EAGAIN means "would block": wolfIP_sock_recvfrom returns it
+     * (via queue_pop) for an established socket with an empty RX queue. A -1 is
+     * the "not established" / torn-down case and must be reported as a fatal
+     * close, otherwise wolfSSL keeps retrying a dead connection forever and the
+     * owning session is never released. */
+    if (ret == -WOLFIP_EAGAIN)
         return WOLFSSL_CBIO_ERR_WANT_READ;
     if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
@@ -89,7 +94,11 @@ static int wolfIP_io_send(WOLFSSL* ssl, char* buf, int sz, void* ctx)
         return WOLFSSL_CBIO_ERR_GENERAL;
 
     ret = wolfIP_sock_send(desc->stack, desc->fd, buf, sz, 0);
-    if (ret == -WOLFIP_EAGAIN || ret == -1)
+    /* Only -WOLFIP_EAGAIN means "would block" (TX buffer full, nothing queued).
+     * A -1 is the "not established" / torn-down case from wolfIP_sock_sendto and
+     * must be reported as a fatal close, otherwise wolfSSL retries the dead
+     * connection forever and its session is never released. */
+    if (ret == -WOLFIP_EAGAIN)
         return WOLFSSL_CBIO_ERR_WANT_WRITE;
     if (ret <= 0)
         return WOLFSSL_CBIO_ERR_CONN_CLOSE;
@@ -134,4 +143,25 @@ int wolfSSL_SetIO_wolfIP(WOLFSSL* ssl, int fd)
         }
     }
     return -1;
+}
+
+/* Release the io_descs[] slot allocated by wolfSSL_SetIO_wolfIP() for this
+ * session. Must be called on every TLS teardown path (before wolfSSL_free)
+ * or the static pool leaks one slot per connection and is exhausted after
+ * MAX_WOLFIP_CTX sessions. */
+void wolfSSL_CleanupIO_wolfIP(WOLFSSL* ssl)
+{
+    struct wolfip_io_desc *desc;
+
+    if (!ssl)
+        return;
+
+    desc = (struct wolfip_io_desc *)wolfSSL_GetIOReadCtx(ssl);
+    if (!desc)
+        return;
+
+    wolfSSL_SetIOReadCtx(ssl, NULL);
+    wolfSSL_SetIOWriteCtx(ssl, NULL);
+    desc->fd = 0;
+    desc->stack = NULL;
 }

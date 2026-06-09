@@ -50,6 +50,7 @@ typedef struct {
     int internal_fd;
     SemaphoreHandle_t ready_sem;
     volatile uint16_t wait_events;
+    volatile uint16_t seen_events;
 } wolfip_bsd_fd_entry;
 
 static struct wolfIP *g_ipstack;
@@ -131,6 +132,7 @@ static int wolfip_bsd_fd_alloc(int internal_fd)
             g_fds[i].internal_fd = internal_fd;
             g_fds[i].ready_sem = sem;
             g_fds[i].wait_events = 0;
+            g_fds[i].seen_events = 0;
             return i;
         }
     }
@@ -148,6 +150,7 @@ static void wolfip_bsd_fd_free(int public_fd)
     g_fds[public_fd].internal_fd = -1;
     g_fds[public_fd].ready_sem = NULL;
     g_fds[public_fd].wait_events = 0;
+    g_fds[public_fd].seen_events = 0;
 }
 
 static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
@@ -158,6 +161,7 @@ static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
     if (entry == NULL) {
         return;
     }
+    entry->seen_events |= events;
     g_cb_log_count++;
     if ((events & CB_EVENT_CLOSED) != 0u || (g_cb_log_count & 0x1Fu) == 0u) {
         printf("[sock_cb] ifd=%d events=0x%04x wait=0x%04x cb_count=%lu\n",
@@ -173,6 +177,7 @@ static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
 
 static void wolfip_bsd_prepare_wait_locked(wolfip_bsd_fd_entry *entry, uint16_t wait_events)
 {
+    entry->seen_events = 0;
     entry->wait_events = wait_events;
     while (xSemaphoreTake(entry->ready_sem, 0) == pdTRUE) {
     }
@@ -654,6 +659,17 @@ int close(int sockfd)
             wolfip_bsd_fd_free(sockfd);
             xSemaphoreGive(g_lock);
             return ret;
+        }
+        if ((ret == -1) && IS_SOCKET_TCP(entry->internal_fd) &&
+                ((entry->seen_events & CB_EVENT_CLOSED) != 0u)) {
+            /* The TCP core can destroy the socket immediately after delivering
+             * CB_EVENT_CLOSED (e.g. final ACK in LAST_ACK), so the retry sees
+             * the already-zeroed descriptor and wolfIP_sock_close() returns -1.
+             * Treat that as a completed close and release the wrapper slot. */
+            wolfIP_register_callback(g_ipstack, entry->internal_fd, NULL, NULL);
+            wolfip_bsd_fd_free(sockfd);
+            xSemaphoreGive(g_lock);
+            return 0;
         }
         if (ret != -WOLFIP_EAGAIN) {
             xSemaphoreGive(g_lock);

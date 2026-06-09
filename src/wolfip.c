@@ -4641,7 +4641,19 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     if (t->sock.tcp.state == TCP_LAST_ACK && tcp_seq_leq(fin_acked, ack)) {
         tcp_ctrl_rto_stop(t);
         t->sock.tcp.state = TCP_CLOSED;
-        close_socket(t);
+        /* The peer's final ACK tears the socket down here, deep in the RX
+         * path, before wolfIP_poll() Step 3 dispatches socket callbacks.
+         * Do NOT invoke the user callback from here: a callback that touches
+         * the C library (e.g. the FreeRTOS BSD layer's printf -> malloc) adds
+         * frames at the bottom of the RX call chain and overflows the poll
+         * task stack. Instead defer CB_EVENT_CLOSED delivery and the final
+         * close_socket() to Step 3, which dispatches from a shallow stack and
+         * then reaps TCP_CLOSED sockets. A caller blocked on the socket close
+         * (e.g. the FreeRTOS BSD close()) is woken from there. */
+        if (t->callback)
+            t->events |= CB_EVENT_CLOSED;
+        else
+            close_socket(t);
         return;
     }
     if (t->sock.tcp.state == TCP_FIN_WAIT_1 && tcp_seq_leq(fin_acked, ack)) {
@@ -4900,6 +4912,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         struct tsocket *t = &S->tcpsockets[i];
         if (t->proto == 0 || t->S == NULL)
             continue;
+        /* A socket moved to TCP_CLOSED by the RX path with CB_EVENT_CLOSED
+         * still pending has only deferred its teardown to wolfIP_poll()
+         * Step 3 (so the close callback runs on a shallow stack). Ignore any
+         * further input for it until Step 3 delivers the event and reaps it. */
+        if (t->sock.tcp.state == TCP_CLOSED && (t->events & CB_EVENT_CLOSED))
+            continue;
         if (t->src_port == ee16(tcp->dst_port)) {
             /* TCP segment sanity checks */
             iplen = ee16(tcp->ip.len);
@@ -4998,12 +5016,29 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* RFC 9293: only accept RST if SEQ matches rcv_nxt */
                     if (seg_seq != rcv_nxt)
                         continue;
-                    /* RST on a half-open connection: fall back to listening state. */
-                    t->sock.tcp.state = TCP_LISTEN;
-                    t->events &= ~CB_EVENT_READABLE;
-                    t->remote_ip = IPADDR_ANY;
-                    t->dst_port = 0;
-                    t->sock.tcp.ack = 0;
+                    if (t->sock.tcp.is_listener) {
+                        /* RST on a half-open connection of a listening socket:
+                         * fall back to LISTEN to keep the server open. */
+                        t->sock.tcp.state = TCP_LISTEN;
+                        t->events &= ~CB_EVENT_READABLE;
+                        t->remote_ip = IPADDR_ANY;
+                        t->dst_port = 0;
+                        t->sock.tcp.ack = 0;
+                        continue;
+                    }
+                    /* An accepted (cloned) connection has no listen role: a peer
+                     * RST before the handshake completed must tear it down, not
+                     * resurrect it as a phantom listener. Defer CB_EVENT_CLOSED
+                     * delivery and the close_socket() to wolfIP_poll() Step 3
+                     * (shallow stack) rather than invoking the callback from
+                     * deep in the RX path, which can overflow the poll task
+                     * stack; a consumer blocked on the new socket is woken from
+                     * there. */
+                    t->sock.tcp.state = TCP_CLOSED;
+                    if (t->callback)
+                        t->events |= CB_EVENT_CLOSED;
+                    else
+                        close_socket(t);
                     continue;
                 }
                 if (t->sock.tcp.state == TCP_SYN_SENT) {
@@ -9860,11 +9895,25 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     /* Step 3: handle DHCP and application callbacks */
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *ts = &s->tcpsockets[i];
-        if ((ts->sock.tcp.state != TCP_CLOSED) && (ts->callback) && (ts->events)) {
+        if ((ts->callback == NULL) || (ts->events == 0))
+            continue;
+        /* A socket the RX path moved to TCP_CLOSED is dispatched here only when
+         * it deferred a CB_EVENT_CLOSED for delivery on this shallow stack
+         * (LAST_ACK final ACK, or RST on a half-open accepted socket); the
+         * teardown was deferred too so the callback would not run deep in
+         * packet processing. Any other TCP_CLOSED socket is left alone. */
+        if ((ts->sock.tcp.state == TCP_CLOSED) && !(ts->events & CB_EVENT_CLOSED))
+            continue;
+        {
             uint16_t events = ts->events;
             ts->events = 0;
             ts->callback(i | MARK_TCP_SOCKET, events, ts->callback_arg);
         }
+        /* Now that CB_EVENT_CLOSED has been delivered, reap the deferred-close
+         * socket. A socket closed elsewhere is already memset (callback NULL)
+         * and never reaches this branch. */
+        if (ts->sock.tcp.state == TCP_CLOSED)
+            close_socket(ts);
     }
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *ts = &s->udpsockets[i];
@@ -10063,6 +10112,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
+        int tx_drained = 0;
         while (desc) {
             struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
@@ -10135,8 +10185,15 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             }
 #endif
             fifo_pop(&t->sock.udp.txbuf);
+            tx_drained = 1;
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
+        /* Draining the txbuf frees space; raise CB_EVENT_WRITABLE so a sender
+         * blocked on a full buffer (e.g. the FreeRTOS BSD shim's sendto()) is
+         * woken. The loopback path is handled separately via
+         * wolfIP_notify_loopback_space_available(). */
+        if (tx_drained && tx_has_writable_space(t))
+            t->events |= CB_EVENT_WRITABLE;
     }
     for (i = 0; i < MAX_ICMPSOCKETS; i++) {
         struct tsocket *t = &s->icmpsockets[i];
