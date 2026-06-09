@@ -1283,6 +1283,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_tx_udp_sends_on_arp_hit);
     tcase_add_test(tc_core, test_poll_tx_udp_filter_ip_blocks_send);
     tcase_add_test(tc_core, test_poll_tx_udp_eagain_retains_queue);
+    tcase_add_test(tc_core, test_poll_tx_udp_drain_sets_writable);
     tcase_add_test(tc_core, test_poll_tx_udp_broadcast_sets_ff_mac);
     tcase_add_test(tc_core, test_poll_tx_udp_loopback_path_no_crash);
     tcase_add_test(tc_core, test_poll_tx_icmp_sends_on_arp_hit);

@@ -10063,6 +10063,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
+        int tx_drained = 0;
         while (desc) {
             struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
@@ -10135,8 +10136,15 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             }
 #endif
             fifo_pop(&t->sock.udp.txbuf);
+            tx_drained = 1;
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
+        /* Draining the txbuf frees space; raise CB_EVENT_WRITABLE so a sender
+         * blocked on a full buffer (e.g. the FreeRTOS BSD shim's sendto()) is
+         * woken. The loopback path is handled separately via
+         * wolfIP_notify_loopback_space_available(). */
+        if (tx_drained && tx_has_writable_space(t))
+            t->events |= CB_EVENT_WRITABLE;
     }
     for (i = 0; i < MAX_ICMPSOCKETS; i++) {
         struct tsocket *t = &s->icmpsockets[i];

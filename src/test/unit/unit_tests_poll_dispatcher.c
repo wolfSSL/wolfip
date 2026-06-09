@@ -865,6 +865,56 @@ START_TEST(test_poll_tx_udp_eagain_retains_queue)
 }
 END_TEST
 
+START_TEST(test_poll_tx_udp_drain_sets_writable)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[1400];
+    uint8_t peer_mac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x99};
+    int rc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, 6);
+
+    memset(payload, 0xAB, sizeof(payload));
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5004);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    /* Fill the UDP txbuf until sendto() reports the buffer full. */
+    do {
+        rc = wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    } while (rc > 0);
+    ck_assert_int_eq(rc, -WOLFIP_EAGAIN);
+    ts->if_idx = TEST_PRIMARY_IF;
+
+    /* A blocked sendto() would now be waiting for CB_EVENT_WRITABLE. */
+    ts->events = 0;
+
+    /* Poll drains the queue over the wire (mock_send succeeds). */
+    (void)wolfIP_poll(&s, 200);
+
+    /* Draining freed txbuf space, so the drain must raise CB_EVENT_WRITABLE to
+     * wake a blocked sender. Before the fix this bit was never set for
+     * non-loopback UDP sockets and the sender deadlocked. */
+    ck_assert_uint_ne((unsigned)(ts->events & CB_EVENT_WRITABLE), 0U);
+}
+END_TEST
+
 START_TEST(test_poll_tx_udp_broadcast_sets_ff_mac)
 {
     struct wolfIP s;
