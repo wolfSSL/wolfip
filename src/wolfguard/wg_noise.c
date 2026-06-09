@@ -489,30 +489,34 @@ int wg_noise_consume_response(struct wg_device *dev, struct wg_peer *peer,
     uint8_t tau[WG_HASH_LEN];
     uint8_t dh_result[WG_SYMMETRIC_KEY_LEN];
     uint8_t ephemeral_public[WG_PUBLIC_KEY_LEN];
+    uint8_t chaining_key[WG_HASH_LEN];
+    uint8_t hash[WG_HASH_LEN];
     int ret;
 
     if (hs->state != WG_HANDSHAKE_CREATED_INITIATION)
         return -1;
 
     memcpy(ephemeral_public, msg->ephemeral, WG_PUBLIC_KEY_LEN);
+    memcpy(chaining_key, hs->chaining_key, WG_HASH_LEN);
+    memcpy(hash, hs->hash, WG_HASH_LEN);
 
     /* C = KDF1(C, E_r_pub) */
-    ret = wg_kdf1(hs->chaining_key, hs->chaining_key,
+    ret = wg_kdf1(chaining_key, chaining_key,
                   ephemeral_public, WG_PUBLIC_KEY_LEN);
     if (ret != 0)
-        return -1;
+        goto fail;
 
     /* H = Hash(H || msg.ephemeral) */
-    ret = mix_hash(hs->hash, ephemeral_public, WG_PUBLIC_KEY_LEN);
+    ret = mix_hash(hash, ephemeral_public, WG_PUBLIC_KEY_LEN);
     if (ret != 0)
-        return -1;
+        goto fail;
 
     /* C = KDF1(C, DH(E_i_priv, E_r_pub)) */
     ret = wg_dh(dh_result, hs->ephemeral_private, ephemeral_public, &dev->rng);
     if (ret != 0)
         goto fail;
 
-    ret = wg_kdf1(hs->chaining_key, hs->chaining_key,
+    ret = wg_kdf1(chaining_key, chaining_key,
                   dh_result, WG_SYMMETRIC_KEY_LEN);
     if (ret != 0)
         goto fail;
@@ -522,19 +526,19 @@ int wg_noise_consume_response(struct wg_device *dev, struct wg_peer *peer,
     if (ret != 0)
         goto fail;
 
-    ret = wg_kdf1(hs->chaining_key, hs->chaining_key,
+    ret = wg_kdf1(chaining_key, chaining_key,
                   dh_result, WG_SYMMETRIC_KEY_LEN);
     if (ret != 0)
         goto fail;
 
     /* (C, tau, k) = KDF3(C, psk) */
-    ret = wg_kdf3(hs->chaining_key, tau, key, hs->chaining_key,
+    ret = wg_kdf3(chaining_key, tau, key, chaining_key,
                   hs->preshared_key, WG_SYMMETRIC_KEY_LEN);
     if (ret != 0)
         goto fail;
 
     /* H = Hash(H || tau) */
-    ret = mix_hash(hs->hash, tau, WG_HASH_LEN);
+    ret = mix_hash(hash, tau, WG_HASH_LEN);
     if (ret != 0)
         goto fail;
 
@@ -543,28 +547,35 @@ int wg_noise_consume_response(struct wg_device *dev, struct wg_peer *peer,
         uint8_t nothing[1]; /* Dummy buffer for zero-length decrypt */
         ret = wg_aead_decrypt(nothing, key, 0,
                               msg->encrypted_nothing, WG_AUTHTAG_LEN,
-                              hs->hash, WG_HASH_LEN);
+                              hash, WG_HASH_LEN);
     }
     if (ret != 0)
         goto fail;
 
     /* H = Hash(H || msg.empty) */
-    ret = mix_hash(hs->hash, msg->encrypted_nothing, WG_AUTHTAG_LEN);
+    ret = mix_hash(hash, msg->encrypted_nothing, WG_AUTHTAG_LEN);
     if (ret != 0)
         goto fail;
 
+    /* Authenticated: commit the derived state to the handshake. */
+    memcpy(hs->chaining_key, chaining_key, WG_HASH_LEN);
+    memcpy(hs->hash, hash, WG_HASH_LEN);
     hs->remote_index = le32_decode(msg->sender_index);
     hs->state = WG_HANDSHAKE_CONSUMED_RESPONSE;
 
     wg_memzero(key, sizeof(key));
     wg_memzero(tau, sizeof(tau));
     wg_memzero(dh_result, sizeof(dh_result));
+    wg_memzero(chaining_key, sizeof(chaining_key));
+    wg_memzero(hash, sizeof(hash));
     return 0;
 
 fail:
     wg_memzero(key, sizeof(key));
     wg_memzero(tau, sizeof(tau));
     wg_memzero(dh_result, sizeof(dh_result));
+    wg_memzero(chaining_key, sizeof(chaining_key));
+    wg_memzero(hash, sizeof(hash));
     return -1;
 }
 
