@@ -4503,6 +4503,41 @@ START_TEST(test_wolfssh_io_send_behaviors)
 }
 END_TEST
 
+START_TEST(test_wolfssh_io_recv_behaviors)
+{
+    struct wolfIP s;
+    struct wolfssh_io_desc desc;
+    char buf[4];
+    int ret;
+
+    memset(&desc, 0, sizeof(desc));
+    desc.stack = &s;
+    desc.fd = 4;
+    desc.in_use = 1;
+
+    reset_wolfssh_io_state();
+    test_recv_ret = -WOLFIP_EAGAIN;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_WANT_READ);
+
+    /* -1 is the torn-down ("not established", peer RST) case from
+     * wolfIP_sock_recvfrom: it must be a fatal close, not a retryable
+     * WANT_READ, or wolfSSH spins on a dead connection and the SSH handshake
+     * state machine is wedged in KEY_EXCHANGE forever (unauthenticated DoS). */
+    test_recv_ret = -1;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_CONN_CLOSE);
+
+    test_recv_ret = 0;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, WS_CBIO_ERR_CONN_CLOSE);
+
+    test_recv_ret = 4;
+    ret = wolfssh_io_recv(NULL, buf, sizeof(buf), &desc);
+    ck_assert_int_eq(ret, 4);
+}
+END_TEST
+
 START_TEST(test_tcp_listen_rejects_wrong_interface)
 {
     struct wolfIP s;

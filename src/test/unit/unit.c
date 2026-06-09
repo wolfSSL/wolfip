@@ -961,6 +961,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_invalid_desc);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_send_want_write_keeps_buffer);
     tcase_add_test(tc_wolfssl, test_wolfssh_io_send_behaviors);
+    tcase_add_test(tc_wolfssl, test_wolfssh_io_recv_behaviors);
 
     /* Branch-coverage tests backported from the trimmed wolfIP suite. */
     tcase_add_test(tc_core, test_socket_from_fd_invalid_inputs);

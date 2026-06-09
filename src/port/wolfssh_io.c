@@ -70,10 +70,15 @@ static int wolfssh_io_recv(WOLFSSH *ssh, void *buf, word32 sz, void *ctx)
     }
 
     ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, (int)sz, 0);
-    if (ret == -WOLFIP_EAGAIN || ret == -1) {
+    /* Only -WOLFIP_EAGAIN means "would block" (no data queued yet). A -1 is
+     * the "not established" / torn-down case from wolfIP_sock_recvfrom (peer
+     * RST drove the socket to TCP_CLOSED) and must be reported as a fatal
+     * close, otherwise wolfSSH retries the dead connection forever and the
+     * SSH handshake state machine is wedged in KEY_EXCHANGE indefinitely. */
+    if (ret == -WOLFIP_EAGAIN) {
         return WS_CBIO_ERR_WANT_READ;
     }
-    if (ret == 0) {
+    if (ret == 0 || ret == -1) {
         return WS_CBIO_ERR_CONN_CLOSE;
     }
     if (ret < 0) {
