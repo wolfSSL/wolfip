@@ -39,6 +39,8 @@ static int seq;
 static int shutdown_seq;
 static int cleanup_seq;
 static int free_seq;
+static int tls_teardown_calls;
+static int sock_send_result;
 
 static void reset_tracking(void)
 {
@@ -46,6 +48,8 @@ static void reset_tracking(void)
     shutdown_seq = 0;
     cleanup_seq = 0;
     free_seq = 0;
+    tls_teardown_calls = 0;
+    sock_send_result = -1;
 }
 
 /* --- stubs for the wolfIP symbols referenced by httpd.c ------------------ */
@@ -58,7 +62,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int fd, int b)
 int wolfIP_sock_accept(struct wolfIP *s, int fd, struct wolfIP_sockaddr *a, socklen_t *l)
 { (void)s; (void)fd; (void)a; (void)l; return -1; }
 int wolfIP_sock_send(struct wolfIP *s, int fd, const void *b, size_t l, int f)
-{ (void)s; (void)fd; (void)b; (void)f; return (int)l; }
+{ (void)s; (void)fd; (void)b; (void)l; (void)f; return sock_send_result; }
 int wolfIP_sock_recv(struct wolfIP *s, int fd, void *b, size_t l, int f)
 { (void)s; (void)fd; (void)b; (void)l; (void)f; return -1; }
 int wolfIP_sock_close(struct wolfIP *s, int fd)
@@ -81,11 +85,11 @@ int wolfSSL_read(WOLFSSL *ssl, void *data, int sz)
 int wolfSSL_get_error(WOLFSSL *ssl, int ret)
 { (void)ssl; (void)ret; return 0; /* not WANT_READ -> close */ }
 int wolfSSL_shutdown(WOLFSSL *ssl)
-{ (void)ssl; shutdown_seq = ++seq; return 0; }
+{ (void)ssl; tls_teardown_calls++; shutdown_seq = ++seq; return 0; }
 void wolfSSL_CleanupIO_wolfIP(WOLFSSL *ssl)
-{ (void)ssl; cleanup_seq = ++seq; }
+{ (void)ssl; tls_teardown_calls++; cleanup_seq = ++seq; }
 void wolfSSL_free(WOLFSSL *ssl)
-{ (void)ssl; free_seq = ++seq; }
+{ (void)ssl; tls_teardown_calls++; free_seq = ++seq; }
 
 /* --- test harness -------------------------------------------------------- */
 #define CHECK(cond) do { if (!(cond)) { \
@@ -104,6 +108,17 @@ static void check_close_emitted_close_notify(const char *site)
     }
     CHECK(shutdown_seq < cleanup_seq); /* shutdown before IO cleanup */
     CHECK(shutdown_seq < free_seq);    /* shutdown before free */
+}
+
+static void check_plain_http_close_skips_tls(const char *site,
+    struct http_client *hc)
+{
+    if (tls_teardown_calls != 0) {
+        printf("FAIL %s: plain HTTP close called wolfSSL teardown\n", site);
+        failures++;
+    }
+    CHECK(hc->ssl == NULL);
+    CHECK(hc->client_sd == 0);
 }
 
 int main(void)
@@ -148,6 +163,41 @@ int main(void)
     hc.httpd = &httpd; hc.client_sd = 1; hc.ssl = (WOLFSSL *)&ssl_marker;
     http_recv_cb(1, 0, &hc);
     check_close_emitted_close_notify("http_recv_cb fail_close");
+
+    /* http_send_response_headers plain HTTP close must not touch wolfSSL */
+    reset_tracking();
+    memset(&hc, 0, sizeof(hc));
+    hc.httpd = &httpd; hc.client_sd = 1; hc.ssl = NULL;
+    http_send_response_headers(&hc, 200, "OK", "text/plain", 0);
+    check_plain_http_close_skips_tls("http_send_response_headers plain", &hc);
+
+    /* http_send_response_body plain HTTP close must not touch wolfSSL */
+    reset_tracking();
+    memset(&hc, 0, sizeof(hc));
+    hc.httpd = &httpd; hc.client_sd = 1; hc.ssl = NULL;
+    http_send_response_body(&hc, "x", 1);
+    check_plain_http_close_skips_tls("http_send_response_body plain", &hc);
+
+    /* http_send_response_chunk plain HTTP close must not touch wolfSSL */
+    reset_tracking();
+    memset(&hc, 0, sizeof(hc));
+    hc.httpd = &httpd; hc.client_sd = 1; hc.ssl = NULL;
+    http_send_response_chunk(&hc, "x", 1);
+    check_plain_http_close_skips_tls("http_send_response_chunk plain", &hc);
+
+    /* http_send_response_chunk_end plain HTTP close must not touch wolfSSL */
+    reset_tracking();
+    memset(&hc, 0, sizeof(hc));
+    hc.httpd = &httpd; hc.client_sd = 1; hc.ssl = NULL;
+    http_send_response_chunk_end(&hc);
+    check_plain_http_close_skips_tls("http_send_response_chunk_end plain", &hc);
+
+    /* http_recv_cb plain HTTP close must not touch wolfSSL */
+    reset_tracking();
+    memset(&hc, 0, sizeof(hc));
+    hc.httpd = &httpd; hc.client_sd = 1; hc.ssl = NULL;
+    http_recv_cb(1, 0, &hc);
+    check_plain_http_close_skips_tls("http_recv_cb fail_close plain", &hc);
 
     if (failures == 0)
         printf("test_http_close_notify: all checks passed\n");
