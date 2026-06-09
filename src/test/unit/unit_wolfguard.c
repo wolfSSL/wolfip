@@ -1950,6 +1950,97 @@ START_TEST(test_psk_survives_rekey)
 }
 END_TEST
 
+/* A forged response that fails AEAD auth must not corrupt the initiator's
+ * handshake state. wg_noise_consume_response runs the Noise KDF/hash chain
+ * over hs->chaining_key and hs->hash, then authenticates via AEAD. If a
+ * forged response (valid framing, attacker-chosen ephemeral, garbage
+ * encrypted_nothing) is allowed to mutate chaining_key/hash before the
+ * failed AEAD check, the half-advanced state poisons the next consume:
+ * the genuine responder reply then derives the wrong key and is rejected,
+ * a persistent handshake DoS an on-path attacker can drive each cycle.
+ * The function must leave chaining_key/hash/state untouched on failure so
+ * the genuine response still completes. */
+START_TEST(test_consume_response_forgery_preserves_state)
+{
+    struct wg_device dev_a, dev_b;
+    struct wg_peer peer_a;
+    struct wg_msg_initiation init_msg;
+    struct wg_msg_response resp_msg, forged_msg;
+    struct wg_peer *found;
+    uint8_t chaining_key_before[WG_HASH_LEN];
+    uint8_t hash_before[WG_HASH_LEN];
+    int ret;
+
+    init_test_rng();
+
+    memset(&dev_a, 0, sizeof(dev_a));
+    memset(&dev_b, 0, sizeof(dev_b));
+    memset(&peer_a, 0, sizeof(peer_a));
+
+    wg_dh_generate(dev_a.static_private, dev_a.static_public, &test_rng);
+    wg_dh_generate(dev_b.static_private, dev_b.static_public, &test_rng);
+    memcpy(&dev_a.rng, &test_rng, sizeof(WC_RNG));
+    memcpy(&dev_b.rng, &test_rng, sizeof(WC_RNG));
+
+    memcpy(peer_a.public_key, dev_b.static_public, WG_PUBLIC_KEY_LEN);
+    peer_a.is_active = 1;
+    wg_noise_handshake_init(&peer_a.handshake, dev_a.static_private,
+                            dev_b.static_public, NULL, &test_rng);
+
+    memcpy(dev_b.peers[0].public_key, dev_a.static_public, WG_PUBLIC_KEY_LEN);
+    dev_b.peers[0].is_active = 1;
+    wg_noise_handshake_init(&dev_b.peers[0].handshake, dev_b.static_private,
+                            dev_a.static_public, NULL, &test_rng);
+
+    /* A creates an initiation; B consumes it and builds the genuine
+     * response. Keep resp_msg intact for the recovery step below. */
+    dev_a.now = 5000;
+    dev_b.now = 5000;
+    ck_assert_int_eq(wg_noise_create_initiation(&dev_a, &peer_a, &init_msg), 0);
+    found = wg_noise_consume_initiation(&dev_b, &init_msg);
+    ck_assert_ptr_nonnull(found);
+    ck_assert_int_eq(wg_noise_create_response(&dev_b, found, &resp_msg), 0);
+
+    /* A is now waiting for the response. Snapshot the handshake state. */
+    ck_assert_int_eq(peer_a.handshake.state, WG_HANDSHAKE_CREATED_INITIATION);
+    memcpy(chaining_key_before, peer_a.handshake.chaining_key, WG_HASH_LEN);
+    memcpy(hash_before, peer_a.handshake.hash, WG_HASH_LEN);
+
+    /* Forge a response: copy a real frame, then replace the ephemeral and
+     * encrypted_nothing with attacker-chosen bytes. Without the derived key
+     * the attacker cannot produce a valid tag, so AEAD must fail. */
+    memcpy(&forged_msg, &resp_msg, sizeof(forged_msg));
+    wc_RNG_GenerateBlock(&test_rng, forged_msg.ephemeral, WG_PUBLIC_KEY_LEN);
+    wc_RNG_GenerateBlock(&test_rng, forged_msg.encrypted_nothing,
+                         WG_AUTHTAG_LEN);
+
+    /* The forged response must be rejected... */
+    ret = wg_noise_consume_response(&dev_a, &peer_a, &forged_msg);
+    ck_assert_int_eq(ret, -1);
+
+    /* ...and must leave the handshake exactly as it was. */
+    ck_assert_int_eq(memcmp(peer_a.handshake.chaining_key,
+                            chaining_key_before, WG_HASH_LEN), 0);
+    ck_assert_int_eq(memcmp(peer_a.handshake.hash, hash_before, WG_HASH_LEN),
+                     0);
+    ck_assert_int_eq(peer_a.handshake.state, WG_HANDSHAKE_CREATED_INITIATION);
+
+    /* The genuine responder reply must still complete the handshake. */
+    ret = wg_noise_consume_response(&dev_a, &peer_a, &resp_msg);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(peer_a.handshake.state, WG_HANDSHAKE_CONSUMED_RESPONSE);
+
+    /* And the derived session keys must agree with the responder. */
+    dev_a.now = 5001;
+    dev_b.now = 5001;
+    ck_assert_int_eq(wg_noise_begin_session(&dev_a, &peer_a), 0);
+    ck_assert_int_eq(wg_noise_begin_session(&dev_b, found), 0);
+    ck_assert_int_eq(memcmp(peer_a.keypairs.current->sending.key,
+                            found->keypairs.next->receiving.key,
+                            WG_SYMMETRIC_KEY_LEN), 0);
+}
+END_TEST
+
 /* Staged packet buffers zeroed after send */
 START_TEST(test_staged_packets_zeroed_after_send)
 {
@@ -2304,6 +2395,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_noise_handshake_with_psk);
     tcase_add_test(tc, test_noise_replay_protection);
     tcase_add_test(tc, test_noise_replay_after_session);
+    tcase_add_test(tc, test_consume_response_forgery_preserves_state);
     tcase_add_test(tc, test_psk_survives_rekey);
     tcase_add_test(tc, test_initiation_rate_limit);
     suite_add_tcase(s, tc);
