@@ -1581,19 +1581,29 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
 {
     uint8_t   block_len = 0;
     uint16_t  orig_ip_len = *ip_len;
-    uint16_t  orig_payload_len = orig_ip_len - IP_HEADER_LEN;
+    uint16_t  ip_hdr_len = (uint16_t)((ip->ver_ihl & 0x0f) * 4);
+    uint16_t  orig_payload_len;
     uint16_t  payload_len = 0;
-    uint8_t * payload = ip->data;
+    uint8_t * esp_base;
+    uint8_t * payload;
     uint8_t   pad_len = 0;
     uint32_t  seq_n = 0; /* sequence num in network order */
     uint16_t  icv_offset = 0;
     wolfIP_esp_sa * esp_sa = NULL;
     uint8_t   iv_len = 0;
 
-    if (orig_ip_len < IP_HEADER_LEN) {
+    if (ip_hdr_len < IP_HEADER_LEN || orig_ip_len < ip_hdr_len) {
         ESP_LOG("error: ip_len below header: %u\n", orig_ip_len);
         return -1;
     }
+
+    /* rfc4303 sec 3.1.1: in transport mode the ESP header is inserted after
+     * the IP header AND any options it carries. Use the actual IHL so option
+     * bytes (e.g. igmp_send_report's Router-Alert, ver_ihl=0x46) stay in the
+     * clear in front of the ESP header and are not counted as payload. */
+    orig_payload_len = (uint16_t)(orig_ip_len - ip_hdr_len);
+    esp_base = ip->data + (ip_hdr_len - IP_HEADER_LEN);
+    payload = esp_base;
 
     /* todo: priority, proto / port filtering. currently this grabs
      * the first dst and src match. */
@@ -1629,8 +1639,8 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
    /* move ip payload back to make room for ESP header (SPI, SEQ) + IV. */
-    memmove(ip->data + ESP_SPI_LEN + ESP_SEQ_LEN + iv_len,
-            ip->data, orig_payload_len);
+    memmove(esp_base + ESP_SPI_LEN + ESP_SEQ_LEN + iv_len,
+            esp_base, orig_payload_len);
 
     /* Copy in SPI and sequence number fields. */
     memcpy(payload, esp_sa->spi, sizeof(esp_sa->spi));
@@ -1704,7 +1714,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     payload += ESP_NEXT_HEADER_LEN;
 
     /* calculate final esp payload length. */
-    payload_len =  orig_ip_len - IP_HEADER_LEN;
+    payload_len =  orig_payload_len;
     payload_len += ESP_SPI_LEN + ESP_SEQ_LEN + iv_len +
                    pad_len + ESP_PADDING_LEN + ESP_NEXT_HEADER_LEN +
                    esp_sa->icv_len;
@@ -1716,22 +1726,22 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
         switch(esp_sa->enc) {
         #ifndef NO_DES3
         case ESP_ENC_CBC_DES3:
-            err = esp_des3_rfc2451_enc(esp_sa, ip->data, payload_len);
+            err = esp_des3_rfc2451_enc(esp_sa, esp_base, payload_len);
             break;
         #endif /* !NO_DES3 */
 
         case ESP_ENC_CBC_AES:
-            err = esp_aes_rfc3602_enc(esp_sa, ip->data, payload_len);
+            err = esp_aes_rfc3602_enc(esp_sa, esp_base, payload_len);
             break;
 
         #if defined(WOLFSSL_AESGCM_STREAM)
         case ESP_ENC_GCM_RFC4106:
-            err = esp_aes_rfc4106_enc(esp_sa, ip->data, payload_len);
+            err = esp_aes_rfc4106_enc(esp_sa, esp_base, payload_len);
             break;
         #endif /*WOLFSSL_AESGCM_STREAM */
 
         case ESP_ENC_GCM_RFC4543:
-            err = esp_aes_rfc4543_enc(esp_sa, ip->data, payload_len);
+            err = esp_aes_rfc4543_enc(esp_sa, esp_base, payload_len);
             break;
 
         case ESP_ENC_NONE:
@@ -1759,8 +1769,8 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
                 uint8_t * icv = NULL;
                 byte      hash[WC_SHA256_DIGEST_SIZE];
                 memset(hash, 0, sizeof(hash));
-                icv = ip->data + icv_offset;
-                err = esp_calc_icv_hmac(hash, esp_sa, ip->data, payload_len);
+                icv = esp_base + icv_offset;
+                err = esp_calc_icv_hmac(hash, esp_sa, esp_base, payload_len);
                 if (err == 0) {
                     memcpy(icv, hash, esp_sa->icv_len);
                 }
@@ -1785,10 +1795,10 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
         }
     }
 
-    *ip_len = payload_len + IP_HEADER_LEN;
+    *ip_len = payload_len + ip_hdr_len;
 
     #ifdef DEBUG_ESP
-    wolfIP_print_esp(esp_sa, ip->data, payload_len, pad_len, ip->proto);
+    wolfIP_print_esp(esp_sa, esp_base, payload_len, pad_len, ip->proto);
     #endif /* DEBUG_ESP */
 
     /* update len, set proto to ESP 0x32 (50), recalculate iphdr checksum. */
