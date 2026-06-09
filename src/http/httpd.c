@@ -133,6 +133,7 @@ void http_send_response_headers(struct http_client *hc, int status_code, const c
     }
     if (rc <= 0) {
         /* Error – close connection */
+        wolfSSL_shutdown(hc->ssl);
         wolfSSL_CleanupIO_wolfIP(hc->ssl);
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
@@ -151,6 +152,7 @@ void http_send_response_body(struct http_client *hc, const void *body, size_t le
         rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, body, len, 0);
 
     if (rc <= 0) {
+        wolfSSL_shutdown(hc->ssl);
         wolfSSL_CleanupIO_wolfIP(hc->ssl);
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
@@ -180,6 +182,7 @@ void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t 
     if ((http_write_response(hc, txt_chunk, strlen(txt_chunk)) <= 0) ||
             (http_write_response(hc, chunk, len) <= 0) ||
             (http_write_response(hc, "\r\n", 2) <= 0)) {
+        wolfSSL_shutdown(hc->ssl);
         wolfSSL_CleanupIO_wolfIP(hc->ssl);
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
@@ -197,6 +200,7 @@ void http_send_response_chunk_end(struct http_client *hc) {
     else
         rc = wolfIP_sock_send(hc->httpd->ipstack, hc->client_sd, "0\r\n\r\n", 5, 0);
     if (rc <= 0) {
+        wolfSSL_shutdown(hc->ssl);
         wolfSSL_CleanupIO_wolfIP(hc->ssl);
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
@@ -488,6 +492,7 @@ static void http_recv_cb(int sd, uint16_t event, void *arg) {
 
 fail_close:
     if (hc->ssl) {
+        wolfSSL_shutdown(hc->ssl);
         wolfSSL_CleanupIO_wolfIP(hc->ssl);
         wolfSSL_free(hc->ssl);
         hc->ssl = NULL;
