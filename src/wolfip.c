@@ -4641,6 +4641,16 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     if (t->sock.tcp.state == TCP_LAST_ACK && tcp_seq_leq(fin_acked, ack)) {
         tcp_ctrl_rto_stop(t);
         t->sock.tcp.state = TCP_CLOSED;
+        /* The peer's final ACK tears the socket down synchronously here,
+         * during packet processing, before wolfIP_poll() Step 3 dispatches
+         * socket callbacks. close_socket() memsets the callback and event
+         * mask away, so deliver CB_EVENT_CLOSED now; otherwise a caller
+         * blocked on the socket close (e.g. the FreeRTOS BSD close()) would
+         * never be woken. */
+        if (t->callback) {
+            int sock_fd = (int)(t - t->S->tcpsockets) | MARK_TCP_SOCKET;
+            t->callback(sock_fd, CB_EVENT_CLOSED, t->callback_arg);
+        }
         close_socket(t);
         return;
     }

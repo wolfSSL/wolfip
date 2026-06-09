@@ -597,6 +597,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rst_syn_rcvd_returns_to_listen);
     tcase_add_test(tc_utils, test_tcp_fin_wait_1_to_closing);
     tcase_add_test(tc_utils, test_tcp_last_ack_closes_socket);
+    tcase_add_test(tc_utils, test_tcp_last_ack_closes_socket_delivers_closed_event);
     tcase_add_test(tc_utils, test_tcp_last_ack_partial_ack_keeps_socket_and_timer);
     tcase_add_test(tc_utils, test_tcp_ack_acks_data_and_sets_writable);
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_resend_clears_sent);
