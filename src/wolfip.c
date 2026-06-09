@@ -5008,12 +5008,27 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* RFC 9293: only accept RST if SEQ matches rcv_nxt */
                     if (seg_seq != rcv_nxt)
                         continue;
-                    /* RST on a half-open connection: fall back to listening state. */
-                    t->sock.tcp.state = TCP_LISTEN;
-                    t->events &= ~CB_EVENT_READABLE;
-                    t->remote_ip = IPADDR_ANY;
-                    t->dst_port = 0;
-                    t->sock.tcp.ack = 0;
+                    if (t->sock.tcp.is_listener) {
+                        /* RST on a half-open connection of a listening socket:
+                         * fall back to LISTEN to keep the server open. */
+                        t->sock.tcp.state = TCP_LISTEN;
+                        t->events &= ~CB_EVENT_READABLE;
+                        t->remote_ip = IPADDR_ANY;
+                        t->dst_port = 0;
+                        t->sock.tcp.ack = 0;
+                        continue;
+                    }
+                    /* An accepted (cloned) connection has no listen role: a peer
+                     * RST before the handshake completed must tear it down, not
+                     * resurrect it as a phantom listener. Deliver CB_EVENT_CLOSED
+                     * synchronously because close_socket() wipes the callback
+                     * before wolfIP_poll() Step 3 dispatches events; otherwise a
+                     * consumer blocked on the new socket would never wake. */
+                    if (t->callback) {
+                        int sock_fd = (int)(t - S->tcpsockets) | MARK_TCP_SOCKET;
+                        t->callback(sock_fd, CB_EVENT_CLOSED, t->callback_arg);
+                    }
+                    close_socket(t);
                     continue;
                 }
                 if (t->sock.tcp.state == TCP_SYN_SENT) {

@@ -1201,6 +1201,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_parse_options_sack_permitted_parsed);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_bad_seq_ignored);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen);
+    tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_nonlistener_closes);
     tcase_add_test(tc_core, test_tcp_input_time_wait_sends_ack_on_any_segment);
     tcase_add_test(tc_core, test_tcp_input_last_ack_unacceptable_sends_ack);
     tcase_add_test(tc_core, test_tcp_input_last_ack_syn_sends_challenge_ack);
