@@ -266,8 +266,74 @@ START_TEST(test_multicast_igmp_query_refreshes_report)
     put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
     fix_ip_checksum(ip);
 
+    /* RFC 3376 §5.2: the report is deferred to a timer, not emitted from the
+     * receive path. Max Resp Code 0 floors the delay to 1 ms, so it fires on
+     * the next poll. */
     last_frame_sent_size = 0;
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    wolfIP_poll(&s, 2);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+}
+END_TEST
+
+/* A Membership Query must not draw an immediate, undelayed report. RFC 3376
+ * §5.2 requires a host to defer its Current-State Report by a delay chosen
+ * uniformly in (0, Max Resp Time], and §5.2 rule 1 says a query that arrives
+ * while a response is already pending must not schedule another. Together this
+ * coalesces a query flood into a single deferred report: an on-link attacker
+ * spraying General Queries (TTL 1 -> 224.0.0.1) can otherwise force one report
+ * per query, draining a constrained host. Max Resp Code 100 -> 10 s window. */
+START_TEST(test_multicast_igmp_query_flood_coalesced)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *igmp = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    ip4 group = 0xE9010207U;
+    unsigned int q;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+
+    /* General query, Max Resp Code 100 (= 10 s). */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    igmp[1] = 100;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+
+    /* Feed a burst of identical queries without polling. None may be answered
+     * synchronously from the receive path; the report is deferred to a timer. */
+    last_frame_sent_count = 0;
+    for (q = 0; q < 5; q++)
+        wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+
+    /* Poll past the 10 s window: the whole burst collapses to exactly one
+     * deferred Current-State Report (mode IS_EXCLUDE). */
+    last_frame_sent_size = 0;
+    wolfIP_poll(&s, 10001);
+    ck_assert_uint_eq(last_frame_sent_count, 1);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
 }
@@ -380,8 +446,9 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
     ck_assert_uint_eq(last_frame_sent_size, 0);
 
-    /* Sanity: a compliant query (TTL 1, all-hosts dst) still solicits a report,
-     * so the guards did not over-block. */
+    /* Sanity: a compliant query (TTL 1, all-hosts dst) still solicits a report
+     * (deferred per RFC 3376 §5.2, then emitted on poll), so the guards did not
+     * over-block. */
     memset(frame, 0, sizeof(frame));
     memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
     memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
@@ -398,6 +465,8 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
     fix_ip_checksum(ip);
     last_frame_sent_size = 0;
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    wolfIP_poll(&s, 2);
     ck_assert_uint_gt(last_frame_sent_size, 0);
 }
 END_TEST
