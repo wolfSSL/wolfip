@@ -184,6 +184,7 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
 	build/test-http-smuggle build/test-http-arg-oob \
 	build/test-http-close-notify \
+	build/test-freertos-close-last-ack \
 	build/test-posix-errno \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
@@ -432,6 +433,13 @@ build/test-http-close-notify: src/test/test_http_close_notify.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ src/test/test_http_close_notify.c $(LDFLAGS)
+
+# Standalone regression test for the FreeRTOS BSD close() wrapper when
+# CB_EVENT_CLOSED is delivered synchronously during LAST_ACK teardown.
+build/test-freertos-close-last-ack: src/test/test_freertos_close_last_ack.c src/port/freeRTOS/bsd_socket.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -o $@ src/test/test_freertos_close_last_ack.c $(LDFLAGS)
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true
