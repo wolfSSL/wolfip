@@ -410,6 +410,8 @@ job_echo_freertos() {
   echo "==> Running stm32h563_m33mu_echo_freertos"
   trap cleanup_runtime EXIT
   setup_tap_and_dnsmasq
+  tcpdump -i tap0 -nn -s0 -U -w /tmp/echo.pcap > /tmp/tcpdump.log 2>&1 &
+  printf '%s\n' "$!" > /tmp/tcpdump.pid
   start_m33mu 180 --quit-on-faults
   local ip
   ip="$(wait_for_lease 90)"
