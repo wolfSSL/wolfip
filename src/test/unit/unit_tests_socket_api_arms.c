@@ -1204,7 +1204,11 @@ START_TEST(test_sock_recvfrom_tcp_not_established)
     sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     ck_assert_int_ge(sd, 0);
     ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
-    ts->sock.tcp.state = TCP_CLOSED;
+    /* A genuinely not-established stream (mid-connect) reports an error.
+     * TCP_CLOSED is intentionally NOT used here: a torn-down/closed stream now
+     * reports EOF (0), covered by
+     * test_tcp_input_syn_rcvd_rst_nullcb_recv_reports_eof. */
+    ts->sock.tcp.state = TCP_SYN_SENT;
 
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, buf, sizeof(buf), 0,
                                            NULL, NULL), -1);

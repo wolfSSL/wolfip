@@ -6545,7 +6545,17 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                     tcp_send_ack(ts);
             }
             return ret;
-        } else { /* Not established */
+        } else if (ts->sock.tcp.state == TCP_CLOSED) {
+            /* Torn-down stream (peer RST, abortive close, or reaped after
+             * teardown): drain any bytes still queued, then report EOF (0)
+             * instead of a bare -1. can_read() already advertises a CLOSED
+             * socket as readable, and the FreeRTOS BSD recv() wrapper only
+             * blocks while can_read()==0 -- so a -1 here surfaces as a
+             * spurious "recv failed sock_err=1" rather than end-of-stream. */
+            if (queue_len(&ts->sock.tcp.rxbuf) == 0)
+                return 0;
+            return queue_pop(&ts->sock.tcp.rxbuf, buf, len);
+        } else { /* Not established (LISTEN / SYN_SENT / SYN_RCVD / closing) */
             return -1;
         }
     } else if (IS_SOCKET_UDP(sockfd)) {

@@ -657,6 +657,58 @@ START_TEST(test_tcp_input_syn_rcvd_rst_good_seq_nonlistener_closes)
 }
 END_TEST
 
+START_TEST(test_tcp_input_syn_rcvd_rst_nullcb_recv_reports_eof)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    char buf[16];
+    int fd;
+    int can_read_ret;
+    int recv_ret;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 8080, rport = 40000;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_RCVD;
+    ts->sock.tcp.is_listener = 0;   /* accepted clone, not the listener */
+    ts->sock.tcp.ack = 2;           /* rcv_nxt = 2 */
+    ts->local_ip  = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->src_port  = lport;
+    ts->dst_port  = rport;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    ts->callback = NULL;            /* accept() never blocked: no callback armed */
+    ts->callback_arg = NULL;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    fd = (int)(MARK_TCP_SOCKET | 0);
+
+    /* Peer RST (seq == rcv_nxt) tears the half-open clone down. With no
+     * callback the teardown is immediate (close_socket from the RX path). */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 2, 0, TCP_FLAG_RST);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+
+    /* can_read() reports the closed stream as readable... */
+    can_read_ret = wolfIP_sock_can_read(&s, fd);
+    ck_assert_int_eq(can_read_ret, 1);
+
+    /* ...so recv() must report EOF (0), not a bare -1. The -1 is what the
+     * FreeRTOS shim turns into "recv failed ret=-1 sock_err=1". */
+    recv_ret = wolfIP_sock_recv(&s, fd, buf, sizeof(buf), 0);
+    ck_assert_int_eq(recv_ret, 0);
+}
+END_TEST
+
 /* Time-wait state re-ACKs any incoming segment */
 START_TEST(test_tcp_input_time_wait_sends_ack_on_any_segment)
 {
