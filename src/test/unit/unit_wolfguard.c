@@ -2307,6 +2307,80 @@ START_TEST(test_allowed_ip_source_rejected)
 END_TEST
 
 /*
+ * Rotating the device static private key (wolfguard_set_private_key) must
+ * invalidate every peer's existing session keypairs.  The symmetric session
+ * key is derived during the handshake and is independent of the static
+ * identity, so a captured pre-rotation keypair stays valid (is_valid==1,
+ * within REJECT_AFTER_TIME) unless explicitly cleared.  If it survives,
+ * wg_handle_data resolves the stale receiver_index, decrypts the frame with
+ * the unchanged key and injects the plaintext into wg0 — letting a holder of
+ * the old session keep tunnelling traffic across the rotation.
+ */
+START_TEST(test_keypairs_cleared_on_private_key_rotation)
+{
+    struct wg_device dev_a, dev_b;
+    struct wg_peer peer_a, peer_b;
+    struct wg_keypair *kp;
+    uint8_t inner_pkt[32];
+    uint8_t msg_buf[sizeof(struct wg_msg_data) + 32 + WG_AUTHTAG_LEN];
+    struct wg_msg_data *data_msg = (struct wg_msg_data *)msg_buf;
+    uint8_t new_priv[WG_PRIVATE_KEY_LEN];
+    uint64_t ctr, rx_before;
+
+    setup_paired_devices(&dev_a, &dev_b, &peer_a, &peer_b);
+
+    /* Steady-state established session: promote B's responder keypair to
+     * current, the state a long-lived peer sits in after exchanging data. */
+    if (dev_b.peers[0].keypairs.next) {
+        dev_b.peers[0].keypairs.current = dev_b.peers[0].keypairs.next;
+        dev_b.peers[0].keypairs.next = NULL;
+    }
+
+    /* B permits peer A to source from 10.0.0.0/24, so a decrypted frame from
+     * 10.0.0.1 would pass cryptokey routing and be injected into wg0. */
+    wg_allowedips_insert(&dev_b, ee32(0x0A000000), 24, 0);
+
+    /* A builds a legitimate data frame (src 10.0.0.1 -> dst 10.0.0.2). */
+    kp = peer_a.keypairs.current;
+    ck_assert_ptr_nonnull(kp);
+
+    memset(inner_pkt, 0, sizeof(inner_pkt));
+    inner_pkt[0] = 0x45;                    /* IPv4, IHL=5 */
+    inner_pkt[2] = 0x00; inner_pkt[3] = 32; /* total length = 32 */
+    inner_pkt[12] = 10; inner_pkt[13] = 0;  /* src 10.0.0.1 */
+    inner_pkt[14] = 0;  inner_pkt[15] = 1;
+    inner_pkt[16] = 10; inner_pkt[17] = 0;  /* dst 10.0.0.2 */
+    inner_pkt[18] = 0;  inner_pkt[19] = 2;
+
+    ctr = kp->sending_counter++;
+    data_msg->header.type = wg_le32_encode(WG_MSG_DATA);
+    data_msg->receiver_index = wg_le32_encode(kp->remote_index);
+    data_msg->counter = wg_le64_encode(ctr);
+    ck_assert_int_eq(
+        wg_aead_encrypt(data_msg->encrypted_data, kp->sending.key,
+                        ctr, inner_pkt, sizeof(inner_pkt), NULL, 0), 0);
+
+    /* Rotate B's static private key. */
+    wc_RNG_GenerateBlock(&test_rng, new_priv, WG_PRIVATE_KEY_LEN);
+    ck_assert_int_eq(wolfguard_set_private_key(&dev_b, new_priv), 0);
+
+    /* The pre-rotation session keypairs must be gone. */
+    ck_assert_ptr_null(dev_b.peers[0].keypairs.current);
+    ck_assert_ptr_null(dev_b.peers[0].keypairs.previous);
+    ck_assert_ptr_null(dev_b.peers[0].keypairs.next);
+
+    /* Replaying the captured frame must be dropped: rx_bytes only advances
+     * once decrypt succeeds, so it must stay flat after the rotation. */
+    rx_before = dev_b.peers[0].rx_bytes;
+    dev_b.now = 10001;
+    wg_packet_receive(&dev_b, msg_buf,
+                      sizeof(struct wg_msg_data) + sizeof(inner_pkt) + WG_AUTHTAG_LEN,
+                      ee32(0xC0A80101), ee16(51821));
+    ck_assert_uint_eq(dev_b.peers[0].rx_bytes, rx_before);
+}
+END_TEST
+
+/*
  * wolfguard_output (the wg0 TX dispatch) must reject frames whose IP version
  * nibble is not 4.  wolfguard is IPv4-only (wg_allowedips_lookup keys on a
  * uint32_t), and the destination-address read at offset 16 is only meaningful
@@ -2441,6 +2515,7 @@ static Suite *wolfguard_suite(void)
     tcase_add_test(tc, test_staged_packets_preserved_when_no_keypair);
     tcase_add_test(tc, test_keepalive_rejected_expired_key);
     tcase_add_test(tc, test_allowed_ip_source_rejected);
+    tcase_add_test(tc, test_keypairs_cleared_on_private_key_rotation);
     tcase_add_test(tc, test_output_rejects_non_ipv4);
     suite_add_tcase(s, tc);
 
