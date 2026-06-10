@@ -744,6 +744,35 @@ START_TEST(test_register_callback_variants)
 }
 END_TEST
 
+static int test_eapol_cb(void *ctx, unsigned int if_idx,
+                         const uint8_t *frame, uint32_t len)
+{
+    (void)ctx; (void)if_idx; (void)frame; (void)len;
+    return 0;
+}
+
+START_TEST(test_register_eapol_handler)
+{
+    struct wolfIP s;
+    int           sentinel = 0xA5;
+
+    wolfIP_init(&s);
+
+    /* NULL stack is a no-op (must not crash). */
+    wolfIP_register_eapol_handler(NULL, test_eapol_cb, &sentinel);
+
+    /* Register: handler + ctx stored. */
+    wolfIP_register_eapol_handler(&s, test_eapol_cb, &sentinel);
+    ck_assert_ptr_eq((void *)s.eapol_handler, (void *)test_eapol_cb);
+    ck_assert_ptr_eq(s.eapol_handler_ctx,     &sentinel);
+
+    /* Unregister: passing NULL handler clears it. */
+    wolfIP_register_eapol_handler(&s, NULL, NULL);
+    ck_assert_ptr_eq((void *)s.eapol_handler, NULL);
+    ck_assert_ptr_eq(s.eapol_handler_ctx,     NULL);
+}
+END_TEST
+
 START_TEST(test_sock_connect_udp_bound_ip_not_local)
 {
     struct wolfIP s;
