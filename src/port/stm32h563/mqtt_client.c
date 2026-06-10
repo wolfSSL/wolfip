@@ -456,10 +456,22 @@ static int handle_disconnecting(void)
             ctx.ssl = NULL;
         }
 
-        /* Clean up socket */
+        /* Clean up socket. Clear the io_desc fd first so the
+         * wolfMQTT_Cleanup_wolfIP() below does not close it again. */
+        if (ctx.io_ctx) {
+            wolfMQTT_SetFd_wolfIP(ctx.io_ctx, -1);
+        }
         if (ctx.socket_fd >= 0) {
             wolfIP_sock_close(ctx.stack, ctx.socket_fd);
             ctx.socket_fd = -1;
+        }
+
+        /* Release the wolfMQTT/wolfIP io_desc slot (in_use sentinel) so it is
+         * not leaked from the fixed MAX_WOLFMQTT_CTX pool. NULL it to avoid a
+         * double free if this path is re-entered. */
+        if (ctx.io_ctx) {
+            wolfMQTT_Cleanup_wolfIP(ctx.io_ctx);
+            ctx.io_ctx = NULL;
         }
 
         ctx.state = MQTT_STATE_IDLE;
@@ -509,9 +521,21 @@ int mqtt_client_poll(void)
                 wolfSSL_free(ctx.ssl);
                 ctx.ssl = NULL;
             }
+            /* Clear the io_desc fd first so the wolfMQTT_Cleanup_wolfIP()
+             * below does not close it again. */
+            if (ctx.io_ctx) {
+                wolfMQTT_SetFd_wolfIP(ctx.io_ctx, -1);
+            }
             if (ctx.socket_fd >= 0) {
                 wolfIP_sock_close(ctx.stack, ctx.socket_fd);
                 ctx.socket_fd = -1;
+            }
+            /* Release the wolfMQTT/wolfIP io_desc slot (in_use sentinel) so it
+             * is not leaked from the fixed MAX_WOLFMQTT_CTX pool. NULL it to
+             * avoid a double free if this path is re-entered. */
+            if (ctx.io_ctx) {
+                wolfMQTT_Cleanup_wolfIP(ctx.io_ctx);
+                ctx.io_ctx = NULL;
             }
             ctx.publish_pending = 0;
             ctx.state = MQTT_STATE_IDLE;

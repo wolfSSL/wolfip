@@ -30,6 +30,13 @@ ENABLE_MQTT ?= 0
 # MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
 ENABLE_MQTT_BROKER ?= 0
 
+# MQTT Broker persistence: set ENABLE_MQTT_BROKER_PERSIST=1 to persist broker
+# state (sessions/subs/retained/offline-queue) to STM32H5 internal flash,
+# AES-256-GCM encrypted at rest. OFF by default. Requires the wolfMQTT broker
+# persistence layer (mqtt_broker_persist.c + MqttBroker_SetPersistHooks) from
+# wolfMQTT master, and ENABLE_MQTT_BROKER=1.
+ENABLE_MQTT_BROKER_PERSIST ?= 0
+
 # TFTP client demo: set ENABLE_TFTP=1 to include the wolfIP TFTP client
 # that downloads a firmware image at boot and stages it into the
 # wolfBoot update partition. TZEN=0 only.
@@ -310,7 +317,7 @@ SRCS += $(WOLFMQTT_SRCS)
 
 # wolfMQTT objects use relaxed warnings + MQTT/SSL include paths + user_settings.h
 $(WOLFMQTT_ROOT)/%.o: $(WOLFMQTT_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) $(MQTT_PERSIST_DEFS) -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
 
 endif # ENABLE_MQTT
 
@@ -333,13 +340,49 @@ CFLAGS += -DENABLE_MQTT_BROKER
 CFLAGS += -DWOLFMQTT_USER_SETTINGS
 CFLAGS += -I$(WOLFMQTT_ROOT)
 
-# MQTT broker wrapper
+# Opt-in broker persistence. Gated by ENABLE_MQTT_BROKER_PERSIST so the
+# default broker build stays compatible with released wolfMQTT (the
+# persistence layer is only in wolfMQTT PR 538 / broker_features for now).
+# The persistence macros are defined on the command line (not in
+# user_settings.h) so they are set before any wolfMQTT/wolfSSL header is
+# parsed - the port includes wolfmqtt/mqtt_broker.h before wolfssl/ssl.h
+# pulls in user_settings.h, and these also need to precede mqtt_broker.h's
+# #ifndef size defaults. MQTT_PERSIST_DEFS is reused by the wolfMQTT object
+# pattern rules below.
+ifeq ($(ENABLE_MQTT_BROKER_PERSIST),1)
+# The flash KV backend writes via the non-secure FLASH register view and a
+# fixed flash layout, so it is TZEN=0 only.
+ifeq ($(TZEN),1)
+  $(error ENABLE_MQTT_BROKER_PERSIST=1 requires TZEN=0 (the flash KV backend uses the non-secure FLASH register view))
+endif
+# NOTE: WOLFMQTT_BROKER_PERSIST_ENCRYPT enables AES-256-GCM at rest, but the
+# backend's derive_key hook returns a FIXED DEVELOPMENT KEY (see
+# mqtt_broker_persist_flash.c). This is for testing only - replace derive_key
+# with a real key source (SE/HSM/device secret) before relying on
+# confidentiality.
+MQTT_PERSIST_DEFS := -DWOLFMQTT_BROKER_PERSIST -DWOLFMQTT_BROKER_PERSIST_ENCRYPT \
+                     -DBROKER_MAX_PERSIST_SESSIONS=8 -DBROKER_MAX_OFFLINE_MSGS_PER_SUB=8
+CFLAGS += $(MQTT_PERSIST_DEFS)
+endif
+
+# MQTT broker wrapper (+ STM32H5 internal-flash persistence backend when
+# ENABLE_MQTT_BROKER_PERSIST=1).
 SRCS += mqtt_broker.c
+ifeq ($(ENABLE_MQTT_BROKER_PERSIST),1)
+SRCS += mqtt_broker_persist_flash.c
+endif
 
 # wolfMQTT broker source files
 # Note: mqtt_client.c is needed by broker internals (MqttClient_Init, etc.)
+# mqtt_broker_persist.c is the generic persistence codec (encode/decode +
+# AES-GCM wrap), built only when persistence is enabled. The POSIX backend
+# (mqtt_broker_persist_posix.c) is never built here - it pulls in
+# <dirent.h>/<fcntl.h>; we supply a flash backend instead.
 WOLFMQTT_BROKER_SRCS := \
     $(WOLFMQTT_ROOT)/src/mqtt_broker.c
+ifeq ($(ENABLE_MQTT_BROKER_PERSIST),1)
+WOLFMQTT_BROKER_SRCS += $(WOLFMQTT_ROOT)/src/mqtt_broker_persist.c
+endif
 
 # Only add shared wolfMQTT sources if MQTT client is not already enabled
 ifneq ($(ENABLE_MQTT),1)
@@ -355,7 +398,7 @@ SRCS += $(WOLFMQTT_BROKER_SRCS)
 # Only define this pattern rule if MQTT client didn't already define it
 ifneq ($(ENABLE_MQTT),1)
 $(WOLFMQTT_ROOT)/%.o: $(WOLFMQTT_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT_BROKER -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DENABLE_MQTT_BROKER $(MQTT_PERSIST_DEFS) -DWOLFSSL_USER_SETTINGS -DWOLFMQTT_USER_SETTINGS -I$(WOLFMQTT_ROOT) -I$(WOLFSSL_ROOT) -I$(ROOT)/src -c $< -o $@
 endif
 
 endif # ENABLE_MQTT_BROKER

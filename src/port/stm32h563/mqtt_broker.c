@@ -26,6 +26,9 @@
 #include <string.h>
 
 #include "certs.h"
+#ifdef WOLFMQTT_BROKER_PERSIST
+#include "mqtt_broker_persist_flash.h"
+#endif
 
 /* Configuration defaults */
 #define DEFAULT_BROKER_PORT_TLS     8883
@@ -49,6 +52,9 @@ static struct {
     MqttBroker broker;
     MqttBrokerNet net;
     WOLFSSL_CTX *ssl_ctx;
+#ifdef WOLFMQTT_BROKER_PERSIST
+    MqttBrokerPersistHooks persist_hooks;
+#endif
     broker_state_t state;
     mqtt_broker_debug_cb debug_cb;
     uint16_t port;
@@ -163,6 +169,19 @@ static int handle_init(void)
 
     /* Configure broker */
     ctx.broker.port = ctx.port;
+
+#ifdef WOLFMQTT_BROKER_PERSIST
+    /* Install the STM32H5 internal-flash persistence backend before
+     * MqttBroker_Start (restore runs inside Start). On failure the broker
+     * still runs, just without durable state. */
+    if (MqttBrokerNet_PersistFlash_Init(&ctx.persist_hooks) == 0) {
+        (void)MqttBroker_SetPersistHooks(&ctx.broker, &ctx.persist_hooks);
+        debug_print("MQTT Broker: flash persistence enabled\n");
+    }
+    else {
+        debug_print("MQTT Broker: persist init failed (in-memory only)\n");
+    }
+#endif
 
     /* Set up TLS if enabled */
     if (ctx.use_tls) {
