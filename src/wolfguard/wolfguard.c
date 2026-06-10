@@ -164,6 +164,7 @@ int wolfguard_set_private_key(struct wg_device *dev,
                               const uint8_t *private_key)
 {
     int ret;
+    int i;
 
     memcpy(dev->static_private, private_key, WG_PRIVATE_KEY_LEN);
 
@@ -175,6 +176,36 @@ int wolfguard_set_private_key(struct wg_device *dev,
 
     /* Re-initialize cookie checker with new public key */
     wg_cookie_checker_init(&dev->cookie_checker, dev->static_public);
+
+    for (i = 0; i < WOLFGUARD_MAX_PEERS; i++) {
+        struct wg_peer *peer = &dev->peers[i];
+
+        if (!peer->is_active)
+            continue;
+
+        /* Drop the live session keypairs. */
+        wg_memzero(&peer->keypairs.keypair_slots,
+                   sizeof(peer->keypairs.keypair_slots));
+        peer->keypairs.current = NULL;
+        peer->keypairs.previous = NULL;
+        peer->keypairs.next = NULL;
+
+        /* Drop plaintext queued under the old identity. */
+        wg_memzero(peer->staged_packets, sizeof(peer->staged_packets));
+        memset(peer->staged_packet_lens, 0, sizeof(peer->staged_packet_lens));
+        peer->staged_count = 0;
+
+        /* Re-init the handshake with the new static key, preserving the PSK.
+         * This also recomputes precomputed_static_static so future handshakes
+         * use the rotated identity. */
+        {
+            uint8_t psk[WG_SYMMETRIC_KEY_LEN];
+            memcpy(psk, peer->handshake.preshared_key, WG_SYMMETRIC_KEY_LEN);
+            wg_noise_handshake_init(&peer->handshake, dev->static_private,
+                                    peer->public_key, psk, &dev->rng);
+            wg_memzero(psk, sizeof(psk));
+        }
+    }
 
     return 0;
 }
