@@ -9994,31 +9994,12 @@ int wolfIP_dns_ptr_lookup(struct wolfIP *s, uint32_t ip, uint16_t *id, void (*lo
     return dns_send_query(s, ptr_name, id, DNS_PTR);
 }
 
-/* wolfIP_poll: poll the network stack for incoming packets
- * This function should be called in a loop to process incoming packets.
- * It will call the poll function of the device driver and process the
- * received packets.
- *
- * This function also handles timers for all supported protocols.
- *
- * It returns the number of milliseconds to wait before
- * calling it again (TODO).
- */
-int wolfIP_poll(struct wolfIP *s, uint64_t now)
+static void poll_devices(struct wolfIP *s)
 {
-    int len = 0;
-    int i = 0;
     uint8_t buf[LINK_MTU];
+    int len = 0;
     unsigned int if_idx;
-    struct wolfIP_timer tmr;
-    memset(buf, 0, LINK_MTU);
 
-    if (!s)
-        return -WOLFIP_EINVAL;
-
-    s->last_tick = now;
-
-    /* Step 1: Poll the device */
     for (if_idx = 0; if_idx < s->if_count; if_idx++) {
         struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
         int budget = WOLFIP_POLL_BUDGET;
@@ -10046,12 +10027,35 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             }
         } while (len > 0 && budget > 0);
     }
-    /* Step 2: Handle timers */
-    while(is_timer_expired(&s->timers, now)) {
+}
+
+static void handle_timers(struct wolfIP *s)
+{
+    struct wolfIP_timer tmr;
+
+    while(is_timer_expired(&s->timers, s->last_tick)) {
         tmr = timers_binheap_pop(&s->timers);
         tmr.cb(tmr.arg);
     }
-    /* Step 3: handle DHCP and application callbacks */
+}
+
+static void dispatch_events(struct tsocket *socks, int count, uint32_t mark)
+{
+    int i;
+    for (i = 0; i < count; i++) {
+        struct tsocket *ts = &socks[i];
+        if (ts->callback && ts->events) {
+            uint16_t events = ts->events;
+            ts->events = 0;
+            ts->callback(i | mark, events, ts->callback_arg);
+        }
+    }
+}
+
+static void handle_socket_callbacks(struct wolfIP *s)
+{
+    int i = 0;
+
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *ts = &s->tcpsockets[i];
 
@@ -10084,6 +10088,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             ts->events = 0;
             ts->callback(i | MARK_TCP_SOCKET, events, ts->callback_arg);
         }
+
         /* Now that CB_EVENT_CLOSED has been delivered, reap the deferred-close
          * socket. Disarm the callback first so close_socket() takes the plain
          * teardown path instead of re-deferring (it re-arms close_notify_pending
@@ -10095,22 +10100,10 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             close_socket(ts);
         }
     }
-    for (i = 0; i < MAX_UDPSOCKETS; i++) {
-        struct tsocket *ts = &s->udpsockets[i];
-        if ((ts->callback) && (ts->events)) {
-            uint16_t events = ts->events;
-            ts->events = 0;
-            ts->callback(i | MARK_UDP_SOCKET, events, ts->callback_arg);
-        }
-    }
-    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
-        struct tsocket *ts = &s->icmpsockets[i];
-        if ((ts->callback) && (ts->events)) {
-            uint16_t events = ts->events;
-            ts->events = 0;
-            ts->callback(i | MARK_ICMP_SOCKET, events, ts->callback_arg);
-        }
-    }
+
+    dispatch_events(s->udpsockets,  MAX_UDPSOCKETS,  MARK_UDP_SOCKET);
+    dispatch_events(s->icmpsockets, MAX_ICMPSOCKETS, MARK_ICMP_SOCKET);
+
 #if WOLFIP_RAWSOCKETS
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];
@@ -10129,14 +10122,15 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         }
     }
 #endif
+}
 
-    /* Step 4: attempt to write any pending data */
-    /**
-     * TCP
-     * */
+static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
+{
+    int i;
+
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         struct tsocket *ts = &s->tcpsockets[i];
-        uint32_t in_flight = ts->sock.tcp.bytes_in_flight;
+        uint32_t in_flight;
         uint32_t size = 0;
         uint32_t send_guard = 0;
         uint32_t send_budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
@@ -10152,7 +10146,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         }
         in_flight = ts->sock.tcp.bytes_in_flight;
         if (ts->sock.tcp.persist_active && (ts->sock.tcp.peer_rwnd > 0 ||
-                !tcp_has_pending_unsent_payload(ts)))
+                    !tcp_has_pending_unsent_payload(ts)))
             tcp_persist_stop(ts);
         desc = fifo_peek(&ts->sock.tcp.txbuf);
         while (desc && send_guard++ < send_budget) {
@@ -10166,8 +10160,10 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                     break;
                 desc = next_desc;
                 continue;
-            } else {
+            }
+
 #ifdef ETHERNET
+            {
                 ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, ts->remote_ip);
                 if (wolfIP_is_loopback_if(tx_if)) {
                     struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
@@ -10180,115 +10176,117 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
                         break;
                     }
                 }
+            }
 #endif
-                    {
-                        uint32_t snd_wnd = ts->sock.tcp.cwnd;
-                        int is_retrans;
-                        uint32_t seg_ip_len;
-                        uint32_t seg_hdr_len;
-                        uint32_t seg_payload_len;
-                        if (ts->sock.tcp.peer_rwnd < snd_wnd)
-                            snd_wnd = ts->sock.tcp.peer_rwnd;
-                        is_retrans = (desc->flags & PKT_FLAG_RETRANS) ? 1 : 0;
-                        seg_ip_len = tcp_tx_desc_ip_len(ts, desc, tcp);
-                        seg_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
-                        seg_payload_len = (seg_ip_len > seg_hdr_len) ? (seg_ip_len - seg_hdr_len) : 0;
-                        if (is_retrans || seg_payload_len == 0 ||
-                                (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
-                        struct wolfIP_timer new_tmr = {};
-                        size = seg_ip_len;
-                        tcp = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
-                        /* Refresh ack counter */
-                        ts->sock.tcp.last_ack = ts->sock.tcp.ack;
-                        tcp->ack = ee32(ts->sock.tcp.ack);
-                        tcp->win = ee16(tcp_adv_win(ts, 1));
-                        ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
-                        if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
-                            break;
-                        }
-                        if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip, desc->len) != 0) {
-                            break;
-                        }
-#ifdef ETHERNET
-                        if (!wolfIP_ll_is_non_ethernet(ts->S, tx_if)) {
-                            if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip.eth, desc->len) != 0) {
-                                break;
-                            }
-                        }
-#endif
-                        {
-                            #ifdef WOLFIP_ESP
-                            if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                                struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                                int esp_err = esp_send(ll, (struct wolfIP_ip_packet *)tcp, size);
-                                if (esp_err == 1) {
-                                    /* ipsec not configured on this interface.
-                                     * send plaintext. */
-                                    send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
-                                }
-                            } else {
-                                send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
-                            }
-                            #else
-                            send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
-                            #endif /* WOLFIP_ESP */
-                        }
-                        if (send_ret == -WOLFIP_EAGAIN) {
-                            if (tx_has_writable_space(ts))
-                                ts->events |= CB_EVENT_WRITABLE;
-                            break;
-                        }
-                        if (send_ret < 0)
-                            break;
-                        desc->flags |= PKT_FLAG_SENT;
-                        desc->flags &= ~PKT_FLAG_RETRANS;
-                        if (is_retrans)
-                            desc->flags |= PKT_FLAG_WAS_RETRANS;
-                        desc->time_sent = now;
-                        if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
-                            desc = fifo_pop(&ts->sock.tcp.txbuf);
-                        } else {
-                            uint32_t payload_len = size - (IP_HEADER_LEN + (tcp->hlen >> 2));
-                            if (ts->sock.tcp.tmr_rto != NO_TIMER) {
-                                timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
-                                ts->sock.tcp.tmr_rto = NO_TIMER;
-                            }
-                            new_tmr.cb = tcp_rto_cb;
-                            new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
-                            new_tmr.arg = ts;
-                            ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
-                            if (!is_retrans) {
-                                in_flight += payload_len;
-                                ts->sock.tcp.bytes_in_flight += payload_len;
-                            }
-                            next_desc = fifo_next(&ts->sock.tcp.txbuf, desc);
-                            if (next_desc == desc)
-                                break;
-                            desc = next_desc;
-                            if (ts->sock.tcp.persist_active && ts->sock.tcp.peer_rwnd > 0)
-                                tcp_persist_stop(ts);
-                        }
-                        } else {
-                        struct pkt_desc *rexmit_desc = NULL;
-                        if (seg_payload_len > 0 && ts->sock.tcp.peer_rwnd == 0)
-                            tcp_persist_start(ts, now);
-                        if (!is_retrans) {
-                            rexmit_desc = tcp_find_pending_retrans(ts, desc);
-                            if (rexmit_desc && rexmit_desc != desc) {
-                                desc = rexmit_desc;
-                                continue;
-                            }
-                        }
+            {
+                uint32_t snd_wnd = ts->sock.tcp.cwnd;
+                int is_retrans;
+                uint32_t seg_ip_len;
+                uint32_t seg_hdr_len;
+                uint32_t seg_payload_len;
+                if (ts->sock.tcp.peer_rwnd < snd_wnd)
+                    snd_wnd = ts->sock.tcp.peer_rwnd;
+                is_retrans = (desc->flags & PKT_FLAG_RETRANS) ? 1 : 0;
+                seg_ip_len = tcp_tx_desc_ip_len(ts, desc, tcp);
+                seg_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
+                seg_payload_len = (seg_ip_len > seg_hdr_len) ? (seg_ip_len - seg_hdr_len) : 0;
+                if (is_retrans || seg_payload_len == 0 ||
+                        (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
+                    struct wolfIP_timer new_tmr = {};
+                    size = seg_ip_len;
+                    /* Refresh ack counter */
+                    ts->sock.tcp.last_ack = ts->sock.tcp.ack;
+                    tcp->ack = ee32(ts->sock.tcp.ack);
+                    tcp->win = ee16(tcp_adv_win(ts, 1));
+                    ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
+                    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
                         break;
                     }
+                    if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip, desc->len) != 0) {
+                        break;
                     }
+#ifdef ETHERNET
+                    if (!wolfIP_ll_is_non_ethernet(ts->S, tx_if)) {
+                        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip.eth, desc->len) != 0) {
+                            break;
+                        }
+                    }
+#endif
+                    {
+#ifdef WOLFIP_ESP
+                        if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
+                            struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
+                            int esp_err = esp_send(ll, (struct wolfIP_ip_packet *)tcp, size);
+                            if (esp_err == 1) {
+                                /* ipsec not configured on this interface.
+                                 * send plaintext. */
+                                send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+                            }
+                        } else {
+                            send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+                        }
+#else
+                        send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+#endif /* WOLFIP_ESP */
+                    }
+                    if (send_ret == -WOLFIP_EAGAIN) {
+                        if (tx_has_writable_space(ts))
+                            ts->events |= CB_EVENT_WRITABLE;
+                        break;
+                    }
+                    if (send_ret < 0)
+                        break;
+                    desc->flags |= PKT_FLAG_SENT;
+                    desc->flags &= ~PKT_FLAG_RETRANS;
+                    if (is_retrans)
+                        desc->flags |= PKT_FLAG_WAS_RETRANS;
+                    desc->time_sent = now;
+                    if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
+                        desc = fifo_pop(&ts->sock.tcp.txbuf);
+                    } else {
+                        uint32_t payload_len = size - (IP_HEADER_LEN + (tcp->hlen >> 2));
+                        if (ts->sock.tcp.tmr_rto != NO_TIMER) {
+                            timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
+                            ts->sock.tcp.tmr_rto = NO_TIMER;
+                        }
+                        new_tmr.cb = tcp_rto_cb;
+                        new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+                        new_tmr.arg = ts;
+                        ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
+                        if (!is_retrans) {
+                            in_flight += payload_len;
+                            ts->sock.tcp.bytes_in_flight += payload_len;
+                        }
+                        next_desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+                        if (next_desc == desc)
+                            break;
+                        desc = next_desc;
+                        if (ts->sock.tcp.persist_active && ts->sock.tcp.peer_rwnd > 0)
+                            tcp_persist_stop(ts);
+                    }
+                } else {
+                    struct pkt_desc *rexmit_desc = NULL;
+                    if (seg_payload_len > 0 && ts->sock.tcp.peer_rwnd == 0)
+                        tcp_persist_start(ts, now);
+                    if (!is_retrans) {
+                        rexmit_desc = tcp_find_pending_retrans(ts, desc);
+                        if (rexmit_desc && rexmit_desc != desc) {
+                            desc = rexmit_desc;
+                            continue;
+                        }
+                    }
+                    break;
+                }
             }
         }
     }
+}
 
-    /*
-     * UDP
-     * */
+static void flush_udp_tx(struct wolfIP *s)
+{
+    int i;
+    int len;
+
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
@@ -10375,6 +10373,13 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         if (tx_drained && tx_has_writable_space(t))
             t->events |= CB_EVENT_WRITABLE;
     }
+}
+
+static void flush_icmp_tx(struct wolfIP *s)
+{
+    int i;
+    int len;
+
     for (i = 0; i < MAX_ICMPSOCKETS; i++) {
         struct tsocket *t = &s->icmpsockets[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
@@ -10434,7 +10439,13 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
     }
+}
+
+static void flush_raw_tx(struct wolfIP *s)
+{
 #if WOLFIP_RAWSOCKETS
+    int i;
+
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];
         struct pkt_desc *desc;
@@ -10491,8 +10502,15 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             (void)nexthop;
         }
     }
+#else
+    (void)s;
 #endif
+}
+
+static void flush_packet_tx(struct wolfIP *s)
+{
 #if WOLFIP_PACKET_SOCKETS
+    int i;
     for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
         struct packetsocket *p = &s->packetsockets[i];
         struct pkt_desc *desc;
@@ -10519,7 +10537,44 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
             desc = fifo_peek(&p->txbuf);
         }
     }
+#else
+    (void)s;
 #endif
+}
+
+/* wolfIP_poll: poll the network stack for incoming packets
+ * This function should be called in a loop to process incoming packets.
+ * It will call the poll function of the device driver and process the
+ * received packets.
+ *
+ * This function also handles timers for all supported protocols.
+ *
+ * TODO: Return the number of milliseconds to wait before
+ * calling it again.
+ */
+int wolfIP_poll(struct wolfIP *s, uint64_t now)
+{
+    if (!s)
+        return -WOLFIP_EINVAL;
+
+    s->last_tick = now;
+
+    /* Poll the device */
+    poll_devices(s);
+
+    /* Handle timers */
+    handle_timers(s);
+
+    /* Handle socket callbacks */
+    handle_socket_callbacks(s);
+
+    /* Attempt to write any pending data for all supported protocols */
+    flush_tcp_tx(s, now);
+    flush_udp_tx(s);
+    flush_icmp_tx(s);
+    flush_raw_tx(s);
+    flush_packet_tx(s);
+
     return 0;
 }
 
