@@ -5,11 +5,19 @@
  *   SRAM:  640KB @ 0x20000000 (contiguous SRAM1+SRAM2+SRAM3)
  *
  * Non-secure addresses (TrustZone disabled).
+ *
+ * The top 32KB of flash (4x 8KB sectors, 0x081F8000-0x08200000) are
+ * carved out of the code region and reserved for the MQTT broker
+ * persistence key/value store (see mqtt_broker_persist_flash.c, which
+ * hard-codes KVF_REGION_BASE = 0x081F8000 and derives the region extent
+ * from KVF_SECTOR_SIZE/KVF_BANK_SIZE - two 16KB banks - to match this
+ * 32KB carve-out). The linker can never place code there, so an
+ * erase/program of the KV region cannot corrupt the firmware image.
  */
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 2048K
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 2016K  /* 2048K - 32K KV store */
     RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 640K
 }
 

@@ -141,9 +141,16 @@ jobs:
           set -euo pipefail
           make -C src/port/stm32h563 \
             WOLFSSL_ROOT=../../../../wolfssl \
-            ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_SSH=1 \
+            ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_MQTT_BROKER_PERSIST=1 \
+            ENABLE_SSH=1 \
             WOLFSSL_SP_NO_ASM=1 \
             CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+          # Confirm the broker persistence backend is compiled in. Write strings
+          # to a file first: piping into 'grep -q' makes grep close the pipe
+          # early, so 'strings' takes SIGPIPE (141) which 'set -o pipefail'
+          # would turn into a spurious job failure.
+          strings src/port/stm32h563/app.bin > /tmp/app.strings
+          grep -q "flash persistence enabled" /tmp/app.strings
 
       - name: Run m33mu + DHCP + full test
         timeout-minutes: 15

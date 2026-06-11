@@ -119,7 +119,11 @@ static int wolfmqtt_net_read(void *context, byte *buf, int buf_len,
     }
 
     ret = wolfIP_sock_recv(desc->stack, desc->fd, buf, buf_len, 0);
-    if (ret == -WOLFIP_EAGAIN || ret == -1) {
+    /* Only EAGAIN (TX/RX buffer transient) is retryable. A bare -1 from
+     * wolfIP means the socket is no longer ESTABLISHED/CLOSE_WAIT (e.g. a
+     * peer RST closed it); treat it as fatal so wolfMQTT does not busy-spin
+     * on MQTT_CODE_CONTINUE forever. */
+    if (ret == -WOLFIP_EAGAIN) {
         return MQTT_CODE_CONTINUE;
     }
     if (ret == 0) {
@@ -144,7 +148,12 @@ static int wolfmqtt_net_write(void *context, const byte *buf, int buf_len,
     }
 
     ret = wolfIP_sock_send(desc->stack, desc->fd, buf, buf_len, 0);
-    if (ret == -WOLFIP_EAGAIN || ret == -1) {
+    /* Only EAGAIN (TX buffer full) is retryable. A bare -1 from wolfIP means
+     * the socket is no longer ESTABLISHED/CLOSE_WAIT (e.g. a peer RST closed
+     * it); treat it as fatal so wolfMQTT's publish retry loop does not
+     * busy-spin on MQTT_CODE_CONTINUE forever (which on a single-threaded
+     * target would stall wolfIP_poll and deny all network service). */
+    if (ret == -WOLFIP_EAGAIN) {
         return MQTT_CODE_CONTINUE;
     }
     if (ret == 0) {

@@ -272,6 +272,14 @@ extern void wolfmqtt_log(const char *fmt, ...);
 #define BROKER_MAX_RETAINED        4
 #define BROKER_MAX_PAYLOAD_LEN  1024
 
+/* Broker persistence (encrypted-at-rest flash KV) is opt-in via the
+ * Makefile flag ENABLE_MQTT_BROKER_PERSIST, which defines
+ * WOLFMQTT_BROKER_PERSIST{,_ENCRYPT} and the BROKER_MAX_PERSIST_* sizes on
+ * the compiler command line. They are intentionally NOT defined here: the
+ * port's mqtt_broker.c includes <wolfmqtt/mqtt_broker.h> before
+ * <wolfssl/ssl.h> pulls in this file, so a #define here would land after
+ * the broker header's persistence structs were already skipped. */
+
 /* Broker logging: errors and info (connections, subscriptions) */
 #define BROKER_LOG_LEVEL_DEFAULT   2 /* BROKER_LOG_INFO */
 
