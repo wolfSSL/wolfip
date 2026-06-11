@@ -96,12 +96,37 @@
 #define KVF_TOMB_MARK     0x00U
 
 #define KVF_MAX_KEY       256U                 /* per hooks API contract */
-#define KVF_MAX_BLOB      1280U                /* >= largest GCM-wrapped record */
+
+/* Largest GCM-wrapped blob the wolfMQTT persist codec can emit, derived
+ * from the broker config macros so a config bump cannot silently exceed
+ * it. Encrypted blob layout (wolfMQTT src/mqtt_broker_persist.c):
+ * WMQB header (12) + GCM nonce (12) + body + GCM tag (16). */
+#define KVF_WRAP_OVERHEAD  (12U + 12U + 16U)
+/* Largest record bodies the codec can emit:
+ * SUBS: 2 + count*(1+1+2+filter), count <= BROKER_MAX_SUBS,
+ *       filter strlen <= BROKER_MAX_FILTER_LEN-1
+ * OUTQ: 26 + topic + payload (covers RETAINED, which is 6 smaller;
+ *       OUTQ itself is a no-op under WOLFMQTT_STATIC_MEMORY but
+ *       keeping it in the bound makes it config-proof) */
+#define KVF_SUBS_BODY_MAX  (2U + (BROKER_MAX_SUBS) * \
+                            (4U + (BROKER_MAX_FILTER_LEN - 1U)))
+#define KVF_OUTQ_BODY_MAX  (26U + (BROKER_MAX_TOPIC_LEN - 1U) + \
+                            (BROKER_MAX_PAYLOAD_LEN))
+#define KVF_BODY_MAX       ((KVF_SUBS_BODY_MAX > KVF_OUTQ_BODY_MAX) ? \
+                            KVF_SUBS_BODY_MAX : KVF_OUTQ_BODY_MAX)
+#define KVF_MAX_BLOB       (KVF_BODY_MAX + KVF_WRAP_OVERHEAD)
+
 #define KVF_PAYLOAD_PAD_MAX  (((KVF_MAX_KEY + KVF_MAX_BLOB) + 15U) & ~15U)
 
 #define KVF_ALIGN16(x)    (((uint32_t)(x) + 15U) & ~15U)
 /* stride = header + commit + padded payload + tombstone */
 #define KVF_STRIDE(klen, blen)  (3U * KVF_QW + KVF_ALIGN16((klen) + (blen)))
+
+/* One max-size record (plus the bank header quad-word) must fit in a
+ * bank, or kv_put could never store it even after compaction. */
+typedef char kvf_assert_rec_fits_bank[
+    (KVF_STRIDE(KVF_MAX_KEY, KVF_MAX_BLOB) + KVF_QW <= KVF_BANK_SIZE) ?
+    1 : -1];
 
 /* ----- STM32H5 FLASH controller (TZEN=0 / non-secure view) ---------- */
 #define KVF_FLASH_BASE       0x40022000UL
