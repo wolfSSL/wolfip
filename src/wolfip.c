@@ -10006,22 +10006,20 @@ static void poll_devices(struct wolfIP *s)
         if (!ll || !ll->poll)
             continue;
         do {
-            if (ll->non_ethernet) {
-                uint32_t frame_mtu = wolfIP_ll_frame_mtu(ll);
-                if (frame_mtu <= ETH_HEADER_LEN)
-                    break;
-#if ETH_HEADER_LEN > 0
-                memset(buf, 0, ETH_HEADER_LEN);
-#endif
-                len = ll->poll(ll, buf + ETH_HEADER_LEN,
-                        frame_mtu - ETH_HEADER_LEN);
-                if (len > 0)
-                    len += ETH_HEADER_LEN;
-            } else {
-                len = ll->poll(ll, buf, wolfIP_ll_frame_mtu(ll));
-            }
+            unsigned int off = ll->non_ethernet ? ETH_HEADER_LEN : 0;
+            uint32_t mtu = wolfIP_ll_frame_mtu(ll);
+
+            if (off && mtu <= off)
+                break;
+
+            if (off)
+                memset(buf, 0, off);
+
+            len = ll->poll(ll, buf + off, mtu - off);
+
             if (len > 0) {
                 /* Process packet */
+                len += off;
                 wolfIP_recv_on(s, if_idx, buf, len);
                 budget--;
             }
