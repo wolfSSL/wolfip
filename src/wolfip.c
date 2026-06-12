@@ -10027,11 +10027,11 @@ static void poll_devices(struct wolfIP *s)
     }
 }
 
-static void handle_timers(struct wolfIP *s)
+static void handle_timers(struct wolfIP *s, uint64_t now)
 {
     struct wolfIP_timer tmr;
 
-    while(is_timer_expired(&s->timers, s->last_tick)) {
+    while(is_timer_expired(&s->timers, now)) {
         tmr = timers_binheap_pop(&s->timers);
         tmr.cb(tmr.arg);
     }
@@ -10561,7 +10561,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     poll_devices(s);
 
     /* Handle timers */
-    handle_timers(s);
+    handle_timers(s, now);
 
     /* Handle socket callbacks */
     handle_socket_callbacks(s);
