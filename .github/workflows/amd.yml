@@ -1,0 +1,178 @@
+name: AMD/Xilinx ports
+
+# Build (and QEMU boot-smoke) the bare-metal wolfIP ports under src/port/amd/:
+# ZCU102 (A53), Versal VMK180 (A72) and Zynq-7000 ZC702 (A9). app.elf builds
+# from repo sources only - no Vitis/FSBL/bootgen/hardware. (BOOT.BIN needs an
+# FSBL + bootgen and is out of scope here.)
+
+on:
+  push:
+    paths:
+      - 'src/port/amd/**'
+      - 'src/wolfip.c'
+      - 'wolfip.h'
+      - 'tools/scripts/amd/**'
+      - '.github/workflows/amd.yml'
+  pull_request:
+    paths:
+      - 'src/port/amd/**'
+      - 'src/wolfip.c'
+      - 'wolfip.h'
+      - 'tools/scripts/amd/**'
+      - '.github/workflows/amd.yml'
+
+# Cancel superseded runs on the same ref (runner optimization).
+concurrency:
+  group: amd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARM_TC_VER: 14.3.rel1
+  TC_ROOT: /home/runner/toolchains
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Prime the toolchain cache once so the matrix legs don't each re-download
+  # ~150 MB. Pin the official ARM GNU Toolchain bundle that ships BOTH cross
+  # compilers (aarch64-none-elf for ZCU102/Versal, arm-none-eabi for Zynq-7000).
+  # --------------------------------------------------------------------------
+  toolchains:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Cache ARM GNU toolchains
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TC_ROOT }}
+          key: arm-gnu-${{ env.ARM_TC_VER }}-x86_64
+
+      - name: Download + extract toolchains
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          mkdir -p "$TC_ROOT"
+          base="https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TC_VER}/binrel"
+          for t in aarch64-none-elf arm-none-eabi; do
+            f="arm-gnu-toolchain-${ARM_TC_VER}-x86_64-${t}.tar.xz"
+            curl -fSL --retry 3 --retry-delay 5 -o "/tmp/$f" "$base/$f"
+            tar -xf "/tmp/$f" -C "$TC_ROOT"
+          done
+          ls -d "$TC_ROOT"/*/
+
+  # --------------------------------------------------------------------------
+  # Full build matrix: per board x layout x default/SPEED_TEST (~10 legs).
+  # -Werror is already in each board's CFLAGS, so a clean compile is the gate.
+  # --------------------------------------------------------------------------
+  build:
+    needs: toolchains
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { board: zcu102,   cross: aarch64-none-elf-, layout: ocm, speed: ""            }
+          - { board: zcu102,   cross: aarch64-none-elf-, layout: ocm, speed: "-DSPEED_TEST" }
+          - { board: zcu102,   cross: aarch64-none-elf-, layout: ddr, speed: ""            }
+          - { board: zcu102,   cross: aarch64-none-elf-, layout: ddr, speed: "-DSPEED_TEST" }
+          - { board: versal,   cross: aarch64-none-elf-, layout: ocm, speed: ""            }
+          - { board: versal,   cross: aarch64-none-elf-, layout: ocm, speed: "-DSPEED_TEST" }
+          - { board: versal,   cross: aarch64-none-elf-, layout: ddr, speed: ""            }
+          - { board: versal,   cross: aarch64-none-elf-, layout: ddr, speed: "-DSPEED_TEST" }
+          - { board: zynq7000, cross: arm-none-eabi-,    layout: ocm, speed: ""            }
+          - { board: zynq7000, cross: arm-none-eabi-,    layout: ocm, speed: "-DSPEED_TEST" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore toolchains
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TC_ROOT }}
+          key: arm-gnu-${{ env.ARM_TC_VER }}-x86_64
+          fail-on-cache-miss: true
+
+      - name: Add toolchains to PATH
+        run: |
+          echo "$TC_ROOT/arm-gnu-toolchain-${ARM_TC_VER}-x86_64-aarch64-none-elf/bin" >> "$GITHUB_PATH"
+          echo "$TC_ROOT/arm-gnu-toolchain-${ARM_TC_VER}-x86_64-arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Build ${{ matrix.board }} (${{ matrix.layout }}${{ matrix.speed && ' SPEED' || '' }})
+        run: |
+          set -euxo pipefail
+          ${{ matrix.cross }}gcc --version | head -1
+          args="CROSS_COMPILE=${{ matrix.cross }}"
+          # zynq7000 is OCM-only (no LAYOUT switch / no target_ddr.ld).
+          if [ "${{ matrix.board }}" != "zynq7000" ]; then
+            args="$args LAYOUT=${{ matrix.layout }}"
+          fi
+          if [ -n "${{ matrix.speed }}" ]; then
+            args="$args CFLAGS_EXTRA=${{ matrix.speed }}"
+          fi
+          make -C "src/port/amd/boards/${{ matrix.board }}" $args
+          ${{ matrix.cross }}size "src/port/amd/boards/${{ matrix.board }}/app.elf"
+
+      - name: Upload app.elf
+        uses: actions/upload-artifact@v4
+        with:
+          name: amd-${{ matrix.board }}-${{ matrix.layout }}-${{ matrix.speed != '' && 'speed' || 'default' }}
+          path: src/port/amd/boards/${{ matrix.board }}/app.elf
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # QEMU boot smoke: build the OCM/default app per board and confirm it boots
+  # to "Ready" under the matching Xilinx QEMU machine. zcu102 gates; versal and
+  # zynq7000 are informational (continue-on-error) until their QEMU device
+  # models are confirmed - the machine/UART/load details may need iteration.
+  # --------------------------------------------------------------------------
+  qemu:
+    needs: toolchains
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { board: zcu102,   cross: aarch64-none-elf-, gate: true  }
+          - { board: versal,   cross: aarch64-none-elf-, gate: false }
+          - { board: zynq7000, cross: arm-none-eabi-,    gate: false }
+    continue-on-error: ${{ !matrix.gate }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore toolchains
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TC_ROOT }}
+          key: arm-gnu-${{ env.ARM_TC_VER }}-x86_64
+          fail-on-cache-miss: true
+
+      - name: Add toolchains to PATH
+        run: |
+          echo "$TC_ROOT/arm-gnu-toolchain-${ARM_TC_VER}-x86_64-aarch64-none-elf/bin" >> "$GITHUB_PATH"
+          echo "$TC_ROOT/arm-gnu-toolchain-${ARM_TC_VER}-x86_64-arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-arm qemu-system-aarch64
+
+      - name: Build ${{ matrix.board }} (OCM, default)
+        run: |
+          set -euxo pipefail
+          make -C "src/port/amd/boards/${{ matrix.board }}" CROSS_COMPILE=${{ matrix.cross }}
+
+      - name: QEMU boot smoke
+        run: |
+          chmod +x tools/scripts/amd/qemu-smoke.sh
+          UART_LOG="uart-${{ matrix.board }}.log" \
+            tools/scripts/amd/qemu-smoke.sh "${{ matrix.board }}"
+
+      - name: Upload UART log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-uart-${{ matrix.board }}
+          path: uart-${{ matrix.board }}.log
+          if-no-files-found: warn
