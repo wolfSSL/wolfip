@@ -10280,17 +10280,20 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
     }
 }
 
-static void flush_udp_tx(struct wolfIP *s)
+static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
+        int count, uint8_t proto)
 {
     int i;
-    int len;
+    int is_udp = (proto == WI_IPPROTO_UDP);
 
-    for (i = 0; i < MAX_UDPSOCKETS; i++) {
-        struct tsocket *t = &s->udpsockets[i];
+    for (i = 0; i < count; i++) {
+        struct tsocket *t = &socks[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
         int tx_drained = 0;
+        int len;
         while (desc) {
-            struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)(t->txmem + desc->pos + sizeof(*desc));
+            struct wolfIP_ip_packet *ip =
+                (struct wolfIP_ip_packet *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
             int send_ret = 0;
 #ifdef ETHERNET
@@ -10301,141 +10304,76 @@ static void flush_udp_tx(struct wolfIP *s)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
 #ifdef IP_MULTICAST
-                if (wolfIP_ip_is_multicast(t->remote_ip)) {
+                if (is_udp && wolfIP_ip_is_multicast(t->remote_ip)) {
                     mcast_ip_to_eth(t->remote_ip, t->nexthop_mac);
                 } else
 #endif
-                if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
-                            (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
-                    /* Send ARP request */
-                    arp_request(s, tx_if, nexthop);
-                    break;
-                }
+                    if (!wolfIP_ip_is_broadcast(s, nexthop) &&
+                            arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0) {
+                        /* Send ARP request */
+                        arp_request(s, tx_if, nexthop);
+                        break;
+                    }
                 if (wolfIP_ip_is_broadcast(s, nexthop))
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif
             len = desc->len - ETH_HEADER_LEN;
-            ip_output_add_header(t, (struct wolfIP_ip_packet *)udp, WI_IPPROTO_UDP, len);
-            if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, t->S, tx_if, udp, desc->len) != 0)
-                break;
-            if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &udp->ip, desc->len) != 0)
+            ip_output_add_header(t, ip, proto, len);
+
+            if (is_udp) {
+                if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, tx_if,
+                            (struct wolfIP_udp_datagram *)ip, desc->len) != 0)
+                    break;
+            } else {
+                if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, tx_if,
+                            (struct wolfIP_icmp_packet *)ip, desc->len) != 0)
+                    break;
+            }
+            if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, tx_if, ip, desc->len) != 0)
                 break;
 #ifdef ETHERNET
             if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
-                if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, t->S, tx_if, &udp->ip.eth, desc->len) != 0)
+                if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, tx_if,
+                            &ip->eth, desc->len) != 0)
                     break;
             }
 #endif
-            {
-                #ifdef DEBUG_UDP
-                wolfIP_print_udp(udp);
-                #endif /* DEBUG_UDP */
-                #ifdef WOLFIP_ESP
-                if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                    if (esp_send(ll, (struct wolfIP_ip_packet *)udp, len) == 1) {
-                        /* ipsec not configured on this interface.
-                         * send plaintext. */
-                        send_ret = wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
-                    }
-                } else {
-                    send_ret = wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
-                }
-                #else
-                send_ret = wolfIP_ll_send_frame(s, tx_if, udp, desc->len);
-                #endif /* WOLFIP_ESP */
+#ifdef WOLFIP_ESP
+            if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
+                struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
+                /* IPsec not configured on this interface.
+                 * Send plaintext instead.
+                 * */
+                if (esp_send(ll, ip, len) == 1)
+                    send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
+            } else {
+                send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
             }
-            if (send_ret == -WOLFIP_EAGAIN)
-                break;
-            if (send_ret < 0)
+#else
+            send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
+#endif
+            if (send_ret == -WOLFIP_EAGAIN || send_ret < 0)
                 break;
 #ifdef IP_MULTICAST
-            /* Loopback only after a successful wire send. Running udp_try_recv
+            /* UDP: Loopback only after a successful wire send. Running udp_try_recv
              * before the filter/send path caused repeated local deliveries
              * when a SENDING filter blocked the frame or the driver returned
              * -EAGAIN: the descriptor stays in the txbuf and every subsequent
              * wolfIP_poll() re-enters the loop and re-loops the datagram. */
-            if (wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop) {
-                udp_try_recv(s, tx_if, udp, desc->len);
-            }
+            if (is_udp && wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop)
+                udp_try_recv(s, tx_if, (struct wolfIP_udp_datagram *)ip, desc->len);
 #endif
             fifo_pop(&t->sock.udp.txbuf);
             tx_drained = 1;
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
-        /* Draining the txbuf frees space; raise CB_EVENT_WRITABLE so a sender
+        /* UDP: Draining the txbuf frees space; raise CB_EVENT_WRITABLE so a sender
          * blocked on a full buffer (e.g. the FreeRTOS BSD shim's sendto()) is
          * woken. The loopback path is handled separately via
          * wolfIP_notify_loopback_space_available(). */
-        if (tx_drained && tx_has_writable_space(t))
+        if (is_udp && tx_drained && tx_has_writable_space(t))
             t->events |= CB_EVENT_WRITABLE;
-    }
-}
-
-static void flush_icmp_tx(struct wolfIP *s)
-{
-    int i;
-    int len;
-
-    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
-        struct tsocket *t = &s->icmpsockets[i];
-        struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
-        while (desc) {
-            struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)(t->txmem + desc->pos + sizeof(*desc));
-            unsigned int tx_if = wolfIP_socket_if_idx(t);
-            int send_ret = 0;
-#ifdef ETHERNET
-            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, t->remote_ip);
-            if (wolfIP_is_loopback_if(tx_if)) {
-                struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
-                if (loop)
-                    memcpy(t->nexthop_mac, loop->mac, 6);
-            } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                if ((!wolfIP_ip_is_broadcast(s, nexthop) &&
-                            (arp_lookup(s, tx_if, nexthop, t->nexthop_mac) < 0))) {
-                    arp_request(s, tx_if, nexthop);
-                    break;
-                }
-                if (wolfIP_ip_is_broadcast(s, nexthop))
-                    memset(t->nexthop_mac, 0xFF, 6);
-            }
-#endif
-            len = desc->len - ETH_HEADER_LEN;
-            ip_output_add_header(t, (struct wolfIP_ip_packet *)icmp, WI_IPPROTO_ICMP, len);
-            if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, t->S, tx_if, icmp, desc->len) != 0)
-                break;
-            if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &icmp->ip, desc->len) != 0)
-                break;
-#ifdef ETHERNET
-            if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
-                if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, t->S, tx_if, &icmp->ip.eth, desc->len) != 0)
-                    break;
-            }
-#endif
-            {
-                #ifdef WOLFIP_ESP
-                if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                    if (esp_send(ll, (struct wolfIP_ip_packet *)icmp, len) == 1) {
-                        /* ipsec not configured on this interface.
-                         * send plaintext. */
-                        send_ret = wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
-                    }
-                } else {
-                    send_ret = wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
-                }
-                #else
-                send_ret = wolfIP_ll_send_frame(s, tx_if, icmp, desc->len);
-                #endif /* WOLFIP_ESP */
-            }
-            if (send_ret == -WOLFIP_EAGAIN)
-                break;
-            if (send_ret < 0)
-                break;
-            fifo_pop(&t->sock.udp.txbuf);
-            desc = fifo_peek(&t->sock.udp.txbuf);
-        }
     }
 }
 
@@ -10568,8 +10506,8 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 
     /* Attempt to write any pending data for all supported protocols */
     flush_tcp_tx(s, now);
-    flush_udp_tx(s);
-    flush_icmp_tx(s);
+    flush_datagram_tx(s, s->udpsockets, MAX_UDPSOCKETS, WI_IPPROTO_UDP);
+    flush_datagram_tx(s, s->icmpsockets, MAX_ICMPSOCKETS, WI_IPPROTO_ICMP);
     flush_raw_tx(s);
     flush_packet_tx(s);
 
