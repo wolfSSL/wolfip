@@ -1,0 +1,5 @@
+*.o
+*.elf
+*.bin
+BOOT.BIN
+.layout_stamp

@@ -1,0 +1,14 @@
+// ZCU102 BOOT.BIN definition for wolfIP bare-metal app.
+//
+// Variables expanded by build_bootbin.sh:
+//   ${FSBL_ELF}    - path to a pre-built ZynqMP FSBL (A53-0, EL3, NS)
+//   ${APP_ELF}     - path to the wolfIP app ELF (this directory's app.elf)
+//
+// bootgen consumes this file with:
+//   bootgen -arch zynqmp -image boot.bif -w on -o BOOT.BIN
+
+the_ROM_image:
+{
+    [bootloader, destination_cpu=a53-0]                   ${FSBL_ELF}
+    [destination_cpu=a53-0, exception_level=el-3]         ${APP_ELF}
+}
