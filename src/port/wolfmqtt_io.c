@@ -45,6 +45,7 @@ static struct wolfmqtt_io_desc *io_desc_alloc(void)
         if (!io_descs[i].in_use) {
             io_descs[i].in_use = 1;
             io_descs[i].connected = 0;
+            io_descs[i].fd = -1;
             return &io_descs[i];
         }
     }
@@ -75,10 +76,12 @@ static int wolfmqtt_net_connect(void *context, const char *host, word16 port,
         return MQTT_CODE_ERROR_BAD_ARG;
     }
 
-    /* Create TCP socket */
-    desc->fd = wolfIP_sock_socket(desc->stack, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    /* Create the socket only on the first attempt; async retries reuse it. */
     if (desc->fd < 0) {
-        return MQTT_CODE_ERROR_NETWORK;
+        desc->fd = wolfIP_sock_socket(desc->stack, AF_INET, IPSTACK_SOCK_STREAM, 0);
+        if (desc->fd < 0) {
+            return MQTT_CODE_ERROR_NETWORK;
+        }
     }
 
     /* Set up address */
