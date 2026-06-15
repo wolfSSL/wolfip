@@ -339,7 +339,8 @@ static int wolftftp_parse_request(const uint8_t *buf, uint16_t len,
         return WOLFTFTP_ERR_PACKET;
     p += slen + 1U;
     slen = wolftftp_strnlen_local(p, (size_t)(buf + len - (const uint8_t *)p));
-    if (slen == 0 || wolftftp_stricmp_local(p, "octet") != 0)
+    if (slen == 0 || (const uint8_t *)(p + slen) >= buf + len ||
+            wolftftp_stricmp_local(p, "octet") != 0)
         return WOLFTFTP_ERR_UNSUPPORTED;
     p += slen + 1U;
 
