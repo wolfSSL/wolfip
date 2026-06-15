@@ -94,13 +94,17 @@ static int wolftftp_parse_u32(const char *value, uint32_t max_value,
     uint32_t *out)
 {
     uint32_t v = 0;
+    uint32_t digit;
 
     if (value == NULL || out == NULL || *value == '\0')
         return -1;
     while (*value != '\0') {
         if (*value < '0' || *value > '9')
             return -1;
-        v = (v * 10U) + (uint32_t)(*value - '0');
+        digit = (uint32_t)(*value - '0');
+        if (v > (0xFFFFFFFFU - digit) / 10U)
+            return -1;
+        v = (v * 10U) + digit;
         if (v > max_value)
             return -1;
         value++;
