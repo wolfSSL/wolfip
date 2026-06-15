@@ -181,7 +181,7 @@ static void http_close_client(struct http_client *hc)
 }
 
 void http_send_response_chunk(struct http_client *hc, const void *chunk, size_t len) {
-    char txt_chunk[8];
+    char txt_chunk[20];
     memset(txt_chunk, 0, sizeof(txt_chunk));
     if (!hc)
         return;
