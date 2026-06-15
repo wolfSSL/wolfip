@@ -290,7 +290,7 @@ int http_url_encode(char *buf, size_t len, size_t max_len) {
     if (q) {
         if (len >= max_len)
             return -1; /* No space for the null terminator */
-        q[len] = '\0';
+        buf[len] = '\0';
     }
     return len;
 }
