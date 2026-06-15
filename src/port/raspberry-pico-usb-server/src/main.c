@@ -50,11 +50,11 @@ extern char MOTD[];
 static struct wolfIP *IPStack = NULL;
 
 /* Two static buffers for RX frames from USB host */
-uint8_t tusb_net_rxbuf[LINK_MTU][2];
+uint8_t tusb_net_rxbuf[2][LINK_MTU];
 uint8_t tusb_net_rxbuf_used[2] =  {0, 0};
 
 /* Two static buffers for TX frames to USB host */
-uint8_t tusb_net_txbuf[LINK_MTU][2];
+uint8_t tusb_net_txbuf[2][LINK_MTU];
 uint16_t tusb_net_txbuf_sz[2] = {0, 0};
 
 /* Fixed mac-address for the raspberry side of the link.
@@ -81,6 +81,8 @@ static int ll_usb_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t sz) {
     uint16_t sz16 = (uint16_t)sz;
     uint32_t i;
     (void) dev;
+    if (sz > LINK_MTU)
+        return 0;
     board_led_on();
     for (;;) {
         if (!tud_ready()) {
@@ -111,7 +113,7 @@ uint16_t tud_network_xmit_cb(uint8_t *dst, void *ref, uint16_t arg) {
     (void) ref;
     (void) arg;
     memcpy(dst, ref, arg);
-    if (ref == tusb_net_rxbuf[0])
+    if (ref == tusb_net_txbuf[0])
         tusb_net_txbuf_sz[0] = 0;
     else if (ref == tusb_net_txbuf[1])
         tusb_net_txbuf_sz[1] = 0;
@@ -127,6 +129,8 @@ uint16_t tud_network_xmit_cb(uint8_t *dst, void *ref, uint16_t arg) {
 static void tusb_net_push_rx(const uint8_t *src, uint16_t size) {
     uint8_t *dst = NULL;
     int i;
+    if (size > LINK_MTU)
+        return;
     for (i = 0; i < 2; i++) {
         if (!tusb_net_rxbuf_used[i]) {
             dst = tusb_net_rxbuf[i];
