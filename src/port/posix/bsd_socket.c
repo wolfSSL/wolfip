@@ -1008,7 +1008,6 @@ int wolfIP_sock_recvmsg(struct wolfIP *ipstack, int sockfd, struct msghdr *msg, 
     uint8_t stack_buf[WOLFIP_IOV_STACK_BUF] = {0};
     uint8_t *heap_buf = NULL;
     uint8_t *buf = NULL;
-    struct pollfd pfd;
 
     if (wolfip_calc_msghdr_len(msg, &total_len) < 0)
         return -WOLFIP_EINVAL;
@@ -1029,16 +1028,9 @@ int wolfIP_sock_recvmsg(struct wolfIP *ipstack, int sockfd, struct msghdr *msg, 
         }
     }
 
-    pfd.fd = sockfd;
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-    while (1) {
-        ret = wolfIP_sock_recvfrom(ipstack, sockfd, buf ? buf : msg->msg_iov[0].iov_base,
-                total_len, flags, src, src ? &addrlen : NULL);
-        if (ret != -WOLFIP_EAGAIN)
-            break;
-        (void)wolfIP_sock_poll(ipstack, &pfd, 1, -1);
-    }
+    /* Return EAGAIN to the caller; the wrapper handles non-blocking/timeout. */
+    ret = wolfIP_sock_recvfrom(ipstack, sockfd, buf ? buf : msg->msg_iov[0].iov_base,
+            total_len, flags, src, src ? &addrlen : NULL);
     if (ret > 0 && msg->msg_iovlen > 1 && buf) {
         wolfip_scatter_iov(msg, buf, (size_t)ret);
     }
