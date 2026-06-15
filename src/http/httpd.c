@@ -466,7 +466,7 @@ static void http_recv_cb(int sd, uint16_t event, void *arg) {
     if (!hc) return;
     (void) event;
     if (hc->ssl) {
-        ret = wolfSSL_read(hc->ssl, buf, sizeof(buf));
+        ret = wolfSSL_read(hc->ssl, buf, sizeof(buf) - 1);
         if (ret < 0) {
             if (wolfSSL_get_error(hc->ssl, ret) == WOLFSSL_ERROR_WANT_READ) {
                 return;
@@ -475,12 +475,14 @@ static void http_recv_cb(int sd, uint16_t event, void *arg) {
             }
         }
     } else {
-        ret = wolfIP_sock_recv(hc->httpd->ipstack, sd, buf, sizeof(buf), 0);
+        ret = wolfIP_sock_recv(hc->httpd->ipstack, sd, buf, sizeof(buf) - 1, 0);
         if (ret == -WOLFIP_EAGAIN)
             return;
     }
     if (ret <= 0)
         goto fail_close;
+    /* The parser uses strchr/strstr, so terminate the bounded read. */
+    buf[ret] = '\0';
     parse_r = parse_http_request(hc, buf, ret);
     if (parse_r < 0)
         goto fail_close;
