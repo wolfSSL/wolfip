@@ -505,11 +505,13 @@ static void http_accept_cb(int sd, uint16_t event, void *arg) {
     struct wolfIP_sockaddr_in addr;
     socklen_t addr_len = sizeof(struct wolfIP_sockaddr_in);
     int client_sd = wolfIP_sock_accept(httpd->ipstack, sd, (struct wolfIP_sockaddr *) &addr, &addr_len);
+    int i;
+    int assigned = 0;
     if (client_sd < 0) {
         return;
     }
     (void) event;
-    for (int i = 0; i < HTTPD_MAX_CLIENTS; i++) {
+    for (i = 0; i < HTTPD_MAX_CLIENTS; i++) {
         if (httpd->clients[i].client_sd == 0) {
             httpd->clients[i].client_sd = client_sd;
             httpd->clients[i].httpd = httpd;
@@ -526,9 +528,12 @@ static void http_accept_cb(int sd, uint16_t event, void *arg) {
                 }
             }
             wolfIP_register_callback(httpd->ipstack, client_sd, http_recv_cb, &httpd->clients[i]);
+            assigned = 1;
             break;
         }
     }
+    if (!assigned)
+        wolfIP_sock_close(httpd->ipstack, client_sd);
 }
 
 /* Extra utility to extract requests arguments */
