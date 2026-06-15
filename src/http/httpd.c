@@ -321,7 +321,10 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     char *p = (char *) buf;
     char *end = p + len;
     char *q;
+    char *query_start = NULL;
     size_t n;
+    size_t path_len;
+    size_t query_len;
     int ret;
     int decoded_len;
     long content_length = -1; /* -1: no Content-Length header seen */
@@ -345,26 +348,40 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     if (!q)
         goto bad_request;
     n = q - p;
-    if (n >= sizeof(req.path))
+    /* Split the request target into path and optional query (on '?'). */
+    query_start = memchr(p, '?', n);
+    if (query_start != NULL) {
+        path_len = (size_t)(query_start - p);
+        query_len = n - path_len - 1U;
+    } else {
+        path_len = n;
+        query_len = 0;
+    }
+    if (path_len >= sizeof(req.path))
         goto bad_request;
-    memcpy(req.path, p, n);
-    req.path[n] = '\0';
-    decoded_len = http_url_decode(req.path, n);
+    memcpy(req.path, p, path_len);
+    req.path[path_len] = '\0';
+    decoded_len = http_url_decode(req.path, path_len);
     if (decoded_len < 0)
         goto bad_request;
     req.path[decoded_len] = '\0';
     if (memchr(req.path, '\r', (size_t)decoded_len) ||
             memchr(req.path, '\n', (size_t)decoded_len))
         goto bad_request;
+    if (query_start != NULL) {
+        if (query_len >= sizeof(req.query))
+            goto bad_request;
+        if (memchr(query_start + 1, '\r', query_len) ||
+                memchr(query_start + 1, '\n', query_len))
+            goto bad_request;
+        memcpy(req.query, query_start + 1, query_len);
+        req.query[query_len] = '\0';
+    }
+    /* Skip the HTTP version token; only its CRLF framing matters here. */
     p = q + 1;
     q = strchr(p, '\r');
     if (!q)
         goto bad_request;
-    n = q - p;
-    if (n >= sizeof(req.query))
-        goto bad_request;
-    memcpy(req.query, p, n);
-    req.query[n] = '\0';
     p = q + 2;
 
     /* Parse the headers */
