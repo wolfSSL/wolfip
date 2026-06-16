@@ -11,8 +11,15 @@
 
 const char *board_banner(void)
 {
+    /* The entry exception level depends on the build: EL3 for JTAG/FSBL
+     * boot, EL2 when wolfBoot chain-loads the image (EL=2 / -DWOLFIP_EL2). */
+#ifdef WOLFIP_EL2
+    return "\n\n=== wolfIP ZCU102 (UltraScale+ A53-0 EL2) ===\n"
+           "MMU on, caches on. Bringing up GIC-400 (GICv2)...\n";
+#else
     return "\n\n=== wolfIP ZCU102 (UltraScale+ A53-0 EL3) ===\n"
            "MMU on, caches on. Bringing up GIC-400 (GICv2)...\n";
+#endif
 }
 
 void board_irq_setup(void)

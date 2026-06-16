@@ -74,6 +74,50 @@ LOCAL_OBJS := $(LOCAL_C:.c=.o) $(LOCAL_S:.S=.o)
 WOLFIP_OBJ := wolfip.o
 OBJS := $(LOCAL_OBJS) $(WOLFIP_OBJ)
 
+# Optional network-delivered update (OTA=1). The running, wolfBoot-verified
+# wolfIP app fetches a newer signed image over TFTP and stages it to the SD
+# OFP_B partition, then resets so wolfBoot boots the higher version. To avoid
+# any runtime hand-off, the SAME wolfBoot SD/disk driver SOURCE is compiled
+# straight into the app (sdhci.c/disk.c/gpt.c) and fed platform glue from
+# sdhci_shim.c. WOLFBOOT points at the wolfBoot tree (override as needed).
+OTA ?= 0
+ifeq ($(OTA),1)
+    WOLFBOOT ?= $(HOME)/GitHub/wolfboot-alt3
+    # OFP_B = MBR partition index 2 (matches wolfBoot zynqmp_sdcard.config).
+    CFLAGS += -DWOLFIP_OTA -DBOOT_PART_B=2 -I$(ROOT)/src/tftp
+    # App-side OTA glue + the wolfIP TFTP client. syscalls_stub.o satisfies
+    # the newlib reent/stdio hooks that snprintf (in the TFTP client) pulls in.
+    OTA_OBJS := ota.o sdhci_shim.o syscalls_stub.o wolftftp.o
+    # wolfBoot SD-host + disk drivers, compiled from source (no hand-off).
+    WB_DRV_OBJS := sdhci.o disk.o gpt.o
+    OTA_OBJS += $(WB_DRV_OBJS)
+    OBJS += $(OTA_OBJS)
+    vpath %.c $(ROOT)/src/tftp
+    vpath %.c $(WOLFBOOT)/src
+    # SDHCI_DEBUG=1 routes the driver's DEBUG_SDHCI tracing to the app UART
+    # (printf.h DEBUG_UART path -> uart_printf/uart_write in sdhci_shim.c).
+    # Default off keeps wolfBoot_printf a no-op (WOLFBOOT_NO_PRINTF). Note the
+    # per-block read/write traces are verbose during a full image transfer.
+    SDHCI_DEBUG ?= 0
+    ifeq ($(SDHCI_DEBUG),1)
+        WB_PRINT := -DDEBUG_UART -DDEBUG_SDHCI
+    else
+        WB_PRINT := -DWOLFBOOT_NO_PRINTF
+    endif
+    # The wolfBoot driver objects need the wolfBoot include tree and its
+    # build defines, scoped to just those objects. They are vendored source,
+    # so relax -Werror (benign unused-var/function warnings) for them only.
+    # SDHCI_FORCE_CARD_DETECT: the ZCU102 carrier does not wire the SD card-
+    # detect pin to the controller, so the SRS09 Card-Inserted/Card-State-
+    # Stable bits are unreliable (they only settle given enough delay). The
+    # card is unquestionably present here - we booted from it - so skip the
+    # present-state check rather than depend on it stabilizing in time.
+    $(WB_DRV_OBJS): CFLAGS += -I$(WOLFBOOT)/include -I$(WOLFBOOT)/src \
+        -DDISK_SDCARD $(WB_PRINT) -DTARGET_zynq -DWOLFBOOT_UPDATE_DISK \
+        -DARCH_AARCH64 -DBOOT_PART_A=1 -DBOOT_PART_B=2 -DSDHCI_FORCE_CARD_DETECT \
+        -Wno-error -Wno-unused-function -Wno-unused-variable
+endif
+
 # Shared sources live outside this board dir; find them by vpath so the
 # .o files still land here (keeps clean + JTAG app.elf-in-place working).
 vpath %.c $(COMMON):$(ARCH):$(IP)
