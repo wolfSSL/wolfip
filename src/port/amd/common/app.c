@@ -32,6 +32,13 @@
 #include "gem.h"
 #include "timer.h"
 #include "app.h"
+#ifdef WOLFIP_OTA
+#include "ota.h"
+/* Filename the host TFTP server offers for the signed update image. */
+#ifndef OTA_FILENAME
+#define OTA_FILENAME "wolfip_update.bin"
+#endif
+#endif
 
 #define ECHO_PORT       7
 #define RX_BUF_SIZE     1500
@@ -140,6 +147,16 @@ static void udp_echo_cb(int fd, uint16_t event, void *arg)
          * (first octet in the high byte), so swap before printing. */
         uart_puts(" bytes from "); uart_putip4(ee32(peer.sin_addr.s_addr));
         uart_puts("\n");
+#ifdef WOLFIP_OTA
+        /* A datagram beginning "UPDATE" triggers a network-delivered
+         * firmware update: fetch OTA_FILENAME over TFTP from the sender
+         * and stage it to OFP_B. The downloaded image is authenticated by
+         * wolfBoot on the next boot, so the trigger itself need not be. */
+        if (n >= 6 && memcmp(udp_rx_buf, "UPDATE", 6) == 0
+                && !ota_in_progress()) {
+            (void)ota_trigger(s, peer.sin_addr.s_addr, OTA_FILENAME);
+        }
+#endif
     }
 }
 #else /* SPEED_TEST */
@@ -425,7 +442,11 @@ int main(void)
     }
 #else
     for (;;) {
-        (void)wolfIP_poll(IPStack, app_now_ms());
+        uint64_t now = app_now_ms();
+        (void)wolfIP_poll(IPStack, now);
+#ifdef WOLFIP_OTA
+        ota_poll(IPStack, (uint32_t)now);
+#endif
     }
 #endif
 
