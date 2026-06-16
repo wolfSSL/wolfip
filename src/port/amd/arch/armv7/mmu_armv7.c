@@ -93,14 +93,26 @@ static void mmu_build_tables(void)
 {
     uint32_t i;
     uint32_t addr;
+    uint32_t dma_lo = (uint32_t)(uintptr_t)_dma_buffers_start;
+    uint32_t dma_hi = (uint32_t)(uintptr_t)_dma_buffers_end;
 
     for (i = 0; i < 4096; i++)
         L1[i] = SEC_INVALID;
 
-    /* DDR 0x00000000 - 0x3FFFFFFF (1 GB) as Normal WB. */
+    /* DDR 0x00000000 - 0x3FFFFFFF (1 GB) Normal WB cacheable, except any
+     * 1 MB section overlapping the GEM DMA region, which is Normal-NC. In
+     * the OCM layout the DMA buffers live in OCM (mapped NC below), so no
+     * DDR section is carved and all of DDR stays cacheable. In the DDR
+     * layout (the wolfBoot / cached-code path) the rings sit in DDR and
+     * MUST be NC: the 8-byte GEM BDs share 32-byte cache lines, so a
+     * cacheable ring lets a cache-line clean write stale neighbour BDs back
+     * over MAC-set OWN bits and wedges RX under sustained load (HIGH-2). */
     for (i = 0; i < 1024; i++) {
         addr = i * 0x100000u;
-        L1[i] = SEC_NORMAL_WB(addr);
+        if (addr + 0x100000u <= dma_lo || addr >= dma_hi)
+            L1[i] = SEC_NORMAL_WB(addr);
+        else
+            L1[i] = SEC_NORMAL_NC(addr);
     }
 
     /* PS peripherals at 0xE0000000 - 0xFEFFFFFF (Device). */

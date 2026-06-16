@@ -29,6 +29,31 @@
 #define UART_EARLY_TX_OFF 0x30     /* Cadence TX FIFO; PL011 boards pass 0x00 */
 #endif
 
+/* Exception level of the entry. The default (JTAG / FSBL / PLM->BL31) drops
+ * us at EL3. wolfBoot hands a chain-loaded image off at EL2, so the demo
+ * build passes -DWOLFIP_EL2 (to CFLAGS *and* ASFLAGS) to retarget the
+ * EL-specific system registers. SCR_ELx exists only at EL3; at EL2 IRQs are
+ * taken at the current EL once PSTATE.I is unmasked, so that block is
+ * skipped. The GIC (GICv2 mem-mapped / GICv3 ICC_*_EL1) and the generic
+ * timer (CNTPCT_EL0) work unchanged at EL2. */
+#ifdef WOLFIP_EL2
+#define SCTLR_ELx sctlr_el2
+#define CPTR_ELx  cptr_el2
+#define VBAR_ELx  vbar_el2
+#define SPSR_ELx  spsr_el2
+#define ELR_ELx   elr_el2
+#define ESR_ELx   esr_el2
+#define FAR_ELx   far_el2
+#else
+#define SCTLR_ELx sctlr_el3
+#define CPTR_ELx  cptr_el3
+#define VBAR_ELx  vbar_el3
+#define SPSR_ELx  spsr_el3
+#define ELR_ELx   elr_el3
+#define ESR_ELx   esr_el3
+#define FAR_ELx   far_el3
+#endif
+
     /* A loader (FSBL, wolfBoot, ...) that respects the ELF entry
      * point in the program header branches to _start directly. A
      * loader that simply branches to the first byte of the binary
@@ -106,16 +131,17 @@ _start:
     and     x0, x0, #0xff       /* Aff0 */
     cbnz    x0, _park_secondary
 
-    /* Disable MMU + caches in case FSBL left them on. */
-    mrs     x0, sctlr_el3
+    /* Disable MMU + caches in case the loader left them on. */
+    mrs     x0, SCTLR_ELx
     bic     x0, x0, #(1 << 0)   /* M  - MMU off */
     bic     x0, x0, #(1 << 2)   /* C  - D-cache off */
     bic     x0, x0, #(1 << 12)  /* I  - I-cache off */
-    msr     sctlr_el3, x0
+    msr     SCTLR_ELx, x0
     isb
 
-    /* Allow FP/SIMD at EL3 (FSBL does this too, but be explicit). */
-    msr     cptr_el3, xzr
+    /* Allow FP/SIMD (the loader usually does this; be explicit). Unused
+     * here (-mgeneral-regs-only) but harmless. */
+    msr     CPTR_ELx, xzr
 
     /* Force SPSel = 1 (use SP_ELx). The IRQ vector at offset 0x280
      * (Current EL with SPx) is what we wired el3_irq_trampoline to.
@@ -134,14 +160,16 @@ _start:
      *   bit 2  FIQ = 1  (route FIQ to EL3)
      *   bit 3  EA  = 1  (route SError/abort to EL3)
      *   bit 10 RW  = 0  (no lower EL64; we never drop to lower EL) */
+#ifndef WOLFIP_EL2
     mov     x0, #((1 << 1) | (1 << 2) | (1 << 3))
     msr     scr_el3, x0
     isb
+#endif
 
     /* Vector base. */
     adrp    x0, _vectors
     add     x0, x0, :lo12:_vectors
-    msr     vbar_el3, x0
+    msr     VBAR_ELx, x0
 
     /* Stack pointer. After 'msr spsel, #1' this writes SP_EL3. */
     ldr     x0, =_stack_top
@@ -223,15 +251,15 @@ el3_irq_trampoline:
     str     x30,      [sp, #(15 * 16)]
     /* Snapshot exception return state in case irq_dispatch (or any
      * nested exception inside it) clobbers SPSR_EL3 / ELR_EL3. */
-    mrs     x0,  spsr_el3
-    mrs     x1,  elr_el3
+    mrs     x0,  SPSR_ELx
+    mrs     x1,  ELR_ELx
     stp     x0,  x1,  [sp, #(16 * 16)]
 
     bl      irq_dispatch
 
     ldp     x0,  x1,  [sp, #(16 * 16)]
-    msr     spsr_el3, x0
-    msr     elr_el3,  x1
+    msr     SPSR_ELx, x0
+    msr     ELR_ELx,  x1
     ldp     x0,  x1,  [sp, #(0  * 16)]
     ldp     x2,  x3,  [sp, #(1  * 16)]
     ldp     x4,  x5,  [sp, #(2  * 16)]
@@ -271,19 +299,19 @@ irq_disable:
  * ------------------------------------------------------------------- */
     .type el3_sync_trampoline, %function
 el3_sync_trampoline:
-    mrs     x0, esr_el3
-    mrs     x1, elr_el3
-    mrs     x2, far_el3
-    mrs     x3, spsr_el3
+    mrs     x0, ESR_ELx
+    mrs     x1, ELR_ELx
+    mrs     x2, FAR_ELx
+    mrs     x3, SPSR_ELx
     bl      exception_report
     b       _hang
 
     .type el3_serror_trampoline, %function
 el3_serror_trampoline:
-    mrs     x0, esr_el3
-    mrs     x1, elr_el3
-    mrs     x2, far_el3
-    mrs     x3, spsr_el3
+    mrs     x0, ESR_ELx
+    mrs     x1, ELR_ELx
+    mrs     x2, FAR_ELx
+    mrs     x3, SPSR_ELx
     mov     x4, #1              /* indicate SError to C */
     bl      exception_report_serror
     b       _hang

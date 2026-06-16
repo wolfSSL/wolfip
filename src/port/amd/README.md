@@ -106,25 +106,26 @@ RX is the board's UART `~B/s` line (host -> board); TX is host-measured
 |------------------------------|-----------------|--------:|--------:|
 | VMK180 (Versal, A72 @ EL3)   | DDR (JTAG)      |   ~300  |   ~334  |
 | ZCU102 (ZynqMP, A53 @ EL3)   | DDR (SD boot)   |   ~126  |   ~194  |
-| ZC702 (Zynq-7000, A9 @ SVC)  | OCM (JTAG)      |    ~22  |    ~19  |
+| ZC702 (Zynq-7000, A9 @ SVC)  | DDR (JTAG)      |    ~59  |    ~53  |
 | ZCU102 (ZynqMP, A53 @ EL3)   | OCM (JTAG)      |    ~10  |     ~9  |
+| ZC702 (Zynq-7000, A9 @ SVC)  | OCM (JTAG)      |    ~22  |    ~19  |
 
 The single dominant factor is the **memory layout**: the OCM layout runs *all*
 code (and the rings) from Normal non-cacheable OCM, so every instruction fetch
 and frame copy is uncached. The DDR layout keeps code+data in cacheable DDR and
-maps only the GEM DMA region non-cacheable - ~13-30x faster, as the two ZCU102
-rows show directly (same SoC/core, OCM ~10/9 vs DDR ~126/194 Mbps). The faster
-A72 (Versal) reaches ~300/334 on DDR.
+maps only the GEM DMA region non-cacheable. The same-SoC OCM-vs-DDR rows show
+the effect directly: ~13x on the ZCU102 A53 (10 -> 126 Mbps) and ~2.7x on the
+slower ZC702 A9 (22 -> 59 Mbps). The faster A72 (Versal) reaches ~300/334 on DDR.
 
 How each DDR number was loaded: Versal's PLM trains DDR from a boot PDI, so the
-DDR app loads cleanly over JTAG. On ZynqMP, JTAG writes into DDR after a bare
-`psu_init` are unreliable (the load goes through the A53 with a cache flush and
-either errors or lands corrupt - DDR itself is fine, a direct DAP memtest passes),
-so the ZCU102 DDR figure is from an **SD boot**: `FSBL_ELF=.../zynqmp_fsbl.elf
-make bootbin` produces a DDR-layout `BOOT.BIN` that the FSBL trains DDR for and
-DMA-loads (no JTAG memory writes). Copy it to the SD card's FAT boot partition
-and set SW6 = SD. The same applies to ZC702 (its OCM-only port has no DDR layout
-yet; a DDR profile is future work).
+DDR app loads cleanly over JTAG. On ZC702 the FSBL trains DDR and the JTAG loader
+then `dow`s the app to its link address (`0x10000000`), also clean. On ZynqMP,
+JTAG writes into DDR after a bare `psu_init` are unreliable (the load goes through
+the A53 with a cache flush and either errors or lands corrupt - DDR itself is
+fine, a direct DAP memtest passes), so the ZCU102 DDR figure is from an **SD
+boot**: `FSBL_ELF=.../zynqmp_fsbl.elf make bootbin` produces a DDR-layout
+`BOOT.BIN` that the FSBL trains DDR for and DMA-loads (no JTAG memory writes).
+Copy it to the SD card's FAT boot partition and set SW6 = SD.
 
 What it took to get here:
 
