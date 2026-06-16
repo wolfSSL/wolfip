@@ -29,7 +29,18 @@ CFLAGS  += $(CFLAGS_EXTRA)
 
 ASFLAGS := -mcpu=cortex-a9 -marm
 
-LDSCRIPT := target.ld
+# Memory layout: ocm (default) runs uncached from OCM (JTAG / FSBL bring-up);
+# ddr runs cached from DDR @ 0x10000000 (the wolfBoot / fast path).
+LAYOUT ?= ocm
+ifeq ($(LAYOUT),ddr)
+    LDSCRIPT := target_ddr.ld
+    CFLAGS   += -DAMD_LAYOUT_DDR
+else ifeq ($(LAYOUT),ocm)
+    LDSCRIPT := target.ld
+    CFLAGS   += -DAMD_LAYOUT_OCM
+else
+    $(error LAYOUT must be 'ocm' or 'ddr')
+endif
 LDFLAGS  := -nostdlib -nostartfiles -T $(LDSCRIPT) -Wl,-gc-sections
 # Override newlib's memset/memcpy with bytewise variants in main.c
 # (the same "fast memset uses an instruction the bare-metal setup
@@ -44,6 +55,20 @@ LOCAL_OBJS := $(LOCAL_C:.c=.o) $(LOCAL_S:.S=.o)
 
 WOLFIP_OBJ := wolfip.o
 OBJS := $(LOCAL_OBJS) $(WOLFIP_OBJ)
+
+# A change in LAYOUT must force a full rebuild: the objects link against a
+# different load address and AMD_LAYOUT_* define. The stamp's mtime only
+# bumps when LAYOUT actually changes.
+LAYOUT_STAMP := .layout_stamp
+$(LAYOUT_STAMP): FORCE
+	@if [ "`cat $@ 2>/dev/null`" != "$(LAYOUT)" ]; then \
+	    echo "LAYOUT -> $(LAYOUT) (was `cat $@ 2>/dev/null`); forcing rebuild"; \
+	    echo "$(LAYOUT)" > $@; \
+	fi
+$(OBJS): $(LAYOUT_STAMP)
+
+# The $(OBJS): rule above lists app.o first, so pin the default goal to all.
+.DEFAULT_GOAL := all
 
 # Shared sources live outside this board dir; find them by vpath so the
 # .o files still land here (keeps clean + JTAG app.elf-in-place working).
@@ -68,13 +93,16 @@ $(WOLFIP_OBJ): $(ROOT)/src/wolfip.c
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) app.elf BOOT.BIN
+	rm -f $(OBJS) app.elf BOOT.BIN $(LAYOUT_STAMP)
 
-.PHONY: all clean help
+FORCE:
+
+.PHONY: all clean help FORCE
 
 help:
 	@echo "Zynq-7000 wolfIP build (Cortex-A9):"
-	@echo "  make                         - build app.elf"
+	@echo "  make                         - build app.elf (OCM layout)"
+	@echo "  make LAYOUT=ddr              - build for DDR @ 0x10000000 (wolfBoot/fast)"
 	@echo "  make clean                   - remove artifacts"
 	@echo ""
 	@echo "Override CROSS_COMPILE if your toolchain prefix differs."

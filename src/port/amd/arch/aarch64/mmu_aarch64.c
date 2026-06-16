@@ -177,6 +177,24 @@ static void mmu_build_tables(void)
         L1[i] = 0;
 }
 
+/* EL-specific system-register names. Default EL3; the wolfBoot demo build
+ * passes -DWOLFIP_EL2 (the image is chain-loaded at EL2). TCR_EL2/MAIR_EL2
+ * (E2H=0) share the single-range format of their EL3 counterparts, so the
+ * same TCR/MAIR values apply. */
+#ifdef WOLFIP_EL2
+#define SR_MAIR  "mair_el2"
+#define SR_TCR   "tcr_el2"
+#define SR_TTBR0 "ttbr0_el2"
+#define SR_SCTLR "sctlr_el2"
+#define INS_TLBI "tlbi alle2"
+#else
+#define SR_MAIR  "mair_el3"
+#define SR_TCR   "tcr_el3"
+#define SR_TTBR0 "ttbr0_el3"
+#define SR_SCTLR "sctlr_el3"
+#define INS_TLBI "tlbi alle3"
+#endif
+
 void mmu_enable(void)
 {
     uint64_t mair;
@@ -195,7 +213,7 @@ void mmu_enable(void)
      *   ATTR1 = 0x00 (Device-nGnRnE)
      *   ATTR2 = 0x44 (Normal Inner+Outer Non-Cacheable, for DMA buffers) */
     mair = (0xFFULL << 0) | (0x00ULL << 8) | (0x44ULL << 16);
-    __asm__ volatile ("msr mair_el3, %0" :: "r"(mair));
+    __asm__ volatile ("msr " SR_MAIR ", %0" :: "r"(mair));
 
     /* TCR_EL3: 32-bit VA (T0SZ=32, start level L1), 4 KB granule,
      * IRGN0=WB-RA-WA, ORGN0=WB-RA-WA, SH0=Inner shareable, IPS=40 bit.
@@ -210,15 +228,15 @@ void mmu_enable(void)
         | ((uint64_t)2 << 16)         /* PS    = 40 bit PA */
         | ((uint64_t)1 << 23)         /* RES1 */
         | ((uint64_t)1 << 31);        /* RES1 */
-    __asm__ volatile ("msr tcr_el3, %0" :: "r"(tcr));
+    __asm__ volatile ("msr " SR_TCR ", %0" :: "r"(tcr));
 
-    /* TTBR0_EL3 = &L1. */
-    __asm__ volatile ("msr ttbr0_el3, %0" :: "r"((uint64_t)(uintptr_t)L1));
+    /* TTBR0_ELx = &L1. */
+    __asm__ volatile ("msr " SR_TTBR0 ", %0" :: "r"((uint64_t)(uintptr_t)L1));
 
     __asm__ volatile ("isb" ::: "memory");
 
     /* Invalidate TLBs and I-cache before turning the MMU on. */
-    __asm__ volatile ("tlbi alle3" ::: "memory");
+    __asm__ volatile (INS_TLBI ::: "memory");
     __asm__ volatile ("ic iallu" ::: "memory");
     __asm__ volatile ("dsb sy" ::: "memory");
     __asm__ volatile ("isb" ::: "memory");
@@ -231,12 +249,14 @@ void mmu_enable(void)
      * here). Newlib aarch64 memset uses DC ZVA for fast bulk zero
      * writes; without DZE=1 the instruction traps UNDEF and the
      * exception loop wedges the CPU. */
-    __asm__ volatile ("mrs %0, sctlr_el3" : "=r"(sctlr));
+    __asm__ volatile ("mrs %0, " SR_SCTLR : "=r"(sctlr));
     sctlr |= (1ULL << 0);   /* M */
     sctlr |= (1ULL << 2);   /* C */
     sctlr |= (1ULL << 12);  /* I */
-    sctlr |= (1ULL << 14);  /* DZE - allow DC ZVA */
+#ifndef WOLFIP_EL2
+    sctlr |= (1ULL << 14);  /* DZE - allow DC ZVA (EL3; RES0 in SCTLR_EL2) */
+#endif
     sctlr &= ~(1ULL << 1);  /* A off */
-    __asm__ volatile ("msr sctlr_el3, %0" :: "r"(sctlr));
+    __asm__ volatile ("msr " SR_SCTLR ", %0" :: "r"(sctlr));
     __asm__ volatile ("isb" ::: "memory");
 }

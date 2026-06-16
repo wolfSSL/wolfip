@@ -32,6 +32,17 @@ CFLAGS  += $(CFLAGS_EXTRA)
 
 ASFLAGS := -mcpu=cortex-a53 -DUART_EARLY_TX_OFF=0x30
 
+# Entry exception level: 3 (default - JTAG / FSBL / PLM->BL31 drop us at EL3)
+# or 2 (wolfBoot chain-loads the image at EL2). EL=2 retargets the
+# EL-specific system registers in startup_aarch64.S + mmu_aarch64.c.
+EL ?= 3
+ifeq ($(EL),2)
+    CFLAGS  += -DWOLFIP_EL2
+    ASFLAGS += -DWOLFIP_EL2
+else ifneq ($(EL),3)
+    $(error EL must be 2 or 3)
+endif
+
 # Layout selector. Default ocm keeps the OCM-only layout that the JTAG
 # iteration scripts depend on (everything in OCM @ 0xFFFC0000). Pass
 # LAYOUT=ddr to relink for DDR @ 0x10000000 -- this is the layout
