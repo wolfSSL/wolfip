@@ -79,10 +79,21 @@ OBJS := $(LOCAL_OBJS) $(WOLFIP_OBJ)
 # OFP_B partition, then resets so wolfBoot boots the higher version. To avoid
 # any runtime hand-off, the SAME wolfBoot SD/disk driver SOURCE is compiled
 # straight into the app (sdhci.c/disk.c/gpt.c) and fed platform glue from
-# sdhci_shim.c. WOLFBOOT points at the wolfBoot tree (override as needed).
+# sdhci_shim.c. The caller must set WOLFBOOT=/path/to/wolfBoot (no default).
 OTA ?= 0
 ifeq ($(OTA),1)
-    WOLFBOOT ?= $(HOME)/GitHub/wolfboot-alt3
+    # OTA needs the DDR layout: the multi-MB staging buffer + the compiled-in
+    # wolfBoot drivers do not fit the OCM layout. Fail fast with a clear message
+    # instead of a generic link-time region overflow.
+    ifeq ($(LAYOUT),ocm)
+        $(error OTA=1 requires LAYOUT=ddr (staging buffer + drivers do not fit OCM))
+    endif
+    # WOLFBOOT must point at a wolfBoot tree - its src/{sdhci,disk,gpt}.c and
+    # include/ are compiled into the app. No developer-local default, so OTA
+    # builds are portable; the demo's build.sh passes WOLFBOOT explicitly.
+    ifeq ($(strip $(WOLFBOOT)),)
+        $(error OTA=1 requires WOLFBOOT=/path/to/wolfBoot)
+    endif
     # OFP_B = MBR partition index 2 (matches wolfBoot zynqmp_sdcard.config).
     CFLAGS += -DWOLFIP_OTA -DBOOT_PART_B=2 -I$(ROOT)/src/tftp
     # App-side OTA glue + the wolfIP TFTP client. syscalls_stub.o satisfies

@@ -27,6 +27,7 @@
  * _sbrk hands out a small static heap so that any incidental allocation
  * succeeds rather than corrupting memory; the rest fail cleanly with ENOSYS.
  */
+#include <stddef.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>

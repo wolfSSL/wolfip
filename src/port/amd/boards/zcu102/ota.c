@@ -248,6 +248,12 @@ int ota_trigger(struct wolfIP *stack, uint32_t server_ip_be,
 
     g_stack = stack;
 
+    /* Clear terminal state from any previous attempt. Without this, a retry
+     * after a WOLFTFTP_CLIENT_ERROR leaves g_done set, and ota_poll() would
+     * early-return on it and never apply a subsequently successful transfer. */
+    g_done = 0;
+    g_sink.bytes = 0;
+
     /* Initialize the SD card before starting the transfer (see
      * ota_prepare_disk). Done first so a card error costs no socket. */
     if (ota_prepare_disk() < 0)
