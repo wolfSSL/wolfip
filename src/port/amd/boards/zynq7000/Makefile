@@ -67,7 +67,8 @@ $(LAYOUT_STAMP): FORCE
 	fi
 $(OBJS): $(LAYOUT_STAMP)
 
-# The $(OBJS): rule above lists app.o first, so pin the default goal to all.
+# The first explicit target rule above is $(LAYOUT_STAMP), which would otherwise
+# become make's default goal; pin the default goal to 'all'.
 .DEFAULT_GOAL := all
 
 # Shared sources live outside this board dir; find them by vpath so the
