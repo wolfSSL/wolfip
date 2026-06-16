@@ -679,6 +679,19 @@ esp_const_memcmp(const uint8_t * vec_a, const uint8_t * vec_b, uint32_t len)
 #define esp_enc_payload(data, iv_len) \
         ((data) + ESP_SPI_LEN + ESP_SEQ_LEN + (iv_len))
 
+/**
+ * note: encryption is done with these 8 functions:
+ *   - esp_des3_rfc2451_enc (_dec)
+ *   - esp_aes_rfc3602_enc  (_dec)
+ *   - esp_aes_rfc4106_enc  (_dec)
+ *   - esp_aes_rfc4543_enc  (_dec)
+ *
+ * They use local Aes, Des3, Gmac structs, and do Init/SetKey on every crypt
+ * operation. It would be much more performant to move these structs into the
+ * esp_sa, and do Init/SetKey only once at SA creation. However that would use
+ * much more memory.
+ * */
+
 static int
 esp_aes_rfc3602_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
                     uint32_t esp_len)
@@ -1428,16 +1441,17 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 
     if (esp_sa->icv_len) {
         switch (esp_sa->auth) {
+        /* for hmac auths, icv calculated immediately */
         case ESP_AUTH_MD5_RFC2403:
         case ESP_AUTH_SHA1_RFC2404:
         case ESP_AUTH_SHA256_RFC4868:
             err = esp_check_icv_hmac(esp_sa, ip->data, esp_len);
             break;
+        /* for aeads, icv calculated later during decrypt */
         #if defined(WOLFSSL_AESGCM_STREAM)
         case ESP_AUTH_GCM_RFC4106:
         #endif /* WOLFSSL_AESGCM_STREAM */
         case ESP_AUTH_GCM_RFC4543:
-            /* icv calculated during decrypt */
             err = 0;
             break;
         case ESP_AUTH_NONE:
@@ -1453,11 +1467,8 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         }
     }
 
-    /* ICV verified; now safe to commit the sequence to the replay window
-     * (RFC 4303 s3.4.3). */
-    esp_replay_commit(&esp_sa->replay, seq);
-
-    /* icv check good, now finish unwrapping esp packet. */
+    /* hmac icv check good, now finish unwrapping esp packet.
+     * for aeads, the icv check happens in decrypt now. */
     if (iv_len != 0) {
         /* Decrypt the payload in place. */
         switch(esp_sa->enc) {
@@ -1495,7 +1506,11 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         }
     }
 
-    /* Payload is now decrypted. We can now parse
+    /* icv verified for hmacs and aeads at this point. now safe to commit the
+     * sequence to the replay window (RFC 4303 s3.4.3). */
+    esp_replay_commit(&esp_sa->replay, seq);
+
+    /* Payload is now verified and decrypted. We can now parse
      * the ESP trailer for next header and pad_len. */
     pad_len = *(ip->data + esp_len - esp_sa->icv_len - ESP_NEXT_HEADER_LEN
                 - ESP_PADDING_LEN);
@@ -1513,6 +1528,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
             return -1;
         }
     }
+    /* verify padding is correct */
     if (pad_len > 0) {
         const uint8_t *padding = ip->data + esp_len - esp_sa->icv_len
                                - ESP_NEXT_HEADER_LEN - ESP_PADDING_LEN
@@ -1529,6 +1545,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     }
 
     #ifdef DEBUG_ESP
+    /* optionally debug print the ESP packet, now that it's readable. */
     wolfIP_print_esp(esp_sa, ip->data, esp_len, pad_len, nxt_hdr);
     #endif /* DEBUG_ESP */
 
