@@ -464,7 +464,7 @@ START_TEST(test_sa_del_all)
 END_TEST
 
 /*
- * replay window (esp_check_replay)
+ * replay window (esp_replay_check)
  * valid initial window: [1 .. 32]  (seq=0 is always invalid per RFC 4303)
  * */
 
@@ -473,7 +473,7 @@ START_TEST(test_replay_seq_zero_rejected)
 {
     replay_t r;
     esp_replay_init(r);
-    ck_assert_int_ne(esp_check_replay(&r, 0U), 0);
+    ck_assert_int_ne(esp_replay_check(&r, 0U), 0);
 }
 END_TEST
 
@@ -482,7 +482,7 @@ START_TEST(test_replay_first_packet_accepted)
 {
     replay_t r;
     esp_replay_init(r); /* hi_seq=32, seq_low=1 */
-    ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 1U), 0);
 }
 END_TEST
 
@@ -492,9 +492,9 @@ START_TEST(test_replay_duplicate_rejected)
 {
     replay_t r;
     esp_replay_init(r);
-    ck_assert_int_eq(esp_check_replay(&r, 5U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 5U), 0);
     esp_replay_commit(&r, 5U);                       /* ICV passed */
-    ck_assert_int_ne(esp_check_replay(&r, 5U), 0);   /* second time: replayed */
+    ck_assert_int_ne(esp_replay_check(&r, 5U), 0);   /* second time: replayed */
 }
 END_TEST
 
@@ -505,7 +505,7 @@ START_TEST(test_replay_multiple_in_window)
     uint32_t i;
     esp_replay_init(r); /* window [1..32] */
     for (i = 1U; i <= 31U; i++) {
-        ck_assert_int_eq(esp_check_replay(&r, i), 0);
+        ck_assert_int_eq(esp_replay_check(&r, i), 0);
         esp_replay_commit(&r, i);
     }
 }
@@ -517,10 +517,10 @@ START_TEST(test_replay_below_window_rejected)
     replay_t r;
     esp_replay_init(r);
     /* Advance the window by receiving a high sequence number. */
-    ck_assert_int_eq(esp_check_replay(&r, 64U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 64U), 0);
     esp_replay_commit(&r, 64U);                      /* hi_seq=64, seq_low=34 */
     /* seq=1 is now below the window floor. */
-    ck_assert_int_ne(esp_check_replay(&r, 1U), 0);
+    ck_assert_int_ne(esp_replay_check(&r, 1U), 0);
 }
 END_TEST
 
@@ -529,7 +529,7 @@ START_TEST(test_replay_advance_hi_seq)
 {
     replay_t r;
     esp_replay_init(r); /* hi_seq=32 */
-    ck_assert_int_eq(esp_check_replay(&r, 33U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 33U), 0);
     esp_replay_commit(&r, 33U);
     ck_assert_uint_eq(r.hi_seq, 33U);
 }
@@ -540,9 +540,9 @@ START_TEST(test_replay_advanced_hi_seq_duplicate_rejected)
 {
     replay_t r;
     esp_replay_init(r); /* hi_seq=32 */
-    ck_assert_int_eq(esp_check_replay(&r, 33U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 33U), 0);
     esp_replay_commit(&r, 33U);
-    ck_assert_int_ne(esp_check_replay(&r, 33U), 0);
+    ck_assert_int_ne(esp_replay_check(&r, 33U), 0);
 }
 END_TEST
 
@@ -553,7 +553,7 @@ START_TEST(test_replay_low_hi_seq_accepts_seq_one)
     esp_replay_init(r);
     r.hi_seq = 1U;
     r.bitmap = 0U;
-    ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 1U), 0);
 }
 END_TEST
 
@@ -563,16 +563,16 @@ START_TEST(test_replay_jump_resets_bitmap)
     replay_t r;
     esp_replay_init(r);
     /* Accept some sequences so the bitmap has bits set. */
-    ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 1U), 0);
     esp_replay_commit(&r, 1U);
-    ck_assert_int_eq(esp_check_replay(&r, 2U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 2U), 0);
     esp_replay_commit(&r, 2U);
     /* Jump more than ESP_REPLAY_WIN (32) ahead. */
-    ck_assert_int_eq(esp_check_replay(&r, 1000U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 1000U), 0);
     esp_replay_commit(&r, 1000U);
     ck_assert_uint_eq(r.hi_seq, 1000U);
     /* seq=1 is now far outside the window. */
-    ck_assert_int_ne(esp_check_replay(&r, 1U), 0);
+    ck_assert_int_ne(esp_replay_check(&r, 1U), 0);
 }
 END_TEST
 
@@ -582,17 +582,17 @@ START_TEST(test_replay_old_seqs_after_jump)
 {
     replay_t r;
     esp_replay_init(r);
-    ck_assert_int_eq(esp_check_replay(&r, 10U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 10U), 0);
     esp_replay_commit(&r, 10U);
-    ck_assert_int_eq(esp_check_replay(&r, 500U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 500U), 0);
     esp_replay_commit(&r, 500U); /* jump > 32 */
     /* 10 is now well below the new window floor (500-31=469). */
-    ck_assert_int_ne(esp_check_replay(&r, 10U), 0);
+    ck_assert_int_ne(esp_replay_check(&r, 10U), 0);
 }
 END_TEST
 
 /* RFC 4303 s3.4.3: the replay window must not be updated until after
- * ICV verification succeeds.  esp_check_replay must be read-only;
+ * ICV verification succeeds.  esp_replay_check must be read-only;
  * esp_replay_commit updates the window after ICV passes. */
 START_TEST(test_regression_replay_window_not_updated_before_icv)
 {
@@ -602,9 +602,9 @@ START_TEST(test_regression_replay_window_not_updated_before_icv)
     esp_replay_init(r);
 
     /* Accept a few packets to establish window state */
-    ck_assert_int_eq(esp_check_replay(&r, 1U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 1U), 0);
     esp_replay_commit(&r, 1U);
-    ck_assert_int_eq(esp_check_replay(&r, 2U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 2U), 0);
     esp_replay_commit(&r, 2U);
 
     /* Save the replay state before the "unverified" packet arrives */
@@ -612,9 +612,9 @@ START_TEST(test_regression_replay_window_not_updated_before_icv)
 
     /* Simulate receiving seq=10. This should only CHECK, not UPDATE.
      * In the real flow, ICV verification would follow and might fail. */
-    ck_assert_int_eq(esp_check_replay(&r, 10U), 0);
+    ck_assert_int_eq(esp_replay_check(&r, 10U), 0);
 
-    /* esp_check_replay is now read-only (correct behavior), so the
+    /* esp_replay_check is now read-only (correct behavior), so the
      * replay state must be unchanged. */
     ck_assert_uint_eq(r.bitmap, saved.bitmap);
     ck_assert_uint_eq(r.hi_seq, saved.hi_seq);

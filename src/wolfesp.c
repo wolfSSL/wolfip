@@ -1240,7 +1240,7 @@ esp_check_icv_hmac(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
  * return 0 on success.
  * */
 static int
-esp_check_replay(const struct replay_t * replay, uint32_t seq)
+esp_replay_check(const struct replay_t * replay, uint32_t seq)
 {
     #if !defined(ESP_REPLAY_WIN)
     /* anti-replay service not enabled */
@@ -1419,7 +1419,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         return -1;
     }
 
-    err = esp_check_replay(&esp_sa->replay, seq);
+    err = esp_replay_check(&esp_sa->replay, seq);
     if (err) {
         return -1;
     }
