@@ -33,11 +33,13 @@
 #include <errno.h>
 
 /* Static heap for _sbrk. snprintf's non-float conversions don't allocate,
- * so this is a safety margin, not a hot path. */
+ * so this is a safety margin, not a hot path. Aligned to 16 bytes: newlib's
+ * malloc rounds its sbrk returns off the heap base, so a 16-byte-aligned base
+ * keeps any incidental allocation correctly aligned for AArch64. */
 #ifndef OTA_HEAP_SIZE
 #define OTA_HEAP_SIZE (64U * 1024U)
 #endif
-static char ota_heap[OTA_HEAP_SIZE];
+static char ota_heap[OTA_HEAP_SIZE] __attribute__((aligned(16)));
 static char *ota_brk = ota_heap;
 
 void *_sbrk(ptrdiff_t incr)
