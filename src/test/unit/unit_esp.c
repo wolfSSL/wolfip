@@ -670,6 +670,52 @@ START_TEST(test_replay_overflow)
 }
 END_TEST
 
+/* The sequence number must only be committed after aead verify.
+ * Send plausible junk ESP packets for a real RFC4543 SA, and check the
+ * inbound replay state is not mutated after verify failure. */
+START_TEST(test_replay_aead_verify)
+{
+    static uint8_t  buf[LINK_MTU + 256];
+    uint8_t         ref[64];
+    uint32_t        frame_len, i;
+    int             ret;
+    wolfIP_esp_sa * esp_sa = NULL;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+
+    for (i = 0U; i < sizeof(ref); i++) ref[i] = (uint8_t)(i & 0xaaU);
+
+    /* fake ESP packet with enough data to get through early processing, but
+     * eventually fail during GMAC verify. */
+    memcpy(ref, spi_rt, sizeof(spi_rt));
+    /* max sequence number */
+    ref[4] = 0xff; ref[5] = 0xff; ref[6] = 0xff; ref[7] = 0xff;
+
+    esp_setup();
+
+    ret = wolfIP_esp_sa_new_gcm(1, (uint8_t *)spi_rt,
+                                atoip4(T_SRC), atoip4(T_DST),
+                                ESP_ENC_GCM_RFC4543,
+                                (uint8_t *)k_aes256_gcm,
+                                sizeof(k_aes256_gcm));
+    ck_assert_int_eq(ret, 0);
+    esp_sa = esp_sa_get(1, (uint8_t *)spi_rt);
+    ck_assert_ptr_nonnull(esp_sa);
+    /* sanity check esp_replay_init */
+    ck_assert_int_eq(esp_sa->replay.hi_seq, ESP_REPLAY_WIN);
+    ck_assert_int_eq(esp_sa->replay.bitmap, 0U);
+
+    /* should fail to unwrap. */
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                ref, sizeof(ref));
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, -1);
+
+    /* the hi seq and bitmap should be unchanged. */
+    ck_assert_int_eq(esp_sa->replay.hi_seq, ESP_REPLAY_WIN);
+    ck_assert_int_eq(esp_sa->replay.bitmap, 0U);
+}
+END_TEST
+
 /*
  * esp_transport_unwrap error paths
  */
@@ -2053,6 +2099,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_replay_jump_resets_bitmap);
     tcase_add_test(tc, test_replay_old_seqs_after_jump);
     tcase_add_test(tc, test_replay_overflow);
+    tcase_add_test(tc, test_replay_aead_verify);
     tcase_add_test(tc, test_regression_replay_window_not_updated_before_icv);
     suite_add_tcase(s, tc);
 

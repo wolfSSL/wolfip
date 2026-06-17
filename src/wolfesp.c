@@ -1155,7 +1155,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     uint8_t         salt_len = ESP_GCM_RFC4106_SALT_LEN;
     uint8_t         nonce[ESP_GCM_RFC4106_NONCE_LEN]; /* 4 salt + 8 iv */
 
-    ESP_DEBUG("info: aes gcm enc: %d\n", esp_len);
+    ESP_DEBUG("info: aes gcm rfc4543 enc: %d\n", esp_len);
 
     /* get enc payload, iv, and icv pointers. */
     iv = esp_enc_iv(esp_data);
@@ -1500,8 +1500,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         }
 
         if (err) {
-            ESP_LOG("error: esp_decrypt(%02x): %d\n", esp_sa->enc,
-                   err);
+            ESP_LOG("error: esp_decrypt(%02x): %d\n", esp_sa->enc, err);
             return -1;
         }
     }
