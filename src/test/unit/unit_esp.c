@@ -671,7 +671,7 @@ START_TEST(test_replay_overflow)
 END_TEST
 
 /* The sequence number must only be committed after aead verify.
- * Send plausible junk ESP packets for a real RFC4543 SA, and check the
+ * Send a plausible junk ESP packet for a real RFC4543 SA, and check the
  * inbound replay state is not mutated after verify failure. */
 START_TEST(test_replay_aead_verify)
 {
@@ -682,7 +682,7 @@ START_TEST(test_replay_aead_verify)
     wolfIP_esp_sa * esp_sa = NULL;
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
 
-    for (i = 0U; i < sizeof(ref); i++) ref[i] = (uint8_t)(i & 0xaaU);
+    for (i = 0U; i < sizeof(ref); i++) ref[i] = (uint8_t)(i & 0xffU);
 
     /* fake ESP packet with enough data to get through early processing, but
      * eventually fail during GMAC verify. */
@@ -705,7 +705,7 @@ START_TEST(test_replay_aead_verify)
     ck_assert_uint_eq(esp_sa->replay.bitmap, 0U);
 
     /* should fail to unwrap. */
-    frame_len = build_ip_packet(buf, sizeof(buf), 0x32, ref, sizeof(ref));
+    frame_len = build_ip_packet(buf, sizeof(buf), 0x32U, ref, sizeof(ref));
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, -1);
 
