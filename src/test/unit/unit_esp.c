@@ -701,18 +701,17 @@ START_TEST(test_replay_aead_verify)
     esp_sa = esp_sa_get(1, (uint8_t *)spi_rt);
     ck_assert_ptr_nonnull(esp_sa);
     /* sanity check esp_replay_init */
-    ck_assert_int_eq(esp_sa->replay.hi_seq, ESP_REPLAY_WIN);
-    ck_assert_int_eq(esp_sa->replay.bitmap, 0U);
+    ck_assert_uint_eq(esp_sa->replay.hi_seq, ESP_REPLAY_WIN);
+    ck_assert_uint_eq(esp_sa->replay.bitmap, 0U);
 
     /* should fail to unwrap. */
-    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
-                                ref, sizeof(ref));
+    frame_len = build_ip_packet(buf, sizeof(buf), 0x32, ref, sizeof(ref));
     ret = esp_transport_unwrap(ip, &frame_len);
     ck_assert_int_eq(ret, -1);
 
     /* the hi seq and bitmap should be unchanged. */
-    ck_assert_int_eq(esp_sa->replay.hi_seq, ESP_REPLAY_WIN);
-    ck_assert_int_eq(esp_sa->replay.bitmap, 0U);
+    ck_assert_uint_eq(esp_sa->replay.hi_seq, ESP_REPLAY_WIN);
+    ck_assert_uint_eq(esp_sa->replay.bitmap, 0U);
 }
 END_TEST
 
