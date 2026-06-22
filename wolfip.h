@@ -120,8 +120,24 @@ typedef uint32_t ip4;
 
 /* Macros, compiler specific. */
 #define PACKED __attribute__((packed))
-#define ee16(x) __builtin_bswap16(x)
-#define ee32(x) __builtin_bswap32(x)
+/* ee16/ee32 convert between host and network (big-endian) byte order.
+ * On a big-endian host (e.g. PowerPC e5500/e6500) host order already
+ * matches network order, so these must be no-ops; only swap on a
+ * little-endian host. */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#  define ee16(x) ((uint16_t)(x))
+#  define ee32(x) ((uint32_t)(x))
+#elif defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#  define ee16(x) __builtin_bswap16(x)
+#  define ee32(x) __builtin_bswap32(x)
+#elif defined(_MSC_VER)  /* MSVC targets (x86/x64/ARM64) are little-endian */
+#  define ee16(x) ((uint16_t)(((uint16_t)(x) >> 8) | ((uint16_t)(x) << 8)))
+#  define ee32(x) ((uint32_t)(((uint32_t)(x) >> 24) | \
+        (((uint32_t)(x) >> 8) & 0x0000FF00U) | \
+        (((uint32_t)(x) << 8) & 0x00FF0000U) | ((uint32_t)(x) << 24)))
+#else
+#  error "Cannot determine byte order; define __BYTE_ORDER__"
+#endif
 
 #ifndef WOLFIP_EAGAIN
 #ifdef EAGAIN
