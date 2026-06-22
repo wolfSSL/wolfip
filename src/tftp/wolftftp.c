@@ -20,9 +20,12 @@
  */
 #include "wolftftp.h"
 
-#include <ctype.h>
-#include <stdio.h>
 #include <string.h>
+
+/* This client avoids <stdio.h> (snprintf) and <ctype.h> (tolower) so it
+ * links on bare-metal targets without a hosted libc. The small local
+ * helpers below cover the only uses: ASCII case-folding and unsigned
+ * decimal formatting of TFTP option values. */
 
 #define WOLFTFTP_PKT_MAX (4U + WOLFTFTP_MAX_BLKSIZE)
 #define WOLFTFTP_OPT_BLKSIZE   0x01U
@@ -59,6 +62,35 @@ static size_t wolftftp_strnlen_local(const char *s, size_t max_len)
     return max_len;
 }
 
+/* ASCII lowercase (no <ctype.h>/_ctype_ dependency). */
+static unsigned char wolftftp_tolower_local(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        c = (unsigned char)(c - 'A' + 'a');
+    return c;
+}
+
+/* Format an unsigned value as decimal into out[0..cap-1] with a NUL
+ * terminator, replacing snprintf("%u"/"%lu", ...). */
+static void wolftftp_utoa_local(char *out, size_t cap, unsigned long v)
+{
+    char tmp[24];
+    size_t n = 0;
+    size_t i;
+
+    if (cap == 0)
+        return;
+    if (v == 0)
+        tmp[n++] = '0';
+    while (v != 0) {
+        tmp[n++] = (char)('0' + (v % 10UL));
+        v /= 10UL;
+    }
+    for (i = 0; i < n && (i + 1U) < cap; i++)
+        out[i] = tmp[n - 1U - i];
+    out[i] = '\0';
+}
+
 static int wolftftp_stricmp_local(const char *a, const char *b)
 {
     unsigned char ca;
@@ -67,8 +99,8 @@ static int wolftftp_stricmp_local(const char *a, const char *b)
     if (a == NULL || b == NULL)
         return -1;
     while (*a != '\0' || *b != '\0') {
-        ca = (unsigned char)tolower((unsigned char)*a);
-        cb = (unsigned char)tolower((unsigned char)*b);
+        ca = wolftftp_tolower_local((unsigned char)*a);
+        cb = wolftftp_tolower_local((unsigned char)*b);
         if (ca != cb)
             return (int)ca - (int)cb;
         if (*a != '\0')
@@ -244,28 +276,28 @@ static int wolftftp_build_request(uint8_t *buf, uint16_t max_len, uint16_t opcod
     *requested_opts = 0;
 
     if (cfg->blksize != WOLFTFTP_DEFAULT_BLKSIZE) {
-        (void)snprintf(value, sizeof(value), "%u", cfg->blksize);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)cfg->blksize);
         ret = wolftftp_append_opt(buf, &off, max_len, "blksize", value);
         if (ret != 0)
             return ret;
         *requested_opts |= WOLFTFTP_OPT_BLKSIZE;
     }
     if (cfg->timeout_s != WOLFTFTP_DEFAULT_TIMEOUT_S) {
-        (void)snprintf(value, sizeof(value), "%u", cfg->timeout_s);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)cfg->timeout_s);
         ret = wolftftp_append_opt(buf, &off, max_len, "timeout", value);
         if (ret != 0)
             return ret;
         *requested_opts |= WOLFTFTP_OPT_TIMEOUT;
     }
     if (cfg->windowsize > 1U) {
-        (void)snprintf(value, sizeof(value), "%u", cfg->windowsize);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)cfg->windowsize);
         ret = wolftftp_append_opt(buf, &off, max_len, "windowsize", value);
         if (ret != 0)
             return ret;
         *requested_opts |= WOLFTFTP_OPT_WINDOWSIZE;
     }
     if (tsize != 0U || cfg->max_image_size != 0U) {
-        (void)snprintf(value, sizeof(value), "%lu", (unsigned long)tsize);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)tsize);
         ret = wolftftp_append_opt(buf, &off, max_len, "tsize", value);
         if (ret != 0)
             return ret;
@@ -436,25 +468,25 @@ static int wolftftp_build_oack(uint8_t *buf, uint16_t max_len,
         return -WOLFIP_EINVAL;
     wolftftp_write_u16(buf, WOLFTFTP_OP_OACK);
     if ((opts & WOLFTFTP_OPT_BLKSIZE) != 0U) {
-        (void)snprintf(value, sizeof(value), "%u", neg->blksize);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)neg->blksize);
         ret = wolftftp_append_opt(buf, &off, max_len, "blksize", value);
         if (ret != 0)
             return ret;
     }
     if ((opts & WOLFTFTP_OPT_TIMEOUT) != 0U) {
-        (void)snprintf(value, sizeof(value), "%u", neg->timeout_s);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)neg->timeout_s);
         ret = wolftftp_append_opt(buf, &off, max_len, "timeout", value);
         if (ret != 0)
             return ret;
     }
     if ((opts & WOLFTFTP_OPT_TSIZE) != 0U) {
-        (void)snprintf(value, sizeof(value), "%lu", (unsigned long)neg->tsize);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)neg->tsize);
         ret = wolftftp_append_opt(buf, &off, max_len, "tsize", value);
         if (ret != 0)
             return ret;
     }
     if ((opts & WOLFTFTP_OPT_WINDOWSIZE) != 0U) {
-        (void)snprintf(value, sizeof(value), "%u", neg->windowsize);
+        wolftftp_utoa_local(value, sizeof(value), (unsigned long)neg->windowsize);
         ret = wolftftp_append_opt(buf, &off, max_len, "windowsize", value);
         if (ret != 0)
             return ret;
