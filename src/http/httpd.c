@@ -273,28 +273,27 @@ int http_url_decode(char *buf, size_t len)
 
 int http_url_encode(char *buf, size_t len, size_t max_len) {
     char *p = buf;
-    char *q = NULL;
+    char *q;
     while (p < buf + len) {
         q = memchr(p, ' ', len - (size_t)(p - buf));
-        if (!q) {
+        if (q == NULL) {
             break;
         }
         if (len + 2 >= max_len) {
             return -1; /* Not enough space */
         }
         /* Shift memory to create space for %20 */
-        memmove(q + 3, q + 1, len - (q + 1 - buf));
+        memmove(q + 3, q + 1, len - (size_t)(q + 1 - buf));
         *q = '%';
         *(q + 1) = '2';
         *(q + 2) = '0';
         len += 2;
+        p = q + 3;
     }
-    if (q) {
-        if (len >= max_len)
-            return -1; /* No space for the null terminator */
-        buf[len] = '\0';
-    }
-    return len;
+    if (len >= max_len)
+        return -1; /* No space for the null terminator */
+    buf[len] = '\0';
+    return (int)len;
 }
 
 /* Case-insensitive check that header line [s, s+len) begins with the field
