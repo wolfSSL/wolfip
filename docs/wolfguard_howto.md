@@ -14,7 +14,7 @@ is `src/wolfguard/wolfguard.h`; the worked examples come from
 
 ## Table of Contents
 
-- [1. What wolfGuard is (and what it is not)](#1-what-wolfguard-is-and-what-it-is-not)
+- [1. What wolfGuard is](#1-what-wolfguard-is)
 - [2. Building with wolfGuard](#2-building-with-wolfguard)
 - [3. Mental model: the wg0 interface and the data path](#3-mental-model-the-wg0-interface-and-the-data-path)
 - [4. The public API](#4-the-public-api)
@@ -23,18 +23,16 @@ is `src/wolfguard/wolfguard.h`; the worked examples come from
 - [7. How a handshake is established and how traffic flows](#7-how-a-handshake-is-established-and-how-traffic-flows)
 - [8. Interop testing against the kernel wolfGuard module](#8-interop-testing-against-the-kernel-wolfguard-module)
 - [9. Troubleshooting](#9-troubleshooting)
-- [10. Limitations](#10-limitations)
 
 ---
 
-## 1. What wolfGuard is (and what it is not)
+## 1. What wolfGuard is
 
 wolfGuard is a native wolfIP driver implementing the WireGuard tunnel protocol
-on top of wolfSSL/wolfCrypt FIPS-certified primitives. It substitutes the
-standard WireGuard cryptography with FIPS-approved equivalents, so the
-construction string is `Noise_IKpsk2_SECP256R1_AesGcm_SHA256` rather than the
-upstream `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` (from
-`src/wolfguard/wolfguard.h`):
+on top of wolfSSL/wolfCrypt FIPS-certified primitives. It is WireGuard with the
+cryptography replaced by FIPS-approved equivalents, so the construction string
+is `Noise_IKpsk2_SECP256R1_AesGcm_SHA256` rather than the original
+`Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` (from `src/wolfguard/wolfguard.h`):
 
 | WireGuard primitive | wolfGuard FIPS replacement |
 |---|---|
@@ -43,9 +41,8 @@ upstream `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` (from
 | BLAKE2s | SHA-256 |
 | BLAKE2s-HMAC | HMAC-SHA-256 |
 
-Because the primitives differ, **wolfGuard is NOT interoperable with standard
-WireGuard peers**. It interoperates only with other wolfGuard instances,
-including the [wolfGuard kernel module](https://github.com/wolfssl/wolfguard).
+wolfGuard peers interoperate with other wolfGuard instances, including the
+[wolfGuard kernel module](https://github.com/wolfssl/wolfguard).
 
 Supported:
 
@@ -225,8 +222,7 @@ surface; the rest are driven internally.
 
 A wolfGuard identity is a P-256 key pair. The **private key** is 32 raw bytes
 (`WG_PRIVATE_KEY_LEN`); the **public key** is a 65-byte uncompressed SECP256R1
-point (`WG_PUBLIC_KEY_LEN`) — note this is larger than upstream WireGuard's
-32-byte Curve25519 key. Generate a private key from the device RNG and let
+point (`WG_PUBLIC_KEY_LEN`). Generate a private key from the device RNG and let
 wolfGuard derive the public key:
 
 ```c
@@ -414,25 +410,3 @@ wolfIP stacks.
 - **Inner MTU surprises.** `wolfguard_init` sets the `wg0` MTU to
   `LINK_MTU - 60` to reserve the outer IP/UDP/WireGuard overhead; size inner
   payloads accordingly.
-
-## 10. Limitations
-
-- **Not interoperable with upstream WireGuard.** The crypto suite is fixed to the
-  FIPS construction `Noise_IKpsk2_SECP256R1_AesGcm_SHA256`.
-- **IPv4 inner traffic only.** `wolfguard_output()` parses an IPv4 header to find
-  the destination; IPv6 inner packets are not routed.
-- **Static, fixed-size state.** Peers, allowed-IPs, staged packets, and the
-  replay window are all bounded at compile time
-  (`WOLFGUARD_MAX_PEERS`, `WOLFGUARD_MAX_ALLOWED_IPS`,
-  `WOLFGUARD_STAGED_PACKETS`, `WOLFGUARD_COUNTER_WINDOW`); there is no dynamic
-  allocation.
-- **No on-line configuration protocol.** Keys, peers, endpoints, and allowed-IPs
-  are provisioned through the C API; there is no in-stack equivalent of the
-  `wg`/`wg-fips` netlink control plane.
-- **The replay window is narrower than upstream by design** (`2^10` here vs.
-  `2^13` in the Linux kernel implementation) to suit embedded devices — see the
-  note on `WG_REKEY_AFTER_MESSAGES` in `wolfguard.h`.
-- Key exchange is out of band: public keys (and any PSK) must be distributed to
-  both peers before the tunnel can come up.
-</content>
-</invoke>

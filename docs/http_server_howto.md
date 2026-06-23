@@ -23,7 +23,6 @@ dynamic handler on an STM32H5).
 - [10. Enabling HTTPS (TLS layering)](#10-enabling-https-tls-layering)
 - [11. URL encoding/decoding helpers](#11-url-encodingdecoding-helpers)
 - [12. Troubleshooting](#12-troubleshooting)
-- [13. Limitations](#13-limitations)
 
 ---
 
@@ -403,28 +402,3 @@ and returns the new length or `-1` if there is not enough room.
   window, or send incrementally with the chunked helpers.
 - **Fifth concurrent client is refused.** Only `HTTPD_MAX_CLIENTS` (4) client
   slots exist; a new accept with no free slot is dropped.
-
-## 13. Limitations
-
-This is a deliberately minimal server. Known constraints, all from
-`src/http/httpd.h` / `httpd.c`:
-
-- **Methods:** only `GET` and `POST`. No `HEAD`, `PUT`, `DELETE`, etc.
-- **Routing:** exact-match paths only (`strcmp`), no prefix/wildcard/regex,
-  max `HTTPD_MAX_URLS` (16) routes.
-- **Concurrency:** at most `HTTPD_MAX_CLIENTS` (4) simultaneous connections, and
-  bounded overall by the stack's `MAX_TCPSOCKETS`. One request is parsed per
-  read; no HTTP keep-alive pipelining logic.
-- **Fixed sizes:** method ≤ 8, path ≤ 128, query ≤ 256, body ≤ 1024 bytes;
-  `req->headers` holds only the last header line. Requests exceeding these are
-  rejected with `400`.
-- **No buffering / flow control on output:** responses are sent as generated; a
-  blocked socket drops the response and closes the connection.
-- **No chunked request bodies** and no body without `Content-Length` (rejected
-  to avoid request smuggling).
-- **Static content is referenced, not copied** — the string must outlive the
-  server.
-- **wolfSSL is a hard dependency** even for plain HTTP, because the header
-  includes `<wolfssl/ssl.h>` unconditionally.
-</content>
-</invoke>

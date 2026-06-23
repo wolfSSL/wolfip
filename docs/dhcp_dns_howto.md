@@ -23,7 +23,6 @@ full DHCP-then-DNS-then-connect test driven against `dnsmasq`) and
 - [8. End-to-end: DHCP up, then resolve a host](#8-end-to-end-dhcp-up-then-resolve-a-host)
 - [9. Socket-pool implications](#9-socket-pool-implications)
 - [10. Troubleshooting](#10-troubleshooting)
-- [11. Limitations](#11-limitations)
 
 ---
 
@@ -368,17 +367,3 @@ drained.
 **Wrong-looking resolved address.** The callback delivers `ip` in **host byte
 order**; convert with `ee32()` before storing it in a `sin_addr` (which is network
 byte order).
-
-## 11. Limitations
-
-- Client only — no DHCP server, no DNS server.
-- IPv4 only — no IPv6, no AAAA records.
-- DNS: forward (A) and reverse (PTR) lookups only; no caching, no search-domain
-  handling, no TCP fallback (truncated responses are dropped), and **one
-  outstanding query at a time**.
-- The DNS server is a single address; DHCP records only the first server from
-  option 6, and a static `WOLFIP_STATIC_DNS_IP` always wins over the DHCP-learned
-  one.
-- DHCP and DNS each consume a UDP socket from the `MAX_UDPSOCKETS` pool.
-- Progress is entirely poll-driven: a non-advancing `now_ms` stalls retransmits,
-  lease renewal, and DNS timeouts.

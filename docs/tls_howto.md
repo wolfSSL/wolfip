@@ -25,7 +25,6 @@ is documented by wolfSSL; this guide only covers the wolfIP integration points.
 - [8. Non-blocking handshakes and the poll loop](#8-non-blocking-handshakes-and-the-poll-loop)
 - [9. Cleanup and the static descriptor pool](#9-cleanup-and-the-static-descriptor-pool)
 - [10. Troubleshooting](#10-troubleshooting)
-- [11. Limitations](#11-limitations)
 
 ---
 
@@ -457,18 +456,3 @@ that. Also set SNI with `wolfSSL_UseSNI()`; most public servers require it.
 
 **Link errors on `wolfSSL_*`.** `src/port/wolfssl_io.c` was not compiled with
 `-DWOLFSSL_WOLFIP`, or you did not link `-lwolfssl`. See §2.
-
-## 11. Limitations
-
-- The descriptor pool is static and sized by `MAX_WOLFIP_CTX` (default 8); it
-  bounds both the registered CTX/stacks and the live TLS sessions, and leaks if
-  `wolfSSL_CleanupIO_wolfIP()` is skipped on teardown.
-- The bridge is TCP only — it wraps `wolfIP_sock_recv`/`send` on a stream
-  socket. There is no DTLS-over-UDP glue here.
-- Everything is non-blocking and single-threaded: the application owns the
-  retry-on-`WANT_*` logic; there is no blocking-handshake convenience wrapper.
-- The glue is the transport only — certificate/key management, verification
-  policy, SNI, and the TLS configuration are entirely on the wolfSSL side and
-  are your responsibility.
-- The TLS version and cipher suites available depend on how your wolfSSL library
-  was configured and built; the in-tree examples target TLS 1.3.

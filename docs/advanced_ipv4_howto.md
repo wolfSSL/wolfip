@@ -18,7 +18,6 @@ examples come from `src/test/test_multicast_interop.c`,
 - [3. Multiple interfaces](#3-multiple-interfaces)
 - [4. The loopback interface](#4-the-loopback-interface)
 - [5. Troubleshooting](#5-troubleshooting)
-- [6. Limitations](#6-limitations)
 
 ---
 
@@ -412,20 +411,3 @@ be using a TTL large enough for the hop count.
 **Wrong interface after enabling loopback.** Remember the index shift: the legacy
 accessors now target index 1 (the first NIC). Use `wolfIP_getdev_ex()` /
 `wolfIP_ipconfig_set_ex()` with explicit indices to avoid ambiguity.
-
-## 6. Limitations
-
-- Multicast is **any-source (ASM)** only; source-filter joins such as
-  `MCAST_JOIN_SOURCE_GROUP` are not implemented.
-- Multicast and IGMP are entirely gated by `IP_MULTICAST`; with it undefined the
-  socket options return without effect.
-- Per-socket joins are capped at `WOLFIP_UDP_MCAST_MEMBERSHIPS` (default 4) and
-  the stack-wide membership table at `MAX_UDPSOCKETS * WOLFIP_UDP_MCAST_MEMBERSHIPS`.
-- IGMP reports use IGMPv3 Current-State Reports; there is no full IGMP querier
-  role.
-- Forwarding is plain IPv4 unicast routing with TTL decrement and ICMP
-  TTL-exceeded; there is no NAT, fragmentation-on-forward, or multicast routing.
-- Forwarding requires at least two configured interfaces and is IPv4 only.
-- The loopback interface occupies interface index 0 and requires
-  `WOLFIP_MAX_INTERFACES > 1`; its address is fixed at `127.0.0.1/8` and its
-  queue depth is `WOLFIP_LOOPBACK_QUEUE_DEPTH` (default 4).

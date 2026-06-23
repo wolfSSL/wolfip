@@ -21,7 +21,6 @@ is `wolfesp.h`; the worked examples come from `src/test/esp/` and the
 - [8. Interoperating with Linux `ip xfrm`](#8-interoperating-with-linux-ip-xfrm)
 - [9. Inspecting ESP traffic in Wireshark](#9-inspecting-esp-traffic-in-wireshark)
 - [10. Troubleshooting](#10-troubleshooting)
-- [11. Limitations](#11-limitations)
 
 ---
 
@@ -352,15 +351,3 @@ needed options and reinstall.
 **ESP packets on an interface marked `non_ethernet` are dropped.** ESP transport
 unwrap currently runs only on Ethernet interfaces; L3-only links are not
 supported on the inbound ESP path.
-
-## 11. Limitations
-
-- Transport mode only — no tunnel mode, so ESP does not protect forwarded
-  traffic.
-- Manual keying only — no IKE/IKEv2; provision SAs out of band.
-- Matching is by `{src, dst, SPI}`; there is no port/protocol policy selector
-  yet.
-- IPv4 only.
-- 32-bit sequence numbers with a 32-packet replay window; no extended (64-bit)
-  sequence numbers.
-- Static SA pool sized by `WOLFIP_ESP_NUM_SA`.
