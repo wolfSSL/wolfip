@@ -23,11 +23,16 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
 
 ## Module How-To Guides
 
-The core socket and stack APIs are documented below. Optional modules have
-dedicated getting-started guides:
+The core socket and stack APIs are documented below. Optional modules and
+features have dedicated getting-started guides:
 
+- [TLS over wolfIP](tls_howto.md) — running wolfSSL/TLS on wolfIP sockets (`WOLFSSL_WOLFIP`), the I/O-callback bridge, and non-blocking handshakes.
+- [HTTP/HTTPS server](http_server_howto.md) — the `src/http/` server module (`WOLFIP_ENABLE_HTTP`), handler registration, and enabling HTTPS via a `WOLFSSL_CTX`.
 - [IPsec ESP how-to](ipsec_esp_howto.md) — build with `WOLFIP_ESP`, install Security Associations, and interoperate with Linux `ip xfrm`.
+- [wolfGuard (FIPS WireGuard)](wolfguard_howto.md) — the in-stack WireGuard tunnel (`WOLFGUARD`), peer/key setup, and kernel interop.
 - [TFTP how-to](tftp_howto.md) — the callback-driven, allocation-free TFTP client/server in `src/tftp/`, including the firmware-download pattern.
+- [DHCP & DNS clients](dhcp_dns_howto.md) — acquiring a lease, resolving names with `nslookup`, and the poll-loop lifecycle.
+- [Advanced IPv4](advanced_ipv4_howto.md) — multicast/IGMP, IPv4 forwarding, multiple interfaces, and loopback.
 - [Porting guide](porting_guide.md) — writing device drivers and porting wolfIP to a new OS.
 
 ## Build Integration

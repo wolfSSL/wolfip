@@ -186,8 +186,17 @@ This port follows the same model as the POSIX wrapper:
 
 - [API reference](docs/API.md): core stack, socket, and protocol-client APIs
 - [Porting guide](docs/porting_guide.md): designing device drivers (with and without DMA) and porting wolfIP to a new operating system
-- [IPsec ESP how-to](docs/ipsec_esp_howto.md): securing traffic with ESP transport mode, SA setup, and Linux `ip xfrm` interop
-- [TFTP how-to](docs/tftp_howto.md): running the TFTP client/server module and wiring its callbacks (including firmware download)
+
+Module how-tos:
+
+- [TLS over wolfIP](docs/tls_howto.md): running wolfSSL/TLS on wolfIP sockets, the I/O-callback bridge, and non-blocking handshakes
+- [HTTP/HTTPS server](docs/http_server_howto.md): the `src/http/` server module, handler registration, and enabling HTTPS
+- [IPsec ESP](docs/ipsec_esp_howto.md): securing traffic with ESP transport mode, SA setup, and Linux `ip xfrm` interop
+- [wolfGuard (FIPS WireGuard)](docs/wolfguard_howto.md): the in-stack WireGuard tunnel, peer/key setup, and kernel interop
+- [TFTP](docs/tftp_howto.md): the TFTP client/server module, callback wiring, and the firmware-download pattern
+- [DHCP & DNS clients](docs/dhcp_dns_howto.md): acquiring a lease, resolving names, and the poll-loop lifecycle
+- [Advanced IPv4](docs/advanced_ipv4_howto.md): multicast/IGMP, IPv4 forwarding, multiple interfaces, and loopback
+
 - [Migrating from lwIP](docs/migrating_from_lwIP.md): mapping lwIP concepts and APIs onto wolfIP
 
 ## Source Layout
