@@ -184,16 +184,20 @@ needs `WOLFIP_MAX_INTERFACES >= 2` (see [section 3](#3-multiple-interfaces)).
 ### How a packet is forwarded
 
 When a frame arrives whose destination is **not** local to the receiving
-interface, the IP input path checks whether the destination is on-link for some
-**other** configured interface (`wolfIP_forward_interface`). If so, the packet is
-routed out that interface:
+interface, the IP input path asks `wolfIP_forward_interface()` for an egress
+interface. That lookup covers both:
+
+- directly connected subnets on the stack's other interfaces, and
+- optional static routes added with `wolfIP_route_add()`.
+
+If a route is found, the packet is forwarded out that interface:
 
 ```text
    in_if  ─▶ IP input ─▶ dest local to this host? ─yes▶ deliver up the stack
                               │ no
                               ▼
                   forward_interface(in_if, dest)
-                              │  (scans other ifaces for an on-link match)
+                              │  (connected-subnet or static-route lookup)
                   ┌───────────┴───────────┐
                   │ no out iface           │ out iface found
                   ▼                        ▼
@@ -264,7 +268,19 @@ wolfIP_ipconfig_set_ex(router_stack, 1, router_wan_ip4, IP4(255,255,255,0), IP4(
 ```
 
 A host on the LAN reaching a server on the WAN sets the router's LAN address as
-its gateway; the router forwards between the two on-link subnets automatically.
+its gateway; the router forwards between the two connected subnets automatically.
+
+If the next hop is **not** directly on one of those connected subnets, add a
+static route:
+
+```c
+/* 10.20.0.0/16 is reachable via 192.168.1.254 on interface 0 */
+wolfIP_route_add(s, 0, IP4(10,20,0,0), 16, IP4(192,168,1,254));
+```
+
+The static-route API is compiled only when forwarding is enabled:
+`wolfIP_route_add()`, `wolfIP_route_delete()`, `wolfIP_route_lookup()`,
+`wolfIP_route_get()`, and `wolfIP_route_count()`.
 
 ## 3. Multiple interfaces
 

@@ -166,9 +166,10 @@ int httpd_register_handler(struct httpd *httpd, const char *path,
   lets it build the entire response.
 
 Both copy the path into the route table (truncated to `HTTP_PATH_LEN`, 128) and
-return `0`, or `-1` if all 16 slots are taken. A registered route with neither a
-handler nor static content yields `503 Service Unavailable`; an unmatched path
-yields `404 Not Found` (`parse_http_request()` in `httpd.c`).
+return `0`, or `-1` if all 16 slots are taken. Each successful registration
+consumes one slot; there is no public deregistration API. A registered route with
+neither a handler nor static content yields `503 Service Unavailable`; an
+unmatched path yields `404 Not Found` (`parse_http_request()` in `httpd.c`).
 
 ## 6. The handler/callback API
 

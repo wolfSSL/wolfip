@@ -209,8 +209,9 @@ overwritten by DHCP — see §6).
    wolfIP_dns_server_get(s, &dns);   /* 0 == none set */
    ```
 
-2. **Configured statically at compile time.** Define `WOLFIP_STATIC_DNS_IP` in
-   `config.h`. The default configuration sets it to Quad9:
+2. **Configured statically for the built-in singleton stack.** Define
+   `WOLFIP_STATIC_DNS_IP` in `config.h`. The default configuration sets it to
+   Quad9:
 
    ```c
    /* config.h */
@@ -231,7 +232,19 @@ overwritten by DHCP — see §6).
 Because the static value is applied first and DHCP only fills the slot when it is
 still zero, a compile-time `WOLFIP_STATIC_DNS_IP` takes precedence over whatever
 DHCP offers. Leave it undefined (and rely on DHCP) if you want the network to
-choose the resolver. If neither path sets a server, `nslookup()` returns `-101`.
+choose the resolver.
+
+Two caveats:
+
+- The automatic `WOLFIP_STATIC_DNS_IP` assignment happens only in
+  `wolfIP_init_static()`. If your application allocates its own stack object and
+  calls `wolfIP_init()`, that macro is **not** applied for you.
+- There is currently no public `wolfIP_dns_server_set()` API. For non-static
+  stacks, the practical choices today are "learn the resolver from DHCP option
+  6" or set `s->dns_server` in your own integration code before calling
+  `nslookup()`.
+
+If neither path sets a server, `nslookup()` returns `-101`.
 
 ## 7. DNS: resolving a name
 
@@ -259,6 +272,11 @@ while (!example_com_resolved) {
     usleep(1000);
 }
 ```
+
+The callback fires only on a successful answer. NXDOMAIN, a truncated UDP
+response (`TC`), malformed replies, or retry exhaustion abort the query without
+invoking `lookup_cb`, so production code should pair `nslookup()` with its own
+timeout or state flag.
 
 Behaviour to rely on (verified in `src/wolfip.c`):
 
