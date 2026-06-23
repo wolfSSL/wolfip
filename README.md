@@ -182,6 +182,11 @@ This port follows the same model as the POSIX wrapper:
 - Socket wrappers serialize stack access with a mutex
 - Blocking operations wait on callback-driven wakeups (instead of busy polling)
 
+## Documentation
+
+- [Porting guide](docs/porting_guide.md): designing device drivers (with and without DMA) and porting wolfIP to a new operating system
+- [Migrating from lwIP](docs/migrating_from_lwIP.md): mapping lwIP concepts and APIs onto wolfIP
+
 ## Source Layout
 
 - `src/wolfip.c`: core TCP/IP stack
