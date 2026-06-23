@@ -184,7 +184,10 @@ This port follows the same model as the POSIX wrapper:
 
 ## Documentation
 
+- [API reference](docs/API.md): core stack, socket, and protocol-client APIs
 - [Porting guide](docs/porting_guide.md): designing device drivers (with and without DMA) and porting wolfIP to a new operating system
+- [IPsec ESP how-to](docs/ipsec_esp_howto.md): securing traffic with ESP transport mode, SA setup, and Linux `ip xfrm` interop
+- [TFTP how-to](docs/tftp_howto.md): running the TFTP client/server module and wiring its callbacks (including firmware download)
 - [Migrating from lwIP](docs/migrating_from_lwIP.md): mapping lwIP concepts and APIs onto wolfIP
 
 ## Source Layout

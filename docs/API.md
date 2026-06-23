@@ -19,6 +19,16 @@ wolfIP is a minimal TCP/IP stack designed for resource-constrained embedded syst
   - TFTP (RFC 1350, RFC 2347, RFC 2348, RFC 2349, RFC 7440) via the reusable `src/tftp/` module
   - UDP (RFC 768) - unicast, optional IPv4 multicast with `IP_MULTICAST`
   - TCP (RFC 793) with options (Timestamps, MSS)
+  - IPsec ESP (RFC 4303) - transport mode, manual keying, with `WOLFIP_ESP`
+
+## Module How-To Guides
+
+The core socket and stack APIs are documented below. Optional modules have
+dedicated getting-started guides:
+
+- [IPsec ESP how-to](ipsec_esp_howto.md) — build with `WOLFIP_ESP`, install Security Associations, and interoperate with Linux `ip xfrm`.
+- [TFTP how-to](tftp_howto.md) — the callback-driven, allocation-free TFTP client/server in `src/tftp/`, including the firmware-download pattern.
+- [Porting guide](porting_guide.md) — writing device drivers and porting wolfIP to a new OS.
 
 ## Build Integration
 
