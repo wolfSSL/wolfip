@@ -54,6 +54,12 @@ VLAN_IP ?= 10.10.100.2
 VLAN_MASK ?= 255.255.255.0
 VLAN_GW ?= 10.10.100.1
 
+# Wired IEEE 802.1X EAP-TLS demo. Set ENABLE_DOT1X=1 to drive the in-tree
+# wolfSupplicant through an EAP-TLS exchange over Ethernet (EAPOL/0x888E
+# via a wolfIP packet socket) against an 802.1X authenticator such as
+# hostapd driver=wired. Auto-enables TLS (EAP-TLS needs wolfSSL). TZEN=0.
+ENABLE_DOT1X ?= 0
+
 # FreeRTOS integration: set FREERTOS=1 to run the HTTPS server from a
 # FreeRTOS task using the blocking BSD socket wrapper layer.
 FREERTOS ?= 0
@@ -70,6 +76,9 @@ ifeq ($(ENABLE_SSH),1)
   ENABLE_TLS = 1
 endif
 ifeq ($(ENABLE_MQTT),1)
+  ENABLE_TLS = 1
+endif
+ifeq ($(ENABLE_DOT1X),1)
   ENABLE_TLS = 1
 endif
 
@@ -431,6 +440,64 @@ SRCS += $(ROOT)/src/tftp/wolftftp.c
 endif # ENABLE_TFTP
 
 # -----------------------------------------------------------------------------
+# Wired 802.1X EAP-TLS demo (wolfSupplicant over a wolfIP packet socket)
+# -----------------------------------------------------------------------------
+ifeq ($(ENABLE_DOT1X),1)
+
+ifeq ($(TZEN),1)
+  $(error ENABLE_DOT1X=1 currently only supports TZEN=0)
+endif
+
+ifeq ($(wildcard dot1x_certs.h),)
+  $(error dot1x_certs.h not found - generate the test PKI first: cd dot1x && ./gen_certs.sh)
+endif
+
+SUPP_DIR := $(ROOT)/src/supplicant
+
+CFLAGS += -DENABLE_DOT1X
+CFLAGS += -DWOLFIP_WITH_SUPPLICANT
+CFLAGS += -DWOLFIP_ENABLE_EAP_TLS=1
+# Use user_settings.h (not the host-generated wolfssl/options.h) so the
+# supplicant's wolfSSL config matches the cross-built library exactly.
+CFLAGS += -DWOLFSSL_NO_OPTIONS_H
+# wolfCrypt extras the supplicant's WPA crypto references (PBKDF2 for PSK,
+# AES key wrap for the GTK). Linked in even though the wired EAP-TLS path
+# never runs the 4-way handshake. WOLFSSL_AES_DIRECT is already in
+# user_settings.h; HAVE_PBKDF2 also un-gates NO_PWDBASED there.
+CFLAGS += -DHAVE_PBKDF2 -DHAVE_AES_KEYWRAP
+CFLAGS += -DWOLFIP_ENABLE_SAE=0 -DWOLFIP_ENABLE_PEAP_MSCHAPV2=0
+CFLAGS += -DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1
+# The port config.h has no socket-array sizes; one packet socket (EAPOL)
+# is all the demo needs. The raw-socket array is unused but must size >0.
+CFLAGS += -DWOLFIP_MAX_RAWSOCKETS=1 -DWOLFIP_MAX_PACKETSOCKETS=1
+CFLAGS += -I$(SUPP_DIR)
+
+# Demo driver + the EAP-TLS subset of the supplicant (PSK-only crypto and
+# SAE/PEAP are compiled out).
+SRCS += dot1x_client.c
+SRCS += $(SUPP_DIR)/supplicant.c
+SRCS += $(SUPP_DIR)/eapol.c
+SRCS += $(SUPP_DIR)/eap.c
+SRCS += $(SUPP_DIR)/eap_tls.c
+SRCS += $(SUPP_DIR)/eap_tls_engine.c
+SRCS += $(SUPP_DIR)/rsn_ie.c
+SRCS += $(SUPP_DIR)/wpa_crypto.c
+# wc_PBKDF2 for wpa_crypto.c (not in the base TLS source set).
+SRCS += $(WOLFSSL_ROOT)/wolfcrypt/src/pwdbased.c
+
+# Supplicant objects: relaxed warnings + wolfSSL/supplicant include paths
+# and the EAP-TLS feature flags (supplicant.h pulls in wolfSSL headers).
+$(SUPP_DIR)/%.o: $(SUPP_DIR)/%.c
+	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS -DWOLFSSL_NO_OPTIONS_H \
+	    -DWOLFIP_WITH_SUPPLICANT -DWOLFIP_ENABLE_EAP_TLS=1 \
+	    -DWOLFIP_ENABLE_SAE=0 -DWOLFIP_ENABLE_PEAP_MSCHAPV2=0 \
+	    -DWOLFIP_RAWSOCKETS=1 -DWOLFIP_PACKET_SOCKETS=1 \
+	    -DHAVE_PBKDF2 -DHAVE_AES_KEYWRAP \
+	    -I$(WOLFSSL_ROOT) -I$(SUPP_DIR) -c $< -o $@
+
+endif # ENABLE_DOT1X
+
+# -----------------------------------------------------------------------------
 # 802.1Q VLAN
 # -----------------------------------------------------------------------------
 ifeq ($(ENABLE_VLAN),1)
@@ -507,7 +574,7 @@ factory: factory.bin
 
 # wolfSSL objects use relaxed warnings + user_settings.h + include paths
 $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH -DWOLFSSL_WOLFSSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) -I$(WOLFSSL_ROOT) -c $< -o $@
+	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH -DWOLFSSL_WOLFSSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) $(if $(filter 1,$(ENABLE_DOT1X)),-DHAVE_PBKDF2 -DHAVE_AES_KEYWRAP) -I$(WOLFSSL_ROOT) -c $< -o $@
 
 clean:
 	rm -f *.o app.elf app.bin
@@ -516,6 +583,7 @@ clean:
 	rm -f $(ROOT)/src/port/*.o
 	rm -f $(ROOT)/src/port/stm32/*.o
 	rm -f $(ROOT)/src/port/freeRTOS/*.o
+	rm -f $(ROOT)/src/supplicant/*.o
 ifeq ($(FREERTOS),1)
 	rm -f $(FREERTOS_PATH)/*.o
 	rm -f $(FREERTOS_PATH)/portable/MemMang/*.o
