@@ -91,6 +91,60 @@ void *_sbrk(ptrdiff_t incr)
     return prev;
 }
 
+/* This board has no RTC, so derive a coarse wall-clock from the build date
+ * (__DATE__ = "Mmm dd yyyy"). It only needs to be accurate enough that
+ * wolfSSL X.509 notBefore/notAfter checks pass for certs minted around
+ * build time (e.g. the 802.1X EAP-TLS demo). Resolution is one day; we add
+ * two days of slack so a cert whose notBefore is later on the build day is
+ * still considered valid. */
+static time_t build_epoch(void)
+{
+    static const char mon_names[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    static const int  mdays[12] =
+        { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    const char *bd = __DATE__;
+    long  days;
+    long  y;
+    int   mon;
+    int   day;
+    int   year;
+    int   leap;
+    int   i;
+
+    mon = 0;
+    for (i = 0; i < 12; i++) {
+        if (mon_names[i * 3] == bd[0] && mon_names[i * 3 + 1] == bd[1]
+            && mon_names[i * 3 + 2] == bd[2]) {
+            mon = i;
+            break;
+        }
+    }
+    day  = ((bd[4] == ' ') ? 0 : (bd[4] - '0')) * 10 + (bd[5] - '0');
+    year = (bd[7] - '0') * 1000 + (bd[8] - '0') * 100
+         + (bd[9] - '0') * 10 + (bd[10] - '0');
+
+    days = 0;
+    for (y = 1970; y < (long)year; y++) {
+        days += (((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0))
+                ? 366 : 365;
+    }
+    leap = (((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0));
+    for (i = 0; i < mon; i++) {
+        days += mdays[i];
+        if ((i == 1) && leap) {
+            days += 1;
+        }
+    }
+    days += (day - 1);
+    /* NOTE: newlib time_t here is 32-bit signed, so this value overflows on
+     * 2038-01-19; a build dated after that wraps negative and X.509
+     * notBefore/notAfter checks fail. Also note _gettimeofday()/time() return
+     * this same constant (frozen clock) - fine for the one-shot EAP-TLS cert
+     * validity check it exists for, but not for measuring elapsed wall time
+     * (layer a SysTick offset on top of build_epoch() if that is needed). */
+    return (time_t)((days + 2) * 86400L);
+}
+
 int _gettimeofday(struct timeval *tv, void *tzvp)
 {
     (void)tzvp;
@@ -98,17 +152,18 @@ int _gettimeofday(struct timeval *tv, void *tzvp)
         errno = EINVAL;
         return -1;
     }
-    tv->tv_sec = 0;
+    tv->tv_sec = build_epoch();
     tv->tv_usec = 0;
     return 0;
 }
 
 time_t time(time_t *t)
 {
+    time_t now = build_epoch();
     if (t != 0) {
-        *t = 0;
+        *t = now;
     }
-    return 0;
+    return now;
 }
 
 void _exit(int status)

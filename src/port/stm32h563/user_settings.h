@@ -131,7 +131,9 @@ extern "C" {
 #define NO_RABBIT
 #define NO_HC128
 #define NO_PSK
+#ifndef HAVE_PBKDF2          /* dot1x/supplicant needs PBKDF2 (wc_PBKDF2) */
 #define NO_PWDBASED
+#endif
 #define NO_OLD_TLS                /* Disable TLS 1.0/1.1 */
 #define NO_CHECK_PRIVATE_KEY      /* Save code - we trust our own keys */
 

@@ -69,6 +69,10 @@ extern volatile unsigned long broker_uptime_sec;
 #include "tftp_client_demo.h"
 #endif
 
+#ifdef ENABLE_DOT1X
+#include "dot1x_client.h"
+#endif
+
 #ifdef ENABLE_TLS_CLIENT
 
 /* Google IP for TLS client test (run: dig +short google.com) */
@@ -896,6 +900,18 @@ int main(void)
         }
         uart_puts("\n");
     }
+
+#ifdef ENABLE_DOT1X
+    /* Wired IEEE 802.1X EAP-TLS: authenticate at layer 2 (EAPOL/0x888E)
+     * before any IP setup. Self-contained one-shot against an 802.1X
+     * authenticator such as hostapd driver=wired; needs no IP address. */
+    uart_puts("\n=== Wired 802.1X EAP-TLS (wolfSupplicant) ===\n");
+    if (dot1x_eaptls_run(IPStack, uart_puts) == 0) {
+        uart_puts("=== 802.1X: AUTHENTICATED ===\n\n");
+    } else {
+        uart_puts("=== 802.1X: authentication FAILED ===\n\n");
+    }
+#endif
 
 #ifdef ENABLE_VLAN
     /* 802.1Q VLAN sub-interface: create a logical interface on top of the

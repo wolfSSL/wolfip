@@ -1,0 +1,6 @@
+# hostapd EAP user file for the wired EAP-TLS demo.
+#
+# One phase-1 entry: allow any outer identity to authenticate with EAP-TLS.
+# Authentication is by client certificate (CN alice@wolfip.local, signed by
+# the shared test CA), so the identity string itself is informational.
+*	TLS

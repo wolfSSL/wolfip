@@ -1,0 +1,6 @@
+# Generated test PKI for the wired 802.1X EAP-TLS demo.
+# Run dot1x/gen_certs.sh to (re)create these. Not committed: they contain
+# private keys, and the embedded firmware header must match the host certs
+# from the same generation.
+dot1x_certs.h
+dot1x/host/
