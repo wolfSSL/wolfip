@@ -1,0 +1,24 @@
+# hostapd_psk_hwsim.conf.template
+#
+# WPA2-Personal AP on a mac80211_hwsim virtual radio. Driver is
+# nl80211 (the real wireless stack), so association is a true 802.11
+# (re)assoc with RSN IE negotiation - hostapd's wpa_auth_sm will see
+# AKM=PSK and run the 4-way handshake without EAP.
+
+interface=@IFACE@
+driver=nl80211
+logger_stdout=-1
+logger_stdout_level=0
+
+ssid=@SSID@
+hw_mode=g
+channel=1
+
+# WPA2-Personal (RSN, CCMP, PSK).
+wpa=2
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+wpa_passphrase=@PSK@
+
+ctrl_interface=/tmp/wolfip_hostapd_ctrl

@@ -246,6 +246,213 @@ WOLFGUARD_SRC := src/wolfguard/wolfguard.c \
                  src/wolfguard/wg_timers.c
 WOLFGUARD_OBJ := $(patsubst src/%.c,build/wolfguard/%.o,$(WOLFGUARD_SRC))
 
+# wolfSupplicant - per-feature build flags. Core (PSK + 4-way + EAP
+# framing) is always built; the per-method modules below are gated.
+#
+#   WOLFIP_ENABLE_EAP_TLS=1        WPA2-Enterprise EAP-TLS (default on)
+#   WOLFIP_ENABLE_PEAP_MSCHAPV2=1  WPA2-Enterprise PEAPv0/MSCHAPv2
+#                                  (default off - pulls in deprecated
+#                                  MD4 + DES; needs wolfSSL built with
+#                                  --enable-md4 --enable-des3)
+#   WOLFIP_ENABLE_SAE=1            WPA3-Personal SAE dragonfly
+#                                  (default on - needs WOLFSSL_PUBLIC_MP
+#                                  in the linked wolfSSL build for the
+#                                  mp_* / sp_* math ABI)
+#   WOLFIP_ENABLE_SAE_H2E=1        WPA3-SAE Hash-to-Element PWE
+#                                  (default on; requires WOLFIP_ENABLE_SAE.
+#                                  Off = legacy hunt-and-peck only.)
+#   WOLFIP_ENABLE_SAE_HNP=1        WPA3-SAE hunt-and-peck PWE
+#                                  (default on; set to 0 in H2E-only
+#                                  builds to drop ~600 B of text from
+#                                  sae_compute_pwe_hnp).
+#
+# WOLFSSL_PREFIX is optional. When set, the build links against that
+# wolfSSL tree (-I, -L, -Wl,-rpath) instead of the system one.
+WOLFIP_ENABLE_EAP_TLS       ?= 1
+WOLFIP_ENABLE_PEAP_MSCHAPV2 ?= 0
+WOLFIP_ENABLE_SAE           ?= 1
+WOLFIP_ENABLE_SAE_H2E       ?= 1
+WOLFIP_ENABLE_SAE_HNP       ?= 1
+
+ifneq ($(WOLFSSL_PREFIX),)
+WOLFSSL_CFLAGS := -I$(WOLFSSL_PREFIX)/include
+WOLFSSL_LIBS   := -L$(WOLFSSL_PREFIX)/lib -lwolfssl \
+                  -Wl,-rpath,$(WOLFSSL_PREFIX)/lib
+endif
+
+# Core (always present). eap_tls.c is just EAP-TLS framing (L/M/S flag
+# handling + reassembly buffers) - no wolfSSL TLS engine, so it stays
+# in core for use by unit tests even when EAP-TLS is disabled.
+SUPPLICANT_SRC := src/supplicant/wpa_crypto.c \
+                  src/supplicant/eapol.c \
+                  src/supplicant/rsn_ie.c \
+                  src/supplicant/eap.c \
+                  src/supplicant/eap_tls.c \
+                  src/supplicant/supplicant.c
+
+ifeq ($(WOLFIP_ENABLE_EAP_TLS),1)
+SUPPLICANT_SRC += src/supplicant/eap_tls_engine.c
+CFLAGS += -DWOLFIP_ENABLE_EAP_TLS=1
+endif
+
+ifeq ($(WOLFIP_ENABLE_PEAP_MSCHAPV2),1)
+SUPPLICANT_SRC += src/supplicant/mschapv2.c \
+                  src/supplicant/eap_peap.c
+CFLAGS += -DWOLFIP_ENABLE_PEAP_MSCHAPV2=1
+# PEAP/MSCHAPv2 transitively requires EAP-TLS for the outer TLS engine.
+ifneq ($(WOLFIP_ENABLE_EAP_TLS),1)
+$(error WOLFIP_ENABLE_PEAP_MSCHAPV2=1 requires WOLFIP_ENABLE_EAP_TLS=1)
+endif
+endif
+
+ifeq ($(WOLFIP_ENABLE_SAE),1)
+SUPPLICANT_SRC += src/supplicant/sae_crypto.c
+CFLAGS += -DWOLFIP_ENABLE_SAE=1
+ifeq ($(WOLFIP_ENABLE_SAE_H2E),1)
+CFLAGS += -DWOLFIP_ENABLE_SAE_H2E=1
+endif
+ifeq ($(WOLFIP_ENABLE_SAE_HNP),0)
+CFLAGS += -DWOLFIP_ENABLE_SAE_HNP=0
+# At least one PWE method must remain enabled.
+ifneq ($(WOLFIP_ENABLE_SAE_H2E),1)
+$(error WOLFIP_ENABLE_SAE_HNP=0 requires WOLFIP_ENABLE_SAE_H2E=1)
+endif
+endif
+else
+ifeq ($(WOLFIP_ENABLE_SAE_H2E),1)
+$(error WOLFIP_ENABLE_SAE_H2E=1 requires WOLFIP_ENABLE_SAE=1)
+endif
+endif
+
+SUPPLICANT_OBJ := $(patsubst src/%.c,build/%.o,$(SUPPLICANT_SRC))
+
+build/supplicant/%.o: src/supplicant/%.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) $(NL80211_CFLAGS) -Isrc/supplicant -c $< -o $@
+
+# WOLFSSL_LIBS / WOLFSSL_CFLAGS may already be set above when
+# WOLFSSL_PREFIX is provided. Otherwise default to pkg-config detection
+# and a plain -lwolfssl fallback.
+ifeq ($(WOLFSSL_LIBS),)
+WOLFSSL_LIBS:=$(shell pkg-config --libs wolfssl 2>/dev/null)
+endif
+ifeq ($(WOLFSSL_LIBS),)
+WOLFSSL_LIBS:=-lwolfssl
+endif
+ifeq ($(WOLFSSL_CFLAGS),)
+WOLFSSL_CFLAGS:=$(shell pkg-config --cflags wolfssl 2>/dev/null)
+endif
+
+build/test-wpa-crypto: $(SUPPLICANT_OBJ) build/supplicant/test_wpa_crypto.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-supplicant-4way: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_4way.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-supplicant-pmksa: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_pmksa.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-eap-framing: $(SUPPLICANT_OBJ) build/supplicant/test_eap_framing.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+ifeq ($(WOLFIP_ENABLE_EAP_TLS),1)
+build/test-eap-tls-engine: $(SUPPLICANT_OBJ) build/supplicant/test_eap_tls_engine.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+endif
+
+ifeq ($(WOLFIP_ENABLE_EAP_TLS),1)
+build/test-supplicant-eap-tls: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_eap_tls.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-supplicant-hostapd: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_hostapd.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+endif
+
+build/test-supplicant-hostapd-psk: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_hostapd_psk.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+ifeq ($(WOLFIP_ENABLE_SAE),1)
+build/test-sae-crypto: $(SUPPLICANT_OBJ) build/supplicant/test_sae_crypto.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-supplicant-sae: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_sae.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+# WPA3-SAE hostapd interop via mac80211_hwsim + nl80211 external auth.
+build/test-supplicant-hostapd-sae: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_hostapd_sae.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(NL80211_LIBS) $(END_GROUP)
+
+supplicant-hwsim-sae-test: build/test-supplicant-hostapd-sae
+	@sudo ./tools/hostapd/run_hwsim_sae_test.sh
+
+# Same harness but configures hostapd with sae_pwe=2 (H2E only) and tells
+# the supplicant test binary to use RFC 9380 SSWU PWE. Subject to the
+# same hwsim FullMAC limitation noted in tools/hostapd/README.md.
+supplicant-hwsim-sae-h2e-test: build/test-supplicant-hostapd-sae
+	@sudo env WOLFIP_SAE_H2E=1 ./tools/hostapd/run_hwsim_sae_test.sh
+endif
+
+# MSCHAPv2 crypto-only test + full hostapd-PEAP interop. Only built
+# when PEAP/MSCHAPv2 is enabled.
+ifeq ($(WOLFIP_ENABLE_PEAP_MSCHAPV2),1)
+build/test-mschapv2: build/supplicant/mschapv2.o build/supplicant/test_mschapv2.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-supplicant-hostapd-peap: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_hostapd_peap.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+supplicant-hostapd-peap-test: build/test-supplicant-hostapd-peap build/test-eap-tls-engine
+	@sudo MODE=peap ./tools/hostapd/run_hostapd_test.sh
+endif
+
+SUPPLICANT_TEST_BINS := build/test-wpa-crypto build/test-supplicant-4way \
+                        build/test-supplicant-pmksa build/test-eap-framing
+ifeq ($(WOLFIP_ENABLE_EAP_TLS),1)
+SUPPLICANT_TEST_BINS += build/test-eap-tls-engine build/test-supplicant-eap-tls
+endif
+ifeq ($(WOLFIP_ENABLE_SAE),1)
+SUPPLICANT_TEST_BINS += build/test-sae-crypto build/test-supplicant-sae
+endif
+
+supplicant-tests: $(SUPPLICANT_TEST_BINS)
+	@for t in $(SUPPLICANT_TEST_BINS); do echo "==> $$t"; $$t || exit 1; done
+
+# Real-authenticator interop tests. Both require hostapd installed and
+# root (veth pair + AF_PACKET raw socket). Not part of supplicant-tests
+# because of those constraints.
+supplicant-hostapd-test: build/test-supplicant-hostapd build/test-eap-tls-engine
+	@sudo ./tools/hostapd/run_hostapd_test.sh
+
+supplicant-hostapd-psk-test: build/test-supplicant-hostapd-psk
+	@sudo MODE=psk ./tools/hostapd/run_hostapd_test.sh
+
+# nl80211 helper used by the hwsim path - small libnl-genl-3 client that
+# drives the STA's open auth + WPA2 association so hostapd will start
+# the real 4-way handshake. EAPOL itself flows via AF_PACKET as usual.
+NL80211_CFLAGS:=$(shell pkg-config --cflags libnl-genl-3.0 libnl-3.0 2>/dev/null)
+NL80211_LIBS:=$(shell pkg-config --libs libnl-genl-3.0 libnl-3.0 2>/dev/null)
+
+build/nl80211_connect: tools/hostapd/nl80211_connect.c
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) $(NL80211_CFLAGS) -o $@ $< $(NL80211_LIBS)
+
+supplicant-hwsim-psk-test: build/test-supplicant-hostapd-psk build/nl80211_connect
+	@sudo ./tools/hostapd/run_hwsim_psk_test.sh
+
 # Test
 
 ifeq ($(CHECK_PKG_LIBS),)

@@ -744,6 +744,91 @@ START_TEST(test_register_callback_variants)
 }
 END_TEST
 
+static int test_eapol_cb(void *ctx, unsigned int if_idx,
+                         const uint8_t *frame, uint32_t len)
+{
+    (void)ctx; (void)if_idx; (void)frame; (void)len;
+    return 0;
+}
+
+START_TEST(test_register_eapol_handler)
+{
+    struct wolfIP s;
+    int           sentinel = 0xA5;
+
+    wolfIP_init(&s);
+
+    /* NULL stack is a no-op (must not crash). */
+    wolfIP_register_eapol_handler(NULL, test_eapol_cb, &sentinel);
+
+    /* Register: handler + ctx stored. */
+    wolfIP_register_eapol_handler(&s, test_eapol_cb, &sentinel);
+    ck_assert_ptr_eq((void *)s.eapol_handler, (void *)test_eapol_cb);
+    ck_assert_ptr_eq(s.eapol_handler_ctx,     &sentinel);
+
+    /* Unregister: passing NULL handler clears it. */
+    wolfIP_register_eapol_handler(&s, NULL, NULL);
+    ck_assert_ptr_eq((void *)s.eapol_handler, NULL);
+    ck_assert_ptr_eq(s.eapol_handler_ctx,     NULL);
+}
+END_TEST
+
+static struct {
+    int          called;
+    unsigned int if_idx;
+    uint32_t     len;
+    uint8_t      buf[64];
+} g_eapol_cap;
+
+static int test_eapol_capture_cb(void *ctx, unsigned int if_idx,
+                                 const uint8_t *frame, uint32_t len)
+{
+    (void)ctx;
+    g_eapol_cap.called++;
+    g_eapol_cap.if_idx = if_idx;
+    g_eapol_cap.len = len;
+    if (len <= sizeof(g_eapol_cap.buf))
+        memcpy(g_eapol_cap.buf, frame, len);
+    return 0;
+}
+
+START_TEST(test_eapol_handler_dispatch)
+{
+    struct wolfIP s;
+    static const struct wolfIP_wifi_ops dummy_ops; /* non-NULL: marks a Wi-Fi if */
+    uint8_t frame[32];
+    static const uint8_t payload[] =
+        { 0x01, 0x00, 0x00, 0x05, 0xDE, 0xAD, 0xBE, 0xEF };
+    const uint32_t flen = ETH_HEADER_LEN + (uint32_t)sizeof(payload);
+
+    wolfIP_init(&s);
+    /* The 0x888E demux only fires on a Wi-Fi interface (wifi_ops != NULL). */
+    s.ll_dev[TEST_PRIMARY_IF].wifi_ops = &dummy_ops;
+
+    /* dst = our MAC, src = AP, ethertype 0x888E, then the EAPOL payload. */
+    memcpy(&frame[0], s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memset(&frame[6], 0x22, 6);
+    frame[12] = 0x88;
+    frame[13] = 0x8E;
+    memcpy(&frame[ETH_HEADER_LEN], payload, sizeof(payload));
+
+    /* Registered handler: receives the payload with the Ethernet header
+     * stripped, and IP/ARP processing is skipped (recv_on returns early). */
+    memset(&g_eapol_cap, 0, sizeof(g_eapol_cap));
+    wolfIP_register_eapol_handler(&s, test_eapol_capture_cb, NULL);
+    wolfIP_recv(&s, frame, flen);
+    ck_assert_int_eq(g_eapol_cap.called, 1);
+    ck_assert_int_eq((int)g_eapol_cap.len, (int)sizeof(payload));
+    ck_assert_mem_eq(g_eapol_cap.buf, payload, sizeof(payload));
+
+    /* No handler registered: a 0x888E frame is dropped, not dispatched. */
+    wolfIP_register_eapol_handler(&s, NULL, NULL);
+    memset(&g_eapol_cap, 0, sizeof(g_eapol_cap));
+    wolfIP_recv(&s, frame, flen);
+    ck_assert_int_eq(g_eapol_cap.called, 0);
+}
+END_TEST
+
 START_TEST(test_sock_connect_udp_bound_ip_not_local)
 {
     struct wolfIP s;
