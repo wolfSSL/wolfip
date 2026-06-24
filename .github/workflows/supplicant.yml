@@ -1,0 +1,152 @@
+name: wolfSupplicant tests
+
+# Only run when the supplicant / its test harness changes, to avoid burning
+# runner minutes on unrelated commits.
+on:
+  push:
+    branches: [ 'master', 'main', 'release/**' ]
+    paths:
+      - 'src/supplicant/**'
+      - 'tools/hostapd/**'
+      - 'tools/wolfsta/**'
+      - 'Makefile'
+      - '.github/workflows/supplicant.yml'
+  pull_request:
+    branches: [ '*' ]
+    paths:
+      - 'src/supplicant/**'
+      - 'tools/hostapd/**'
+      - 'tools/wolfsta/**'
+      - 'Makefile'
+      - '.github/workflows/supplicant.yml'
+
+# Cancel superseded runs on the same ref (push churn / PR force-pushes).
+concurrency:
+  group: supplicant-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so the wolfSSL build cache key is stable (a moving branch would
+  # never cache-hit). Bump to refresh.
+  WOLFSSL_REF: v5.9.1-stable
+  WOLFSSL_PREFIX: /home/runner/wolfssl-install
+
+jobs:
+  supplicant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config \
+                                  hostapd dnsmasq socat iw rfkill \
+                                  libnl-3-dev libnl-genl-3-dev
+          # mac80211_hwsim lives in linux-modules-extra; best-effort.
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
+
+      # Cache the built+installed wolfSSL (keyed on ref + the supplicant's
+      # configure flags). A hit skips the multi-minute wolfSSL build.
+      - name: Cache wolfSSL
+        id: cache-wolfssl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WOLFSSL_PREFIX }}
+          key: wolfssl-${{ env.WOLFSSL_REF }}-enable-all-md5-md4-des3-pubmp-v1
+
+      - name: Build wolfSSL (cache miss only)
+        if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 https://github.com/wolfssl/wolfssl --branch "$WOLFSSL_REF" /tmp/wolfssl
+          cd /tmp/wolfssl
+          ./autogen.sh
+          # --enable-all pulls TLS 1.3, AES key wrap, keying-material and the
+          # curves the supplicant needs; WOLFSSL_PUBLIC_MP exports the mp_*/sp_*
+          # math API used by WPA3-SAE. CMAC is NOT required (the EAPOL-Key
+          # AES-128-CMAC MIC is implemented in-tree). --enable-md4/--enable-des3
+          # are only needed for the optional PEAP/MSCHAPv2 crypto vectors below.
+          ./configure --prefix="$WOLFSSL_PREFIX" --enable-all --enable-md5 \
+                      --enable-des3 --enable-md4 \
+                      CFLAGS="-DWOLFSSL_PUBLIC_MP"
+          make -j"$(nproc)"
+          make install
+
+      # WOLFSSL_PREFIX is in env, so every `make` below links + rpaths
+      # against the cached wolfSSL (no sudo install needed; rpath is absolute
+      # so the binaries resolve the lib even under sudo).
+
+      # Hard gate: in-process unit tests (no root / no radio).
+      - name: Supplicant unit tests
+        run: make supplicant-tests
+
+      # PEAP/MSCHAPv2 is off by default (pulls in deprecated MD4 + DES); the
+      # shared wolfSSL above is built with --enable-md4 --enable-des3, so its
+      # RFC 2759 crypto vectors can run here as a hard gate too.
+      - name: PEAP / MSCHAPv2 crypto vectors
+        run: |
+          WOLFIP_ENABLE_PEAP_MSCHAPV2=1 make build/test-mschapv2
+          build/test-mschapv2
+
+      # Best-effort: real-radio interop needs the mac80211_hwsim kernel
+      # module, not loadable on every hosted runner. Probe and skip cleanly.
+      - name: Probe mac80211_hwsim
+        id: hwsim
+        run: |
+          sudo systemctl stop NetworkManager 2>/dev/null || true
+          sudo rfkill unblock all 2>/dev/null || true
+          if sudo modprobe mac80211_hwsim radios=2 2>/dev/null; then
+            echo "available=yes" >> "$GITHUB_OUTPUT"
+            sudo rmmod mac80211_hwsim 2>/dev/null || true
+          else
+            echo "available=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::mac80211_hwsim not available on this runner; skipping radio interop"
+          fi
+
+      - name: Build SoftMAC test binaries + wolfsta
+        if: steps.hwsim.outputs.available == 'yes'
+        run: |
+          make build/test-supplicant-hwsim-sae-softmac wolfsta \
+               build/test-supplicant-hwsim-eap-softmac \
+               build/test-supplicant-hwsim-pmksa-softmac build/test-eap-tls-engine
+
+      - name: WPA3-SAE over hwsim (P-256 group 19, H&P + H2E)
+        if: steps.hwsim.outputs.available == 'yes'
+        run: |
+          sudo ./tools/hostapd/run_hwsim_sae_softmac_test.sh
+          sudo ./tools/hostapd/run_hwsim_sae_softmac_h2e_test.sh
+
+      - name: WPA3-SAE over hwsim (P-384 group 20, H&P + H2E)
+        if: steps.hwsim.outputs.available == 'yes'
+        run: |
+          sudo ./tools/hostapd/run_hwsim_sae_softmac_g20_test.sh
+          sudo ./tools/hostapd/run_hwsim_sae_softmac_g20_h2e_test.sh
+
+      - name: WPA3-SAE over hwsim (P-521 group 21, H2E)
+        if: steps.hwsim.outputs.available == 'yes'
+        run: sudo ./tools/hostapd/run_hwsim_sae_softmac_g21_h2e_test.sh
+
+      - name: WPA3-SAE negative (wrong password rejected)
+        if: steps.hwsim.outputs.available == 'yes'
+        run: sudo ./tools/hostapd/run_hwsim_sae_softmac_badpw_test.sh
+
+      - name: WPA3-SAE PMKSA fast reconnect over hwsim
+        if: steps.hwsim.outputs.available == 'yes'
+        run: sudo ./tools/hostapd/run_hwsim_pmksa_softmac_test.sh
+
+      - name: WPA2-Enterprise EAP-TLS over hwsim
+        if: steps.hwsim.outputs.available == 'yes'
+        run: sudo ./tools/hostapd/run_hwsim_eap_softmac_test.sh
+
+      - name: wolfsta join + DHCP over hwsim (SAE + WPA2-PSK)
+        if: steps.hwsim.outputs.available == 'yes'
+        run: |
+          sudo ./tools/hostapd/run_hwsim_wolfsta_dhcp_test.sh
+          sudo ./tools/hostapd/run_hwsim_wolfsta_dhcp_psk_test.sh
+
+      # NOTE: P-521 hunt-and-peck (run_hwsim_sae_softmac_g21_test.sh) has an
+      # open hostapd interop gap - kept as a make target, not yet in CI.
