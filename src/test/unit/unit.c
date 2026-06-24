@@ -337,6 +337,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_getsockname_invalid_socket_ids);
     tcase_add_test(tc_utils, test_sock_getsockname_icmp_success);
     tcase_add_test(tc_utils, test_register_callback_variants);
+    tcase_add_test(tc_utils, test_register_eapol_handler);
+    tcase_add_test(tc_utils, test_eapol_handler_dispatch);
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_ip_not_local);
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_ip_success);
     tcase_add_test(tc_utils, test_sock_connect_udp_primary_fallback);

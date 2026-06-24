@@ -1,0 +1,10 @@
+# Hostapd EAP user file for wolfIP PEAP+MSCHAPv2 interop test.
+#
+# Two-line format: the first entry (without [2]) matches the OUTER
+# Identity (sent in cleartext before the TLS tunnel), and authorizes
+# PEAP as the EAP method. The second entry (with [2]) matches the
+# INNER Identity (sent inside the TLS tunnel) and binds it to
+# MSCHAPv2 with the given plaintext password.
+
+"anonymous@wolfip.local"  PEAP  [ver=0]
+"alice@wolfip.local"      MSCHAPV2  "clientPass"  [2]

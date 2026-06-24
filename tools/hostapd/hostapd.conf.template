@@ -1,0 +1,24 @@
+# hostapd.conf.template
+#
+# IEEE 802.1X "wired" mode for EAP-TLS interop testing of the wolfIP
+# supplicant. Bound to a TAP device; no radio, no 4-way handshake -
+# just the EAP server side. Placeholders in @...@ are substituted by
+# run_hostapd_test.sh.
+
+interface=@IFACE@
+driver=wired
+logger_stdout=-1
+logger_stdout_level=2
+
+ieee8021x=1
+eap_server=1
+eap_user_file=@USER_FILE@
+
+# EAP-TLS server identity. Hostapd reads PEM here (it can also do DER
+# via *_blob if you prefer, but PEM keeps the config readable).
+ca_cert=@CA_CERT@
+server_cert=@SERVER_CERT@
+private_key=@SERVER_KEY@
+
+# Make sure hostapd writes its control socket somewhere we can clean up.
+ctrl_interface=/tmp/wolfip_hostapd_ctrl

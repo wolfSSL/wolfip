@@ -164,6 +164,45 @@ typedef uint32_t ip4;
 #endif
 
 /* Device driver interface */
+
+/* Optional Wi-Fi control surface. Populated only by Wi-Fi ports
+ * (CYW43439, ESP32, etc.). For wired/Ethernet ports, the wifi_ops
+ * pointer on wolfIP_ll_dev is NULL and these callbacks are ignored.
+ *
+ * The wolfIP supplicant (src/supplicant/) consumes this vtable when
+ * present: scan + connect drive the chip's MAC layer, set_key installs
+ * PTK/GTK after the 4-way handshake completes, and inbound EAPOL
+ * frames (ethertype 0x888E) are demuxed to the supplicant before the
+ * IP stack sees them.
+ */
+struct wolfIP_ll_dev; /* forward */
+
+struct wolfIP_wifi_scan_entry {
+    uint8_t  bssid[6];
+    int8_t   rssi_dbm;
+    uint8_t  channel;
+    uint8_t  ssid_len;
+    uint8_t  ssid[32];
+    uint8_t  flags;           /* bit 0 = WPA2-PSK supported */
+};
+
+#define WOLFIP_WIFI_KEY_PAIRWISE 0
+#define WOLFIP_WIFI_KEY_GROUP    1
+
+struct wolfIP_wifi_ops {
+    int (*scan)(struct wolfIP_ll_dev *ll,
+                struct wolfIP_wifi_scan_entry *out, int max_entries);
+    int (*connect)(struct wolfIP_ll_dev *ll,
+                   const uint8_t *ssid, uint8_t ssid_len,
+                   const uint8_t bssid[6]);
+    int (*disconnect)(struct wolfIP_ll_dev *ll);
+    int (*set_key)(struct wolfIP_ll_dev *ll,
+                   int key_type,         /* PAIRWISE or GROUP */
+                   uint8_t key_idx,
+                   const uint8_t *key, uint16_t key_len);
+    int (*get_bssid)(struct wolfIP_ll_dev *ll, uint8_t out_bssid[6]);
+};
+
 /* Struct to contain link-layer (ll) device description
  */
 struct wolfIP_ll_dev {
@@ -186,6 +225,9 @@ struct wolfIP_ll_dev {
     uint8_t  vlan_dei;                  /* 0..1 (drop-eligible indicator) */
     uint8_t  vlan_active;               /* 1 if this slot is a live sub-iface */
 #endif
+    /* Optional Wi-Fi vtable. NULL on Ethernet ports. Appended last so adding
+     * it does not shift the offsets of the pre-existing members. */
+    const struct wolfIP_wifi_ops *wifi_ops;
 };
 
 /* Struct to contain an IP device configuration */
@@ -408,6 +450,20 @@ int nslookup(struct wolfIP *s, const char *name, uint16_t *id,
 /* IP stack interface */
 void wolfIP_init(struct wolfIP *s);
 void wolfIP_init_static(struct wolfIP **s);
+
+/* Register a callback invoked by wolfIP_recv_on() whenever an inbound
+ * Ethernet frame on a Wi-Fi interface (ll->wifi_ops != NULL) carries
+ * ethertype 0x888E (EAPOL / 802.1X). The supplicant module
+ * (src/supplicant/) wires itself in here to receive 4-way handshake
+ * and Group Key handshake frames. `frame`/`len` cover the 802.1X
+ * payload only (Ethernet header already stripped). Pass NULL handler
+ * to unregister. Returns 0 on success, negative if s is NULL. */
+int wolfIP_register_eapol_handler(struct wolfIP *s,
+                                  int (*handler)(void *ctx,
+                                                 unsigned int if_idx,
+                                                 const uint8_t *frame,
+                                                 uint32_t len),
+                                  void *ctx);
 size_t wolfIP_instance_size(void);
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);

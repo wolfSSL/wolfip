@@ -1421,6 +1421,14 @@ struct wolfIP {
     uint32_t loopback_tail;
     uint32_t loopback_count;
 #endif
+    /* Optional EAPOL (ethertype 0x888E) hook. NULL by default. When set,
+     * inbound 0x888E frames on interfaces whose ll->wifi_ops != NULL are
+     * routed here before IP/ARP dispatch. The supplicant module
+     * (src/supplicant/) registers itself here via
+     * wolfIP_register_eapol_handler(). */
+    int (*eapol_handler)(void *ctx, unsigned int if_idx,
+                         const uint8_t *frame, uint32_t len);
+    void *eapol_handler_ctx;
 };
 
 static inline int tx_has_writable_space(const struct tsocket *t)
@@ -9104,6 +9112,21 @@ void wolfIP_init_static(struct wolfIP **s)
 }
 #endif
 
+int wolfIP_register_eapol_handler(struct wolfIP *s,
+                                  int (*handler)(void *ctx,
+                                                 unsigned int if_idx,
+                                                 const uint8_t *frame,
+                                                 uint32_t len),
+                                  void *ctx)
+{
+    if (s == NULL) {
+        return -1;
+    }
+    s->eapol_handler     = handler;
+    s->eapol_handler_ctx = ctx;
+    return 0;
+}
+
 size_t wolfIP_instance_size(void)
 {
     return sizeof(struct wolfIP);
@@ -9453,6 +9476,19 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
 #if WOLFIP_PACKET_SOCKETS
     packet_try_recv(s, if_idx, eth, len, pkt_match_wildcard);
 #endif
+    /* EAPOL (0x888E) demux: hand the 802.1X payload to the registered
+     * supplicant handler. Only triggered on Wi-Fi interfaces (those
+     * whose ll->wifi_ops is populated by the port). The IP/ARP path is
+     * skipped entirely for these frames - they never carry IP. */
+    if (eth->type == ee16(0x888E)) {
+        if (s->eapol_handler != NULL && ll->wifi_ops != NULL
+            && len > (uint32_t)ETH_HEADER_LEN) {
+            (void)s->eapol_handler(s->eapol_handler_ctx, if_idx,
+                                   (const uint8_t *)eth + ETH_HEADER_LEN,
+                                   len - (uint32_t)ETH_HEADER_LEN);
+        }
+        return;
+    }
     if (eth->type == ee16(ETH_TYPE_IP)) {
         struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)eth;
         if ((memcmp(eth->dst, ll->mac, 6) != 0) &&
