@@ -1,0 +1,49 @@
+; cyw43.pio - half-duplex gSPI transport for the CYW43439 on RP2350 PIO
+;
+; Copyright (C) 2026 wolfSSL Inc.
+;
+; This file is part of wolfIP. GPLv3 (see project headers).
+;
+; The Pico W carrier shares MOSI/MISO on one line (GP24) through a 470R
+; resistor, with CLK on GP29 and CS on GP25. The pico-sdk / PicoWi
+; reference drivers use PIO (not bit-bang) for this link because the
+; gSPI needs a clean, gap-free clock with deterministic edge timing.
+;
+; Pin roles (set up by the C side):
+;   side-set (1 bit) -> CLK   (GP29)
+;   OUT / IN / SET   -> DATA  (GP24, direction flipped mid-program)
+;   CS               -> driven by the CPU (GP25), not by PIO
+;
+; Per transaction the CPU pushes to the TX FIFO, in order:
+;   1) out_bits - 1   (number of bits to clock OUT)
+;   2) in_bits  - 1   (number of bits to clock IN)
+;   3) the command/write word, MSB-first (32 bits)
+; and then reads the response word from the RX FIFO.
+;
+; Autopull/autopush (threshold 32) are ENABLED C-side, so the OUT
+; instructions auto-refill the OSR from the FIFO and the IN bits
+; auto-push once 32 are collected - no explicit pull/push needed.
+;
+; Mode 0: CLK idles low; DATA is presented while CLK is low and the chip
+; latches it on the rising edge. On read, the host samples while CLK is
+; high. Shift directions are MSB-first (out/in shift left).
+
+.program cyw43_pio
+.side_set 1
+
+.wrap_target
+    out    x, 32    side 0      ; X = out_bits-1 (autopull)
+    out    y, 32    side 0      ; Y = in_bits-1  (autopull)
+    set    pindirs, 1 side 0    ; DATA -> output (host drives)
+
+outlp:
+    out    pins, 1  side 0      ; present next bit, CLK low (autopull cmd)
+    jmp    x--, outlp side 1    ; CLK high: chip latches the bit
+
+    set    pindirs, 0 side 0    ; DATA -> input (chip drives); CLK low
+    nop             side 0      ; turnaround settle, CLK low
+
+inlp:
+    in     pins, 1  side 1      ; CLK high, sample DATA (autopush at 32)
+    jmp    y--, inlp side 0     ; CLK low, next bit
+.wrap
