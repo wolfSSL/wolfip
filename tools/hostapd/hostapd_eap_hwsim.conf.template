@@ -1,0 +1,32 @@
+# hostapd_eap_hwsim.conf.template
+#
+# WPA2-Enterprise (IEEE 802.1X / EAP-TLS) AP on a mac80211_hwsim virtual
+# radio, for interop testing the wolfIP supplicant's EAP-TLS path over a
+# real 802.11 radio (auth + 4-way), as opposed to the wired veth harness.
+#
+# Placeholders in @...@ are substituted by run_hwsim_eap_softmac_test.sh.
+
+interface=@IFACE@
+driver=nl80211
+logger_stdout=-1
+logger_stdout_level=2
+
+ssid=@SSID@
+hw_mode=g
+channel=1
+
+# WPA2-Enterprise: AKM 802.1X (00:0F:AC:01), CCMP.
+wpa=2
+wpa_key_mgmt=WPA-EAP
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+
+# EAP server (EAP-TLS) with the throwaway test PKI.
+ieee8021x=1
+eap_server=1
+eap_user_file=@USER_FILE@
+ca_cert=@CA_CERT@
+server_cert=@SERVER_CERT@
+private_key=@SERVER_KEY@
+
+ctrl_interface=/tmp/wolfip_hostapd_ctrl

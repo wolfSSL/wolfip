@@ -163,7 +163,13 @@ ESP_OBJ=build/esp/wolfip.o \
 	$(WOLFIP_TFTP_OBJ) \
 	$(TAP_OBJ)
 
-HAVE_WOLFSSL:=$(shell printf "#include <wolfssl/options.h>\nint main(void){return 0;}\n" | $(CC) $(CFLAGS) -x c - -c -o /dev/null 2>/dev/null && echo 1)
+# When WOLFSSL_PREFIX is set (e.g. CI builds wolfSSL into a cached prefix),
+# the include dir is only folded into CFLAGS inside the Darwin block above and
+# into WOLFSSL_CFLAGS further below - neither is in scope for this probe on
+# Linux. Add the prefix include here so the probe matches how the supplicant
+# objects are actually compiled; otherwise a perfectly good prefixed wolfSSL
+# is reported "not found" and the build aborts.
+HAVE_WOLFSSL:=$(shell printf "#include <wolfssl/options.h>\nint main(void){return 0;}\n" | $(CC) $(CFLAGS) $(if $(WOLFSSL_PREFIX),-I$(WOLFSSL_PREFIX)/include) -x c - -c -o /dev/null 2>/dev/null && echo 1)
 
 # Require wolfSSL unless the requested goals are wolfSSL-independent (unit/cppcheck/clean).
 REQ_WOLFSSL_GOALS:=$(filter-out unit cppcheck clean,$(MAKECMDGOALS))
@@ -326,10 +332,19 @@ endif
 
 SUPPLICANT_OBJ := $(patsubst src/%.c,build/%.o,$(SUPPLICANT_SRC))
 
+# Header-dependency tracking for the supplicant + its host glue. Without
+# this, editing a supplicant header (e.g. a struct in supplicant.h) would
+# not rebuild the dependent test objects, silently linking objects that
+# disagree on a struct's size -> stack/heap corruption at runtime. The
+# -MMD -MP above emit a .d per object; pull them in if present.
+-include $(SUPPLICANT_OBJ:.o=.d)
+-include build/supplicant/*.d
+-include build/nl80211_sta.d build/wolfsta_main.d
+
 build/supplicant/%.o: src/supplicant/%.c
 	@mkdir -p `dirname $@` || true
 	@echo "[CC] $<"
-	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) $(NL80211_CFLAGS) -Isrc/supplicant -c $< -o $@
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) $(NL80211_CFLAGS) -MMD -MP -Isrc/supplicant -c $< -o $@
 
 # WOLFSSL_LIBS / WOLFSSL_CFLAGS may already be set above when
 # WOLFSSL_PREFIX is provided. Otherwise default to pkg-config detection
@@ -374,6 +389,17 @@ build/test-supplicant-eap-tls: $(SUPPLICANT_OBJ) build/supplicant/test_supplican
 build/test-supplicant-hostapd: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_hostapd.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+# WPA2-Enterprise (EAP-TLS) over the SoftMAC nl80211 path on mac80211_hwsim
+# (full enterprise join: 802.1X assoc + EAP-TLS + MSK-keyed 4-way).
+build/test-supplicant-hwsim-eap-softmac: $(SUPPLICANT_OBJ) \
+		build/supplicant/test_supplicant_hwsim_eap_softmac.o \
+		build/nl80211_sta.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(NL80211_LIBS) $(END_GROUP)
+
+supplicant-hwsim-eap-softmac-test: build/test-supplicant-hwsim-eap-softmac build/test-eap-tls-engine
+	@sudo ./tools/hostapd/run_hwsim_eap_softmac_test.sh
 endif
 
 build/test-supplicant-hostapd-psk: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_hostapd_psk.o
@@ -402,6 +428,70 @@ supplicant-hwsim-sae-test: build/test-supplicant-hostapd-sae
 # same hwsim FullMAC limitation noted in tools/hostapd/README.md.
 supplicant-hwsim-sae-h2e-test: build/test-supplicant-hostapd-sae
 	@sudo env WOLFIP_SAE_H2E=1 ./tools/hostapd/run_hwsim_sae_test.sh
+
+# WPA3-SAE over the SoftMAC nl80211 path (AUTHENTICATE + SAE_DATA, then
+# ASSOCIATE) via tools/hostapd/nl80211_sta.c. Unlike the FullMAC
+# external-auth binary above, this one is what mac80211_hwsim actually
+# supports, so it validates green under hwsim with no hardware - and the
+# same code drives a real SoftMAC USB radio (e.g. a TP-Link card).
+build/test-supplicant-hwsim-sae-softmac: $(SUPPLICANT_OBJ) \
+		build/supplicant/test_supplicant_hwsim_sae_softmac.o \
+		build/nl80211_sta.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(NL80211_LIBS) $(END_GROUP)
+
+build/test-supplicant-hwsim-pmksa-softmac: $(SUPPLICANT_OBJ) \
+		build/supplicant/test_supplicant_hwsim_pmksa_softmac.o \
+		build/nl80211_sta.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(NL80211_LIBS) $(END_GROUP)
+
+supplicant-hwsim-sae-softmac-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_test.sh
+
+# WPA3-SAE PMKSA fast reconnect: full SAE then a cached-PMKSA reconnect.
+supplicant-hwsim-pmksa-test: build/test-supplicant-hwsim-pmksa-softmac
+	@sudo ./tools/hostapd/run_hwsim_pmksa_softmac_test.sh
+
+supplicant-hwsim-sae-softmac-h2e-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_h2e_test.sh
+
+# WPA3-SAE over hwsim for ECC groups 20 (P-384) and 21 (P-521), H&P + H2E.
+supplicant-hwsim-sae-softmac-g20-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_g20_test.sh
+supplicant-hwsim-sae-softmac-g21-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_g21_test.sh
+supplicant-hwsim-sae-softmac-g20-h2e-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_g20_h2e_test.sh
+supplicant-hwsim-sae-softmac-g21-h2e-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_g21_h2e_test.sh
+
+# Negative test: a wrong SAE password must be cleanly rejected (no hang/crash).
+supplicant-hwsim-sae-softmac-badpw-test: build/test-supplicant-hwsim-sae-softmac
+	@sudo ./tools/hostapd/run_hwsim_sae_softmac_badpw_test.sh
+
+# wolfsta - host STA app: wolfIP + wolfSupplicant bound to a real radio
+# netdev (PSK or SAE) over the SoftMAC nl80211 path, then DHCP. Needs
+# WOLFIP_ENABLE_SAE=1 (default). Validate on mac80211_hwsim first, then
+# run unchanged against a TP-Link SoftMAC card.
+build/wolfsta_main.o: tools/wolfsta/wolfsta.c
+	@mkdir -p build || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) $(NL80211_CFLAGS) -MMD -MP -Isrc/supplicant -Itools/hostapd -c $< -o $@
+
+build/wolfsta: build/wolfip.o $(WOLFIP_TFTP_OBJ) $(SUPPLICANT_OBJ) \
+		build/nl80211_sta.o build/wolfsta_main.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(NL80211_LIBS) $(END_GROUP)
+
+wolfsta: build/wolfsta
+
+# End-to-end wolfsta over mac80211_hwsim: join (SAE/PSK) -> DHCP -> ping +
+# UDP echo. AUTH=psk for the WPA2-PSK variant; WOLFIP_SAE_H2E=1 for H2E.
+supplicant-hwsim-wolfsta-dhcp-test: build/wolfsta
+	@sudo ./tools/hostapd/run_hwsim_wolfsta_dhcp_test.sh
+supplicant-hwsim-wolfsta-dhcp-psk-test: build/wolfsta
+	@sudo ./tools/hostapd/run_hwsim_wolfsta_dhcp_psk_test.sh
 endif
 
 # MSCHAPv2 crypto-only test + full hostapd-PEAP interop. Only built
@@ -449,6 +539,13 @@ NL80211_LIBS:=$(shell pkg-config --libs libnl-genl-3.0 libnl-3.0 2>/dev/null)
 build/nl80211_connect: tools/hostapd/nl80211_connect.c
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) $(NL80211_CFLAGS) -o $@ $< $(NL80211_LIBS)
+
+# Reusable SoftMAC STA radio glue, linked by the SoftMAC SAE test binary
+# (and by the wolfsta host app). Needs the nl80211 + supplicant headers.
+build/nl80211_sta.o: tools/hostapd/nl80211_sta.c
+	@mkdir -p build || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(NL80211_CFLAGS) -MMD -MP -Isrc/supplicant -c $< -o $@
 
 supplicant-hwsim-psk-test: build/test-supplicant-hostapd-psk build/nl80211_connect
 	@sudo ./tools/hostapd/run_hwsim_psk_test.sh
