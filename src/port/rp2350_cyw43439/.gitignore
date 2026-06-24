@@ -1,0 +1,11 @@
+# CYW43439 firmware blob - third-party license (Broadcom/Infineon +
+# George Robotics/Raspberry Pi, RP-silicon only). NOT distributed with
+# wolfIP. Obtain from the pico-sdk cyw43-driver firmware/ directory and
+# place the vendor headers + cyw43_fw_blob.c here for local builds.
+fw_local/
+
+# Build artifacts
+*.o
+*.elf
+*.bin
+*.uf2

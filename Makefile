@@ -145,6 +145,11 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=comparePointers:src/port/lpc54s018/syscalls.c \
 			   --suppress=comparePointers:src/port/stm32f439/startup.c \
 			   --suppress=comparePointers:src/port/stm32f439/syscalls.c \
+			   --suppress=comparePointers:src/port/rp2350_cyw43439/startup_m33.c \
+			   --suppress=comparePointers:src/port/rp2350_cyw43439/startup_hazard3.c \
+			   --suppress=comparePointers:src/port/rp2350_cyw43439/syscalls.c \
+			   --suppress=unknownMacro:src/port/stm32h563/dot1x_client.c \
+			   --suppress=preprocessorErrorDirective:src/supplicant/supplicant_features.h \
 			   --disable=style \
 			   --std=c99 --language=c \
 			   --platform=unix64 \
@@ -375,6 +380,18 @@ build/test-eap-framing: $(SUPPLICANT_OBJ) build/supplicant/test_eap_framing.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
 
+# CYW43439 driver SDPCM/BDC framing unit test - pure logic, host-compiled,
+# no wolfSSL, no Pico (cyw43_sdpcm.c includes only stdint/string).
+build/port/rp2350_cyw43439/%.o: src/port/rp2350_cyw43439/%.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -Isrc/port/rp2350_cyw43439 -c $< -o $@
+
+build/test-cyw43-sdpcm: build/port/rp2350_cyw43439/cyw43_sdpcm.o \
+                        build/port/rp2350_cyw43439/test_cyw43_sdpcm.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(^)
+
 ifeq ($(WOLFIP_ENABLE_EAP_TLS),1)
 build/test-eap-tls-engine: $(SUPPLICANT_OBJ) build/supplicant/test_eap_tls_engine.o
 	@echo "[LD] $@"
@@ -510,7 +527,8 @@ supplicant-hostapd-peap-test: build/test-supplicant-hostapd-peap build/test-eap-
 endif
 
 SUPPLICANT_TEST_BINS := build/test-wpa-crypto build/test-supplicant-4way \
-                        build/test-supplicant-pmksa build/test-eap-framing
+                        build/test-supplicant-pmksa build/test-eap-framing \
+                        build/test-cyw43-sdpcm
 ifeq ($(WOLFIP_ENABLE_EAP_TLS),1)
 SUPPLICANT_TEST_BINS += build/test-eap-tls-engine build/test-supplicant-eap-tls
 endif
