@@ -5,9 +5,10 @@
 - [1. Scope](#1-scope)
 - [2. Where a port plugs in](#2-where-a-port-plugs-in)
 - [3. The link-layer device interface](#3-the-link-layer-device-interface)
+  - [3.1 L2 versus L3 drivers](#31-l2-versus-l3-drivers)
 - [4. Designing a device driver](#4-designing-a-device-driver)
   - [4.1 The driver contract](#41-the-driver-contract)
-  - [4.2 A driver without DMA (PIO / host-backed)](#42-a-driver-without-dma-pio--host-backed)
+  - [4.2 The simplest drivers: loopback, PIO, host-backed](#42-the-simplest-drivers-loopback-pio-host-backed)
   - [4.3 A driver with DMA: descriptor rings](#43-a-driver-with-dma-descriptor-rings)
   - [4.4 DMA ownership and the poll path](#44-dma-ownership-and-the-poll-path)
   - [4.5 DMA ownership and the send path](#45-dma-ownership-and-the-send-path)
@@ -125,9 +126,45 @@ back-pointer to your driver state, the wolfIP equivalent of lwIP's
 `wolfIP_getdev(s)` and additional interfaces with `wolfIP_getdev_ex(s, idx)`.
 
 `buf` is always a **single, contiguous, linear** frame buffer owned by the
-stack — there is no `pbuf` chain to walk. The frame includes the full Ethernet
-header. Your driver must not retain the `buf` pointer after the callback
-returns.
+stack — there is no `pbuf` chain to walk. On an L2 interface the frame includes
+the full Ethernet header (see below). Your driver must not retain the `buf`
+pointer after the callback returns.
+
+### 3.1 L2 versus L3 drivers
+
+The `non_ethernet` flag selects the driver class:
+
+- **L2 / Ethernet driver** (`non_ethernet = 0`, the default). The driver moves
+  complete Ethernet frames: a 14-byte Ethernet header followed by the payload.
+  wolfIP performs ARP / neighbour resolution and builds and parses the Ethernet
+  header itself. The `buf` passed to `poll` and `send` begins at the Ethernet
+  header. The TAP, LPC, VA416xx, and GEM drivers are all L2.
+
+- **L3 / point-to-point driver** (`non_ethernet = 1`). The link carries bare IP
+  packets — there is no Ethernet header and no ARP. On transmit, wolfIP strips
+  the 14-byte Ethernet header it built before calling your `send`, so `send`
+  receives the IP packet (`buf + ETH_HEADER_LEN`, `len - ETH_HEADER_LEN`). On
+  receive, your `poll` must return a buffer that begins at the IP header. The
+  built-in loopback interface and TUN-style devices
+  (`src/port/posix/linux_tun.c`, `IFF_TUN`) are L3.
+
+| | L2 (Ethernet) | L3 (point-to-point) |
+|---|---|---|
+| `non_ethernet` | `0` | `1` |
+| Frame at `poll` / `send` | Ethernet header + IP | IP only |
+| ARP / neighbour resolution | performed by wolfIP | skipped |
+| Examples | TAP, LPC, VA416xx, GEM | loopback `lo`, TUN |
+
+The stack applies the L3 stripping in `wolfIP_ll_send_frame()`:
+
+```c
+if (ll->non_ethernet)
+    return ll->send(ll, (uint8_t *)buf + ETH_HEADER_LEN, len - ETH_HEADER_LEN);
+```
+
+The `mtu` field always describes wolfIP's internal frame budget *including*
+Ethernet headroom; on an L3 link the maximum IP payload handed to `send` is
+therefore `mtu - ETH_HEADER_LEN`.
 
 ---
 
@@ -164,12 +201,56 @@ before writing a line of driver code:
   hardware is busy, return `0` (poll) or `-WOLFIP_EAGAIN` (send) and let the
   next poll cycle make progress.
 
-### 4.2 A driver without DMA (PIO / host-backed)
+### 4.2 The simplest drivers: loopback, PIO, host-backed
 
-The simplest possible driver does a register/FIFO read on poll and a
-register/FIFO write on send. The POSIX TAP driver is the canonical minimal
-example — the "hardware" is a host file descriptor, but the shape is identical
-to a small MCU MAC that exposes an RX/TX FIFO (`src/port/posix/tap_linux.c`):
+The very simplest driver has no hardware at all. When `WOLFIP_ENABLE_LOOPBACK`
+is set (and `WOLFIP_MAX_INTERFACES > 1`), `wolfIP_init()` installs an L3
+loopback interface at index 0 — `ifname` `"lo"`, `non_ethernet = 1`, address
+`127.0.0.1/8` — whose `poll`/`send` move IP packets through a small in-memory
+queue (`src/wolfip.c`):
+
+```c
+static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
+{
+    struct wolfIP *s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
+
+    if (len == 0 || len > IP_MTU_MAX)
+        return 0;
+    if (s->loopback_count >= WOLFIP_LOOPBACK_QUEUE_DEPTH)
+        return -WOLFIP_EAGAIN;                /* queue full: retry later */
+    /* buf is the IP packet — the Ethernet header was already stripped for
+     * this non_ethernet device. Store as-is; wolfIP_poll re-adds the prefix. */
+    memcpy(s->loopback_buf[s->loopback_tail], buf, len);
+    s->loopback_count++;
+    return (int)len;
+}
+
+static int wolfIP_loopback_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
+{
+    struct wolfIP *s = WOLFIP_CONTAINER_OF(ll, struct wolfIP, ll_dev);
+    uint32_t pending;
+
+    if (s->loopback_count == 0)
+        return 0;                             /* nothing queued */
+    pending = s->loopback_pending_len[s->loopback_head];
+    if (pending > len)
+        return 0;
+    memcpy(buf, s->loopback_buf[s->loopback_head], pending);
+    s->loopback_count--;
+    return (int)pending;                      /* one IP packet */
+}
+```
+
+This is the `poll`/`send` contract in its purest form: `send` queues a packet
+(or returns `-WOLFIP_EAGAIN` when the queue is full), `poll` dequeues one packet
+(or returns `0` when empty). No Ethernet header, no DMA, no cache maintenance —
+exactly what an L3 driver does, with an in-memory queue standing in for the wire.
+
+The next simplest driver is a programmed-I/O Ethernet (L2) MAC: a register/FIFO
+read on poll and a register/FIFO write on send. The POSIX TAP driver is the
+canonical minimal example — the "hardware" is a host file descriptor, but the
+shape is identical to a small MCU MAC that exposes an RX/TX FIFO
+(`src/port/posix/tap_linux.c`):
 
 ```c
 static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
