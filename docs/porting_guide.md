@@ -67,7 +67,7 @@ thread, it does not allocate memory at runtime, and it never blocks. All
 progress happens inside one function:
 
 ```c
-uint32_t wolfIP_poll(struct wolfIP *s, uint64_t now_ms);
+int wolfIP_poll(struct wolfIP *s, uint64_t now);
 ```
 
 Every call to `wolfIP_poll()` does four things in order:
@@ -738,9 +738,9 @@ threads, and no timer callbacks from the OS.
 ### 6.2 The poll task: the heartbeat of the stack
 
 The poll task is a forever-loop that takes the core mutex, runs one poll cycle,
-releases the mutex, and sleeps. `wolfIP_poll()` returns a hint for how many
-milliseconds until the next timer is due; bound it so the task neither spins nor
-oversleeps. The FreeRTOS version:
+releases the mutex, and sleeps for a bounded interval. `wolfIP_poll()` returns
+`>= 0` on success and a negative value on error; the FreeRTOS version clamps the
+sleep to a `[MIN, MAX]` window so the task neither spins nor oversleeps:
 
 ```c
 static void wolfip_bsd_poll_task(void *arg)
