@@ -41,13 +41,18 @@ Supported:
 - A small static pool of SAs (`WOLFIP_ESP_NUM_SA`, default 2 inbound + 2
   outbound) with a 32-packet anti-replay window.
 
-**Not** supported: tunnel mode, IKE/automatic keying (SAs are installed
-manually), IPv6, and ESP across forwarded/routed packets. There is no SPD
-(security policy database) with port/proto selectors yet — matching is by
-`{src IP, dst IP, SPI}`.
+The ESP data path is deliberately scoped for embedded use. Tunnel mode, UDP
+encapsulation of ESP, IPv6, ESP across forwarded/routed packets, and a full SPD
+(security policy database) with port/proto selectors are outside the current
+scope — matching is by `{src IP, dst IP, SPI}`. These can be added as
+deployments come to need them.
 
-Because there is no IKE, you provision keys out of band on both peers, exactly
-as you would with a manually-keyed `ip xfrm state` on Linux.
+**No IKE is a design choice, not a gap.** You provision keys out of band on both
+peers, exactly as you would with a manually-keyed `ip xfrm state` on Linux. For
+embedded line rates, devices are not expected to rekey often or to exhaust an SA
+rapidly, so an online key-exchange daemon buys little for the code and attack
+surface it adds. Sequence numbers are 32-bit, which comfortably covers the
+packet volumes these links carry between planned key rotations.
 
 ## 2. Building with ESP support
 
@@ -60,6 +65,12 @@ AES-GCM API:
 make
 sudo make install
 ```
+
+This is a full wolfSSL build so a single library can exercise every ESP suite
+for interop testing. A practical deployment does not need all of it: ESP only
+uses wolfCrypt, so you can build with `--enable-cryptonly` and enable just the
+specific algorithms your SAs use (for example only AES-GCM), which yields a much
+slimmer library.
 
 Then compile wolfIP with the ESP feature flags (`Makefile`, `ESP_CFLAGS`):
 
@@ -243,8 +254,14 @@ A few practical rules drawn from the example key tables
 - **GCM/GMAC keys carry a 4-byte salt.** For the RFC 4106/4543 constructors the
   key buffer is the cipher key **plus** a trailing 4-byte nonce salt. The
   example uses a 36-byte buffer (32-byte AES-256 key + 4-byte salt) and passes
-  `sizeof(key)` (36). wolfIP derives the per-packet IV by combining that salt
-  with the outbound sequence number, so you never supply an IV yourself.
+  `sizeof(key)` (36). The salt may be public and is shared with the peer; you
+  never supply a per-packet IV yourself.
+- **The GCM nonce is built deterministically** following NIST SP 800-38D
+  §8.2.1. At SA creation wolfIP draws an 8-byte random pre-IV from
+  `wc_RNG_GenerateBlock()`; per packet, the low 32 bits of that pre-IV are XORed
+  with the ESP sequence number to form the 8-byte IV, and the 4-byte salt is
+  prepended to make the 12-byte GCM nonce. This gives a monotonic counter with a
+  random starting point, so nonces never repeat under a given key.
 - **CBC/3DES keys do not carry the salt.** When reusing the same key bytes for
   a CBC SA, pass `sizeof(key) - 4` to drop the trailing salt (the example does
   exactly this: `sizeof(in_enc_key) - 4`). The CBC IV is generated randomly per
