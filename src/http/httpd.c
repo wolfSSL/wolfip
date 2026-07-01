@@ -70,15 +70,10 @@ static const char *http_status_text(int status_code) {
     }
 }
 
-static int http_url_slot_is_free(const struct http_url *url)
-{
-    return (url->handler == NULL) && (url->static_content == NULL);
-}
-
 int httpd_register_handler(struct httpd *httpd, const char *path, int (*handler)(struct httpd *httpd, struct http_client *hc, struct http_request *req)) {
-    int i = 0;
+    int i;
     for (i = 0; i < HTTPD_MAX_URLS; i++) {
-        if (http_url_slot_is_free(&httpd->urls[i])) {
+        if (httpd->urls[i].path[0] == '\0') {
             /* Copy path and guarantee null termination */
             strncpy(httpd->urls[i].path, path, HTTP_PATH_LEN);
             httpd->urls[i].path[HTTP_PATH_LEN-1] = '\0';
@@ -90,9 +85,9 @@ int httpd_register_handler(struct httpd *httpd, const char *path, int (*handler)
 }
 
 int httpd_register_static_page(struct httpd *httpd, const char *path, const char *content) {
-    int i = 0;
+    int i;
     for (i = 0; i < HTTPD_MAX_URLS; i++) {
-        if (http_url_slot_is_free(&httpd->urls[i])) {
+        if (httpd->urls[i].path[0] == '\0') {
             /* Copy path and guarantee null termination */
             strncpy(httpd->urls[i].path, path, HTTP_PATH_LEN);
             httpd->urls[i].path[HTTP_PATH_LEN-1] = '\0';
