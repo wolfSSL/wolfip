@@ -1,0 +1,9 @@
+# Build artifacts
+*.o
+app.elf
+app.hex
+app.map
+# MDB / IPE transient files
+mdb_flash.cmd
+MPLABXLog.*
+log.*
