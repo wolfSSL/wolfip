@@ -199,8 +199,8 @@ If a route is found, the packet is forwarded out that interface:
                   forward_interface(in_if, dest)
                               │  (connected-subnet or static-route lookup)
                   ┌───────────┴───────────┐
-                  │ no out iface           │ out iface found
-                  ▼                        ▼
+                  │ no out iface          │ out iface found
+                  ▼                       ▼
               (dropped)            ttl <= 1 ? ─yes▶ ICMP TTL-exceeded back to src
                                        │ no
                                        ▼

@@ -150,17 +150,17 @@ socket and leaking its session.
         │  (TLS record layer encrypts)
         ▼
   wolfIP_io_send ──▶ wolfIP_sock_send(stack, fd, ciphertext)
-        │                                   │
+        │                                    │
         │  -WOLFIP_EAGAIN ─▶ WANT_WRITE      ▼  (queued; flushed by wolfIP_poll)
-        ▲                              TCP / IP / Ethernet ──▶ wire
+        ▲                               TCP / IP / Ethernet ──▶ wire
         │
   app: wolfSSL_read(ssl, plaintext)
         │  (TLS record layer decrypts)
         ▼
   wolfIP_io_recv ◀── wolfIP_sock_recv(stack, fd, ciphertext)
-        │                                   ▲
+        │                                    ▲
         │  -WOLFIP_EAGAIN ─▶ WANT_READ       │
-                                       wire ──▶ Ethernet / IP / TCP
+                                        wire ──▶ Ethernet / IP / TCP
 ```
 
 The application sees plaintext via `wolfSSL_read`/`wolfSSL_write`; wolfIP sees
