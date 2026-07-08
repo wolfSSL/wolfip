@@ -352,7 +352,12 @@ typedef uint32_t socklen_t;
 #define WOLFIP_HAVE_POSIX_TYPES 1
 #endif
 
-#if defined(__has_include)
+/* WOLFIP_NO_SYS_HEADERS: opt out of probing for system socket headers. Some
+ * bare-metal/RTOS SDKs (e.g. an lwIP posix-compat layer) put a <sys/socket.h>
+ * on the include path that is NOT the host libc's -- it redefines iovec/msghdr
+ * and a send() macro that collide with wolfIP. Define WOLFIP_NO_SYS_HEADERS to
+ * skip the probe and use wolfIP's own POSIX type fallbacks below. */
+#if defined(__has_include) && !defined(WOLFIP_NO_SYS_HEADERS)
 #if __has_include(<sys/socket.h>)
 #include <sys/socket.h>
 #if !defined(WOLFIP_HAVE_POSIX_TYPES) && __has_include(<sys/uio.h>)
