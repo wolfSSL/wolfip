@@ -18,57 +18,70 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
+
+/* Entropy for wolfIP_getrandom() (see main.c): TCP initial sequence numbers,
+ * ephemeral ports, DHCP / DNS transaction ids.
+ *
+ * The RP2040 has no hardware TRNG, so this uses the ROSC (ring oscillator)
+ * RANDOMBIT jitter - the same source the pico-sdk pico_rand uses - von-Neumann
+ * debiased to remove first-order bias. This replaces the previous 3-LSB ADC
+ * sampler, which was slow (1 ms/sample) and weakly random. There is no
+ * cryptographic consumer in this build (no wolfCrypt / TLS is linked), so no
+ * SHA-256 conditioning stage is applied; debiased ROSC bits are sufficient for
+ * protocol randomization. A crypto build should instead feed a DRBG from a
+ * conditioned source (cf. the RP2350 hardware TRNG port).
+ */
 #include "pico/stdlib.h"
-#include "hardware/gpio.h"
-#include "hardware/adc.h"
+#include "hardware/structs/rosc.h"
 #include <string.h>
 
+/* Per debiased bit: raw pairs to sample before giving up on a differing pair.
+ * A healthy ROSC differs roughly every other sample; this budget is only
+ * approached on a hardware fault. */
+#define ROSC_VN_MAX_PAIRS 1024u
 
-#define IN3_PIN 29
-#define IN0_PIN 28
-#define IN1_PIN 27
-#define IN2_PIN 26
+/* One raw ROSC jitter bit, with a short settle so consecutive samples
+ * decorrelate. */
+static unsigned int rosc_raw_bit(void)
+{
+    volatile int d;
+    for (d = 0; d < 16; d++) {
+    }
+    return (unsigned int)(rosc_hw->randombit & 1u);
+}
 
-const uint32_t IN[4] = {IN0_PIN, IN1_PIN, IN2_PIN, IN3_PIN};
-static int adc_initialized = 0;
+/* von Neumann extractor: emit a bit only when a raw pair differs (10 -> 1,
+ * 01 -> 0). Falls back to a single raw bit if the pair budget is exhausted so
+ * a seed is always produced (best-effort, non-crypto path). */
+static unsigned int rosc_vn_bit(void)
+{
+    unsigned int a, b, tries;
 
-const int in_a[8] = { 0, 1, 2, 3, 1, 3, 0, 2 };
-
-int custom_random_seed(unsigned char *output, unsigned int sz) {
-    uint32_t i;
-    uint32_t result = 0;
-    uint32_t rd = 0, wsz;
-
-    if (!adc_initialized) {
-        adc_init();
-        for (i = 0; i < 4; i++) {
-            adc_gpio_init(IN[i]);
+    for (tries = 0; tries < ROSC_VN_MAX_PAIRS; tries++) {
+        a = rosc_raw_bit();
+        b = rosc_raw_bit();
+        if (a != b) {
+            return a;
         }
-        adc_initialized = 1;
-        sleep_ms(10);
+    }
+    return rosc_raw_bit();
+}
+
+int custom_random_seed(unsigned char *output, unsigned int sz)
+{
+    unsigned int  i, nbits;
+    unsigned char byte;
+
+    if (output == NULL) {
+        return -1;
     }
 
-    /* Perform eight 3-bit samples with sources 0-1-2-4 */
-    for (i = 0; rd < sz; i = (i + 1) % 8) {
-        adc_select_input(in_a[i]);
-
-        /* Read the least significant 3 bits from the ADC */
-        result = (result << 3) | (adc_read() & 0x00000007);
-
-        /* Introduce a delay to capture environmental noise */
-        sleep_ms(1);
-
-        /* If we've completed eight samples, copy the result to the output */
-        if (i == 7) {
-            wsz = 3;
-            if (wsz > (sz - rd)) {
-                wsz = sz - rd;
-            }
-
-            memcpy(output + rd, &result, wsz);
-            rd += wsz;
-            result = 0;
+    for (i = 0; i < sz; i++) {
+        byte = 0;
+        for (nbits = 0; nbits < 8u; nbits++) {
+            byte = (unsigned char)((byte << 1) | (rosc_vn_bit() & 1u));
         }
+        output[i] = byte;
     }
 
     return 0;

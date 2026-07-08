@@ -46,7 +46,8 @@ if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
 elseif (CMAKE_C_COMPILER_ID STREQUAL "IAR")
 
 endif ()
-target_link_libraries(${PROJECT} PUBLIC hardware_adc)
+# rand.c seeds wolfIP_getrandom() from the ROSC RANDOMBIT register (part of
+# the pico core headers); no separate hardware library is required.
 
 # Configure compilation flags and libraries for the example without RTOS.
 # See the corresponding function in hw/bsp/FAMILY/family.cmake for details.

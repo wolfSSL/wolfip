@@ -1397,7 +1397,7 @@ int sae_h2e_compute_pt(struct sae_ctx *c,
     hlen      = sae_hash_len(hash_type);
     if (hlen <= 0 || (size_t)hlen > sizeof(prk)) return BAD_FUNC_ARG;
     /* RFC 9380 hash_to_field length L = ceil((ceil(log2 p) + k)/8) where k
-     * is the curve security level (128/192/256), i.e. 48/72/98 bytes for
+     * is the curve security level (128/192/256), i.e. 48/72/99 bytes for
      * P-256/P-384/P-521 - NOT a fixed prime_len+16. (P-256 happens to be
      * prime_len+16=48, which is why only the larger groups were wrong.) */
     L = c->grp->h2e_field_len;
