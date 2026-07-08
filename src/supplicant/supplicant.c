@@ -1030,6 +1030,8 @@ struct supp_pmksa_snapshot {
     uint8_t  ssid[WOLFIP_SUPPLICANT_MAX_SSID];
     uint8_t  bssid[WPA_MAC_LEN];
     uint8_t  pp_hash[32];
+    uint8_t  have_pmkid;
+    uint8_t  pmkid[WPA_PMKID_LEN];
 };
 
 /* Capture the prior PMKSA entry. Trusted later only if BOTH the magic and the
@@ -1040,13 +1042,15 @@ struct supp_pmksa_snapshot {
 static void supp_pmksa_snapshot(const struct wolfip_supplicant *s,
                                 struct supp_pmksa_snapshot *snap)
 {
-    snap->magic    = s->pmksa_magic;
-    snap->ssid_len = s->pmksa_ssid_len;
-    snap->have_pp  = s->pmksa_have_pp;
+    snap->magic      = s->pmksa_magic;
+    snap->ssid_len   = s->pmksa_ssid_len;
+    snap->have_pp    = s->pmksa_have_pp;
+    snap->have_pmkid = s->pmksa_have_pmkid;
     memcpy(snap->pmk,     s->pmksa_pmk,     WPA_PMK_LEN);
     memcpy(snap->ssid,    s->pmksa_ssid,    WOLFIP_SUPPLICANT_MAX_SSID);
     memcpy(snap->bssid,   s->pmksa_bssid,   WPA_MAC_LEN);
     memcpy(snap->pp_hash, s->pmksa_pp_hash, sizeof(snap->pp_hash));
+    memcpy(snap->pmkid,   s->pmksa_pmkid,   WPA_PMKID_LEN);
 }
 
 /* Re-apply the snapshot iff valid for this SSID. Returns 1 on a PMKSA hit. */
@@ -1057,13 +1061,15 @@ static int supp_pmksa_restore(struct wolfip_supplicant *s,
     if (snap->magic == WOLFIP_PMKSA_MAGIC
         && (size_t)snap->ssid_len == cfg->ssid_len
         && memcmp(snap->ssid, cfg->ssid, cfg->ssid_len) == 0) {
-        s->pmksa_magic    = snap->magic;
-        s->pmksa_ssid_len = snap->ssid_len;
-        s->pmksa_have_pp  = snap->have_pp;
+        s->pmksa_magic      = snap->magic;
+        s->pmksa_ssid_len   = snap->ssid_len;
+        s->pmksa_have_pp    = snap->have_pp;
+        s->pmksa_have_pmkid = snap->have_pmkid;
         memcpy(s->pmksa_pmk,     snap->pmk,     WPA_PMK_LEN);
         memcpy(s->pmksa_ssid,    snap->ssid,    WOLFIP_SUPPLICANT_MAX_SSID);
         memcpy(s->pmksa_bssid,   snap->bssid,   WPA_MAC_LEN);
         memcpy(s->pmksa_pp_hash, snap->pp_hash, sizeof(s->pmksa_pp_hash));
+        memcpy(s->pmksa_pmkid,   snap->pmkid,   WPA_PMKID_LEN);
         return 1;
     }
     return 0;
@@ -1495,7 +1501,12 @@ int wolfip_supplicant_rx_auth_frame(struct wolfip_supplicant *s,
     if (seq == 2U) {
         uint16_t recv_sc;
         if (s->state != SUPP_STATE_SAE_CONFIRM_SENT) return -1;
-        if (len < 8U + 32U) return -1;
+        /* Confirm carries an HMAC of kck_len bytes: 32 for hunt-and-peck
+         * (all groups keyed with SHA-256) or the per-group hash for H2E
+         * (SHA-256/384/512). Use kck_len, not grp->hash_len, so H&P groups
+         * 20/21 aren't rejected here; the exact length is re-checked in
+         * sae_verify_peer_confirm (peer_mac_len != c->kck_len). */
+        if (len < 8U + s->sae.kck_len) return -1;
         recv_sc = (uint16_t)(frame[6] | ((uint16_t)frame[7] << 8));
         if (sae_verify_peer_confirm(&s->sae, recv_sc,
                                     &frame[8], len - 8U) != 0) {

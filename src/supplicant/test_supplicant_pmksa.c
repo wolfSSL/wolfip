@@ -226,12 +226,90 @@ static int test_psk_pmk_passphrase_bound(void)
     return fails;
 }
 
+/* D. PMKID survives _init()'s context zero through the real snapshot/restore
+ * path (not a hand-seeded field after init). Seed a cached PMKSA with a PMKID,
+ * re-init the SAME context for the SAME SSID, and require the PMKID to still be
+ * usable by get_pmkid + pmksa_reconnect. A re-init for a DIFFERENT SSID must
+ * drop it (magic/SSID mismatch in restore). */
+static int test_pmkid_survives_reinit(void)
+{
+    struct wolfip_supplicant s;
+    struct wolfip_supplicant_cfg cfg;
+    uint8_t seed_pmkid[16];
+    uint8_t got[16];
+    int fails = 0;
+    size_t i;
+
+    printf("Test D: PMKID survives re-init via snapshot/restore\n");
+
+    for (i = 0; i < 16; i++) seed_pmkid[i] = (uint8_t)(0x10 + i);
+
+    /* Simulate a prior authenticated session that cached a PMKID for
+     * "pmksanet" + this BSSID. */
+    memset(&s, 0, sizeof(s));
+    base_cfg(&cfg, "pmksanet", "ThisIsAPassword!");
+    s.pmksa_magic = WOLFIP_PMKSA_MAGIC;
+    memcpy(s.pmksa_ssid, cfg.ssid, cfg.ssid_len);
+    s.pmksa_ssid_len = (uint8_t)cfg.ssid_len;
+    memcpy(s.pmksa_bssid, cfg.ap_mac, WPA_MAC_LEN);
+    memset(s.pmksa_pmk, 0x44, WPA_PMK_LEN);
+    memcpy(s.pmksa_pmkid, seed_pmkid, 16);
+    s.pmksa_have_pmkid = 1;
+
+    /* Re-init the SAME context for the SAME SSID: the snapshot (taken before
+     * the memset) must carry the PMKID across the context zero. */
+    if (wolfip_supplicant_init(&s, &cfg) != 0) {
+        printf("  [FAIL] re-init (same SSID)\n");
+        return 1;
+    }
+    if (wolfip_supplicant_get_pmkid(&s, got) != 0
+        || memcmp(got, seed_pmkid, 16) != 0) {
+        printf("  [FAIL] PMKID lost across re-init (get_pmkid)\n"); fails++;
+    }
+    else {
+        printf("  [OK]   PMKID preserved across re-init (get_pmkid)\n");
+    }
+    if (wolfip_supplicant_pmksa_reconnect(&s) != 0) {
+        printf("  [FAIL] pmksa_reconnect failed after re-init\n"); fails++;
+    }
+    else {
+        printf("  [OK]   pmksa_reconnect armed after re-init\n");
+    }
+    wolfip_supplicant_deinit(&s);
+
+    /* Re-init for a DIFFERENT SSID must drop the cached PMKID. */
+    memset(&s, 0, sizeof(s));
+    base_cfg(&cfg, "pmksanet", "ThisIsAPassword!");
+    s.pmksa_magic = WOLFIP_PMKSA_MAGIC;
+    memcpy(s.pmksa_ssid, cfg.ssid, cfg.ssid_len);
+    s.pmksa_ssid_len = (uint8_t)cfg.ssid_len;
+    memcpy(s.pmksa_bssid, cfg.ap_mac, WPA_MAC_LEN);
+    memcpy(s.pmksa_pmkid, seed_pmkid, 16);
+    s.pmksa_have_pmkid = 1;
+
+    base_cfg(&cfg, "othernet", "ThisIsAPassword!");
+    if (wolfip_supplicant_init(&s, &cfg) != 0) {
+        printf("  [FAIL] re-init (different SSID)\n");
+        wolfip_supplicant_deinit(&s); return 1;
+    }
+    if (wolfip_supplicant_get_pmkid(&s, got) == 0) {
+        printf("  [FAIL] PMKID survived a re-init for a different SSID\n");
+        fails++;
+    }
+    else {
+        printf("  [OK]   PMKID dropped on re-init for a different SSID\n");
+    }
+    wolfip_supplicant_deinit(&s);
+    return fails;
+}
+
 int main(void)
 {
     int fails = 0;
     fails += test_pmkid_lifecycle();
     fails += test_pmksa_reconnect_idempotent();
     fails += test_psk_pmk_passphrase_bound();
+    fails += test_pmkid_survives_reinit();
 
     if (fails == 0) {
         printf("\nAll PMKSA tests passed.\n");

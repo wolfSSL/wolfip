@@ -26,36 +26,56 @@
 #include "cyw43439_driver.h"
 #include "cyw43439_wifi.h"
 #include "rp2350_clocks.h"
+#include "rp2350_rng.h"
 
 #if defined(WOLFIP_WITH_SUPPLICANT)
 #include "supplicant.h"
+#include <wolfssl/wolfcrypt/random.h>   /* WC_RNG for the DRBG-backed path */
 #endif
 
 extern void rp2350_uart_init(void);
 
-/* wolfIP entropy hook. The RP2350 ROSC (ring oscillator) jitter at
- * 0x400C8000 + 0x1C provides one random bit per read - good for ISN /
- * ephemeral-port seeding but not for crypto. For SAE keying material
- * the supplicant pulls entropy directly from wolfCrypt's RNG. */
+/* Best-effort hardware TRNG words for the non-crypto stack (TCP ISN,
+ * ephemeral ports, DHCP/DNS xids). Caches one 192-bit block and dispenses
+ * six 32-bit words so the hardware is read once per six calls. */
+static uint32_t rp2350_trng_word(void)
+{
+    static uint32_t cache[RP2350_TRNG_EHR_WORDS];
+    static unsigned int have;
+    if (have == 0U) {
+        if (rp2350_trng_read_block(cache) != 0) {
+            /* Hardware fault on a best-effort path: return a non-zero
+             * constant so the stack still gets a usable value. */
+            return 0xDEADBEEFU;
+        }
+        have = RP2350_TRNG_EHR_WORDS;
+    }
+    return cache[--have];
+}
+
+/* wolfIP entropy hook. When the supplicant (and thus wolfCrypt) is present
+ * this returns bytes from the seeded Hash-DRBG - the same crypto-quality RNG
+ * the WPA/SAE keying uses, seeded from the hardware TRNG via
+ * CUSTOM_RAND_GENERATE_SEED (rp2350_wc_genseed). Otherwise it reads the
+ * hardware TRNG directly. */
 uint32_t wolfIP_getrandom(void)
 {
-    static uint32_t lfsr;
-    uint32_t bit;
-    int i;
-    if (lfsr == 0U) {
-        for (i = 0; i < 32; i++) {
-            bit = (*(volatile uint32_t *)0x400C801CUL) & 1U;
-            lfsr = (lfsr << 1) | bit;
-        }
-        if (lfsr == 0U) lfsr = 0xDEADBEEFU;
+#if defined(WOLFIP_WITH_SUPPLICANT)
+    static WC_RNG rng;
+    static int    rng_ready;
+    uint32_t      v;
+
+    if (!rng_ready && wc_InitRng(&rng) == 0) {
+        rng_ready = 1;
     }
-    /* Mix in one fresh ROSC bit per call on top of the LFSR. */
-    bit = (*(volatile uint32_t *)0x400C801CUL) & 1U;
-    /* Unsigned wrap (0 or 0xFFFFFFFF) for the feedback mask - avoids the
-     * signed-overflow cppcheck flags on -(int32_t)(...). */
-    lfsr = (lfsr >> 1) ^ ((0U - (lfsr & 1U)) & 0xD0000001U);
-    lfsr ^= bit;
-    return lfsr;
+    if (rng_ready
+        && wc_RNG_GenerateBlock(&rng, (unsigned char *)&v, sizeof(v)) == 0) {
+        return v;
+    }
+    /* DRBG unavailable (e.g. called before wolfCrypt is ready): fall back to
+     * the raw hardware TRNG so the TCP/IP stack still gets entropy. */
+#endif
+    return rp2350_trng_word();
 }
 
 /* wolfIP state - opaque struct allocated by wolfIP_init_static. */
