@@ -1,0 +1,11 @@
+// bootgen image for the ZCU102 wolfBoot + wolfIP demo.
+// FSBL -> PMUFW -> BL31 (EL3) -> wolfBoot (EL2). The signed wolfIP app is NOT
+// inside BOOT.BIN - it lives on the SD OFP_A partition and wolfBoot loads it.
+// @FW@ and @WOLFBOOT@ are substituted by build.sh.
+the_ROM_image:
+{
+	[bootloader, destination_cpu=a53-0] @FW@/zynqmp_fsbl.elf
+	[destination_cpu=pmu] @FW@/pmufw.elf
+	[destination_cpu=a53-0, exception_level=el-3, trustzone] @FW@/bl31.elf
+	[destination_cpu=a53-0, exception_level=el-2] @WOLFBOOT@/wolfboot.elf
+}
