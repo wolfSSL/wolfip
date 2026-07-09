@@ -1,0 +1,4 @@
+# Build artifacts
+*.o
+app.elf
+app.bin

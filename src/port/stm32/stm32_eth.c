@@ -11,8 +11,16 @@
 #include "config.h"
 #include "stm32_eth.h"
 
+/* STM32C5 (Cortex-M33) uses a DWC GMAC that is byte-for-byte identical to
+ * the STM32H5: same ETH_BASE (0x40028000), same register layout, same NS
+ * access model, and the same MDIO clock-range divider (CR=4) at HCLK 144MHz.
+ * Alias it onto the H5 path so it reuses every H5 value and code arm. */
+#if defined(STM32C5) && !defined(STM32H5)
+#define STM32H5
+#endif
+
 #if !defined(STM32H5) && !defined(STM32H7) && !defined(STM32N6)
-#error "Define STM32H5, STM32H7 or STM32N6 for stm32_eth.c"
+#error "Define STM32C5, STM32H5, STM32H7 or STM32N6 for stm32_eth.c"
 #endif
 
 #if defined(STM32H5)
