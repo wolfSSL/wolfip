@@ -42,12 +42,18 @@
 #include "dot1x_client.h"
 #include "dot1x_certs.h"
 
+#ifdef ENABLE_WOLFHAL
+#include "board.h"
+#endif
+
 #define DOT1X_EAPOL_ETHERTYPE 0x888EU
 #define DOT1X_ETH_HDR_LEN     14U
 #define DOT1X_FRAME_MAX       1600
 /* Loop bound (iterations, not ms): the EAP exchange is event-driven and
  * completes in a handful of round-trips; this is a generous backstop. */
 #define DOT1X_MAX_ITERS       4000000UL
+
+#ifndef ENABLE_WOLFHAL
 
 /* ---- Real millisecond clock (SysTick) ----------------------------------
  * The supplicant timeout (WOLFIP_SUPPLICANT_HS_TIMEOUT_MS) and M2-retransmit
@@ -80,6 +86,8 @@ static void dot1x_systick_arm_1khz(void)
      * bit0 ENABLE. */
     SYST_CSR = (1U << 2) | (1U << 1) | (1U << 0);
 }
+
+#endif /* !ENABLE_WOLFHAL */
 
 /* IEEE 802.1X PAE group address - the standard multicast dst for supplicant
  * EAPOL. Works on a point-to-point link, but 802.1D switches do NOT forward
@@ -239,9 +247,12 @@ int dot1x_eaptls_run(struct wolfIP *stack, void (*log)(const char *msg))
     /* Arm the real ms clock and feed wall-clock milliseconds to the supplicant
      * and the poll loop, so the handshake timeout is time-based not iteration-
      * based. DOT1X_MAX_ITERS remains the absolute backstop. */
+#ifdef ENABLE_WOLFHAL
+    now = board_get_tick();
+#else /* ENABLE_WOLFHAL */
     dot1x_systick_arm_1khz();
     now = g_dot1x_ms;
-
+#endif
     dot1x_log(&ctx, "dot1x: EAP-TLS start (EAPOL-Start) as "
                     DOT1X_EAP_IDENTITY "\n");
     wolfip_supplicant_kick(&supp, now);
@@ -250,7 +261,11 @@ int dot1x_eaptls_run(struct wolfIP *stack, void (*log)(const char *msg))
         wolfip_supplicant_state_t st;
         int n;
 
+#ifdef ENABLE_WOLFHAL
+        now = board_get_tick();
+#else /* ENABLE_WOLFHAL */
         now = g_dot1x_ms;
+#endif
         (void)wolfIP_poll(stack, now);
 
         n = wolfIP_sock_recvfrom(stack, ctx.sock, dot1x_rxframe,

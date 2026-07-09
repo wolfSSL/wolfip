@@ -30,21 +30,19 @@
 #include <wolfHAL/platform/st/stm32h563xx.h>
 #include <wolfHAL/eth_phy/lan8742a_eth_phy.h>
 
-/* Caller-allocated devices (multi-instance drivers). */
-extern whal_Uart g_whalUart;
-
 extern whal_Timeout g_whalTimeout;
-extern volatile uint32_t g_tick;
+extern volatile uint64_t g_tick;
 
-/* The generic wolfIP port (main.c, wolfhal_eth.c) references the board's
- * Ethernet, PHY, and RNG devices through these names. Under the current
- * wolfHAL API these are single-instance drivers whose device structs live
- * in the driver translation units (built from the WHAL_CFG_*_DEV
+/* The generic wolfIP port (main.c, wolfhal_eth.c, syscalls.c) references the
+ * board's Ethernet, PHY, RNG, and UART devices through these names. Under the
+ * current wolfHAL API these are single-instance drivers whose device structs
+ * live in the driver translation units (built from the WHAL_CFG_*_DEV
  * initializers below), so we alias the documented g_whal* names onto those
- * driver singletons. */
+ * driver-owned device structs. */
 #define g_whalEth     (*(whal_Eth *)&whal_Stm32h5_Eth_Dev)
 #define g_whalEthPhy  (*(whal_EthPhy *)&whal_Lan8742a_Dev)
 #define g_whalRng     (*(whal_Rng *)&whal_Stm32h5_Rng_Dev)
+#define g_whalUart    (*(whal_Uart *)&whal_Stm32h5_Uart_Dev)
 
 /* Ethernet PHY: LAN8742A on MDIO address 0 */
 #define BOARD_ETH_PHY_ADDR 0
@@ -64,7 +62,7 @@ enum {
     PIN_COUNT,
 };
 
-/* GPIO dev initializer — singleton defined in the gpio driver TU.
+/* GPIO dev initializer — device struct defined in the gpio driver code.
  * Only the USART3 (ST-Link VCP) and Ethernet RMII pins are configured. */
 #define WHAL_CFG_STM32H5_GPIO_DEV { \
     .base = WHAL_STM32H563_GPIO_BASE, \
@@ -121,7 +119,7 @@ enum {
     }, \
 }
 
-/* RNG dev initializer — singleton defined in the rng driver TU. */
+/* RNG dev initializer — device struct defined in the rng driver code. */
 #define WHAL_CFG_STM32H5_RNG_DEV { \
     .base = WHAL_STM32H563_RNG_BASE, \
     .cfg  = (void *)&(const whal_Stm32h5_Rng_Cfg){ \
@@ -129,9 +127,21 @@ enum {
     }, \
 }
 
+/* UART dev initializer — device struct defined in the UART driver code. Named
+ * WHAL_CFG_STM32WB_UART_DEV (not _STM32H5_) because the STM32H5 USART reuses
+ * the shared STM32WB UART driver, which instantiates the device from that
+ * exact name. USART3 on the ST-Link VCP; BRR for PCLK 168 MHz @ 115200. */
+#define WHAL_CFG_STM32WB_UART_DEV { \
+    .base = WHAL_STM32H563_USART3_BASE, \
+    .cfg  = (void *)&(const whal_Stm32h5_Uart_Cfg){ \
+        .brr = WHAL_STM32H5_UART_BRR(168000000, 115200), \
+        .timeout = &g_whalTimeout, \
+    }, \
+}
+
 /* ETH descriptor rings + buffer pool — defined in board.c, captured by the
- * ETH singleton's cfg below (expanded in the eth driver TU). */
-#define BOARD_ETH_TX_DESC_COUNT 4
+ * ETH device's cfg below (expanded in the eth driver code). */
+#define BOARD_ETH_TX_DESC_COUNT 3
 #define BOARD_ETH_RX_DESC_COUNT 4
 #define BOARD_ETH_TX_BUF_SIZE   1536
 #define BOARD_ETH_RX_BUF_SIZE   1536
@@ -145,7 +155,7 @@ extern uint8_t ethRxBufs[BOARD_ETH_RX_DESC_COUNT * BOARD_ETH_RX_BUF_SIZE];
 #define BOARD_MAC_ADDR {0x00, 0x80, 0xE1, 0x00, 0x00, 0x01}
 #endif
 
-/* ETH dev initializer — singleton defined in the eth driver TU. */
+/* ETH dev initializer — device struct defined in the eth driver code. */
 #define WHAL_CFG_STM32H5_ETH_DEV { \
     .base    = WHAL_STM32H563_ETH_BASE, \
     .macAddr = BOARD_MAC_ADDR, \
@@ -163,7 +173,7 @@ extern uint8_t ethRxBufs[BOARD_ETH_RX_DESC_COUNT * BOARD_ETH_RX_BUF_SIZE];
     }, \
 }
 
-/* LAN8742A PHY dev initializer — singleton defined in the phy driver TU. */
+/* LAN8742A PHY dev initializer — device struct defined in the phy driver code. */
 #define WHAL_CFG_LAN8742A_DEV { \
     .eth  = NULL, \
     .addr = BOARD_ETH_PHY_ADDR, \
@@ -172,11 +182,11 @@ extern uint8_t ethRxBufs[BOARD_ETH_RX_DESC_COUNT * BOARD_ETH_RX_BUF_SIZE];
     }, \
 }
 
-/* SysTick dev initializer — singleton defined in the systick driver TU. */
+/* SysTick dev initializer — device struct defined in the systick driver code. */
 #define WHAL_CFG_SYSTICK_DEV { \
     .base = WHAL_CORTEX_M33_SYSTICK_BASE, \
     .cfg  = (void *)&(const whal_SysTick_Cfg){ \
-        .cyclesPerTick = 168000000 / 1000, \
+        .cyclesPerTick = (168000000-1) / 1000, \
         .clkSrc  = WHAL_SYSTICK_CLKSRC_SYSCLK, \
         .tickInt = WHAL_SYSTICK_TICKINT_ENABLED, \
     }, \
@@ -184,6 +194,6 @@ extern uint8_t ethRxBufs[BOARD_ETH_RX_DESC_COUNT * BOARD_ETH_RX_BUF_SIZE];
 
 whal_Error board_init(void);
 whal_Error board_deinit(void);
-uint32_t board_get_tick(void);
+uint64_t board_get_tick(void);
 
 #endif /* BOARD_H */

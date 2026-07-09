@@ -60,7 +60,7 @@ int wolfhal_eth_init(struct wolfIP_ll_dev *ll, struct wolfhal_eth_ctx *ctx)
 {
     uint8_t link_up, speed, duplex;
     whal_Error err;
-    uint32_t start;
+    uint64_t start;
 
     if (ll == NULL || ctx == NULL || ctx->eth == NULL || ctx->phy == NULL)
         return -1;

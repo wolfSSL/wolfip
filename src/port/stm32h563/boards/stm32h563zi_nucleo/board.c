@@ -29,14 +29,14 @@
 #include <wolfHAL/eth_phy/lan8742a_eth_phy.h>
 
 /* SysTick timing */
-volatile uint32_t g_tick = 0;
+volatile uint64_t g_tick = 0;
 
 void SysTick_Handler(void)
 {
     g_tick++;
 }
 
-uint32_t board_get_tick(void)
+uint64_t board_get_tick(void)
 {
     return g_tick;
 }
@@ -77,16 +77,6 @@ uint8_t ethTxBufs[BOARD_ETH_TX_DESC_COUNT * BOARD_ETH_TX_BUF_SIZE]
     __attribute__((aligned(4)));
 uint8_t ethRxBufs[BOARD_ETH_RX_DESC_COUNT * BOARD_ETH_RX_BUF_SIZE]
     __attribute__((aligned(4)));
-
-/* UART: USART3 on the ST-Link VCP (caller-allocated, multi-instance driver) */
-whal_Uart g_whalUart = {
-    .base = WHAL_STM32H563_USART3_BASE,
-    /* .driver: direct API mapping */
-    .cfg = &(whal_Stm32h5_Uart_Cfg) {
-        .brr = WHAL_STM32H5_UART_BRR(168000000, 115200),
-        .timeout = &g_whalTimeout,
-    },
-};
 
 /*
  * FLASH_ACR (0x40022000): LATENCY[3:0] = 5 wait states for 168 MHz,
@@ -159,7 +149,7 @@ whal_Error board_init(void)
     if (err)
         return err;
 
-    err = whal_Uart_Init(&g_whalUart);
+    err = whal_Uart_Init(WHAL_INTERNAL_DEV);
     if (err)
         return err;
 
@@ -211,7 +201,7 @@ whal_Error board_deinit(void)
     if (err)
         return err;
 
-    err = whal_Uart_Deinit(&g_whalUart);
+    err = whal_Uart_Deinit(WHAL_INTERNAL_DEV);
     if (err)
         return err;
 

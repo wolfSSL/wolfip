@@ -153,8 +153,8 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=unknownMacro:src/port/stm32h563/dot1x_client.c \
 			   --suppress=unknownMacro:src/port/stm32c5a3/startup.c \
 			   --suppress=preprocessorErrorDirective:src/supplicant/supplicant_features.h \
-			   --suppress=comparePointers:src/port/wolfHAL/boards/stm32h563zi_nucleo/startup.c \
-			   --suppress=comparePointers:src/port/wolfHAL/boards/stm32h563zi_nucleo/syscalls.c \
+			   --suppress=comparePointers:src/port/stm32h563/boards/stm32h563zi_nucleo/startup.c \
+			   --suppress=comparePointers:src/port/stm32h563/boards/stm32h563zi_nucleo/syscalls.c \
 			   --disable=style \
 			   --std=c99 --language=c \
 			   --platform=unix64 \

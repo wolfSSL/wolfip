@@ -1,142 +1,48 @@
-# wolfHAL Port for wolfIP
+# wolfHAL Ethernet bridge for wolfIP
 
-Generic wolfIP port that uses the wolfHAL Ethernet API (`whal_Eth` /
-`whal_EthPhy`). Users create a wolfHAL board and the port handles the
-rest — bridging wolfHAL's Ethernet MAC/PHY drivers to wolfIP's
-link-layer device interface.
-
-## Supported Boards
-
-| Board | MCU | PHY | Directory |
-|-------|-----|-----|-----------|
-| NUCLEO-H563ZI | STM32H563ZI | LAN8742A | `boards/stm32h563zi_nucleo` |
-
-## Directory Structure
+Generic, board-agnostic glue between wolfIP's link-layer device interface
+and the wolfHAL Ethernet API (`whal_Eth` / `whal_EthPhy`). This directory
+holds only the bridge:
 
 ```
 src/port/wolfHAL/
-├── Makefile            # Top-level build: make BOARD=<board_name>
-├── main.c              # Generic main: board_init -> wolfhal_eth_init -> wolfIP_poll loop
-├── wolfhal_eth.h       # Port API and wolfhal_eth_ctx struct
-├── wolfhal_eth.c       # Bridges wolfIP_ll_dev poll/send to whal_Eth_Recv/whal_Eth_Send
-└── boards/
-    └── <board_name>/
-        ├── board.mk    # Toolchain, CFLAGS, wolfHAL driver sources
-        ├── board.h     # Board API declarations and device externs
-        ├── board.c     # Clock, GPIO, Ethernet, PHY, UART, timer setup
-        ├── startup.c   # Reset_Handler: copies .data, zeros .bss, calls main()
-        ├── ivt.c       # Interrupt vector table
-        ├── syscalls.c  # libc stubs (_write, _sbrk, etc.)
-        └── linker.ld   # Memory layout (FLASH/RAM regions)
+├── wolfhal_eth.h   # Port API and wolfhal_eth_ctx struct
+└── wolfhal_eth.c   # Bridges wolfIP_ll_dev poll/send to whal_Eth_Recv/whal_Eth_Send
 ```
 
-## Building
+There is no platform code here — the bridge works with any board that
+provides a configured `whal_Eth` and `whal_EthPhy`. Board bringup
+(clocks, GPIO, MAC/PHY/RNG/UART init) and the bare-metal scaffolding
+live in the chip port under `src/port/<chip>/boards/<board>/`.
+
+## Reference integration
+
+`src/port/stm32h563/` integrates this bridge as an opt-in driver backend
+for the NUCLEO-H563ZI board:
 
 ```
-cd src/port/wolfHAL
-make BOARD=stm32h563zi_nucleo
+make -C src/port/stm32h563 ENABLE_WOLFHAL=1
 ```
 
-Override the wolfHAL location (defaults to `../../../wolfHAL` relative to
-the wolfip root, i.e. a sibling directory):
+The build requires `TZEN=0` (the default) and `FREERTOS=0` (the default);
+the Makefile errors out otherwise. `board_init()` programs the PLL
+directly, which conflicts with the wolfBoot-launched non-secure clock
+flow used by `TZEN=1`, and the wolfHAL SysTick driver owns the SysTick
+handler that FreeRTOS also needs.
 
-```
-make BOARD=stm32h563zi_nucleo WOLFHAL_ROOT=/path/to/wolfHAL
-```
-
-Override IP configuration or MAC address at build time:
-
-```
-make BOARD=stm32h563zi_nucleo \
-    CFLAGS+='-DWOLFIP_IP=\"10.0.0.2\" -DWOLFIP_NETMASK=\"255.255.255.0\" -DWOLFIP_GW=\"10.0.0.1\"'
-```
-
-```
-make BOARD=stm32h563zi_nucleo \
-    CFLAGS+='-DBOARD_MAC_ADDR={0x02,0xAA,0xBB,0xCC,0xDD,0xEE}'
-```
-
-## Adding a New Board
-
-Create a new directory under `boards/` with the following files:
-
-### board.h
-
-Must declare the following:
-
-#### Required Device Externs
-
-| Variable | Type | Description |
-|----------|------|-------------|
-| `g_whalEth` | `whal_Eth` | Initialized Ethernet MAC device |
-| `g_whalEthPhy` | `whal_EthPhy` | Initialized Ethernet PHY device |
-| `g_whalUart` | `whal_Uart` | Initialized UART device (used by `_write` syscall for printf) |
-| `g_whalRng` | `whal_Rng` | Initialized RNG device (used by `wolfIP_getrandom`) |
-
-These names are required — `main.c`, `wolfhal_eth.c`, and `syscalls.c`
-reference them directly.
-
-#### Required Functions
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `board_init` | `whal_Error board_init(void)` | Initialize all board hardware. Must call `whal_Eth_Init`, `whal_EthPhy_Init`, `whal_Uart_Init`, and start the system timer before returning. Returns `WHAL_SUCCESS` on success. |
-| `board_deinit` | `whal_Error board_deinit(void)` | Tear down board hardware in reverse order. |
-| `board_get_tick` | `uint32_t board_get_tick(void)` | Return a millisecond tick counter. Used by `wolfhal_eth_init` for link timeout and by `wolfIP_poll` for stack timing. |
-
-### board.c
-
-Implements the functions above. Typical `board_init` sequence:
-
-1. Initialize clocks (PLL, peripheral clocks)
-2. Initialize GPIO (UART pins, Ethernet pins)
-3. Initialize UART (`whal_Uart_Init`)
-4. Initialize Ethernet MAC (`whal_Eth_Init`)
-5. Initialize Ethernet PHY (`whal_EthPhy_Init`)
-6. Initialize and start system timer
-
-The `whal_Eth` device must have its `macAddr` field set — this is
-where wolfIP reads the interface MAC address from.
-
-### board.mk
-
-Provides build configuration. Must set:
-
-| Variable | Description |
-|----------|-------------|
-| `WOLFHAL_ROOT` | Path to wolfHAL (use `?=` so it's overridable) |
-| `GCC` | Cross-compiler path (e.g. `arm-none-eabi-gcc`) |
-| `OBJCOPY` | Objcopy tool |
-| `CFLAGS` | Compiler flags (architecture, warnings, includes) |
-| `LDFLAGS` | Linker flags |
-| `LDLIBS` | Libraries to link (libc, libgcc, etc.) |
-| `LINKER_SCRIPT` | Path to the board's linker script |
-| `BOARD_SOURCE` | List of board + wolfHAL driver source files |
-
-### syscalls.c
-
-Must provide:
-- Standard libc stubs: `_write`, `_read`, `_sbrk`, `_close`, `_fstat`,
-  `_isatty`, `_lseek`, `_exit`, `_kill`, `_getpid`
-- `_write` should route to `whal_Uart_Send(&g_whalUart, ...)` so that
-  `printf` outputs to UART
-- `uint32_t wolfIP_getrandom(void)` is provided by `main.c` using
-  `whal_Rng_Generate(&g_whalRng, ...)`
-
-### startup.c, ivt.c, linker.ld
-
-Standard bare-metal files for your target architecture. See the
-`stm32h563zi_nucleo` board for a reference implementation.
+`ENABLE_WOLFHAL=1` selects `boards/stm32h563zi_nucleo/` (its own
+`startup.c`/`ivt.c`/`syscalls.c`/`linker.ld` plus `board.c`/`board.h`/`board.mk`),
+pulls the wolfHAL STM32H5 driver TUs from a sibling wolfHAL checkout
+(`WOLFHAL_ROOT ?= ../wolfHAL`), and compiles the port's `main.c` against
+wolfHAL drivers instead of the hand-rolled bare-metal ones.
 
 ## Port API
-
-The port exposes a single function:
 
 ```c
 #include "wolfhal_eth.h"
 
 struct wolfhal_eth_ctx ctx = {
-    .eth = &g_whalEth,
+    .eth = &g_whalEth,     /* configured by board_init() */
     .phy = &g_whalEthPhy,
 };
 
@@ -145,16 +51,22 @@ int ret = wolfhal_eth_init(wolfIP_getdev(ipstack), &ctx);
 
 `wolfhal_eth_init` will:
 1. Poll `whal_EthPhy_GetLinkState` until link comes up (5s timeout,
-   configurable via `WOLFHAL_ETH_LINK_TIMEOUT_MS`)
-2. Start the MAC with negotiated speed/duplex
-3. Copy `eth->macAddr` to the wolfIP device
-4. Register poll/send callbacks that bridge to `whal_Eth_Recv`/`whal_Eth_Send`
+   configurable via `WOLFHAL_ETH_LINK_TIMEOUT_MS`).
+2. Start the MAC with the negotiated speed/duplex.
+3. Copy `eth->macAddr` to the wolfIP device.
+4. Register poll/send callbacks that bridge to `whal_Eth_Recv`/`whal_Eth_Send`.
 
-## Naming Conventions
+## What a board must provide
 
-- All port functions and variables use `snake_case`
-- Board functions use `board_` prefix: `board_init`, `board_get_tick`
-- Port functions use `wolfhal_` prefix: `wolfhal_eth_init`
-- wolfHAL API calls retain their own naming (`whal_Eth_Init`, etc.)
-- Global device instances use `g_whal` prefix: `g_whalEth`, `g_whalEthPhy`, `g_whalUart`, `g_whalRng`
-- Macros use `UPPER_SNAKE_CASE`
+The bridge needs the hardware already brought up. A board's `board.c`
+(see `src/port/stm32h563/boards/stm32h563zi_nucleo/board.c`) must, before
+`wolfhal_eth_init` is called:
+
+- Initialize clocks and GPIO, then call `whal_Eth_Init` / `whal_EthPhy_Init`
+  (typically from `board_init()`).
+- Set the `whal_Eth` device's `macAddr` field — wolfIP reads the interface
+  MAC from there.
+- Expose the devices the port references by name: `g_whalEth`, `g_whalEthPhy`,
+  and (for the port's `printf`/RNG hooks) `g_whalUart`, `g_whalRng`.
+- Provide `uint32_t board_get_tick(void)` — a millisecond counter used both
+  for the `wolfhal_eth_init` link timeout and for `wolfIP_poll` timing.

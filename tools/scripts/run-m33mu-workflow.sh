@@ -18,10 +18,14 @@ Accepted workflows:
   stm32h563-m33mu-ssh-tzen
   stm32h563-m33mu-ssh-tzen.yml
   .github/workflows/stm32h563-m33mu-ssh-tzen.yml
+  stm32h563-m33mu-wolfhal
+  wolfhal-stm32h563zi-nucleo.yml
+  .github/workflows/wolfhal-stm32h563zi-nucleo.yml
 
 Optional job names:
   stm32h563_m33mu_echo
   stm32h563_m33mu_echo_freertos
+  stm32h563_m33mu_echo_wolfhal
   stm32h563_m33mu_full
   stm32h563_m33mu_https_tls13
   stm32h563_m33mu_https_freertos
@@ -42,6 +46,9 @@ normalize_workflow() {
       ;;
     stm32h563-m33mu-ssh-tzen|stm32h563-m33mu-ssh-tzen.yml|.github/workflows/stm32h563-m33mu-ssh-tzen.yml)
       printf '%s\n' stm32h563-m33mu-ssh-tzen
+      ;;
+    stm32h563-m33mu-wolfhal|wolfhal-stm32h563zi-nucleo.yml|.github/workflows/wolfhal-stm32h563zi-nucleo.yml)
+      printf '%s\n' stm32h563-m33mu-wolfhal
       ;;
     *)
       return 1

@@ -7,6 +7,14 @@ ROOT := ../../..
 # Default is TZEN=0 (TrustZone disabled)
 TZEN ?= 0
 
+# wolfHAL driver backend: set ENABLE_WOLFHAL=1 to build the port on top of
+# the wolfHAL HAL (Ethernet MAC/PHY, RNG, UART, GPIO, clocks) instead of the
+# in-tree bare-metal drivers. Selects the self-contained board directory
+# boards/$(BOARD). First cut supports TZEN=0 and FREERTOS=0 only.
+ENABLE_WOLFHAL ?= 0
+BOARD ?= stm32h563zi_nucleo
+WOLFHAL_ROOT ?= $(ROOT)/../wolfHAL
+
 # TLS support: set ENABLE_TLS=1 to include wolfSSL TLS server
 # Requires wolfSSL cloned alongside wolfip (or set WOLFSSL_ROOT)
 ENABLE_TLS ?= 0
@@ -126,6 +134,44 @@ CFLAGS_WOLFSSL += $(EXTRA_CFLAGS_WOLFSSL)
 # $(WOLFSSL_ROOT)/%.o relaxed-warning rule.
 include $(ROOT)/src/port/stm32/wolfssl.mk
 
+ifeq ($(ENABLE_WOLFHAL),1)
+# -----------------------------------------------------------------------------
+# wolfHAL driver backend
+# -----------------------------------------------------------------------------
+# board_init() programs the PLL directly and the wolfHAL SysTick driver owns
+# the SysTick handler, so the wolfBoot-launched (TZEN=1) clock flow and the
+# FreeRTOS SysTick are not supported in this first cut.
+ifeq ($(TZEN),1)
+  $(error ENABLE_WOLFHAL=1 does not support TZEN=1 yet (board_init owns the PLL, which conflicts with the wolfBoot-launched NS clock flow))
+endif
+ifeq ($(FREERTOS),1)
+  $(error ENABLE_WOLFHAL=1 does not support FREERTOS=1 yet (wolfHAL SysTick conflicts with the FreeRTOS SysTick handler))
+endif
+
+ifeq ($(wildcard $(WOLFHAL_ROOT)/wolfHAL/wolfHAL.h),)
+  $(error wolfHAL not found at $(WOLFHAL_ROOT). Clone it alongside wolfip: git clone https://github.com/wolfSSL/wolfHAL.git (or set WOLFHAL_ROOT))
+endif
+
+BOARD_DIR := boards/$(BOARD)
+
+CFLAGS += -DENABLE_WOLFHAL -DTZEN_ENABLED=0
+CFLAGS += -I$(WOLFHAL_ROOT) -I$(BOARD_DIR) -I$(ROOT)/src/port/wolfHAL
+
+LDSCRIPT := $(BOARD_DIR)/linker.ld
+
+# The board dir carries its own wolfHAL-specific startup/ivt/syscalls; the
+# bare-metal stm32_eth.c driver is replaced by board.c (BSP bringup) plus the
+# generic wolfhal_eth.c bridge.
+SRCS := $(BOARD_DIR)/startup.c $(BOARD_DIR)/ivt.c syscalls.c
+SRCS += main.c $(BOARD_DIR)/board.c $(ROOT)/src/port/wolfHAL/wolfhal_eth.c
+SRCS += $(ROOT)/src/wolfip.c
+
+# wolfHAL driver selection (WHAL_CFG_* defines) + wolfHAL driver TUs.
+include $(BOARD_DIR)/board.mk
+else
+# -----------------------------------------------------------------------------
+# In-tree bare-metal drivers (default)
+# -----------------------------------------------------------------------------
 # Select linker script based on TZEN setting
 ifeq ($(TZEN),1)
   LDSCRIPT := target_tzen.ld
@@ -135,11 +181,12 @@ else
   CFLAGS += -DTZEN_ENABLED=0
 endif
 
-LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
-
 # Base source files
 SRCS := startup.c ivt.c syscalls.c
 SRCS += main.c $(ROOT)/src/port/stm32/stm32_eth.c $(ROOT)/src/wolfip.c
+endif
+
+LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
 
 ifeq ($(FREERTOS),1)
 ifeq ($(wildcard $(FREERTOS_PATH)/include/FreeRTOS.h),)
@@ -256,6 +303,7 @@ WOLFSSH_SRCS := \
     $(WOLFSSH_ROOT)/src/io.c \
     $(WOLFSSH_ROOT)/src/keygen.c \
     $(WOLFSSH_ROOT)/src/log.c \
+    $(WOLFSSH_ROOT)/src/ossh.c \
     $(WOLFSSH_ROOT)/src/port.c
 
 SRCS += $(WOLFSSH_SRCS)
@@ -483,7 +531,7 @@ endif
 OBJS := $(patsubst %.c,%.o,$(SRCS))
 
 all: app.bin
-	@echo "Built with TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER) FREERTOS=$(FREERTOS)"
+	@echo "Built with TZEN=$(TZEN) ENABLE_WOLFHAL=$(ENABLE_WOLFHAL) ENABLE_TLS=$(ENABLE_TLS) ENABLE_TLS_CLIENT=$(ENABLE_TLS_CLIENT) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER) FREERTOS=$(FREERTOS)"
 ifeq ($(ENABLE_TLS),1)
 	@echo "  wolfSSL: $(WOLFSSL_ROOT)"
 endif
@@ -544,6 +592,11 @@ factory: factory.bin
 # shared $(WOLFSSL_ROOT)/%.o rule in wolfssl.mk via WOLFSSL_EXTRA_DEFS.
 WOLFSSL_EXTRA_DEFS = $(if $(filter 1,$(ENABLE_SSH)),-DENABLE_SSH -DWOLFSSL_WOLFSSH) $(if $(filter 1,$(ENABLE_MQTT_BROKER)),-DENABLE_MQTT_BROKER) $(if $(filter 1,$(ENABLE_DOT1X)),-DHAVE_PBKDF2 -DHAVE_AES_KEYWRAP)
 
+# wolfHAL driver objects: first-party HAL, but built with -Werror relaxed
+# since the port's -Wextra is stricter than wolfHAL's own build.
+$(WOLFHAL_ROOT)/%.o: $(WOLFHAL_ROOT)/%.c
+	$(CC) $(filter-out -Werror,$(CFLAGS)) -c $< -o $@
+
 clean:
 	rm -f *.o app.elf app.bin
 	rm -f app_v1_signed.bin factory.bin wolfboot_padded.bin
@@ -552,6 +605,10 @@ clean:
 	rm -f $(ROOT)/src/port/stm32/*.o
 	rm -f $(ROOT)/src/port/freeRTOS/*.o
 	rm -f $(ROOT)/src/supplicant/*.o
+ifeq ($(ENABLE_WOLFHAL),1)
+	rm -f boards/$(BOARD)/*.o
+	rm -f $(WOLFHAL_ROOT)/src/*.o $(WOLFHAL_ROOT)/src/*/*.o
+endif
 ifeq ($(FREERTOS),1)
 	rm -f $(FREERTOS_PATH)/*.o
 	rm -f $(FREERTOS_PATH)/portable/MemMang/*.o
@@ -582,7 +639,7 @@ verify: app.bin
 	@strings app.bin | grep -q "MQTT Broker: Initializing" && echo "  ✓ MQTT broker enabled" || echo "  ✗ MQTT broker disabled"
 	@echo ""
 	@echo "Binary size: $$(ls -lh app.bin | awk '{print $$5}')"
-	@echo "Build flags: TZEN=$(TZEN) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER) FREERTOS=$(FREERTOS)"
+	@echo "Build flags: TZEN=$(TZEN) ENABLE_WOLFHAL=$(ENABLE_WOLFHAL) ENABLE_TLS=$(ENABLE_TLS) ENABLE_HTTPS=$(ENABLE_HTTPS) ENABLE_SSH=$(ENABLE_SSH) ENABLE_MQTT=$(ENABLE_MQTT) ENABLE_MQTT_BROKER=$(ENABLE_MQTT_BROKER) FREERTOS=$(FREERTOS)"
 
 # Show memory usage
 size: app.elf
@@ -611,6 +668,8 @@ help:
 	@echo ""
 	@echo "Options:"
 	@echo "  TZEN=1          Enable TrustZone support"
+	@echo "  ENABLE_WOLFHAL=1 Use the wolfHAL driver backend (requires wolfHAL; TZEN=0, FREERTOS=0)"
+	@echo "  BOARD=<name>    Board under boards/ (default: stm32h563zi_nucleo)"
 	@echo "  ENABLE_TLS=1    Enable TLS server (requires wolfSSL)"
 	@echo "  ENABLE_TLS_CLIENT=1 Enable TLS client test (Google)"
 	@echo "  ENABLE_HTTPS=1  Enable HTTPS web server (requires TLS)"
@@ -623,11 +682,13 @@ help:
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
 	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
 	@echo "  WOLFMQTT_ROOT=  Path to wolfMQTT (default: ../wolfmqtt)"
+	@echo "  WOLFHAL_ROOT=   Path to wolfHAL (default: ../wolfHAL)"
 	@echo "  CC=             C compiler (default: arm-none-eabi-gcc)"
 	@echo "  OBJCOPY=        Objcopy tool (default: arm-none-eabi-objcopy)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make                                                        # Basic TCP echo (port 7)"
+	@echo "  make ENABLE_WOLFHAL=1                                       # Basic TCP echo via the wolfHAL driver backend"
 	@echo "  make ENABLE_TLS=1                                           # TLS echo server (port 8443)"
 	@echo "  make ENABLE_TLS=1 ENABLE_HTTPS=1                            # TLS + HTTPS web (port 443)"
 	@echo "  make ENABLE_TLS=1 ENABLE_SSH=1                              # TLS + SSH shell (port 22)"
