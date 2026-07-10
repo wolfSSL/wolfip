@@ -32,21 +32,17 @@ extern "C" {
 /* Build-mode shorthand
  *
  * WOLFSSL_STM32C5_CRYPTO_ARM gates the shared STM32C5 hardware-crypto config
- * so both the DHUK crypto-callback self-test (ENABLE_CB_SELFTEST) and the
- * TLS 1.3 mutual-auth client (ENABLE_TLS_CLIENT) get the same C5 arm without
- * duplicating the defines. TLS-only feature toggles are added on top under
- * the ENABLE_TLS gate further down.
+ * for the TLS 1.3 mutual-auth client (ENABLE_TLS_CLIENT). TLS-only feature
+ * toggles are added on top under the ENABLE_TLS gate further down.
  * ------------------------------------------------------------------------- */
-#if defined(ENABLE_CB_SELFTEST) || defined(ENABLE_TLS_CLIENT) || \
-    defined(WOLFSSL_STM32C5)
+#if defined(ENABLE_TLS_CLIENT) || defined(WOLFSSL_STM32C5)
     #define WOLFSSL_STM32C5_CRYPTO_ARM
 #endif
 
 /* ------------------------------------------------------------------------- */
 /* Platform / OS
  *
- * Network-only baseline: this file is only compiled when ENABLE_TLS or
- * ENABLE_CB_SELFTEST is set.
+ * Network-only baseline: this file is only compiled when ENABLE_TLS is set.
  * ------------------------------------------------------------------------- */
 #define WOLFSSL_GENERAL_ALIGNMENT 4
 #define SINGLE_THREADED
@@ -61,11 +57,11 @@ extern "C" {
 #define NO_WOLFSSL_DIR
 
 /* ------------------------------------------------------------------------- */
-/* STM32C5A3 hardware crypto (DHUK crypto-callback self-test build)
+/* STM32C5A3 hardware crypto (DHUK crypto-callback TLS build)
  *
  * The STM32C5A3 has TinyAES + HASH + RNG + SAES + PKA (V2 layout, all on
- * AHB2). For the ENABLE_CB_SELFTEST build we drive them via the direct-
- * register WOLFSSL_STM32_BARE path (the C5 new-generation HAL has no classic
+ * AHB2). We drive them via the direct-register WOLFSSL_STM32_BARE path (the
+ * C5 new-generation HAL has no classic
  * CRYP/PKA driver APIs), mirroring the STM32_Bare_Test c5a3 crypto arm. The
  * network-only (ENABLE_TLS) baseline stays on the software crypto path -- the
  * HW enables below are additive and only activate for the self-test.

@@ -181,8 +181,8 @@ stm32h753/
 ├── syscalls.c             # Newlib stubs
 ├── main.c                 # Application entry point
 ├── stm32_hash_register.h  # STM32 HASH peripheral register definitions
-├── tls_client.c           # TLS 1.3 client (ENABLE_TLS_CLIENT)
-├── tls_client.h           # TLS client header
+├── ../tls_client.c        # TLS 1.3 client state machine (shared, ENABLE_TLS_CLIENT)
+├── ../tls_client.h        # TLS client header (shared)
 ├── ../stm32/stm32_eth.c   # Ethernet MAC/PHY driver (shared)
 ├── ../stm32/stm32_eth.h   # Ethernet driver header (shared)
 └── ../certs.h             # Embedded TLS test certificates (shared)

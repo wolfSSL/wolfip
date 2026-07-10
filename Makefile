@@ -133,6 +133,8 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=constParameterCallback \
 			   --suppress=toomanyconfigs \
 			   --suppress=unmatchedSuppression --inconclusive \
+			   --suppress=comparePointers:src/port/stm32c5a3/startup.c \
+			   --suppress=comparePointers:src/port/stm32c5a3/syscalls.c \
 			   --suppress=comparePointers:src/port/stm32h563/startup.c \
 			   --suppress=comparePointers:src/port/stm32h563/syscalls.c \
 			   --suppress=comparePointers:src/port/stm32h753/startup.c \
@@ -149,6 +151,7 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=comparePointers:src/port/rp2350_cyw43439/startup_hazard3.c \
 			   --suppress=comparePointers:src/port/rp2350_cyw43439/syscalls.c \
 			   --suppress=unknownMacro:src/port/stm32h563/dot1x_client.c \
+			   --suppress=unknownMacro:src/port/stm32c5a3/startup.c \
 			   --suppress=preprocessorErrorDirective:src/supplicant/supplicant_features.h \
 			   --disable=style \
 			   --std=c99 --language=c \

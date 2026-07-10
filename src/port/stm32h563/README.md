@@ -481,7 +481,7 @@ The TLS configuration is in `user_settings.h`:
 | `user_settings.h` | wolfSSL compile-time configuration |
 | `../certs.h` | Embedded ECC P-256 test certificate (shared) |
 | `tls_server.c/h` | TLS echo server implementation |
-| `tls_client.c/h` | TLS client (for outbound connections) |
+| `../tls_client.c/h` | TLS client state machine (shared, for outbound connections) |
 
 ### Generating Custom Certificates
 
@@ -1087,7 +1087,7 @@ reset wolfBoot reads the trailer and swaps in the staged image.
 | `user_settings.h` | wolfSSL/wolfSSH/wolfMQTT configuration |
 | `../certs.h` | Embedded TLS certificates, shared (TLS builds only) |
 | `tls_server.c/h` | TLS echo server (TLS builds only) |
-| `tls_client.c/h` | TLS client for outbound connections (TLS builds only) |
+| `../tls_client.c/h` | TLS client (shared; outbound connections, TLS builds only) |
 | `../http/httpd.c` | HTTPS web server - wolfIP httpd (HTTPS builds only) |
 | `ssh_server.c/h` | SSH shell server (SSH builds only) |
 | `ssh_keys.h` | Embedded SSH host key (SSH builds only) |

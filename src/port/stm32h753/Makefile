@@ -29,9 +29,8 @@ ifeq ($(ENABLE_MQTT_BROKER),1)
   ENABLE_TLS = 1
 endif
 
-# Library paths - default to sibling directories
-WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
-WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
+# WOLFSSL_ROOT/WOLFMQTT_ROOT defaults + the shared wolfSSL source list and
+# $(WOLFSSL_ROOT)/%.o rule come from the shared fragment (included below).
 
 # STM32H753ZI - Cortex-M7 with FPU
 CFLAGS := -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
@@ -44,6 +43,10 @@ CFLAGS += -DSTM32H7
 CFLAGS_WOLFSSL := $(CFLAGS)
 CFLAGS_WOLFSSL := $(filter-out -Werror,$(CFLAGS_WOLFSSL))
 CFLAGS_WOLFSSL += -Wno-unused-variable -Wno-unused-function
+
+# Shared wolfSSL build plumbing: WOLFSSL_ROOT/WOLFMQTT_ROOT defaults, the base
+# WOLFSSL_SRCS list, and the $(WOLFSSL_ROOT)/%.o relaxed-warning rule.
+include $(ROOT)/src/port/stm32/wolfssl.mk
 
 LDSCRIPT := target.ld
 LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-gc-sections
@@ -69,56 +72,19 @@ CFLAGS += -I$(WOLFSSL_ROOT)
 # wolfIP-wolfSSL glue
 SRCS += $(ROOT)/src/port/wolfssl_io.c
 
-# TLS client (Google test)
+# TLS client (Google test) -- shared state machine, plain one-way client.
+# Keep the historical 100-poll settle before the handshake.
 ifeq ($(ENABLE_TLS_CLIENT),1)
-CFLAGS += -DENABLE_TLS_CLIENT
-SRCS += tls_client.c
+CFLAGS += -DENABLE_TLS_CLIENT -DTLS_CLIENT_SETTLE_POLLS=100
+SRCS += $(ROOT)/src/port/tls_client.c
 endif
 
-# wolfSSL source files (minimal set for TLS 1.3 client with ECC)
-WOLFSSL_SRCS := \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/aes.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha256.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha512.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/hmac.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/hash.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/kdf.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/random.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/ecc.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/asn.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/coding.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_port.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c \
+# Base wolfSSL/wolfCrypt set comes from wolfssl.mk. H753 adds the logging/error/
+# encrypt group, the STM32 HW HASH/HMAC port, and the wolfcrypt self-test.
+WOLFSSL_SRCS += $(WOLFSSL_LOG_SRCS)
+WOLFSSL_SRCS += \
     $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/stm32.c \
-    $(WOLFSSL_ROOT)/src/ssl.c \
-    $(WOLFSSL_ROOT)/src/tls.c \
-    $(WOLFSSL_ROOT)/src/tls13.c \
-    $(WOLFSSL_ROOT)/src/internal.c \
-    $(WOLFSSL_ROOT)/src/keys.c \
-    $(WOLFSSL_ROOT)/src/wolfio.c
-
-# ChaCha20-Poly1305 (optional)
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/chacha.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/chacha20_poly1305.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/poly1305.c
-
-# RSA for certificate verification
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/signature.c
-
-# wolfCrypt test (validates all crypto algorithms including HW HASH/HMAC)
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/test/test.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/logging.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/error.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_encrypt.c
+    $(WOLFSSL_ROOT)/wolfcrypt/test/test.c
 
 SRCS += $(WOLFSSL_SRCS)
 
@@ -194,9 +160,7 @@ app.bin: app.elf
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# wolfSSL objects use relaxed warnings
-$(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS -I$(WOLFSSL_ROOT) -c $< -o $@
+# The $(WOLFSSL_ROOT)/%.o relaxed-warning rule comes from wolfssl.mk.
 
 clean:
 	rm -f *.o app.elf app.bin

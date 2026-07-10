@@ -26,9 +26,6 @@
 #include "config.h"
 #include "wolfip.h"
 #include "stm32_eth.h"
-#ifdef ENABLE_CB_SELFTEST
-#include "cb_selftest.h"
-#endif
 #ifdef ENABLE_TLS_CLIENT
 #include "tls_client.h"
 #endif
@@ -43,11 +40,9 @@ static int tls_client_test_done = 0;
 static int tls_request_sent = 0;
 #endif
 
-/* NUCLEO-C5A3ZG: HSE 48 MHz -> PSI -> PSIS = 144 MHz SYSCLK.
- * All bus prescalers /1, so HCLK = PCLK1 = 144 MHz. */
+/* NUCLEO-C5A3ZG: 144 MHz SYSCLK/HCLK (HSE 48 MHz -> PSI -> PSIS, prescalers /1). */
 #define BOARD_SYSCLK_HZ 144000000u
 
-/* HSE/PSI ready timeout loop bounds. */
 #define HSE_TIMEOUT     0x100000u
 #define PSI_TIMEOUT     0x100000u
 #define SW_TIMEOUT      0x010000u
@@ -60,13 +55,8 @@ static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
 
-/* =========================================================================
- * CMSIS-Core hooks
- *
- * The vendor startup (startup.c) calls SystemInit() then __PROGRAM_START()
- * during reset. SystemInit() is a no-op here (clocks are configured in
- * clock_init below). Default_IRQHandler_Hook parks on any unexpected IRQ.
- * ========================================================================= */
+/* CMSIS-Core hooks called by the vendor startup. SystemInit is a no-op (clocks
+ * are set in clock_init); Default_IRQHandler_Hook parks on an unexpected IRQ. */
 void SystemInit(void) { /* no-op */ }
 
 __attribute__((weak)) void Default_IRQHandler_Hook(void)
@@ -74,9 +64,7 @@ __attribute__((weak)) void Default_IRQHandler_Hook(void)
     while (1) { }
 }
 
-/* =========================================================================
- * Simple busy-wait delay
- * ========================================================================= */
+/* Simple busy-wait delay. */
 static void delay(uint32_t count)
 {
     volatile uint32_t i;
@@ -524,17 +512,6 @@ int main(void)
         }
         uart_puts("\n");
     }
-
-#ifdef ENABLE_CB_SELFTEST
-    /* Additive self-test build: register the STM32 DHUK crypto callback and
-     * run the ECDSA / AES-GCM / HMAC-SHA256 / TRNG primitives on hardware,
-     * then park. Network bring-up is skipped in this mode. */
-    (void)cb_selftest_run();
-    uart_puts("\nCB self-test complete; parking.\n");
-    for (;;) {
-        __asm volatile("wfi");
-    }
-#endif
 
     uart_puts("Initializing wolfIP stack...\n");
     wolfIP_init_static(&IPStack);
