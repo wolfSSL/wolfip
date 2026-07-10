@@ -2,3 +2,7 @@
 *.o
 app.elf
 app.bin
+
+# Generated TLS test host material (contains a throwaway test private key).
+# Regenerate with:  python3 gen_certs.py   (also rewrites tls_certs.h)
+tls-certs/

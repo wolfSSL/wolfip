@@ -19,18 +19,30 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
-/* Milestone 3A.0: TLS 1.3 mutual-auth client for the STM32C5A3ZG wolfIP port.
+/* Shared TLS 1.3 client state machine for the STM32 bare-metal wolfIP ports
+ * (compiled from each port as $(ROOT)/src/port/tls_client.c). Build-time knobs:
  *
- * The device presents a client certificate (mutual auth) and completes a
- * TLS 1.3 handshake with TLS_AES_128_GCM_SHA256 against an openssl s_server.
- * The identity private key is loaded here as an ordinary SEC1 EC key (software
- * / direct-HW crypto). The DHUK-wrapped callback key swap is a later step;
- * this build proves the TLS-over-wolfIP + mTLS + cert-chain plumbing works.
+ *   TLS_CLIENT_MUTUAL_AUTH   present a client certificate (mutual auth); loads
+ *                            client_cert_der / client_key_der from the port's
+ *                            tls_certs.h. (STM32C5A3ZG DHUK demo.)
+ *   ENABLE_DHUK_KEY          (implies MUTUAL_AUTH) sign CertificateVerify via a
+ *                            PK callback backed by the DHUK-wrapped identity
+ *                            key -- the scalar is unwrapped in SAES and signed
+ *                            on the HW PKA, never in software.
+ *   TLS_CLIENT_CIPHER        if defined, force this single TLS 1.3 suite.
+ *   TLS_CLIENT_SETTLE_POLLS  poll cycles to wait after TCP connect before the
+ *                            handshake (default 10).
+ *   TLS_CLIENT_BUF_SIZE      receive buffer size (default 2048).
+ *
+ * Without MUTUAL_AUTH this is a plain one-way client (H753/H563 -> HTTPS host);
+ * SNI is optional via tls_client_set_sni().
  */
 
 #include "tls_client.h"
-#include "tls_certs.h"
 #include "wolfip.h"
+#ifdef TLS_CLIENT_MUTUAL_AUTH
+#include "tls_certs.h"
+#endif
 
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/ssl.h>
@@ -46,7 +58,7 @@
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/port/st/stm32.h>
-#include "st_p256_vec.h"
+#include "identity_key.h"
 
 static ecc_key g_dhuk_key;
 static WC_RNG  g_dhuk_rng;
@@ -68,9 +80,9 @@ static const byte g_dhuk_seed[32] = {
 #define TLS_CLIENT_BUF_SIZE 2048
 #endif
 
-/* Forced cipher suite for the 3A.0 mutual-auth test. */
-#ifndef TLS_CLIENT_CIPHER
-#define TLS_CLIENT_CIPHER "TLS_AES_128_GCM_SHA256"
+/* Poll cycles to let the TCP stack settle after connect before the handshake. */
+#ifndef TLS_CLIENT_SETTLE_POLLS
+#define TLS_CLIENT_SETTLE_POLLS 10
 #endif
 
 /* Client state */
@@ -100,8 +112,6 @@ static struct {
     char sni_host[64];
     int got_response;
     int connect_ready_count;
-    unsigned int hs_polls;
-    int hs_last_err;
 } client;
 
 /* External functions from wolfssl_io.c */
@@ -212,8 +222,8 @@ static int dhuk_provision_key(void)
         return ret;
     }
     /* Curve + public point from the identity vector (public, for verify). */
-    ret = wc_ecc_import_unsigned(&g_dhuk_key, (byte *)SigGen_Qx,
-        (byte *)SigGen_Qy, NULL, ECC_SECP256R1);
+    ret = wc_ecc_import_unsigned(&g_dhuk_key, (byte *)identity_key_qx,
+        (byte *)identity_key_qy, NULL, ECC_SECP256R1);
     if (ret != 0) {
         debug_print_kv("TLS Client: DHUK import pub err", ret);
         return ret;
@@ -224,7 +234,7 @@ static int dhuk_provision_key(void)
         ret = wc_AesSetKey(&aes, g_dhuk_seed, 32, NULL, AES_ENCRYPTION);
     }
     if (ret == 0) {
-        ret = wc_AesEcbEncrypt(&aes, wrapped, (byte *)SigGen_D, 32);
+        ret = wc_AesEcbEncrypt(&aes, wrapped, (byte *)identity_key_d, 32);
     }
     wc_AesFree(&aes);
     if (ret != 0) {
@@ -276,36 +286,38 @@ int tls_client_init(struct wolfIP *stack, tls_client_debug_cb debug)
         return -1;
     }
 
-    /* Mutual auth: load the device client certificate (binds the P-256
-     * identity public key). DER / ASN.1 encoded in tls_certs.h. */
+#ifdef TLS_CLIENT_MUTUAL_AUTH
+    /* Load the device client certificate (binds the identity public key) and
+     * its private key. DER / ASN.1 encoded in the port's tls_certs.h. The DHUK
+     * build overrides the actual signing via a PK callback (see below), so the
+     * loaded key there is only a placeholder for wolfSSL's cert/key association.
+     * A SEC1 EC key is ASN.1 (FILETYPE_ASN1). */
     ret = wolfSSL_CTX_use_certificate_buffer(client.ctx,
         client_cert_der, (long)client_cert_der_len, WOLFSSL_FILETYPE_ASN1);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS Client: Failed! load client certificate\n");
         return -1;
     }
-
-    /* Mutual auth: load the SEC1 EC identity private key (raw scalar, for
-     * this software bring-up only; the DHUK build will sign via callback).
-     * SEC1 EC keys are ASN.1 (FILETYPE_ASN1); if the loader rejects it that
-     * is a real finding, not something to paper over. */
     ret = wolfSSL_CTX_use_PrivateKey_buffer(client.ctx,
         client_key_der, (long)client_key_der_len, WOLFSSL_FILETYPE_ASN1);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS Client: Failed! load client private key\n");
         return -1;
     }
+#endif /* TLS_CLIENT_MUTUAL_AUTH */
 
-    /* Server verification OFF for 3A.0: the SERVER verifies US. Server auth
-     * is not the point of this test. */
+    /* Do not verify the server certificate (test against hosts without a
+     * bundled root CA). For mutual auth, the SERVER verifies US. */
     wolfSSL_CTX_set_verify(client.ctx, WOLFSSL_VERIFY_NONE, NULL);
 
-    /* Force the TLS 1.3 suite under test. */
+#ifdef TLS_CLIENT_CIPHER
+    /* Force a single TLS 1.3 suite. */
     ret = wolfSSL_CTX_set_cipher_list(client.ctx, TLS_CLIENT_CIPHER);
     if (ret != WOLFSSL_SUCCESS) {
         debug_print("TLS Client: Failed! set cipher list\n");
         return -1;
     }
+#endif
 
 #ifdef ENABLE_DHUK_KEY
     /* 3A.1: provision the DHUK-wrapped identity key and route the
@@ -324,7 +336,11 @@ int tls_client_init(struct wolfIP *stack, tls_client_debug_cb debug)
     /* Register wolfIP I/O callbacks */
     wolfSSL_SetIO_wolfIP_CTX(client.ctx, stack);
 
+#ifdef TLS_CLIENT_MUTUAL_AUTH
     debug_print("TLS Client: Initialized (mutual auth)\n");
+#else
+    debug_print("TLS Client: Initialized\n");
+#endif
     return 0;
 }
 
@@ -441,7 +457,7 @@ int tls_client_poll(void)
                 }
                 /* Connection established - wait a few poll cycles to settle */
                 client.connect_ready_count++;
-                if (client.connect_ready_count < 10) {
+                if (client.connect_ready_count < TLS_CLIENT_SETTLE_POLLS) {
                     return 0;
                 }
                 client.connect_ready_count = 0;
@@ -473,14 +489,6 @@ int tls_client_poll(void)
             __attribute__((fallthrough));
 
         case TLS_CLIENT_STATE_HANDSHAKE:
-            /* Heartbeat: if this count keeps rising, wolfSSL_connect is
-             * returning each poll (stuck WANT_READ/WRITE); if it freezes,
-             * a crypto op is hung inside wolfSSL_connect. */
-            client.hs_polls++;
-            if (client.hs_polls == 1u || (client.hs_polls % 50u) == 0u) {
-                debug_print_kv("TLS hs poll", (int)client.hs_polls);
-                debug_print_kv("  last err", client.hs_last_err);
-            }
             ret = wolfSSL_connect(client.ssl);
             if (ret == WOLFSSL_SUCCESS) {
                 debug_print("TLS Client: Connected!\n");
@@ -488,7 +496,6 @@ int tls_client_poll(void)
                 client.state = TLS_CLIENT_STATE_CONNECTED;
             } else {
                 err = wolfSSL_get_error(client.ssl, ret);
-                client.hs_last_err = err;
                 if (err == WOLFSSL_ERROR_WANT_READ ||
                     err == WOLFSSL_ERROR_WANT_WRITE) {
                     /* Handshake in progress, continue polling */

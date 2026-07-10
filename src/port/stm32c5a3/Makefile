@@ -18,15 +18,6 @@ ENABLE_HTTPS ?= 0
 # MQTT Broker: set ENABLE_MQTT_BROKER=1 to include wolfMQTT broker (requires TLS)
 ENABLE_MQTT_BROKER ?= 0
 
-# DHUK crypto-callback self-test: set ENABLE_CB_SELFTEST=1 to build the
-# wolfCrypt DHUK crypto-callback primitive self-test (ECDSA sign via HW PKA,
-# AES-GCM via SAES device-bound key, HMAC-SHA256, HW TRNG). Additive to the
-# Phase-1 network baseline: it does NOT enable ENABLE_TLS and does NOT link
-# ssl.c/tls.c/internal.c -- just wolfcrypt + the DHUK port. Requires the
-# wolfSSL worktree that carries the STM32C5 DHUK code (default sibling
-# wolfssl-c5tls; override with WOLFSSL_ROOT=...).
-ENABLE_CB_SELFTEST ?= 0
-
 # Auto-enable TLS when any feature that requires it is enabled
 ifeq ($(ENABLE_TLS_CLIENT),1)
   ENABLE_TLS = 1
@@ -38,20 +29,14 @@ ifeq ($(ENABLE_MQTT_BROKER),1)
   ENABLE_TLS = 1
 endif
 
-# Library paths - default to sibling directories.
-# The DHUK self-test needs the wolfSSL worktree that carries the STM32C5 DHUK
-# code, so it defaults to wolfssl-c5tls; the network/TLS builds default to the
-# plain wolfssl sibling. (?= means an explicit WOLFSSL_ROOT= still wins.)
-ifeq ($(ENABLE_CB_SELFTEST),1)
-  WOLFSSL_ROOT ?= $(ROOT)/../wolfssl-c5tls
-endif
-# The TLS client (3A.0) uses the STM32C5 HW-crypto arm, so it needs the same
-# stm32_bare worktree that carries the STM32C5 DHUK/BARE port.
+# Library paths - default to sibling directories. The TLS client uses the
+# STM32C5 HW-crypto arm, so it needs the wolfSSL worktree that carries the
+# STM32C5 DHUK/BARE port. (?= means an explicit WOLFSSL_ROOT= still wins.)
 ifeq ($(ENABLE_TLS_CLIENT),1)
   WOLFSSL_ROOT ?= $(ROOT)/../wolfssl-c5tls
 endif
-WOLFSSL_ROOT ?= $(ROOT)/../wolfssl
-WOLFMQTT_ROOT ?= $(ROOT)/../wolfmqtt
+# Sibling WOLFSSL_ROOT/WOLFMQTT_ROOT fallbacks + the shared wolfSSL source list
+# and $(WOLFSSL_ROOT)/%.o rule come from the shared fragment (included below).
 
 # -----------------------------------------------------------------------------
 # Device headers / CMSIS
@@ -76,6 +61,10 @@ CFLAGS += -DSTM32C5 -DSTM32C5A3xx
 CFLAGS_WOLFSSL := $(CFLAGS)
 CFLAGS_WOLFSSL := $(filter-out -Werror,$(CFLAGS_WOLFSSL))
 CFLAGS_WOLFSSL += -Wno-unused-variable -Wno-unused-function
+
+# Shared wolfSSL build plumbing: WOLFSSL_ROOT/WOLFMQTT_ROOT defaults, the base
+# WOLFSSL_SRCS list, and the $(WOLFSSL_ROOT)/%.o relaxed-warning rule.
+include $(ROOT)/src/port/stm32/wolfssl.mk
 
 LDSCRIPT := target.ld
 # The vendor startup (startup.c) uses the CMSIS __PROGRAM_START flow:
@@ -118,7 +107,7 @@ SRCS += $(ROOT)/src/port/wolfssl_io.c
 # TLS client (3A.0 mutual-auth against openssl s_server)
 ifeq ($(ENABLE_TLS_CLIENT),1)
 CFLAGS += -DENABLE_TLS_CLIENT
-SRCS += tls_client.c
+SRCS += $(ROOT)/src/port/tls_client.c
 
 # Milestone 3A.1: set ENABLE_DHUK_KEY=1 to sign CertificateVerify with the
 # DHUK-wrapped identity key via a PK callback (identity scalar never in SW).
@@ -127,9 +116,9 @@ ifeq ($(ENABLE_DHUK_KEY),1)
 TLS_WOLFSSL_DEFS += -DENABLE_DHUK_KEY
 endif
 
-# STM32C5 HW-crypto arm for the TLS client. Same defines the ENABLE_CB_SELFTEST
-# build uses; WOLFSSL_STM32C5 also gates the C5 arm in user_settings.h. These
-# join the wolfSSL-facing flags so only wolfSSL/glue objects see them.
+# STM32C5 HW-crypto arm for the TLS client. WOLFSSL_STM32C5 also gates the C5
+# arm in user_settings.h. These join the wolfSSL-facing flags so only the
+# wolfSSL/glue objects see them.
 TLS_WOLFSSL_DEFS += -DWOLFSSL_STM32C5 -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB
 
 # STM32 DHUK/BARE port + crypto-callback dispatcher for the C5 arm.
@@ -145,112 +134,12 @@ endif
 # rules here (before "all:") would hijack the default goal.
 CFLAGS_WOLFSSL += $(TLS_WOLFSSL_DEFS)
 
-# wolfSSL source files (minimal set for TLS 1.3 client with ECC)
-WOLFSSL_SRCS := \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/aes.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha256.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha512.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/hmac.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/hash.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/kdf.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/random.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/ecc.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/asn.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/coding.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_port.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c \
-    $(WOLFSSL_ROOT)/src/ssl.c \
-    $(WOLFSSL_ROOT)/src/tls.c \
-    $(WOLFSSL_ROOT)/src/tls13.c \
-    $(WOLFSSL_ROOT)/src/internal.c \
-    $(WOLFSSL_ROOT)/src/keys.c \
-    $(WOLFSSL_ROOT)/src/wolfio.c
-
-# ChaCha20-Poly1305 (optional)
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/chacha.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/chacha20_poly1305.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/poly1305.c
-
-# RSA for certificate verification
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/rsa.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/signature.c
-
-# Support sources (logging, error strings, encrypt helpers)
-WOLFSSL_SRCS += \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/logging.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/error.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_encrypt.c
-
+# wolfSSL/wolfCrypt source set comes from the shared wolfssl.mk (included above),
+# plus the logging/error/encrypt group.
+WOLFSSL_SRCS += $(WOLFSSL_LOG_SRCS)
 SRCS += $(WOLFSSL_SRCS)
 
 endif # ENABLE_TLS
-
-# -----------------------------------------------------------------------------
-# DHUK crypto-callback self-test (wolfSSL, no TLS)
-#
-# Additive build: registers the STM32 DHUK crypto callback and runs the ECDSA /
-# AES-GCM / HMAC-SHA256 / TRNG primitives on hardware. Compiles the wolfcrypt
-# subset the self-test needs (no ssl.c/tls.c/internal.c) plus the ported
-# cb_selftest.c. The C5 crypto arm (WOLFSSL_STM32C5, STM32_CRYPTO/HASH/RNG,
-# WOLFSSL_STM32_PKA, WOLFSSL_STM32_BARE) is enabled in user_settings.h under the
-# ENABLE_CB_SELFTEST gate; WOLFSSL_DHUK + WOLF_CRYPTO_CB come from here. The
-# defines go into the shared CFLAGS so both the app and the wolfcrypt objects
-# (CFLAGS_WOLFSSL is derived from CFLAGS) see them.
-# -----------------------------------------------------------------------------
-ifeq ($(ENABLE_CB_SELFTEST),1)
-
-# Validate wolfSSL (with DHUK) exists
-ifeq ($(wildcard $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/stm32.c),)
-  $(error wolfSSL (with STM32C5 DHUK) not found at $(WOLFSSL_ROOT). Set WOLFSSL_ROOT to the stm32_bare worktree, e.g. WOLFSSL_ROOT=$(ROOT)/../wolfssl-c5tls)
-endif
-
-CB_SELFTEST_DEFS := -DENABLE_CB_SELFTEST -DWOLFSSL_USER_SETTINGS \
-    -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DWOLFSSL_STM32C5
-CFLAGS += $(CB_SELFTEST_DEFS)
-CFLAGS += -I$(WOLFSSL_ROOT)
-
-# CFLAGS_WOLFSSL is captured (:=) before this block, so it lacks the self-test
-# defines. Append them so the wolfcrypt objects activate the C5 DHUK config.
-CFLAGS_WOLFSSL += $(CB_SELFTEST_DEFS) -I$(WOLFSSL_ROOT)
-
-# Ported self-test entry point
-SRCS += cb_selftest.c
-
-# wolfcrypt subset for the four primitives + the STM32 DHUK port. No
-# ssl.c/tls.c/internal.c -- the self-test is wolfcrypt-only.
-CB_WOLFSSL_SRCS := \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/aes.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha256.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sha512.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/hmac.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/hash.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/random.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/ecc.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/asn.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/coding.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_port.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/memory.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wolfmath.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_int.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_c32.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/sp_cortexm.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/logging.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/error.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/wc_encrypt.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/cryptocb.c \
-    $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/stm32.c
-
-SRCS += $(CB_WOLFSSL_SRCS)
-
-endif # ENABLE_CB_SELFTEST
 
 # -----------------------------------------------------------------------------
 # HTTPS web server (requires TLS) - uses existing wolfIP httpd
@@ -322,9 +211,7 @@ app.bin: app.elf
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# wolfSSL objects use relaxed warnings
-$(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
-	$(CC) $(CFLAGS_WOLFSSL) -DWOLFSSL_USER_SETTINGS -I$(WOLFSSL_ROOT) -c $< -o $@
+# The $(WOLFSSL_ROOT)/%.o relaxed-warning rule comes from wolfssl.mk.
 
 # The two wolfIP<->wolfSSL glue files live in the app/port tree but include
 # wolfssl/ssl.h, so they need the wolfSSL-facing defines (WOLFSSL_WOLFIP /
@@ -332,8 +219,9 @@ $(WOLFSSL_ROOT)/%.o: $(WOLFSSL_ROOT)/%.c
 # defined only when ENABLE_TLS is on, and sit after "all:" so they do not
 # hijack the default goal.
 ifeq ($(ENABLE_TLS),1)
-tls_client.o: tls_client.c
-	$(CC) $(CFLAGS) $(TLS_WOLFSSL_DEFS) -c $< -o $@
+# Shared TLS client: mutual auth (client cert from tls_certs.h) + forced suite.
+$(ROOT)/src/port/tls_client.o: $(ROOT)/src/port/tls_client.c
+	$(CC) $(CFLAGS) $(TLS_WOLFSSL_DEFS) -DTLS_CLIENT_MUTUAL_AUTH -DTLS_CLIENT_CIPHER='"TLS_AES_128_GCM_SHA256"' -c $< -o $@
 
 $(ROOT)/src/port/wolfssl_io.o: $(ROOT)/src/port/wolfssl_io.c
 	$(CC) $(CFLAGS) $(TLS_WOLFSSL_DEFS) -c $< -o $@
@@ -350,10 +238,6 @@ ifeq ($(ENABLE_TLS),1)
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/*.o
 	rm -f $(WOLFSSL_ROOT)/wolfcrypt/test/*.o
 	rm -f $(WOLFSSL_ROOT)/src/*.o
-endif
-ifeq ($(ENABLE_CB_SELFTEST),1)
-	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/*.o
-	rm -f $(WOLFSSL_ROOT)/wolfcrypt/src/port/st/*.o
 endif
 ifeq ($(ENABLE_MQTT_BROKER),1)
 	rm -f $(WOLFMQTT_ROOT)/src/*.o
