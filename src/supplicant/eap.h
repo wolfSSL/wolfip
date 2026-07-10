@@ -35,6 +35,7 @@
 #define EAPOL_TYPE_EAPOL_START      0x01U
 #define EAPOL_TYPE_EAPOL_LOGOFF     0x02U
 #define EAPOL_TYPE_KEY_DESCRIPTOR   0x03U   /* same as EAPOL-Key */
+#define EAPOL_TYPE_MKA              0x05U   /* EAPOL-MKA (802.1X-2010)  */
 
 #define EAP_CODE_REQUEST            0x01U
 #define EAP_CODE_RESPONSE           0x02U

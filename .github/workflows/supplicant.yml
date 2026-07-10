@@ -9,6 +9,8 @@ on:
       - 'src/supplicant/**'
       - 'tools/hostapd/**'
       - 'tools/wolfsta/**'
+      - 'src/macsec/**'
+      - 'tools/macsec/**'
       - 'Makefile'
       - '.github/workflows/supplicant.yml'
   pull_request:
@@ -17,6 +19,8 @@ on:
       - 'src/supplicant/**'
       - 'tools/hostapd/**'
       - 'tools/wolfsta/**'
+      - 'src/macsec/**'
+      - 'tools/macsec/**'
       - 'Makefile'
       - '.github/workflows/supplicant.yml'
 
@@ -30,6 +34,9 @@ env:
   # never cache-hit). Bump to refresh.
   WOLFSSL_REF: v5.9.1-stable
   WOLFSSL_PREFIX: /home/runner/wolfssl-install
+  # Build the whole suite with MACsec/MKA on so every object is compiled once
+  # with a consistent flag set (CMAC/GCM/AES-key-wrap come from --enable-all).
+  WOLFIP_ENABLE_MACSEC: 1
 
 jobs:
   supplicant:
@@ -45,7 +52,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool pkg-config \
-                                  hostapd dnsmasq socat iw rfkill \
+                                  hostapd wpasupplicant dnsmasq socat iw rfkill tcpdump \
                                   libnl-3-dev libnl-genl-3-dev
           # mac80211_hwsim lives in linux-modules-extra; best-effort.
           sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
@@ -80,8 +87,10 @@ jobs:
       # against the cached wolfSSL (no sudo install needed; rpath is absolute
       # so the binaries resolve the lib even under sudo).
 
-      # Hard gate: in-process unit tests (no root / no radio).
-      - name: Supplicant unit tests
+      # Hard gate: in-process unit tests (no root / no radio). With
+      # WOLFIP_ENABLE_MACSEC=1 in env this also builds and runs the MACsec/MKA
+      # crypto, SecY, SA and protocol tests.
+      - name: Supplicant + MACsec unit tests
         run: make supplicant-tests
 
       # PEAP/MSCHAPv2 is off by default (pulls in deprecated MD4 + DES); the
@@ -147,6 +156,53 @@ jobs:
         run: |
           sudo ./tools/hostapd/run_hwsim_wolfsta_dhcp_test.sh
           sudo ./tools/hostapd/run_hwsim_wolfsta_dhcp_psk_test.sh
+
+      # Best-effort: MACsec interop needs the kernel `macsec` module (in-tree
+      # in mainline, but not loadable on every hosted runner). Probe and skip
+      # cleanly. Unlike hwsim this needs no radio, only veth.
+      - name: Probe kernel macsec
+        id: macsec
+        run: |
+          if sudo modprobe macsec 2>/dev/null; then
+            echo "available=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::kernel macsec module unavailable; skipping macsec interop"
+          fi
+
+      - name: Build MACsec SecY interop tool
+        if: steps.macsec.outputs.available == 'yes'
+        run: make build/macsec-probe
+
+      # SecY framing vs the kernel MACsec module, both directions (static SAK).
+      - name: MACsec SecY kernel interop
+        if: steps.macsec.outputs.available == 'yes'
+        run: sudo bash tools/macsec/run_macsec_static_test.sh
+
+      # NOTE: MKA control-plane interop (run_macsec_mka_test.sh /
+      # run_macsec_mka_dataplane_test.sh) needs the wolfDen wolfMKA library
+      # (WOLFMKA_DIR) with the L2-ICV interop fix (wolfSSL/wolfDen PR #2); it
+      # returns to CI once that library is available upstream.
+
+      # Hard gate: the in-process unit tests rebuilt with AddressSanitizer +
+      # UBSan, to catch memory / undefined-behaviour bugs in the parsers.
+      # Runs from a clean tree (sanitizer objects must not be reused); placed
+      # last so it does not disturb the normal-build interop steps above.
+      - name: Supplicant + MACsec unit tests (ASan + UBSan)
+        run: |
+          sudo sysctl vm.mmap_rnd_bits=28 || true
+          make clean
+          make supplicant-tests-sanitize
+
+      # Hard gate: short libFuzzer smoke over the SecY receive path. Needs
+      # clang for -fsanitize=fuzzer.
+      - name: MACsec SecY fuzz smoke
+        run: |
+          if ! command -v clang >/dev/null; then
+            echo "::warning::clang unavailable; skipping fuzz smoke"; exit 0
+          fi
+          make macsec-fuzz
+          ./build/fuzz-macsec-secy -max_total_time=30 -rss_limit_mb=4096
 
       # NOTE: P-521 hunt-and-peck (run_hwsim_sae_softmac_g21_test.sh) has an
       # open hostapd interop gap - kept as a make target, not yet in CI.

@@ -284,6 +284,7 @@ WOLFIP_ENABLE_PEAP_MSCHAPV2 ?= 0
 WOLFIP_ENABLE_SAE           ?= 1
 WOLFIP_ENABLE_SAE_H2E       ?= 1
 WOLFIP_ENABLE_SAE_HNP       ?= 1
+WOLFIP_ENABLE_MACSEC        ?= 0
 
 ifneq ($(WOLFSSL_PREFIX),)
 WOLFSSL_CFLAGS := -I$(WOLFSSL_PREFIX)/include
@@ -335,7 +336,40 @@ $(error WOLFIP_ENABLE_SAE_H2E=1 requires WOLFIP_ENABLE_SAE=1)
 endif
 endif
 
-SUPPLICANT_OBJ := $(patsubst src/%.c,build/%.o,$(SUPPLICANT_SRC))
+# MACsec / MKA (IEEE 802.1AE + 802.1X-2010). Standalone module under
+# src/macsec/ that reuses the supplicant crypto layer (AES key wrap, secure
+# zero). Requires wolfSSL built with --enable-cmac (WOLFSSL_CMAC).
+# The software SecY (macsec_crypto/macsec_secy/macsec_sa) is always built with
+# MACsec. The MKA control plane is provided by the wolfDen wolfMKA library
+# (https://github.com/wolfSSL/wolfDen/tree/main/mka) from a local clone (not a
+# submodule): set WOLFMKA_DIR to build it. Without it, only the SecY data plane
+# (usable with a static SAK) is built.
+WOLFMKA_DIR         ?=
+WOLFMKA_OBJ         :=
+WOLFIP_HAVE_WOLFMKA :=
+
+ifeq ($(WOLFIP_ENABLE_MACSEC),1)
+SUPPLICANT_SRC += src/macsec/macsec_crypto.c \
+                  src/macsec/macsec_secy.c \
+                  src/macsec/macsec_sa.c
+CFLAGS += -DWOLFIP_ENABLE_MACSEC=1 -Isrc/macsec
+ifneq ($(WOLFMKA_DIR),)
+ifeq ($(wildcard $(WOLFMKA_DIR)/include/wolfmka/mka_kay.h),)
+$(error WOLFMKA_DIR is set but does not point at a wolfMKA clone (got '$(WOLFMKA_DIR)'))
+endif
+WOLFIP_HAVE_WOLFMKA := 1
+SUPPLICANT_SRC += src/macsec/mka_wolfmka.c
+# WOLFMKA_ICV_L2_ADDR makes wolfMKA include the L2 addresses (DA||SA||EtherType)
+# in the MKA ICV, matching wpa_supplicant / the Linux kernel (802.1X-2010
+# 11.11.3); required to interoperate with them (wolfSSL/wolfDen PR #2).
+CFLAGS += -DWOLFIP_MKA_WOLFMKA=1 -DWOLFMKA_ICV_L2_ADDR -I$(WOLFMKA_DIR)/include
+# wolfMKA library objects live outside src/, compiled to build/wolfmka/.
+WOLFMKA_OBJ := build/wolfmka/mka_crypto.o build/wolfmka/mka_kay.o \
+               build/wolfmka/mka_pdu.o build/wolfmka/mka_status.o
+endif
+endif
+
+SUPPLICANT_OBJ := $(patsubst src/%.c,build/%.o,$(SUPPLICANT_SRC)) $(WOLFMKA_OBJ)
 
 # Header-dependency tracking for the supplicant + its host glue. Without
 # this, editing a supplicant header (e.g. a struct in supplicant.h) would
@@ -350,6 +384,17 @@ build/supplicant/%.o: src/supplicant/%.c
 	@mkdir -p `dirname $@` || true
 	@echo "[CC] $<"
 	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) $(NL80211_CFLAGS) -MMD -MP -Isrc/supplicant -c $< -o $@
+
+build/macsec/%.o: src/macsec/%.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) -MMD -MP -Isrc/supplicant -Isrc/macsec -c $< -o $@
+
+# wolfMKA library sources from the local clone ($(WOLFMKA_DIR)/src).
+build/wolfmka/%.o: $(WOLFMKA_DIR)/src/%.c
+	@mkdir -p build/wolfmka || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) -I$(WOLFMKA_DIR)/include -c $< -o $@
 
 # WOLFSSL_LIBS / WOLFSSL_CFLAGS may already be set above when
 # WOLFSSL_PREFIX is provided. Otherwise default to pkg-config detection
@@ -367,6 +412,59 @@ endif
 build/test-wpa-crypto: $(SUPPLICANT_OBJ) build/supplicant/test_wpa_crypto.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-macsec-crypto: $(SUPPLICANT_OBJ) build/macsec/test_macsec_crypto.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-macsec-secy: $(SUPPLICANT_OBJ) build/macsec/test_macsec_secy.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+build/test-macsec-sa: $(SUPPLICANT_OBJ) build/macsec/test_macsec_sa.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+# macsec_probe: byte-level SecY cross-check tool used by the kernel-macsec
+# interop scripts (tools/macsec/run_macsec_static_test.sh).
+build/tools/macsec_probe.o: tools/macsec/macsec_probe.c
+	@mkdir -p build/tools || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) -Isrc/supplicant -Isrc/macsec -c $< -o $@
+
+build/macsec-probe: $(SUPPLICANT_OBJ) build/tools/macsec_probe.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+# macsec_sta: AF_PACKET host harness that runs the wolfMKA participant for
+# interop against wpa_supplicant (run_macsec_mka_test.sh). Linux only; requires
+# WOLFMKA_DIR (the wolfMKA library provides the MKA control plane).
+build/tools/macsec_sta.o: tools/macsec/macsec_sta.c
+	@test -n "$(WOLFMKA_DIR)" || { echo "macsec-sta requires WOLFMKA_DIR=<wolfMKA clone>"; exit 1; }
+	@mkdir -p build/tools || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) $(WOLFSSL_CFLAGS) -Isrc/supplicant -Isrc/macsec -I$(WOLFMKA_DIR)/include -c $< -o $@
+
+build/macsec-sta: $(SUPPLICANT_OBJ) build/tools/macsec_sta.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(WOLFSSL_LIBS) $(END_GROUP)
+
+# libFuzzer harness for the network-facing SecY receive path. Needs clang
+# (-fsanitize=fuzzer); the macsec sources are compiled straight into the
+# harness so the instrumentation is consistent. Not built by default. Requires
+# a CMAC-enabled wolfSSL (WOLFSSL_CFLAGS/LIBS).
+FUZZ_CC    ?= clang
+FUZZ_FLAGS ?= -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -g -O1
+FUZZ_MACSEC_SRC := src/macsec/macsec_crypto.c src/macsec/macsec_secy.c \
+                   src/macsec/macsec_sa.c src/supplicant/wpa_crypto.c
+
+build/fuzz-macsec-secy: src/macsec/fuzz_macsec_secy.c $(FUZZ_MACSEC_SRC)
+	@mkdir -p build || true
+	@echo "[FUZZ] $@"
+	@$(FUZZ_CC) $(FUZZ_FLAGS) $(WOLFSSL_CFLAGS) -Isrc/supplicant -Isrc/macsec \
+		$(^) -o $@ $(WOLFSSL_LIBS)
+
+macsec-fuzz: build/fuzz-macsec-secy
 
 build/test-supplicant-4way: $(SUPPLICANT_OBJ) build/supplicant/test_supplicant_4way.o
 	@echo "[LD] $@"
@@ -535,9 +633,22 @@ endif
 ifeq ($(WOLFIP_ENABLE_SAE),1)
 SUPPLICANT_TEST_BINS += build/test-sae-crypto build/test-supplicant-sae
 endif
+ifeq ($(WOLFIP_ENABLE_MACSEC),1)
+SUPPLICANT_TEST_BINS += build/test-macsec-crypto build/test-macsec-secy \
+                        build/test-macsec-sa
+endif
 
 supplicant-tests: $(SUPPLICANT_TEST_BINS)
 	@for t in $(SUPPLICANT_TEST_BINS); do echo "==> $$t"; $$t || exit 1; done
+
+# The same in-process unit tests built with AddressSanitizer + UBSan, to catch
+# memory / undefined-behaviour bugs in the parsers. Target-specific flags flow
+# to the object + link rules of the prerequisite bins. Run from a clean tree
+# (sanitizer objects must not be reused by a normal build).
+supplicant-tests-sanitize: CFLAGS  += -fsanitize=address,undefined \
+                                      -fno-sanitize-recover=all -g
+supplicant-tests-sanitize: LDFLAGS += -fsanitize=address,undefined
+supplicant-tests-sanitize: supplicant-tests
 
 # Real-authenticator interop tests. Both require hostapd installed and
 # root (veth pair + AF_PACKET raw socket). Not part of supplicant-tests

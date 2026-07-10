@@ -48,6 +48,18 @@
 #endif
 #endif
 
+/* MACsec / MKA (IEEE 802.1AE + 802.1X-2010) needs AES-CMAC for the KDF and
+ * MKPDU ICV, AES-GCM for the SecY data plane, and RFC 3394 AES key wrap for
+ * the SAK. */
+#if defined(WOLFIP_ENABLE_MACSEC) && WOLFIP_ENABLE_MACSEC
+#if !defined(WOLFSSL_CMAC) || !defined(HAVE_AESGCM) \
+    || !defined(HAVE_AES_KEYWRAP)
+#warning "wolfIP MACsec disabled (needs WOLFSSL_CMAC + HAVE_AESGCM + HAVE_AES_KEYWRAP)"
+#undef  WOLFIP_ENABLE_MACSEC
+#define WOLFIP_ENABLE_MACSEC 0
+#endif
+#endif
+
 /* WPA2-PSK is the unconditional baseline and cannot be turned off: the
  * 4-way handshake needs AES (CCMP / key-wrap / CMAC), HMAC, SHA-1,
  * SHA-256, PBKDF2, and RFC 3394 AES key wrap. */
