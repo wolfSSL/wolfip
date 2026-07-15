@@ -16,7 +16,7 @@
 
 /* Helper: generate a new sender index.
  * Per spec 5.4.2: "Ii (sender index 4 bytes) is generated randomly (p4)
- * p^n represents a random bitstring of length n bytes.
+ * p^n represents a random bitstring of length n bytes."
  * */
 static uint32_t wg_new_index(struct wg_device *dev)
 {
@@ -65,7 +65,7 @@ void wg_noise_handshake_init(struct wg_handshake *hs,
                              const uint8_t *preshared_key,
                              WC_RNG *rng)
 {
-    /* Save PSK before memset — preshared_key may alias hs->preshared_key */
+    /* Save PSK before memset, preshared_key may alias hs->preshared_key */
     uint8_t psk_buf[WG_SYMMETRIC_KEY_LEN];
     if (preshared_key != NULL)
         memcpy(psk_buf, preshared_key, WG_SYMMETRIC_KEY_LEN);

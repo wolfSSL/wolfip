@@ -1079,21 +1079,6 @@ test-wolfguard-loopback-ubsan: CFLAGS+=-fsanitize=undefined -fno-sanitize-recove
 test-wolfguard-loopback-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
 test-wolfguard-loopback-ubsan: clean-test-wolfguard-loopback build/test/test-wolfguard-loopback
 
-# wolfGuard benchmark
-bench-wolfguard: build/test/bench-wolfguard
-
-build/test/bench-wolfguard: src/test/bench_wolfguard.c
-	@mkdir -p build/test/
-	@echo "[CC] bench_wolfguard.c"
-	@$(CC) $(CFLAGS) -O2 $(WOLFGUARD_CFLAGS) \
-		-c src/test/bench_wolfguard.c -o build/test/bench_wolfguard.o
-	@echo "[LD] $@"
-	@$(CC) build/test/bench_wolfguard.o -o $@ \
-		$(LDFLAGS) -lwolfssl
-
-clean-bench-wolfguard:
-	@rm -f build/test/bench-wolfguard build/test/bench_wolfguard.o
-
 # wolfGuard interop test (wolfIP <-> kernel wolfGuard via TUN)
 test-wolfguard-interop: build/test/test-wolfguard-interop
 
@@ -1117,7 +1102,6 @@ clean-test-wolfguard-interop:
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \
         clean-test-wolfguard-loopback \
-        bench-wolfguard clean-bench-wolfguard \
         test-wolfguard-interop clean-test-wolfguard-interop
 
 cppcheck:

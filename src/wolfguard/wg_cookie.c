@@ -20,7 +20,6 @@
  * message_mac1_key = Hash("mac1----" || device_public_key)
  * cookie_encryption_key = Hash("cookie--" || device_public_key)
  * */
-
 void wg_cookie_checker_init(struct wg_cookie_checker *checker,
                             const uint8_t *device_public_key)
 {
@@ -43,7 +42,6 @@ void wg_cookie_checker_init(struct wg_cookie_checker *checker,
  *
  * Keys are derived from the remote peer's public key.
  * */
-
 void wg_cookie_init(struct wg_cookie *cookie,
                     const uint8_t *peer_public_key)
 {
@@ -64,7 +62,6 @@ void wg_cookie_init(struct wg_cookie *cookie,
  * mac1 = Mac(message_mac1_key, msg[0..mac_offset))
  * mac2 = Mac(cookie, msg[0..mac_offset+16))  if cookie is valid
  * */
-
 int wg_cookie_add_macs(struct wg_peer *peer, void *msg, size_t msg_len,
                        size_t mac_offset, uint64_t now)
 {
@@ -107,7 +104,6 @@ int wg_cookie_add_macs(struct wg_peer *peer, void *msg, size_t msg_len,
 /*
  * Validate mac1 (and optionally mac2) on incoming handshake message
  * */
-
 enum wg_cookie_mac_state wg_cookie_validate(
     struct wg_cookie_checker *checker, void *msg, size_t msg_len,
     size_t mac_offset, uint32_t src_ip, uint16_t src_port, uint64_t now)
@@ -167,7 +163,6 @@ enum wg_cookie_mac_state wg_cookie_validate(
 /*
  * Create cookie reply message
  * */
-
 int wg_cookie_create_reply(struct wg_device *dev, struct wg_msg_cookie *reply,
                            const void *triggering_msg, size_t mac_offset,
                            uint32_t sender_index,
@@ -235,7 +230,6 @@ int wg_cookie_create_reply(struct wg_device *dev, struct wg_msg_cookie *reply,
 /*
  * Consume cookie reply message
  * */
-
 int wg_cookie_consume_reply(struct wg_peer *peer, struct wg_msg_cookie *msg,
                             uint64_t now)
 {

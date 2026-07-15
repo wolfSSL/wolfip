@@ -989,6 +989,214 @@ START_TEST(test_multi_peer)
 END_TEST
 
 /*
+ * MTU boundary sweep
+ *
+ * Sweeps the inner UDP payload across the wg0 MTU in 1-byte
+ * steps.  wolfguard_init() sets wg0 MTU = LINK_MTU - 60, and IPv4(20)+UDP(8)
+ * headers eat 28 more, so payloads up to (LINK_MTU - 88) fit and larger ones
+ * exceed the tunnel MTU.
+ */
+START_TEST(test_mtu_boundary_sweep)
+{
+    uint64_t now;
+    int app_sock_a, app_sock_b;
+    struct wolfIP_sockaddr_in bind_addr, dst_addr;
+    uint8_t sndbuf[LINK_MTU];
+    const int wg0_mtu = LINK_MTU - 60;      /* set by wolfguard_init() */
+    const int max_payload = wg0_mtu - 28;   /* wg0 MTU minus IPv4(20)+UDP(8) */
+    const int anchor = 1000;                /* known-deliverable (cf. flood) */
+    const int top = max_payload + 16;       /* just above the wg0 MTU */
+    int max_delivered = -1;
+    int anchor_delivered = 0;
+    int p, i, ret;
+
+    setup_loopback_stacks(&now);
+
+    /* B listens on 7777, A binds a source port on 9999 */
+    app_sock_b = wolfIP_sock_socket(&stack_b, AF_INET, SOCK_DGRAM, 0);
+    ck_assert_int_ge(app_sock_b, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(7777);
+    bind_addr.sin_addr.s_addr = ee32(MAKE_IP4(10,0,0,2));
+    ck_assert_int_ge(wolfIP_sock_bind(&stack_b, app_sock_b,
+                     (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+    wolfIP_register_callback(&stack_b, app_sock_b, app_udp_callback, &stack_b);
+
+    app_sock_a = wolfIP_sock_socket(&stack_a, AF_INET, SOCK_DGRAM, 0);
+    ck_assert_int_ge(app_sock_a, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(9999);
+    bind_addr.sin_addr.s_addr = ee32(MAKE_IP4(10,0,0,1));
+    ck_assert_int_ge(wolfIP_sock_bind(&stack_a, app_sock_a,
+                     (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    memset(&dst_addr, 0, sizeof(dst_addr));
+    dst_addr.sin_family = AF_INET;
+    dst_addr.sin_port = ee16(7777);
+    dst_addr.sin_addr.s_addr = ee32(MAKE_IP4(10,0,0,2));
+
+    /* Bring the session up with a small packet so the sweep tests
+     * the pure data-plane MTU path, not a handshake+size interaction. */
+    for (i = 0; i < 64; i++)
+        sndbuf[i] = (uint8_t)(i & 0xff);
+    ret = wolfIP_sock_sendto(&stack_a, app_sock_a, sndbuf, 64, 0,
+                             (const struct wolfIP_sockaddr *)&dst_addr,
+                             sizeof(dst_addr));
+    ck_assert_int_ge(ret, 0);
+    pump_stacks(&now, 200, 10);
+    ck_assert_int_gt(app_recv_count, 0);
+    ck_assert_ptr_nonnull(wg_dev_a.peers[0].keypairs.current);
+
+    /* Sweep the inner payload up to just past the tunnel MTU, one byte at a
+     * time.  The loopback ring caps the outer frame below the wg0 MTU, so we
+     * don't hardcode where delivery stops; instead we require that every
+     * delivered packet is byte-exact and that delivery never exceeds the wg0
+     * MTU.  Timers are frozen (step_ms = 0) so a single session persists, a
+     * live clock would trip the spec's stale-receive rekey, since B is a pure
+     * sink that never replies. */
+    for (p = anchor; p <= top; p++) {
+        for (i = 0; i < p; i++)
+            sndbuf[i] = (uint8_t)((i * 31 + p) & 0xff);
+
+        app_recv_count = 0;
+        app_recv_len = 0;
+
+        /* sendto may reject an over-MTU payload (no fragmentation), so
+         * either a rejection here or a silent drop downstream is acceptable. */
+        (void)wolfIP_sock_sendto(&stack_a, app_sock_a, sndbuf, p, 0,
+                                 (const struct wolfIP_sockaddr *)&dst_addr,
+                                 sizeof(dst_addr));
+        pump_stacks(&now, 20, 0);
+
+        if (app_recv_count > 0) {
+            /* Any delivered packet must be intact: exact length and bytes.
+             * This is what catches padding / truncation / buffer bugs. */
+            ck_assert_int_eq(app_recv_len, p);
+            for (i = 0; i < p; i++)
+                ck_assert_uint_eq(app_recv_buf[i],
+                                  (uint8_t)((i * 31 + p) & 0xff));
+            if (p == anchor)
+                anchor_delivered = 1;
+            max_delivered = p;
+        }
+    }
+
+    /* ~1 KB packets flow intact, and delivery never exceeds the wg0 MTU
+     * (an over-MTU inner packet is dropped, not truncated, since wolfIP has no
+     * fragmentation, a larger max_delivered would mean a buffer overrun). */
+    ck_assert_int_eq(anchor_delivered, 1);
+    ck_assert_int_ge(max_delivered, anchor);
+    ck_assert_int_le(max_delivered, max_payload);
+
+    wolfIP_sock_close(&stack_a, app_sock_a);
+    wolfIP_sock_close(&stack_b, app_sock_b);
+    teardown_stacks();
+}
+END_TEST
+
+/*
+ * Sustained flood
+ * This test floods 256 packets to stress the transport path. Each packet
+ * is uniquely tagged, exercising the replay-counter sliding window implemented
+ * by wg_counter_validate().
+ * */
+START_TEST(test_sustained_flood)
+{
+    uint64_t now;
+    int app_sock_a, app_sock_b;
+    struct wolfIP_sockaddr_in bind_addr, dst_addr;
+    uint8_t sndbuf[1024];
+    const int N = 256;              /* crosses several replay-bitmap words */
+    const int payload_len = 1000;
+    int i, j, ret, delivered = 0;
+
+    setup_loopback_stacks(&now);
+
+    app_sock_b = wolfIP_sock_socket(&stack_b, AF_INET, SOCK_DGRAM, 0);
+    ck_assert_int_ge(app_sock_b, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(7777);
+    bind_addr.sin_addr.s_addr = ee32(MAKE_IP4(10,0,0,2));
+    ck_assert_int_ge(wolfIP_sock_bind(&stack_b, app_sock_b,
+                     (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+    wolfIP_register_callback(&stack_b, app_sock_b, app_udp_callback, &stack_b);
+
+    app_sock_a = wolfIP_sock_socket(&stack_a, AF_INET, SOCK_DGRAM, 0);
+    ck_assert_int_ge(app_sock_a, 0);
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = ee16(9999);
+    bind_addr.sin_addr.s_addr = ee32(MAKE_IP4(10,0,0,1));
+    ck_assert_int_ge(wolfIP_sock_bind(&stack_a, app_sock_a,
+                     (struct wolfIP_sockaddr *)&bind_addr, sizeof(bind_addr)), 0);
+
+    memset(&dst_addr, 0, sizeof(dst_addr));
+    dst_addr.sin_family = AF_INET;
+    dst_addr.sin_port = ee16(7777);
+    dst_addr.sin_addr.s_addr = ee32(MAKE_IP4(10,0,0,2));
+
+    /* Establish the session before flooding. */
+    for (j = 0; j < payload_len; j++)
+        sndbuf[j] = (uint8_t)(j & 0xff);
+    ret = wolfIP_sock_sendto(&stack_a, app_sock_a, sndbuf, payload_len, 0,
+                             (const struct wolfIP_sockaddr *)&dst_addr,
+                             sizeof(dst_addr));
+    ck_assert_int_ge(ret, 0);
+    pump_stacks(&now, 200, 10);
+    ck_assert_int_gt(app_recv_count, 0);
+    ck_assert_ptr_nonnull(wg_dev_a.peers[0].keypairs.current);
+
+    /* This is the flood logic, where each
+     * packet carries its sequence number in the first two bytes so
+     * delivery, ordering, and integrity are checked per packet. */
+    for (i = 0; i < N; i++) {
+        for (j = 0; j < payload_len; j++)
+            sndbuf[j] = (uint8_t)((j + i) & 0xff);
+        sndbuf[0] = (uint8_t)(i & 0xff);
+        sndbuf[1] = (uint8_t)((i >> 8) & 0xff);
+
+        app_recv_count = 0;
+        app_recv_len = 0;
+
+        ret = wolfIP_sock_sendto(&stack_a, app_sock_a, sndbuf, payload_len, 0,
+                                 (const struct wolfIP_sockaddr *)&dst_addr,
+                                 sizeof(dst_addr));
+        ck_assert_int_ge(ret, 0);
+        /* Freeze timers (step_ms = 0): keeps a single session for the whole
+         * flood so the replay counter advances monotonically.  With a live
+         * clock the spec's stale-receive rekey would fire (B never replies),
+         * resetting the counter mid-flood. */
+        pump_stacks(&now, 16, 0);
+
+        if (app_recv_count > 0) {
+            ck_assert_int_eq(app_recv_len, payload_len);
+            ck_assert_uint_eq(app_recv_buf[0], (uint8_t)(i & 0xff));
+            ck_assert_uint_eq(app_recv_buf[1], (uint8_t)((i >> 8) & 0xff));
+            delivered++;
+        }
+    }
+
+    /* Nearly all delivered (small slack for pump-timing stragglers). */
+    ck_assert_int_ge(delivered, N - 4);
+
+    /* Receiver's replay window advanced across the whole flood, crossing many
+     * 32-bit bitmap words in wg_counter_validate without false rejections. */
+    ck_assert_ptr_nonnull(wg_dev_b.peers[0].keypairs.current);
+    ck_assert_uint_ge(wg_dev_b.peers[0].keypairs.current->receiving_counter_max,
+                      (uint64_t)(N - 4));
+    ck_assert_uint_gt(wg_dev_a.peers[0].tx_bytes,
+                      (uint64_t)(N - 4) * (uint64_t)payload_len);
+
+    wolfIP_sock_close(&stack_a, app_sock_a);
+    wolfIP_sock_close(&stack_b, app_sock_b);
+    teardown_stacks();
+}
+END_TEST
+
+/*
  * Test suite assembly
  * */
 
@@ -1025,6 +1233,18 @@ static Suite *wolfguard_integration_suite(void)
     tc = tcase_create("multi_peer");
     tcase_set_timeout(tc, 120);
     tcase_add_test(tc, test_multi_peer);
+    suite_add_tcase(s, tc);
+
+    /* MTU boundary: 1-byte payload sweep across the wg0 MTU */
+    tc = tcase_create("mtu_boundary");
+    tcase_set_timeout(tc, 120);
+    tcase_add_test(tc, test_mtu_boundary_sweep);
+    suite_add_tcase(s, tc);
+
+    /* Sustained flood: replay-window advance under volume */
+    tc = tcase_create("flood");
+    tcase_set_timeout(tc, 120);
+    tcase_add_test(tc, test_sustained_flood);
     suite_add_tcase(s, tc);
 
     return s;

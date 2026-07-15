@@ -198,8 +198,8 @@ struct wg_keypair {
 struct wg_keypairs {
     struct wg_keypair *current;
     struct wg_keypair *previous;
-    struct wg_keypair *next;        /* Unconfirmed session for responder */
-    /* Static storage — no dynamic alloc */
+    struct wg_keypair *next;            /* Unconfirmed session for responder */
+    /* Static storage, so no dynamic alloc */
     struct wg_keypair keypair_slots[3];
 };
 

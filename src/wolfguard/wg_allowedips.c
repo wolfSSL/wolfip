@@ -16,7 +16,6 @@
 /*
  * Compute network mask from CIDR prefix length
  * */
-
 static uint32_t cidr_to_mask(uint8_t cidr)
 {
     if (cidr == 0)
@@ -29,7 +28,6 @@ static uint32_t cidr_to_mask(uint8_t cidr)
 /*
  * Insert an allowed IP entry
  * */
-
 int wg_allowedips_insert(struct wg_device *dev, uint32_t ip, uint8_t cidr,
                          uint8_t peer_idx)
 {
@@ -67,7 +65,6 @@ int wg_allowedips_insert(struct wg_device *dev, uint32_t ip, uint8_t cidr,
  *
  * Returns peer_idx or -1 if no match.
  * */
-
 int wg_allowedips_lookup(struct wg_device *dev, uint32_t ip)
 {
     int i;
@@ -94,7 +91,6 @@ int wg_allowedips_lookup(struct wg_device *dev, uint32_t ip)
 /*
  * Remove all entries for a given peer
  * */
-
 void wg_allowedips_remove_by_peer(struct wg_device *dev, uint8_t peer_idx)
 {
     int i;
