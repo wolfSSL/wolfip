@@ -94,7 +94,6 @@ switch. The pre-wired Makefile targets build and exercise it:
 ```sh
 make unit-wolfguard            # unit tests
 make test-wolfguard-loopback   # two-stack loopback integration test
-make bench-wolfguard           # micro-benchmarks
 make test-wolfguard-interop    # interop binary (driven by the script in §8)
 ```
 

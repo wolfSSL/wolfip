@@ -48,10 +48,11 @@ static int wolfguard_ll_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
     return 0;
 }
 
+
+/* This is called when wolfIP routes a packet out through wg0.
+ * We need to find the device from the ll_dev pointer and encrypt. */
 static int wolfguard_ll_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 {
-    /* This is called when wolfIP routes a packet out through wg0.
-     * We need to find the device from the ll_dev pointer and encrypt. */
     struct wg_device *dev = (struct wg_device *)ll->priv;
 
     if (dev == NULL)
@@ -61,7 +62,6 @@ static int wolfguard_ll_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 }
 
 /* UDP socket callback for incoming WireGuard messages */
-
 static void wg_udp_callback(int sock_fd, uint16_t events, void *arg)
 {
     struct wg_device *dev = (struct wg_device *)arg;

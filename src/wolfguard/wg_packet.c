@@ -49,7 +49,6 @@ static uint64_t wg_le64_decode(uint64_t v)
 /*
  * Replay counter validation (sliding window)
  * */
-
 int wg_counter_validate(struct wg_keypair *kp, uint64_t counter)
 {
     uint64_t diff;
@@ -95,7 +94,6 @@ int wg_counter_validate(struct wg_keypair *kp, uint64_t counter)
 /*
  * Pad plaintext to 16-byte multiple (WireGuard spec requirement)
  * */
-
 static size_t wg_pad_len(size_t len)
 {
     size_t padded = len;
@@ -105,9 +103,10 @@ static size_t wg_pad_len(size_t len)
 }
 
 /*
- * Find keypair by receiver index (linear scan — fine for small N)
+ * Find keypair by receiver index.
+ * Linear scan, which is fine for small N (WOLFGUARD_MAX_PEERS
+ * defaults to 8).
  * */
-
 static struct wg_peer *wg_find_peer_by_index(struct wg_device *dev,
                                              uint32_t receiver_index,
                                              struct wg_keypair **kp_out)
@@ -150,7 +149,6 @@ static struct wg_peer *wg_find_peer_by_index(struct wg_device *dev,
  * says "after queuing the packet").  Dropping new arrivals is simpler
  * and avoids memmove/ring-buffer overhead on an embedded target.
  * */
-
 static void wg_stage_packet(struct wg_peer *peer,
                             const uint8_t *packet, size_t len)
 {
@@ -168,7 +166,6 @@ static void wg_stage_packet(struct wg_peer *peer,
 /*
  * TX: encrypt and send a plaintext IP packet as WG data message
  * */
-
 int wg_packet_send(struct wg_device *dev, struct wg_peer *peer,
                    const uint8_t *plaintext, size_t len)
 {
@@ -182,7 +179,9 @@ int wg_packet_send(struct wg_device *dev, struct wg_peer *peer,
 
     /* Check for valid sending keypair */
     if (kp == NULL || !kp->sending.is_valid) {
-        /* No valid session — stage packet and initiate handshake */
+        /* No valid session, so we
+         * stage packet and initiate handshake
+         */
         wg_stage_packet(peer, plaintext, len);
         if (peer->handshake.state == WG_HANDSHAKE_ZEROED) {
             struct wg_msg_initiation init_msg;
@@ -283,7 +282,6 @@ int wg_packet_send(struct wg_device *dev, struct wg_peer *peer,
 /*
  * Send staged (queued) packets after handshake completes
  * */
-
 void wg_packet_send_staged(struct wg_device *dev, struct wg_peer *peer)
 {
     int i;
@@ -315,7 +313,6 @@ void wg_packet_send_staged(struct wg_device *dev, struct wg_peer *peer)
 /*
  * Send keepalive (empty encrypted data message)
  * */
-
 int wg_packet_send_keepalive(struct wg_device *dev, struct wg_peer *peer)
 {
     struct wg_keypair *kp = peer->keypairs.current;
@@ -370,7 +367,6 @@ int wg_packet_send_keepalive(struct wg_device *dev, struct wg_peer *peer)
 /*
  * RX: handle incoming data message (type 4)
  * */
-
 static void wg_handle_data(struct wg_device *dev, const uint8_t *data,
                            size_t len, uint32_t src_ip, uint16_t src_port)
 {
@@ -464,7 +460,6 @@ out:
 /*
  * RX: handle incoming handshake initiation (type 1)
  * */
-
 static void wg_handle_initiation(struct wg_device *dev, const uint8_t *data,
                                  size_t len, uint32_t src_ip,
                                  uint16_t src_port)
@@ -550,7 +545,6 @@ static void wg_handle_initiation(struct wg_device *dev, const uint8_t *data,
 /*
  * RX: handle incoming handshake response (type 2)
  * */
-
 static void wg_handle_response(struct wg_device *dev, const uint8_t *data,
                                 size_t len, uint32_t src_ip,
                                 uint16_t src_port)
@@ -640,7 +634,6 @@ static void wg_handle_response(struct wg_device *dev, const uint8_t *data,
 /*
  * RX: handle incoming cookie reply (type 3)
  * */
-
 static void wg_handle_cookie(struct wg_device *dev, const uint8_t *data,
                               size_t len)
 {
@@ -674,7 +667,6 @@ static void wg_handle_cookie(struct wg_device *dev, const uint8_t *data,
 /*
  * RX: main dispatch, receive and dispatch incoming WG message
  * */
-
 void wg_packet_receive(struct wg_device *dev, const uint8_t *data, size_t len,
                        uint32_t src_ip, uint16_t src_port)
 {
