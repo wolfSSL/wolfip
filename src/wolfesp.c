@@ -640,20 +640,6 @@ calc_icv_hmac_end:
     return err;
 }
 
-/* From wolfcrypt misc.c */
-static int
-esp_const_memcmp(const uint8_t * vec_a, const uint8_t * vec_b, uint32_t len)
-{
-    uint32_t i = 0;
-    int      sum = 0;
-
-    for (i = 0; i < len; i++) {
-        sum |= vec_a[i] ^ vec_b[i];
-    }
-
-    return sum;
-}
-
 /**
  * Get the encryption length for an ESP payload.
  * */
@@ -1225,7 +1211,7 @@ esp_check_icv_hmac(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     icv = esp_data + esp_len - esp_sa->icv_len;
 
     /* compare the first N bits depending on truncation type. */
-    rc = esp_const_memcmp(icv, hash, esp_sa->icv_len);
+    rc = wc_ConstantCompare(icv, hash, esp_sa->icv_len);
     if (rc) {
         rc = -1;
     }
