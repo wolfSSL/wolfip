@@ -96,6 +96,30 @@ static int phy_scan(mdio_read_fn rd, struct phy_link *out)
     return -1;
 }
 
+/* Decode the LAN8740 SCSR HCDSPEED field into speed_100 / full_duplex. */
+static void phy_scsr_decode(uint16_t spd, struct phy_link *out)
+{
+    switch (spd & SCSR_SPD_MASK) {
+        case SCSR_SPD_100FD:
+            out->speed_100 = 1;
+            out->full_duplex = 1;
+            break;
+        case SCSR_SPD_100HD:
+            out->speed_100 = 1;
+            out->full_duplex = 0;
+            break;
+        case SCSR_SPD_10FD:
+            out->speed_100 = 0;
+            out->full_duplex = 1;
+            break;
+        case SCSR_SPD_10HD:
+        default:
+            out->speed_100 = 0;
+            out->full_duplex = 0;
+            break;
+    }
+}
+
 int phy_lan8740_bringup(mdio_read_fn rd, mdio_write_fn wr,
                         uint32_t link_up_timeout_ms, struct phy_link *out)
 {
@@ -157,25 +181,35 @@ int phy_lan8740_bringup(mdio_read_fn rd, mdio_write_fn wr,
     /* Resolved speed/duplex from the LAN8740 Special Control/Status reg. */
     if (rd(out->addr, REG_SCSR, &spd) != 0)
         return -1;
-    switch (spd & SCSR_SPD_MASK) {
-        case SCSR_SPD_100FD:
-            out->speed_100 = 1;
-            out->full_duplex = 1;
-            break;
-        case SCSR_SPD_100HD:
-            out->speed_100 = 1;
-            out->full_duplex = 0;
-            break;
-        case SCSR_SPD_10FD:
-            out->speed_100 = 0;
-            out->full_duplex = 1;
-            break;
-        case SCSR_SPD_10HD:
-        default:
-            out->speed_100 = 0;
-            out->full_duplex = 0;
-            break;
-    }
+    phy_scsr_decode(spd, out);
+
+    return 0;
+}
+
+int phy_lan8740_link_status(mdio_read_fn rd, uint8_t addr, struct phy_link *out)
+{
+    uint16_t reg;
+    uint16_t spd;
+
+    if (rd == NULL || out == NULL)
+        return -1;
+
+    out->link_up = 0;
+    out->speed_100 = 0;
+    out->full_duplex = 0;
+
+    /* BMSR latches link-low, so read it twice for the current state. */
+    if (rd(addr, REG_BMSR, &reg) != 0)
+        return -1;
+    if (rd(addr, REG_BMSR, &reg) != 0)
+        return -1;
+    if ((reg & BMSR_LINK) == 0)
+        return 0;                   /* link down; speed/duplex left 0 */
+    out->link_up = 1;
+
+    if (rd(addr, REG_SCSR, &spd) != 0)
+        return -1;
+    phy_scsr_decode(spd, out);
 
     return 0;
 }

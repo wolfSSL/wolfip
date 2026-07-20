@@ -29,9 +29,16 @@
 /* Full Ethernet init: EMAC/RMII/MDIO bring-up, LAN8740 link, MAC config, DMA
  * descriptor rings, and wiring of ll->poll / ll->send / ll->mac. Pass a 6-byte
  * MAC, or NULL for a locally-administered default. Returns 0 on link up, -2 if
- * the MAC/DMA are up but the PHY link is down (traffic flows once link rises),
- * negative on a fatal init error. */
+ * the MAC/DMA are up but the PHY link is down, negative on a fatal init error.
+ * On -2 the caller should poll pic32mz_eth_link_update() so the MAC picks up
+ * the negotiated speed/duplex when the link rises. */
 int pic32mz_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac);
+
+/* Poll the PHY and re-apply the MAC speed/duplex when the link state changes.
+ * Safe to call periodically (e.g. from a 1 Hz tick); it does not reset the PHY
+ * and only writes the MAC on an actual change. Returns 1 if link is up, 0 if
+ * down (or if no PHY was located at init), negative on an MDIO error. */
+int pic32mz_eth_link_update(void);
 
 /* Frames received / transmitted since init (for diagnostics). */
 void pic32mz_eth_stats(uint32_t *rx, uint32_t *tx);

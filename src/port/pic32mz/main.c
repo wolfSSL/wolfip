@@ -177,6 +177,8 @@ int main(void)
     int rc;
     int dhcp_done = 0;
     uint64_t dhcp_start = 0;
+    int last_link;
+    int lu;
 
     clock_init();
     uart_init();
@@ -201,7 +203,8 @@ int main(void)
     printf("\r\nEthernet init (LAN8740 over RMII)...\r\n");
     eth_ret = pic32mz_eth_init(ll, NULL);
     if (eth_ret == -2)
-        printf("  PHY link down at startup (check cable) - continuing\r\n");
+        printf("  PHY link down at startup (check cable) - will connect when "
+               "link comes up\r\n");
     else if (eth_ret < 0) {
         /* Fatal PHY/MDIO/EMAC failure: ll is only partially initialized, so
          * do not proceed into DHCP/socket setup. */
@@ -214,6 +217,10 @@ int main(void)
 #ifdef PIC32_ETH_TRACE
     pic32mz_eth_diag();
 #endif
+
+    /* Seed link tracking from the init result so the run loop only prints on a
+     * real change (eth_ret 0 = up, -2 = down). */
+    last_link = (eth_ret == 0) ? 1 : 0;
 
     (void)wolfIP_poll(IPStack, millis());       /* prime last_tick */
 #ifdef DHCP
@@ -274,6 +281,16 @@ int main(void)
             next_beat = now + 1000;
             tick++;
             LATHINV = LED_HEARTBEAT;
+
+            /* Poll the PHY once per second and re-apply the MAC speed/duplex on
+             * a link change (e.g. a cable inserted after boot). Report only the
+             * transitions; ignore transient MDIO errors (negative). */
+            lu = pic32mz_eth_link_update();
+            if (lu >= 0 && lu != last_link) {
+                printf(lu ? "  PHY link up\r\n" : "  PHY link down\r\n");
+                last_link = lu;
+            }
+
             if ((tick % 10u) == 0u) {
                 uint32_t rx = 0, tx = 0;
                 ip4 ip = 0, nm = 0, gw = 0;
