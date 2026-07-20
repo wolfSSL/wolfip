@@ -217,6 +217,16 @@ static uint8_t tx_buf[TX_DESC_COUNT][LINK_MTU] __attribute__((coherent, aligned(
 static int rx_idx, tx_idx;
 static uint32_t rx_count, tx_count;
 
+/* PHY link state, tracked so pic32mz_eth_link_update() can re-apply the MAC
+ * speed/duplex when the link changes after init. phy_addr / link_valid are set
+ * once the PHY is located in pic32mz_eth_init(); cur_* hold what is currently
+ * programmed into the MAC. */
+static uint8_t phy_addr;
+static uint8_t link_valid;
+static uint8_t cur_link_up;
+static uint8_t cur_speed_100;
+static uint8_t cur_full_duplex;
+
 #ifdef PIC32_ETH_TRACE
 /* First bytes of the most recent RX/TX frame, for the diagnostic dump. */
 static uint8_t dbg_rx[32], dbg_tx[32];
@@ -347,6 +357,17 @@ static void eth_default_mac(uint8_t mac[6])
     mac[5] = 0x4D;
 }
 
+/* Program the link-dependent MAC registers from a resolved PHY link. The
+ * fixed EMAC1IPGR/CLRT/MAXF are set once in pic32mz_eth_init(). */
+static void mac_apply_link(const struct phy_link *link)
+{
+    /* MAC: auto pad + CRC, duplex + speed from the PHY. */
+    EMAC1CFG2 = _EMAC1CFG2_PADENABLE_MASK | _EMAC1CFG2_CRCENABLE_MASK |
+                (link->full_duplex ? _EMAC1CFG2_FULLDPLX_MASK : 0u);
+    EMAC1IPGT = link->full_duplex ? 0x15 : 0x12;
+    EMAC1SUPPbits.SPEEDRMII = link->speed_100 ? 1 : 0;
+}
+
 int pic32mz_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 {
     struct phy_link link;
@@ -370,7 +391,9 @@ int pic32mz_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     if (ret != 0)
         return ret;
 
-    /* LAN8740 link (fills speed/duplex even if the link is currently down). */
+    /* LAN8740 link. On -2 (link down) bringup leaves link_up/speed/duplex 0;
+     * the MAC is programmed for that here and pic32mz_eth_link_update() re-
+     * applies the negotiated speed/duplex once the link comes up. */
     ret = phy_lan8740_bringup(pic32mz_mdio_read, pic32mz_mdio_write, 5000u,
                               &link);
     /* -2 means "link down" (non-fatal); anything else non-zero is a genuine
@@ -378,14 +401,19 @@ int pic32mz_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     if (ret != 0 && ret != -2)
         return ret;
 
-    /* MAC: auto pad + CRC, duplex from the PHY. */
-    EMAC1CFG2 = _EMAC1CFG2_PADENABLE_MASK | _EMAC1CFG2_CRCENABLE_MASK |
-                (link.full_duplex ? _EMAC1CFG2_FULLDPLX_MASK : 0u);
-    EMAC1IPGT = link.full_duplex ? 0x15 : 0x12;
+    /* PHY located: remember its address and current link so the run-time
+     * poller can re-apply the MAC config on a later link change. */
+    phy_addr = link.addr;
+    link_valid = 1;
+    cur_link_up = link.link_up;
+    cur_speed_100 = link.speed_100;
+    cur_full_duplex = link.full_duplex;
+
+    /* MAC: auto pad + CRC, duplex + speed from the PHY. */
+    mac_apply_link(&link);
     EMAC1IPGR = 0x0C12;
     EMAC1CLRT = 0x370F;
     EMAC1MAXF = LINK_MTU;
-    EMAC1SUPPbits.SPEEDRMII = link.speed_100 ? 1 : 0;
 
     /* Station address: EMAC1SA2/1/0 hold MAC bytes 0..5, low byte first. */
     EMAC1SA2 = ((uint32_t)addr[1] << 8) | addr[0];
@@ -410,4 +438,31 @@ int pic32mz_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     ll->priv = NULL;
 
     return ret;                                 /* 0 = link up, -2 = link down */
+}
+
+int pic32mz_eth_link_update(void)
+{
+    struct phy_link st;
+    int ret;
+
+    if (!link_valid)
+        return 0;                   /* no PHY located; nothing to poll */
+
+    ret = phy_lan8740_link_status(pic32mz_mdio_read, phy_addr, &st);
+    if (ret != 0)
+        return ret;                 /* MDIO error */
+
+    /* Re-apply the MAC only on an actual change so an established link is not
+     * disturbed. Speed/duplex only matter (and are only valid) while up. */
+    if (st.link_up != cur_link_up ||
+        (st.link_up && (st.speed_100 != cur_speed_100 ||
+                        st.full_duplex != cur_full_duplex))) {
+        if (st.link_up)
+            mac_apply_link(&st);
+        cur_link_up = st.link_up;
+        cur_speed_100 = st.speed_100;
+        cur_full_duplex = st.full_duplex;
+    }
+
+    return cur_link_up ? 1 : 0;
 }

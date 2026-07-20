@@ -42,11 +42,21 @@ struct phy_link {
 /* Scan for the PHY, reset it, advertise all modes, run auto-negotiation and
  * wait for link. Fills *out. link_up_timeout_ms bounds the link wait.
  * Returns:
- *    0  link up
- *   -2  link-down / auto-negotiation timeout (PHY responded; *out has valid
- *       default speed/duplex, so MAC bring-up may still proceed)
+ *    0  link up (out->speed_100 / out->full_duplex are the negotiated result)
+ *   -2  link-down / auto-negotiation timeout: the PHY responded and out->addr
+ *       is valid, but out->link_up / speed_100 / full_duplex are all 0 (the
+ *       speed/duplex read only happens after link is up). MAC bring-up may
+ *       still proceed; poll phy_lan8740_link_status() for a later link-up.
  *   -1  PHY/MDIO error (no PHY found, reset stuck, or MDIO access failed) */
 int phy_lan8740_bringup(mdio_read_fn rd, mdio_write_fn wr,
                         uint32_t link_up_timeout_ms, struct phy_link *out);
+
+/* Lightweight link-status refresh for a PHY already located by bringup: read
+ * BMSR and, if link is up, the SCSR speed/duplex. addr is out->addr from a
+ * prior phy_lan8740_bringup(). Does NOT reset the PHY or restart auto-neg, so
+ * it is safe to poll periodically on an established link. Fills out->link_up
+ * and, when up, out->speed_100 / out->full_duplex (both left 0 when down).
+ * Returns 0 on success, -1 on MDIO error. */
+int phy_lan8740_link_status(mdio_read_fn rd, uint8_t addr, struct phy_link *out);
 
 #endif /* PHY_LAN8740_H */

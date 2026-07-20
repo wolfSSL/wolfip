@@ -76,9 +76,10 @@
 /*** DEVCFG3 ***/
 #pragma config USERID =     0xffff
 #pragma config FMIIEN =     OFF      /* RMII (LAN8740 PHY daughter board) */
-/* FETHIO selects the default (ON) vs alternate (OFF) Ethernet I/O pins; it
- * also moves the RMII reference-clock input (EREFCLK: RB4 default / RJ11
- * alternate). Set to the board's routing for the 50 MHz PHY REFCLK. */
+/* FETHIO selects the default (ON) vs alternate (OFF) Ethernet I/O pin set. The
+ * default (ON) 144-pin set is what this board routes; it places the RMII 50 MHz
+ * reference-clock input EREFCLK on RJ11 (shared with AN4/C1INB), which
+ * pic32mz_eth_init() forces to digital via ANSELJCLR. See that function. */
 #pragma config FETHIO =     ON       /* default Ethernet I/O pin set */
 #pragma config PGL1WAY =    ON
 #pragma config PMDL1WAY =   ON
