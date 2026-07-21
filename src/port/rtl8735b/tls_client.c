@@ -92,10 +92,17 @@ static void tls_client_teardown(void)
     }
 }
 
-/* Enter a terminal state (DONE/ERROR), freeing the SSL object first. */
+/* Enter a terminal state (DONE/ERROR): free the SSL object and release the
+ * socket so the fd is not orphaned if the caller never calls
+ * tls_client_close(). tls_client_close() then guards on fd >= 0, so its own
+ * close becomes a safe no-op. */
 static void tls_client_finish(tls_client_state_t st)
 {
     tls_client_teardown();
+    if (client.fd >= 0 && client.stack) {
+        wolfIP_sock_close(client.stack, client.fd);
+        client.fd = -1;
+    }
     client.state = st;
 }
 

@@ -31,7 +31,7 @@ set(WOLFIP_PORT_DIR ${WOLFIP_ROOT}/src/port/rtl8735b)
 ### ---- header search paths (example dir first so our config.h wins) ---- ###
 list(APPEND app_example_inc_path
     ${CMAKE_CURRENT_LIST_DIR}     # user_settings.h (this example dir)
-    ${WOLFIP_PORT_DIR}            # config.h, rtl8735b_eth.h, tls_client.h
+    ${WOLFIP_PORT_DIR}            # config.h, wolfip_rtl8735b.h, tls_client.h
     ${WOLFIP_ROOT}               # wolfip.h
 )
 

@@ -189,6 +189,9 @@ int rtl8735b_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     if (ll == NULL)
         return -1;
 
+    /* Release any buffers from a prior init so a re-init does not leak. */
+    free_eth_bufs();
+
     /* Descriptor rings in reserved SRAM: TX first, RX right after. */
     tx_desc = (uint8_t *)__sram_rev_start__;
     rx_desc = tx_desc + (RTL8735B_TX_DESC_NO * ETH_TX_DESC_SIZE);
