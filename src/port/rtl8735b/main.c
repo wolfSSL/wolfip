@@ -96,6 +96,7 @@ static void echo_cb(int fd, uint16_t event, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
     int ret;
+    int sent;
 
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) && (client_fd == -1)) {
         int c = wolfIP_sock_accept(s, listen_fd, NULL, NULL);
@@ -112,9 +113,15 @@ static void echo_cb(int fd, uint16_t event, void *arg)
         do {
             ret = wolfIP_sock_recvfrom(s, client_fd, rx_buf, sizeof(rx_buf), 0,
                                        NULL, NULL);
-            if (ret > 0)
-                (void)wolfIP_sock_sendto(s, client_fd, rx_buf, (uint32_t)ret, 0,
-                                         NULL, 0);
+            if (ret > 0) {
+                /* Demo echo: no TX backpressure buffering. If the TX buffer
+                 * is full (EAGAIN) or the write is short, the excess is
+                 * dropped; log it so the drop is visible instead of silent. */
+                sent = wolfIP_sock_sendto(s, client_fd, rx_buf, (uint32_t)ret,
+                                          0, NULL, 0);
+                if (sent != ret)
+                    printf("echo: TX drop (sent=%d of %d)\r\n", sent, ret);
+            }
         } while (ret > 0);
         if (ret == 0) {
             wolfIP_sock_close(s, client_fd);
