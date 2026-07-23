@@ -1868,7 +1868,12 @@ esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
     }
 
     /* send it */
-    ll_dev->send(ll_dev, esp, ip_final_len + ETH_HEADER_LEN);
+    esp_rc = ll_dev->send(ll_dev, esp, ip_final_len + ETH_HEADER_LEN);
+    if (esp_rc != (ip_final_len + ETH_HEADER_LEN)) {
+        ESP_LOG("error: esp dev send: sent %d, expected %d\n", esp_rc,
+                (ip_final_len + ETH_HEADER_LEN));
+        return -1;
+    }
     return 0;
 }
 #endif /* WOLFIP_ESP && !WOLFESP_SRC */
