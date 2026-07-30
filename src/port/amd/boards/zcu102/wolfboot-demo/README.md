@@ -59,7 +59,7 @@ On the serial console (PS-UART0, 115200 8N1) you should see FSBL -> wolfBoot (wh
 
 The running app fetches a newer signed image over **TFTP**, writes it to the `OFP_B` SD partition, and resets. The config is version-selecting (`WOLFBOOT_NO_PARTITIONS=1`, "boot the higher version"), so no update flag is needed: wolfBoot verifies both `OFP_A` (v1) and `OFP_B` (v2), boots the higher version, and rolls back to `OFP_A` if `OFP_B` ever fails to verify.
 
-What makes this notable is *how* the app reaches the SD card: it re-uses **wolfBoot's own SD-host and disk drivers** (`$WOLFBOOT/src/sdhci.c`, `disk.c`, `gpt.c`) by compiling that same source straight into the application (the `OTA=1` path in the app `Makefile`), behind a small EL2 platform shim (`boards/zcu102/sdhci_shim.c`: register access, timer, SDMA cache maintenance). One driver, two consumers, no runtime hand-off.
+What makes this notable is *how* the app reaches the SD card: it reuses **wolfBoot's own SD-host and disk drivers** (`$WOLFBOOT/src/sdhci.c`, `disk.c`, `gpt.c`) by compiling that same source straight into the application (the `OTA=1` path in the app `Makefile`), behind a small EL2 platform shim (`boards/zcu102/sdhci_shim.c`: register access, timer, SDMA cache maintenance). One driver, two consumers, no runtime hand-off.
 
 Run it once the app is at `Ready` (the app fetches from the sender's host, so run this on a machine on the board's subnet that has a TFTP server serving `TFTP_ROOT`):
 
