@@ -171,7 +171,8 @@ _start:
     add     x0, x0, :lo12:_vectors
     msr     VBAR_ELx, x0
 
-    /* Stack pointer. After 'msr spsel, #1' this writes SP_EL3. */
+    /* Stack pointer. After 'msr spsel, #1' this writes SP_ELx (SP_EL3
+     * in EL3 builds, SP_EL2 in EL2 builds). */
     ldr     x0, =_stack_top
     mov     sp, x0
 
@@ -227,7 +228,7 @@ _hang:
  * ------------------------------------------------------------------- */
     .type el3_irq_trampoline, %function
 el3_irq_trampoline:
-    /* Save full integer register file (x0-x30) plus SPSR_EL3/ELR_EL3.
+    /* Save full integer register file (x0-x30) plus SPSR_ELx/ELR_ELx.
      * Frame is 18 * 16 = 288 bytes (16-byte aligned). Callee-saved
      * x19-x28 must be preserved too: irq_dispatch is an ordinary C
      * function and may clobber them, while the interrupted code
@@ -250,7 +251,7 @@ el3_irq_trampoline:
     stp     x28, x29, [sp, #(14 * 16)]
     str     x30,      [sp, #(15 * 16)]
     /* Snapshot exception return state in case irq_dispatch (or any
-     * nested exception inside it) clobbers SPSR_EL3 / ELR_EL3. */
+     * nested exception inside it) clobbers SPSR_ELx / ELR_ELx. */
     mrs     x0,  SPSR_ELx
     mrs     x1,  ELR_ELx
     stp     x0,  x1,  [sp, #(16 * 16)]
@@ -292,7 +293,7 @@ irq_disable:
     ret
 
 /* ---------------------------------------------------------------------
- * Synchronous exception handler - print ESR_EL3 / ELR_EL3 / FAR_EL3
+ * Synchronous exception handler - print ESR_ELx / ELR_ELx / FAR_ELx
  * then hang. Anything that previously fell to _hang silently (alignment
  * fault, translation fault, undefined instruction) now produces a
  * UART dump.
