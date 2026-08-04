@@ -595,10 +595,14 @@ static void fix_udp_checksum_raw(struct wolfIP_ip_packet *ip, void *udp_hdr, uin
     *udp_csum = ee16(transport_checksum(&ph, udp_hdr));
 }
 
-static void inject_udp_datagram(struct wolfIP *s, unsigned int if_idx, ip4 src_ip, ip4 dst_ip,
-        uint16_t src_port, uint16_t dst_port, const uint8_t *payload, uint16_t payload_len)
+/* Build a well formed UDP-over-IPv4 Ethernet frame into `frame` and return
+ * its total length. Shared by the two injection helpers below so that the
+ * frame is identical whichever ingress path a test chooses. */
+static uint32_t build_udp_frame(uint8_t *frame, struct wolfIP *s,
+        unsigned int if_idx, ip4 src_ip, ip4 dst_ip,
+        uint16_t src_port, uint16_t dst_port, const uint8_t *payload,
+        uint16_t payload_len)
 {
-    uint8_t frame[LINK_MTU];
     struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)frame;
     struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, if_idx);
     static const uint8_t src_mac[6] = {0x90, 0x91, 0x92, 0x93, 0x94, 0x95};
@@ -625,7 +629,36 @@ static void inject_udp_datagram(struct wolfIP *s, unsigned int if_idx, ip4 src_i
         memcpy(udp->data, payload, payload_len);
     }
 
-    udp_try_recv(s, if_idx, udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + payload_len));
+    return (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN +
+                      payload_len);
+}
+
+/* Hand a datagram straight to udp_try_recv, skipping the whole IP layer.
+ *
+ * Convenient for exercising the UDP socket demux in isolation, but it means
+ * NONE of ip_recv's checks run: no header validation, no checksum, no
+ * martian filtering. A test whose subject is ip_recv must use
+ * recv_udp_datagram() instead, or it will pass no matter what ip_recv does. */
+static void inject_udp_datagram(struct wolfIP *s, unsigned int if_idx, ip4 src_ip, ip4 dst_ip,
+        uint16_t src_port, uint16_t dst_port, const uint8_t *payload, uint16_t payload_len)
+{
+    uint8_t frame[LINK_MTU];
+    uint32_t len = build_udp_frame(frame, s, if_idx, src_ip, dst_ip,
+                                   src_port, dst_port, payload, payload_len);
+
+    udp_try_recv(s, if_idx, (struct wolfIP_udp_datagram *)frame, len);
+}
+
+/* Deliver a datagram through the real ingress path:
+ * wolfIP_recv_ex -> wolfIP_recv_on -> ip_recv -> udp_try_recv. */
+static void recv_udp_datagram(struct wolfIP *s, unsigned int if_idx, ip4 src_ip, ip4 dst_ip,
+        uint16_t src_port, uint16_t dst_port, const uint8_t *payload, uint16_t payload_len)
+{
+    uint8_t frame[LINK_MTU];
+    uint32_t len = build_udp_frame(frame, s, if_idx, src_ip, dst_ip,
+                                   src_port, dst_port, payload, payload_len);
+
+    wolfIP_recv_ex(s, if_idx, frame, len);
 }
 
 static int enqueue_tcp_tx(struct tsocket *ts, uint32_t payload_len, uint8_t flags)
