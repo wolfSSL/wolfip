@@ -131,6 +131,9 @@ struct wolfIP_icmp_packet;
 
 #define ETH_TYPE_IP 0x0800
 #define ETH_TYPE_ARP 0x0806
+#if WOLFIP_IPV6
+#define ETH_TYPE_IPV6 0x86DD
+#endif
 #if WOLFIP_VLAN
 #define ETH_TYPE_VLAN_8021Q 0x8100
 #define WOLFIP_VLAN_TAG_LEN 4
@@ -4484,6 +4487,15 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
 #endif
     return 0;
 }
+
+#if WOLFIP_IPV6
+/* IPv6 header encapsulation and parsing. Included here, rather than compiled
+ * separately, because it needs struct wolfIP and the static checksum,
+ * Ethernet and link-layer helpers above - the same arrangement as
+ * src/wolfesp.c. Placed after ip_output_add_header() so every helper it uses
+ * is already defined. */
+#include "src/wolfip6.c"
+#endif /* WOLFIP_IPV6 */
 
 /* Process timestamp option, calculate RTT */
 static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
@@ -9581,6 +9593,20 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     } else if (eth->type == ee16(ETH_TYPE_ARP)) {
         arp_recv(s, if_idx, buf, len);
     }
+#if WOLFIP_IPV6
+    else if (eth->type == ee16(ETH_TYPE_IPV6)) {
+        struct wolfIP_ip6_packet *ip6pkt = (struct wolfIP_ip6_packet *)eth;
+        /* Unicast to us, or any IPv6 multicast group: Neighbor Discovery and
+         * Router Advertisements all arrive on 33:33:.. addresses, so the
+         * filter has to let them through. Per-group membership filtering
+         * belongs with the multicast layer, not here. */
+        if ((memcmp(eth->dst, ll->mac, 6) != 0) &&
+                !eth_is_ipv6_multicast_mac(eth->dst)) {
+            return; /* Not for us */
+        }
+        (void)ip6_recv(s, if_idx, ip6pkt, len);
+    }
+#endif
 #else
     /* No ethernet, assume IP */
     ip = (struct wolfIP_ip_packet *)buf;

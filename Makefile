@@ -833,7 +833,9 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_dns_edges.c \
 	src/test/unit/unit_tests_misc_edges.c \
 	src/test/unit/unit_tests_vlan.c \
-	src/test/unit/unit_tests_ipv6_addr.c
+	src/test/unit/unit_tests_ipv6_addr.c \
+	src/test/unit/unit_tests_ipv6_hdr.c \
+	src/test/unit/unit_tests_ipv6_recv.c
 
 unit: build/test/unit
 
@@ -849,6 +851,31 @@ unit-multicast: clean-unit unit
 
 unit-vlan: CFLAGS+=-DWOLFIP_VLAN=1 -DWOLFIP_MAX_INTERFACES=6
 unit-vlan: clean-unit unit
+
+# IPv6. WOLFIP_IPV6 must be passed on the command line rather than set only in
+# config.h: wolfip.c includes wolfip.h *before* config.h, so a macro that
+# affects the public header is not visible there otherwise. WOLFIP_VLAN has the
+# same constraint.
+#
+# Note the IPv6 *addressing* tests (unit_tests_ipv6_addr.c) are not gated and
+# run in the plain `make unit` build; this target adds the tests that need the
+# IPv6 stack itself compiled in.
+UNIT_IPV6_CFLAGS:=-DWOLFIP_IPV6=1 -DWOLFIP_IF_MULTICONF=1
+
+unit-ipv6: CFLAGS+=$(UNIT_IPV6_CFLAGS)
+unit-ipv6: clean-unit unit
+
+unit-ipv6-asan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=address
+unit-ipv6-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-ipv6-asan: clean-unit build/test/unit
+
+unit-ipv6-ubsan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=undefined -fno-sanitize-recover=all
+unit-ipv6-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
+unit-ipv6-ubsan: clean-unit build/test/unit
+
+unit-ipv6-leaksan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=leak
+unit-ipv6-leaksan: LDFLAGS+=-fsanitize=leak $(UNIT_LIBS)
+unit-ipv6-leaksan: clean-unit build/test/unit
 
 ESP_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
@@ -914,6 +941,8 @@ COV_MCAST_UNIT:=$(COV_DIR)/unit-multicast
 COV_MCAST_UNIT_O:=$(COV_DIR)/unit-multicast.o
 COV_VLAN_UNIT:=$(COV_DIR)/unit-vlan
 COV_VLAN_UNIT_O:=$(COV_DIR)/unit-vlan.o
+COV_IPV6_UNIT:=$(COV_DIR)/unit-ipv6
+COV_IPV6_UNIT_O:=$(COV_DIR)/unit-ipv6.o
 
 $(COV_UNIT_O): $(UNIT_TEST_SRCS)
 	@mkdir -p $(COV_DIR)
@@ -1024,6 +1053,44 @@ autocov-vlan: unit-vlan $(COV_VLAN_UNIT)
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/vlan.html
 
+$(COV_IPV6_UNIT_O): $(UNIT_TEST_SRCS)
+	@mkdir -p $(COV_DIR)
+	@echo "[CC] unit.c (ipv6 coverage)"
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) $(UNIT_IPV6_CFLAGS) --coverage -c src/test/unit/unit.c -o $(COV_IPV6_UNIT_O)
+
+$(COV_IPV6_UNIT): LDFLAGS+=--coverage $(UNIT_LIBS)
+$(COV_IPV6_UNIT): $(COV_IPV6_UNIT_O)
+	@echo "[LD] $@"
+	@$(CC) $(COV_IPV6_UNIT_O) -o $(COV_IPV6_UNIT) $(UNIT_LDFLAGS) $(LDFLAGS)
+
+# Informational only. The 100%-function-coverage gate applies to src/wolfip.c
+# in the default build; IPv6 code is still growing and carries deliberate
+# stubs, so it is reported but not enforced.
+cov-ipv6: unit-ipv6 $(COV_IPV6_UNIT)
+	@echo "[RUN] unit ipv6 (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_IPV6_UNIT)
+	@echo "[COV] gcovr ipv6 html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/ipv6.html
+	@$(OPEN_CMD) build/coverage/ipv6.html
+
+autocov-ipv6: unit-ipv6 $(COV_IPV6_UNIT)
+	@echo "[RUN] unit ipv6 (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_IPV6_UNIT)
+	@echo "[COV] gcovr ipv6 html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/ipv6.html
+
 # Install dynamic library to re-link linux applications
 #
 install:
@@ -1123,6 +1190,7 @@ clean-test-wolfguard-interop:
 	@rm -f build/test/test-wolfguard-interop build/test/test_wolfguard_interop.o build/test/linux_tun.o
 
 .PHONY: clean all static cppcheck cov autocov autocov-multicast cov-multicast unit-multicast unit-vlan cov-vlan autocov-vlan unit-asan unit-ubsan unit-leaksan clean-unit \
+        unit-ipv6 unit-ipv6-asan unit-ipv6-ubsan unit-ipv6-leaksan cov-ipv6 autocov-ipv6 \
         unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \

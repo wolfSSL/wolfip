@@ -38,6 +38,8 @@
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
 #include "unit_tests_ipv6_addr.c"
+#include "unit_tests_ipv6_hdr.c"
+#include "unit_tests_ipv6_recv.c"
 
 Suite *wolf_suite(void)
 {
@@ -1012,6 +1014,52 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ip6toa_never_exceeds_addrstrlen);
     tcase_add_test(tc_utils, test_ip6_text_roundtrip_is_stable);
     tcase_add_test(tc_utils, test_ip6_text_roundtrip_exhaustive_single_bit);
+
+#if WOLFIP_IPV6
+    /* IPv6 header layout, checksum and encapsulation. Needs the IPv6 stack
+     * compiled in, so these only run under `make unit-ipv6`. */
+    tcase_add_test(tc_proto, test_ip6_header_wire_layout);
+    tcase_add_test(tc_proto, test_ip6_transport_wire_layout);
+    tcase_add_test(tc_proto, test_ip6_pseudo_header_is_40_bytes);
+    tcase_add_test(tc_proto, test_ip6_hdr_version_traffic_class_flow_label);
+    tcase_add_test(tc_proto, test_ip6_hdr_first_word_byte_order);
+    tcase_add_test(tc_proto, test_ip6_hdr_address_accessors_roundtrip);
+    tcase_add_test(tc_proto, test_transport6_checksum_self_verifies);
+    tcase_add_test(tc_proto, test_transport6_checksum_detects_every_single_bit_flip);
+    tcase_add_test(tc_proto, test_transport6_checksum_covers_the_pseudo_header);
+    tcase_add_test(tc_proto, test_transport6_checksum_handles_odd_length_payload);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_fills_the_header);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_defaults_hop_limit);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_udp_zero_checksum_becomes_ffff);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_icmp6_checksum_uses_pseudo_header);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_tcp_checksum);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_rejects_null_arguments);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_without_mac_leaves_ethernet_alone);
+
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_upper_layer_protocols);
+    tcase_add_test(tc_proto, test_ip6_recv_tolerates_ethernet_padding);
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_hop_limit_zero);
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_unspecified_source);
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_all_scopes_as_destination);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_short_frame);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_wrong_version);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_truncated_payload);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_multicast_source);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_unspecified_destination);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_loopback_on_the_wire);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_v4mapped_on_the_wire);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_v4compat_on_the_wire);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_every_extension_header);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_unknown_next_header);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_short_upper_layer_header);
+    tcase_add_test(tc_proto, test_ip6_recv_checks_structure_before_addresses);
+    tcase_add_test(tc_proto, test_eth_is_ipv6_multicast_mac);
+    tcase_add_test(tc_proto, test_ip6_demux_accepts_unicast_and_multicast_frames);
+    tcase_add_test(tc_proto, test_ip6_demux_ignores_frames_for_other_hosts);
+    tcase_add_test(tc_proto, test_ip6_demux_survives_a_truncated_frame);
+    tcase_add_test(tc_proto, test_ip6_ethertype_does_not_disturb_ipv4_or_arp);
+
+#endif /* WOLFIP_IPV6 */
 
     tcase_add_test(tc_wolfssl, test_wolfssl_io_ctx_registers_callbacks);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_success);
