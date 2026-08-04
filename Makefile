@@ -746,6 +746,39 @@ build/test-ipv6-ping: build/ipv6/wolfip.o build/test/test_ipv6_ping.o $(NETDEV_O
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
 
+build/test/test_ipv6_slaac.o: src/test/test_ipv6_slaac.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test-ipv6-slaac: build/ipv6/wolfip.o build/test/test_ipv6_slaac.o $(NETDEV_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+# SLAAC end to end, with the Router Advertisement injected by the test.
+.PHONY: ipv6-slaac-test
+ipv6-slaac-test: build/test-ipv6-slaac
+	@echo "[RUN] $< --selftest (requires root)"
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-slaac-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-ipv6-slaac --selftest
+
+# Same, but the advertisement comes from radvd, which is what proves
+# interoperability with a real router implementation rather than with a
+# frame this repository wrote itself.
+.PHONY: ipv6-slaac-radvd-test
+ipv6-slaac-radvd-test: build/test-ipv6-slaac
+	@command -v radvd >/dev/null 2>&1 || { echo "radvd is not installed"; exit 1; }
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-slaac-radvd-test needs to run as root (sudo)"; exit 1; }
+	@echo "[RUN] $< with radvd"
+	@sudo ./build/test-ipv6-slaac --selftest --with-radvd
+
+# Duplicate address detection against a host that claims the address first.
+.PHONY: ipv6-dad-test
+ipv6-dad-test: build/test-ipv6-slaac
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-dad-test needs to run as root (sudo)"; exit 1; }
+	@echo "[RUN] $< --dad-collision"
+	@sudo ./build/test-ipv6-slaac --dad-collision
+
 .PHONY: ipv6-ping-test
 ipv6-ping-test: build/test-ipv6-ping
 	@echo "[RUN] $< --selftest (requires root)"

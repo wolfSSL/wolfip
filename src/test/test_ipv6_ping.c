@@ -77,6 +77,44 @@ extern int vde_init(struct wolfIP_ll_dev *ll, const char *socket_path,
  * alongside the link-local address. */
 #define PING_GLOBAL "2001:db8::1"
 
+/* Spawn tcpdump on the TAP interface, the same way the IPv4 interop tests
+ * do, so the exchange can be opened in wireshark straight afterwards. The
+ * pid is kept so the capture is stopped on the way out rather than left
+ * running. Set WOLFIP_NO_PCAP to skip it. */
+static pid_t pcap_pid;
+
+static void pcap_start(const char *ifname, const char *file)
+{
+    if (getenv("WOLFIP_NO_PCAP") != NULL)
+        return;
+    pcap_pid = fork();
+    if (pcap_pid < 0) {
+        pcap_pid = 0;
+        return;
+    }
+    if (pcap_pid == 0) {
+        /* -U so frames hit the file as they arrive: if the test aborts, the
+         * capture up to that point is still readable. */
+        execlp("tcpdump", "tcpdump", "-i", ifname, "-w", file, "-U",
+               "-s", "0", (char *)NULL);
+        _exit(127);
+    }
+    /* Let tcpdump attach before any traffic is generated. */
+    usleep(500000);
+    printf("capturing to %s (pid %d)\n", file, (int)pcap_pid);
+}
+
+static void pcap_stop(void)
+{
+    if (pcap_pid > 0) {
+        int status;
+
+        kill(pcap_pid, SIGTERM);
+        waitpid(pcap_pid, &status, 0);
+        pcap_pid = 0;
+    }
+}
+
 static volatile sig_atomic_t stop_requested;
 
 static void on_sigint(int sig)
@@ -172,6 +210,8 @@ int main(int argc, char **argv)
     }
 #endif
 
+    pcap_start(dev->ifname, "ipv6-ping.pcap");
+
     /* Link-local address from the interface MAC, the way RFC 4862 section
      * 5.3 forms it: fe80::/64 plus a modified EUI-64 interface identifier.
      * SLAAC will do this by itself later; here it is done explicitly. */
@@ -209,7 +249,9 @@ int main(int argc, char **argv)
         printf("then, from another terminal:\n\n"
                "  ping -6 -c 3 %s%%%s\n\n", ll_str, dev->ifname);
         printf("Running. Ctrl-C to stop.\n");
-        return run_stack(s, now_ms() + (3600u * 1000u), 0);
+        rc = run_stack(s, now_ms() + (3600u * 1000u), 0);
+        pcap_stop();
+        return rc;
     }
 
     if (system(cmd) != 0)
@@ -236,6 +278,7 @@ int main(int argc, char **argv)
         rc = run_stack(s, now_ms() + (20u * 1000u), child);
     }
 
+    pcap_stop();
     printf("\nICMPv6 echo self-test: %s\n", (rc == 0) ? "PASS" : "FAIL");
     return rc;
 }

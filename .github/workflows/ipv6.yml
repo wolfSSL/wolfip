@@ -19,7 +19,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential check gcovr libwolfssl-dev
+          sudo apt-get install -y build-essential check gcovr libwolfssl-dev \
+                                  radvd tcpdump iputils-ping
 
       # The IPv6 addressing layer lives in wolfip6.h, which is included
       # unconditionally, so it is already covered by the default `make unit`
@@ -88,6 +89,37 @@ jobs:
                   if fn.get("execution_count", 0) == 0:
                       print("   uncovered:", fn.get("name"))
           PY
+
+      # End-to-end against the Linux stack over a TAP device. Needs root for
+      # the device, and captures to a pcap so a CI failure can be opened in
+      # wireshark from the artifacts.
+      - name: ICMPv6 echo end to end
+        run: |
+          make clean
+          make build/test-ipv6-ping
+          sudo ./build/test-ipv6-ping --selftest
+
+      - name: SLAAC end to end (advertisement injected by the test)
+        run: |
+          make build/test-ipv6-slaac
+          sudo ./build/test-ipv6-slaac --selftest
+
+      # The same again, but the Router Advertisement comes from radvd. This
+      # is the one that proves interoperability with a real router
+      # implementation rather than with a frame this repository wrote.
+      - name: SLAAC end to end (radvd)
+        run: sudo ./build/test-ipv6-slaac --selftest --with-radvd
+
+      - name: Duplicate address detection collision
+        run: sudo ./build/test-ipv6-slaac --dad-collision
+
+      - name: Upload captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipv6-pcaps
+          path: "*.pcap"
+          if-no-files-found: ignore
 
       # Surfaces how much requirement-derived test material is still switched
       # off, so the pending set cannot quietly rot.
