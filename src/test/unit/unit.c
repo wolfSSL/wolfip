@@ -37,6 +37,7 @@
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
+#include "unit_tests_ipv6_addr.c"
 
 Suite *wolf_suite(void)
 {
@@ -960,6 +961,57 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ip_output_add_header);
     tcase_add_test(tc_utils, test_ip_output_add_header_icmp);
     tcase_add_test(tc_utils, test_regression_icmp_ip_len_below_header);
+
+    /* IPv6 addressing (wolfip6.h). Not gated on WOLFIP_IPV6: the header holds
+     * only inline helpers and is always included, so these run in the default
+     * build and are covered by the whole CI compiler matrix. */
+    tcase_add_test(tc_utils, test_ip6_cmp_and_copy);
+    tcase_add_test(tc_utils, test_ip6_cmp_differs_in_every_byte_position);
+    tcase_add_test(tc_utils, test_ip6_set_wellknown_addresses);
+    tcase_add_test(tc_utils, test_ip6_init_macros_match_setters);
+    tcase_add_test(tc_utils, test_ip6_is_unspecified);
+    tcase_add_test(tc_utils, test_ip6_is_loopback);
+    tcase_add_test(tc_utils, test_ip6_is_multicast);
+    tcase_add_test(tc_utils, test_ip6_is_link_local_covers_whole_fe80_10);
+    tcase_add_test(tc_utils, test_ip6_is_ula_covers_whole_fc00_7);
+    tcase_add_test(tc_utils, test_ip6_is_global_covers_whole_2000_3);
+    tcase_add_test(tc_utils, test_ip6_multicast_flags_and_scope);
+    tcase_add_test(tc_utils, test_ip6_is_all_nodes_and_all_routers);
+    tcase_add_test(tc_utils, test_ip6_v4mapped_roundtrip);
+    tcase_add_test(tc_utils, test_ip6_v4mapped_boundaries);
+    tcase_add_test(tc_utils, test_ip6_v4compat_excludes_any_and_loopback);
+    tcase_add_test(tc_utils, test_ip6_prefix_cmp_byte_aligned);
+    tcase_add_test(tc_utils, test_ip6_prefix_cmp_non_byte_aligned);
+    tcase_add_test(tc_utils, test_ip6_prefix_cmp_zero_and_clamped);
+    tcase_add_test(tc_utils, test_ip6_prefix_mask);
+    tcase_add_test(tc_utils, test_ip6_prefix_mask_every_length_is_consistent);
+    tcase_add_test(tc_utils, test_ip6_prefix_mask_clears_a_set_host_part);
+    tcase_add_test(tc_utils, test_ip6_make_addr_from_prefix_and_iid);
+    tcase_add_test(tc_utils, test_ip6_make_addr_non_byte_aligned_prefix);
+    tcase_add_test(tc_utils, test_ip6_solicited_node_from_target);
+    tcase_add_test(tc_utils, test_ip6_solicited_node_depends_only_on_low_24_bits);
+    tcase_add_test(tc_utils, test_ip6_is_solicited_node_rejects_near_misses);
+    tcase_add_test(tc_utils, test_ip6_mcast_to_eth_mapping);
+    tcase_add_test(tc_utils, test_ip6_iid_from_mac_eui64);
+    tcase_add_test(tc_utils, test_ip6_iid_from_mac_inverts_ul_bit_both_ways);
+    tcase_add_test(tc_utils, test_ip6_parse_canonical_forms);
+    tcase_add_test(tc_utils, test_ip6_parse_normalises_noncanonical_input);
+    tcase_add_test(tc_utils, test_ip6_parse_embedded_ipv4);
+    tcase_add_test(tc_utils, test_ip6_parse_gap_at_every_position);
+    tcase_add_test(tc_utils, test_ip6_parse_accepts_single_group_gap_but_writes_it_out);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_malformed);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_gap_that_elides_nothing);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_bad_ipv4_tail);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_null_arguments);
+    tcase_add_test(tc_utils, test_ip6_parse_leaves_output_untouched_on_failure);
+    tcase_add_test(tc_utils, test_ip6toa_compresses_longest_zero_run);
+    tcase_add_test(tc_utils, test_ip6toa_compresses_leftmost_run_on_tie);
+    tcase_add_test(tc_utils, test_ip6toa_does_not_compress_single_zero_group);
+    tcase_add_test(tc_utils, test_ip6toa_run_at_start_and_end);
+    tcase_add_test(tc_utils, test_ip6toa_handles_null_arguments);
+    tcase_add_test(tc_utils, test_ip6toa_never_exceeds_addrstrlen);
+    tcase_add_test(tc_utils, test_ip6_text_roundtrip_is_stable);
+    tcase_add_test(tc_utils, test_ip6_text_roundtrip_exhaustive_single_bit);
 
     tcase_add_test(tc_wolfssl, test_wolfssl_io_ctx_registers_callbacks);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_success);

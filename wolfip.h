@@ -139,6 +139,13 @@ typedef uint32_t ip4;
 #  error "Cannot determine byte order; define __BYTE_ORDER__"
 #endif
 
+/* IPv6 address type and helpers. Included unconditionally: the header holds
+ * only a typedef and static inline functions, so it adds no code when IPv6 is
+ * disabled and cannot alter the layout of any structure below. The parts of
+ * IPv6 that *do* affect layout live behind WOLFIP_IPV6 inside wolfip.c, which
+ * includes config.h. */
+#include "wolfip6.h"
+
 #ifndef WOLFIP_EAGAIN
 #ifdef EAGAIN
 #define WOLFIP_EAGAIN EAGAIN
