@@ -42,6 +42,8 @@ wolfIP exposes a BSD-like `socket(2)` API for IPv4 sockets:
 | **Network** | IPv4 | Datagram delivery, TTL handling | [RFC 791](https://datatracker.ietf.org/doc/html/rfc791) |
 | **Network** | IPv4 Forwarding | Multi-interface routing (optional) | [RFC 1812](https://datatracker.ietf.org/doc/html/rfc1812) |
 | **Network** | ICMP | Echo request/reply, TTL exceeded | [RFC 792](https://datatracker.ietf.org/doc/html/rfc792) |
+| **Network** | IPv6 | Header encapsulation and parsing, upper-layer checksum (in progress; addressing, ICMPv6, NDP, SLAAC and DHCPv6 not yet implemented) | [RFC 8200](https://datatracker.ietf.org/doc/html/rfc8200) |
+| **Network** | IPv6 Addressing | Address types, scopes, prefix operations, RFC 5952 text form | [RFC 4291](https://datatracker.ietf.org/doc/html/rfc4291), [RFC 4193](https://datatracker.ietf.org/doc/html/rfc4193), [RFC 5952](https://datatracker.ietf.org/doc/html/rfc5952) |
 | **Network** | IGMPv3 | ASM membership reports for IPv4 multicast (optional) | [RFC 3376](https://datatracker.ietf.org/doc/html/rfc3376) |
 | **Network** | IPsec | ESP Transport mode | [RFC 4303](https://datatracker.ietf.org/doc/html/rfc4303) |
 | **Transport** | UDP | Unicast datagrams, checksum, optional IPv4 multicast | [RFC 768](https://datatracker.ietf.org/doc/html/rfc768) |
@@ -187,6 +189,7 @@ This port follows the same model as the POSIX wrapper:
 
 - [API reference](docs/API.md): core stack, socket, and protocol-client APIs
 - [Porting guide](docs/porting_guide.md): designing device drivers (with and without DMA) and porting wolfIP to a new operating system
+- [DLR integration](docs/dlr_integration.md): the L2 protocol hook and switch-control vtable a third-party Device Level Ring implementation needs from wolfIP
 
 Module how-tos:
 
