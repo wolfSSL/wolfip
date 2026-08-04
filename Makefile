@@ -835,7 +835,8 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_vlan.c \
 	src/test/unit/unit_tests_ipv6_addr.c \
 	src/test/unit/unit_tests_ipv6_hdr.c \
-	src/test/unit/unit_tests_ipv6_recv.c
+	src/test/unit/unit_tests_ipv6_recv.c \
+	src/test/unit/unit_tests_ipv6_pending.c
 
 unit: build/test/unit
 
@@ -876,6 +877,24 @@ unit-ipv6-ubsan: clean-unit build/test/unit
 unit-ipv6-leaksan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=leak
 unit-ipv6-leaksan: LDFLAGS+=-fsanitize=leak $(UNIT_LIBS)
 unit-ipv6-leaksan: clean-unit build/test/unit
+
+# Report how much requirement-derived IPv6 test material is still switched off.
+# The pending tests are guarded by named WOLFIP_IPV6_HAVE_* macros rather than
+# "#if 0" precisely so that this count is possible.
+IPV6_PENDING_SRC:=src/test/unit/unit_tests_ipv6_pending.c
+
+.PHONY: unit-ipv6-pending-count
+unit-ipv6-pending-count:
+	@total=`grep -c '^START_TEST' $(IPV6_PENDING_SRC) 2>/dev/null || echo 0`; \
+	echo "[IPv6] $$total requirement test(s) written and awaiting implementation"; \
+	for m in EXTHDR ICMP6 ND6 SLAAC DHCP6 SOCKETS; do \
+		if grep -q "define WOLFIP_IPV6_HAVE_$$m 1" config.h 2>/dev/null; then \
+			state=enabled; \
+		else \
+			state=pending; \
+		fi; \
+		echo "         WOLFIP_IPV6_HAVE_$$m: $$state"; \
+	done
 
 ESP_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
