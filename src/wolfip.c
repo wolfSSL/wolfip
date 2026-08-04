@@ -9225,6 +9225,17 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     if (version == 4 && ip_hlen >= IP_HEADER_LEN) {
         ip4 dest = ee32(ip->dst);
         int is_local = 0;
+        int l2_group = 0;
+#ifdef ETHERNET
+        /* RFC 1812 sec.5.3.4: a datagram received as a link-layer broadcast
+         * or multicast must never be forwarded. The group bit (LSB of the
+         * first MAC octet) covers ff:ff:ff:ff:ff:ff and every multicast MAC.
+         * Only the forwarding attempt is skipped; local delivery below still
+         * applies, which is what keeps an L2-broadcast DHCP offer carrying a
+         * not-yet-ours unicast ip.dst reaching the DHCP socket. */
+        if (!wolfIP_ll_is_non_ethernet(s, if_idx) && (ip->eth.dst[0] & 0x01))
+            l2_group = 1;
+#endif
         if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest)) {
             is_local = 1;
         } else {
@@ -9238,7 +9249,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 }
             }
         }
-        if (!is_local) {
+        if (!is_local && !l2_group) {
             ip4 src = ee32(ip->src);
             int rpf_drop = 0;
 
