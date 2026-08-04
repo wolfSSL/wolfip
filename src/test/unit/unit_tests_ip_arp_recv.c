@@ -381,6 +381,64 @@ START_TEST(test_ip_recv_forward_self_ip_src_dropped)
 }
 END_TEST
 
+/*
+ * RFC 1812 sec.5.3.4: a datagram received as a link-layer broadcast must
+ * never be forwarded.
+ */
+START_TEST(test_ip_recv_l2_broadcast_frame_not_forwarded)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;   /* 10.0.0.1    router LAN IP (if1) */
+    ip4 secondary_ip = 0xC0A80101U;   /* 192.168.1.1 router WAN IP (if2) */
+    ip4 dest_ip      = 0xC0A80155U;   /* 192.168.1.85 local to if2 */
+    ip4 src_ip       = 0x0A000002U;   /* 10.0.0.2 passes every RPF check */
+    static const uint8_t dest_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    /* ARP hit so that, absent the drop, the packet would be forwarded now. */
+    arp_store_neighbor(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+
+    memset(frame, 0, sizeof(frame));
+    /* The only thing that makes this frame illegal to forward. */
+    memcpy(ip->eth.dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);   /* unicast, not any broadcast address */
+    fix_ip_checksum(ip);
+    {
+        uint16_t *udp = (uint16_t *)(frame + ETH_HEADER_LEN + IP_HEADER_LEN);
+        udp[0] = ee16(9999); udp[1] = ee16(53);
+        udp[2] = ee16(UDP_HEADER_LEN); udp[3] = 0;
+    }
+
+    last_frame_sent_size = 0;
+    /* Enter through wolfIP_recv_on: the L2 accept path is part of the bug. */
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, frame, (uint32_t)sizeof(frame));
+
+    /* Nothing forwarded, and nothing queued behind an ARP resolution. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_eq(s.arp_pending[0].dest, IPADDR_ANY);
+
+    /* The identical packet addressed to the router's MAC is still
+     * forwarded, so the drop keys on eth.dst and not on anything else. */
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    ip->ttl = 64;
+    fix_ip_checksum(ip);
+    last_frame_sent_size = 0;
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, frame, (uint32_t)sizeof(frame));
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 0, dest_mac, 6);
+}
+END_TEST
+
 /* =========================================================================
  * ip_recv: IP with NOP options — options parsed, payload delivered
  * =========================================================================
