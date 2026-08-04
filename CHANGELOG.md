@@ -16,3 +16,9 @@ Initial public wolfIP release.
 - Host link drivers for Linux TAP/TUN, Darwin utun, FreeBSD TAP, and VDE2.
 - Embedded ports for STM32H753ZI, STM32H563, STM32N6, VA416xx, and Raspberry Pi Pico USB networking demos.
 - Shared Ethernet support for STM32 and VA416xx targets, plus common embedded service glue and certificates under `src/port`.
+
+## Unreleased
+
+- IPv6 groundwork (`WOLFIP_IPV6`, off by default): the `ip6` address type with scope/type predicates, prefix operations and RFC 5952 text conversion; IPv6 header encapsulation and parsing with the RFC 8200 40-byte pseudo-header checksum; ethertype and multicast MAC demux. Upper-layer delivery, ICMPv6, Neighbor Discovery, SLAAC and DHCPv6 are not implemented yet.
+- New `WOLFIP_IF_MULTICONF` configuration knob reserving multiple IP configurations per interface, required by IPv6 and off by default.
+- Declared the integration surface for a third-party DLR implementation: `wolfIP_register_l2_handler()` and `struct wolfIP_switch_ops`. See `docs/dlr_integration.md`.
