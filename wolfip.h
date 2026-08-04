@@ -559,6 +559,49 @@ int wolfIP_ifaddr_get(struct wolfIP *s, unsigned int if_idx, int family,
  * dropped. IPADDR_ANY is never local. */
 int wolfIP_ifaddr_is_local4(struct wolfIP *s, ip4 addr, unsigned int *if_idx);
 
+/* IPv6 Neighbor Discovery and address autoconfiguration.
+ *
+ * wolfIP_ipv6_start() brings IPv6 up on an interface: it forms the
+ * link-local address from the interface MAC (RFC 4862 section 5.3), runs
+ * duplicate address detection on it, and then solicits routers so that a
+ * Router Advertisement can supply a global prefix. It is the IPv6
+ * counterpart of dhcp_client_init(), and like it the work continues in the
+ * background from wolfIP_poll().
+ *
+ * Progress is observable through wolfIP_ifaddr_count()/get(): an address is
+ * WOLFIP_IFADDR_TENTATIVE while duplicate address detection runs and
+ * WOLFIP_IFADDR_PREFERRED once it has passed. An address that turns out to
+ * be a duplicate is removed rather than assigned (RFC 4862 section 5.4.5).
+ */
+int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx);
+
+/* Configure an address and verify it with duplicate address detection
+ * before it is used (RFC 4862 section 5.4). This is the entry point for a
+ * statically assigned address, a ULA among them: it behaves like
+ * wolfIP_ifaddr_add6() but leaves the address TENTATIVE until the probe
+ * completes, whereas wolfIP_ifaddr_add6() configures it immediately and
+ * runs no detection. */
+int wolfIP_ipv6_addr_add(struct wolfIP *s, unsigned int if_idx,
+                         const ip6 *addr, uint8_t prefix_len);
+
+/* Install a static neighbour cache entry. Useful before Router
+ * Advertisements have been seen, and for talking to a peer that does not
+ * answer solicitations. */
+int wolfIP_nd6_neighbor_add(struct wolfIP *s, unsigned int if_idx,
+                            const ip6 *addr, const uint8_t *mac);
+
+/* Resolve an address to a link-layer address from the neighbour cache.
+ * Returns 0 and fills `mac` when the entry is usable. Multicast needs no
+ * cache entry: the mapping is algorithmic. */
+int wolfIP_nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
+                      uint8_t *mac);
+
+/* Next hop for a destination: the destination itself when it is on-link
+ * according to the prefix list, otherwise a default router. Returns 0 on
+ * success, negative when there is no route. */
+int wolfIP_ipv6_nexthop(struct wolfIP *s, unsigned int if_idx, const ip6 *dst,
+                        ip6 *nexthop);
+
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol);
 int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr,
                      socklen_t addrlen);

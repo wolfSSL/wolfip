@@ -42,6 +42,7 @@
 #include "unit_tests_ipv6_hdr.c"
 #include "unit_tests_ipv6_recv.c"
 #include "unit_tests_ipv6_icmp.c"
+#include "unit_tests_ipv6_nd.c"
 #include "unit_tests_ipv6_pending.c"
 
 Suite *wolf_suite(void)
@@ -1104,6 +1105,28 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp6_echo_reply_does_not_generate_another_reply);
     tcase_add_test(tc_proto, test_icmp6_unhandled_types_are_ignored_without_replying);
     tcase_add_test(tc_proto, test_icmp6_truncated_echo_is_ignored);
+    tcase_add_test(tc_proto, test_nd_join_forms_link_local_and_probes_it);
+    tcase_add_test(tc_proto, test_nd_join_completes_and_solicits_routers);
+    tcase_add_test(tc_proto, test_nd_na_resolves_an_incomplete_entry);
+    tcase_add_test(tc_proto, test_nd_na_without_target_lla_resolves_nothing);
+    tcase_add_test(tc_proto, test_nd_na_without_override_may_not_replace_a_known_mac);
+    tcase_add_test(tc_proto, test_nd_messages_with_wrong_hop_limit_are_refused);
+    tcase_add_test(tc_proto, test_nd_solicitation_for_our_address_is_answered);
+    tcase_add_test(tc_proto, test_nd_solicitation_for_a_foreign_address_is_ignored);
+    tcase_add_test(tc_proto, test_dad_succeeds_when_nobody_answers);
+    tcase_add_test(tc_proto, test_dad_fails_when_a_neighbour_advertises_the_address);
+    tcase_add_test(tc_proto, test_dad_fails_on_a_simultaneous_probe_from_another_node);
+    tcase_add_test(tc_proto, test_dad_tentative_address_is_not_defended);
+    tcase_add_test(tc_proto, test_ra_assigns_a_global_address_and_a_default_router);
+    tcase_add_test(tc_proto, test_ra_from_a_non_link_local_source_is_ignored);
+    tcase_add_test(tc_proto, test_ra_with_wrong_hop_limit_is_ignored);
+    tcase_add_test(tc_proto, test_ra_ignores_a_link_local_prefix_option);
+    tcase_add_test(tc_proto, test_ra_prefix_that_is_not_64_bits_forms_no_address);
+    tcase_add_test(tc_proto, test_ra_with_zero_router_lifetime_is_not_a_default_route);
+    tcase_add_test(tc_proto, test_ra_with_a_zero_length_option_terminates);
+    tcase_add_test(tc_proto, test_ula_is_verified_by_dad_and_then_usable);
+    tcase_add_test(tc_proto, test_ula_is_defended_and_survives_a_router_advertisement);
+    tcase_add_test(tc_proto, test_ula_duplicate_is_rejected);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
@@ -1118,32 +1141,12 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp6_unknown_informational_message_is_discarded);
 #endif
 #if WOLFIP_IPV6_HAVE_ND6
-    tcase_add_test(tc_proto, test_nd6_solicitation_goes_to_the_solicited_node_group);
-    tcase_add_test(tc_proto, test_nd6_solicitation_carries_source_link_layer_address_option);
-    tcase_add_test(tc_proto, test_nd6_advertisement_updates_the_neighbor_cache);
-    tcase_add_test(tc_proto, test_nd6_messages_with_hop_limit_not_255_are_discarded);
-    tcase_add_test(tc_proto, test_nd6_messages_with_icmp_code_not_zero_are_discarded);
-    tcase_add_test(tc_proto, test_nd6_solicitation_with_unspecified_source_must_be_multicast);
     tcase_add_test(tc_proto, test_nd6_cache_state_machine_transitions);
     tcase_add_test(tc_proto, test_nd6_cache_eviction_when_full);
     tcase_add_test(tc_proto, test_nd6_queues_one_packet_per_pending_resolution);
-    tcase_add_test(tc_proto, test_nd6_router_solicitation_is_sent_on_startup);
-    tcase_add_test(tc_proto, test_nd6_router_advertisement_populates_prefix_and_router_lists);
-    tcase_add_test(tc_proto, test_nd6_router_advertisement_from_non_link_local_is_ignored);
     tcase_add_test(tc_proto, test_nd6_prefix_option_with_length_over_128_is_ignored);
-    tcase_add_test(tc_proto, test_nd6_option_with_zero_length_is_rejected);
-    tcase_add_test(tc_proto, test_nd6_redirect_messages_are_ignored);
 #endif
 #if WOLFIP_IPV6_HAVE_SLAAC
-    tcase_add_test(tc_proto, test_slaac_forms_link_local_from_interface_identifier);
-    tcase_add_test(tc_proto, test_slaac_link_local_is_tentative_until_dad_completes);
-    tcase_add_test(tc_proto, test_slaac_dad_success_promotes_address_to_preferred);
-    tcase_add_test(tc_proto, test_slaac_dad_failure_abandons_the_address);
-    tcase_add_test(tc_proto, test_slaac_dad_detects_a_duplicate_advertisement);
-    tcase_add_test(tc_proto, test_slaac_dad_detects_a_simultaneous_solicitation);
-    tcase_add_test(tc_proto, test_slaac_forms_global_address_from_advertised_prefix);
-    tcase_add_test(tc_proto, test_slaac_ignores_prefix_that_is_not_64_bits);
-    tcase_add_test(tc_proto, test_slaac_ignores_link_local_prefix_in_advertisement);
     tcase_add_test(tc_proto, test_slaac_preferred_lifetime_expiry_deprecates_address);
     tcase_add_test(tc_proto, test_slaac_valid_lifetime_expiry_removes_address);
     tcase_add_test(tc_proto, test_slaac_lifetime_extension_is_bounded);

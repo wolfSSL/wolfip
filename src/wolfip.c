@@ -74,7 +74,15 @@ struct wolfIP_udp_datagram;
 struct wolfIP_icmp_packet;
 
 /* Fixed size binary heap: each element is a timer. */
+#if WOLFIP_IPV6
+/* Neighbor Discovery drives duplicate address detection, router
+ * solicitation retries and every cache expiry from a single periodic tick,
+ * so it needs one slot rather than one per address. The spare few are for
+ * the heap not to be exactly full when DHCP, DNS and TCP are all armed. */
+#define MAX_TIMERS ((MAX_TCPSOCKETS * 3) + 4)
+#else
 #define MAX_TIMERS (MAX_TCPSOCKETS * 3)
+#endif
 
 /* Constants */
 #define ICMP_ECHO_REPLY 0
@@ -1336,6 +1344,55 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
 
 #endif
 
+#if WOLFIP_IPV6
+/* Neighbor Discovery data structures (RFC 4861 section 5.1). Defined here,
+ * beside struct arp_neighbor, because struct wolfIP embeds them; the
+ * implementation lives in src/wolfip6.c.
+ *
+ * Deliberately shaped like the ARP structures above: same fields where the
+ * two protocols agree, plus the reachability state machine and the router
+ * flag that ARP has no equivalent for. */
+enum nd6_state {
+    ND6_INCOMPLETE = 1, /* address resolution in flight, no MAC yet */
+    ND6_REACHABLE,      /* confirmed reachable recently */
+    ND6_STALE,          /* MAC known, reachability unconfirmed */
+    ND6_DELAY,          /* waiting before probing */
+    ND6_PROBE           /* unicast probes in flight */
+};
+
+struct nd6_neighbor {
+    ip6 addr;
+    uint8_t mac[6];
+    uint8_t if_idx;
+    uint8_t state;      /* enum nd6_state; 0 means the slot is free */
+    uint8_t is_router;
+    uint8_t probes;     /* solicitations sent in the current state */
+    uint64_t ts;        /* last state change */
+};
+
+/* On-link prefix, from a Prefix Information option (RFC 4861 section 4.6.2). */
+struct nd6_prefix {
+    ip6 prefix;
+    uint8_t prefix_len;
+    uint8_t if_idx;
+    uint8_t used;
+    uint8_t onlink;     /* L flag */
+    uint8_t autonomous; /* A flag: may be used to form an address */
+    uint32_t valid_lifetime;
+    uint32_t preferred_lifetime;
+    uint64_t ts;
+};
+
+/* Default router (RFC 4861 section 6.3.4). */
+struct nd6_router {
+    ip6 addr;
+    uint8_t if_idx;
+    uint8_t used;
+    uint16_t lifetime;  /* seconds; zero means "not a default router" */
+    uint64_t ts;
+};
+#endif /* WOLFIP_IPV6 */
+
 struct wolfIP;
 
 struct wolfIP_timer {
@@ -1416,8 +1473,29 @@ struct wolfIP {
      * which is why struct wolfIP does not grow in the default build. */
     struct wolfIP_ifaddr_slot {
         uint8_t used;
+        /* Duplicate address detection state, only meaningful while
+         * info.state is WOLFIP_IFADDR_TENTATIVE (RFC 4862 section 5.4). */
+        uint8_t dad_probes;   /* solicitations still to send */
+        uint64_t dad_due;     /* when the next probe or the decision is due */
         struct wolfIP_ifaddr_info info;
     } ifaddr[WOLFIP_IFADDR_MAX];
+#endif
+#if WOLFIP_IPV6
+    /* Neighbor Discovery state (RFC 4861 section 5.1): the neighbour cache,
+     * the on-link prefix list and the default router list. The IPv6
+     * counterpart of struct wolfIP_arp below, and deliberately shaped like
+     * it. */
+    struct wolfIP_nd6 {
+        struct nd6_neighbor neighbors[WOLFIP_ND6_CACHE_SIZE];
+        struct nd6_prefix prefixes[WOLFIP_ND6_PREFIX_MAX];
+        struct nd6_router routers[WOLFIP_ND6_ROUTER_MAX];
+        uint64_t last_ns[WOLFIP_MAX_INTERFACES];  /* NS rate limit, per iface */
+        uint64_t rs_due[WOLFIP_MAX_INTERFACES];   /* next router solicitation */
+        uint8_t rs_left[WOLFIP_MAX_INTERFACES];   /* solicitations remaining */
+        uint8_t started[WOLFIP_MAX_INTERFACES];   /* wolfIP_ipv6_start() called */
+        uint32_t tick_timer;
+        uint64_t tick_due;
+    } nd6;
 #endif
 #ifdef ETHERNET
     struct wolfIP_arp {

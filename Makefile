@@ -860,6 +860,7 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_ipv6_hdr.c \
 	src/test/unit/unit_tests_ipv6_recv.c \
 	src/test/unit/unit_tests_ipv6_icmp.c \
+	src/test/unit/unit_tests_ipv6_nd.c \
 	src/test/unit/unit_tests_ipv6_pending.c
 
 unit: build/test/unit
