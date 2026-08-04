@@ -987,6 +987,12 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ifaddr_the_same_alias_may_not_be_added_twice);
     tcase_add_test(tc_utils, test_ifaddr_pool_is_shared_across_interfaces);
     tcase_add_test(tc_utils, test_ifaddr_socket_binds_to_an_alias_on_the_right_interface);
+    tcase_add_test(tc_utils, test_ifaddr_bind_to_alias_receives_only_its_own_traffic);
+    tcase_add_test(tc_utils, test_ifaddr_bind_to_primary_does_not_receive_alias_traffic);
+    tcase_add_test(tc_utils, test_ifaddr_bind_to_a_foreign_address_is_refused);
+    tcase_add_test(tc_utils, test_ifaddr_sendto_from_an_alias_uses_it_as_source);
+    tcase_add_test(tc_utils, test_ifaddr_wildcard_bind_receives_traffic_to_any_local_address);
+    tcase_add_test(tc_utils, test_ifaddr_tcp_wildcard_listener_accepts_connections_to_an_alias);
 #endif
 #if WOLFIP_IPV6
     tcase_add_test(tc_utils, test_ifaddr_v6_addresses_are_independent_of_v4);

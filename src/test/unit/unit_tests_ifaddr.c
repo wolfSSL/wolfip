@@ -57,6 +57,8 @@
 #define IFA_IP_C 0xC0A80101U /* 192.168.1.1 */
 #define IFA_MASK 0xFFFFFF00U
 
+static const uint8_t ifaddr_peer_mac[6] = {0xAA, 0xBB, 0xCC, 0x00, 0x00, 0x22};
+
 static void ifaddr_setup(struct wolfIP *s)
 {
     wolfIP_init(s);
@@ -449,6 +451,179 @@ START_TEST(test_ifaddr_socket_binds_to_an_alias_on_the_right_interface)
     ck_assert_ptr_nonnull(ts);
     ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
     ck_assert_uint_eq(ts->local_ip, IFA_IP_B);
+}
+END_TEST
+
+/* =========================================================================
+ * bind() and source selection with several addresses on one interface
+ * =========================================================================
+ * Reference behaviour (Linux, and what POSIX implies for the TCP 4-tuple):
+ *
+ *   - Binding to a specific local address restricts the socket to that
+ *     address. Traffic to a *different* local address on the same
+ *     interface must not be delivered to it.
+ *   - Binding to INADDR_ANY is a wildcard: the socket receives traffic
+ *     addressed to any local address.
+ *   - Outbound traffic from a socket bound to a specific address uses that
+ *     address as its source (RFC 6724 rule 1 states this explicitly for
+ *     IPv6; for IPv4 it is RFC 1122 section 3.3.4.3 plus long-standing
+ *     practice).
+ *   - Binding to an address that is not local must fail.
+ */
+
+#define IFA_REMOTE 0x0A0A0A63U /* 10.10.10.99 */
+
+static int ifaddr_udp_bind(struct wolfIP *s, ip4 addr, uint16_t port)
+{
+    struct wolfIP_sockaddr_in sin;
+    int fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+
+    ck_assert_int_ge(fd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(port);
+    sin.sin_addr.s_addr = ee32(addr);
+    if (wolfIP_sock_bind(s, fd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)) != 0)
+        return -1;
+    return fd;
+}
+
+/* Did a datagram sent to dst_ip reach the socket? */
+static int ifaddr_udp_delivered(struct wolfIP *s, int fd, ip4 dst_ip,
+                                uint16_t port)
+{
+    static const uint8_t payload[4] = {'p', 'i', 'n', 'g'};
+    uint8_t buf[16];
+
+    inject_udp_datagram(s, TEST_PRIMARY_IF, IFA_REMOTE, dst_ip, 4444, port,
+                        payload, sizeof(payload));
+    return (wolfIP_sock_recvfrom(s, fd, buf, sizeof(buf), 0, NULL, NULL) > 0);
+}
+
+START_TEST(test_ifaddr_bind_to_alias_receives_only_its_own_traffic)
+{
+    struct wolfIP s;
+    int fd;
+
+    ifaddr_setup(&s);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+
+    fd = ifaddr_udp_bind(&s, IFA_IP_B, 5001);
+    ck_assert_int_ge(fd, 0);
+
+    /* Traffic to the bound alias arrives. */
+    ck_assert_int_eq(ifaddr_udp_delivered(&s, fd, IFA_IP_B, 5001), 1);
+    /* Traffic to the primary on the same interface must not, or binding to
+     * an address would mean nothing. */
+    ck_assert_int_eq(ifaddr_udp_delivered(&s, fd, IFA_IP_A, 5001), 0);
+}
+END_TEST
+
+START_TEST(test_ifaddr_bind_to_primary_does_not_receive_alias_traffic)
+{
+    struct wolfIP s;
+    int fd;
+
+    ifaddr_setup(&s);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+
+    fd = ifaddr_udp_bind(&s, IFA_IP_A, 5002);
+    ck_assert_int_ge(fd, 0);
+    ck_assert_int_eq(ifaddr_udp_delivered(&s, fd, IFA_IP_A, 5002), 1);
+    ck_assert_int_eq(ifaddr_udp_delivered(&s, fd, IFA_IP_B, 5002), 0);
+}
+END_TEST
+
+START_TEST(test_ifaddr_bind_to_a_foreign_address_is_refused)
+{
+    struct wolfIP s;
+
+    ifaddr_setup(&s);
+    /* Not configured anywhere on this stack. */
+    ck_assert_int_lt(ifaddr_udp_bind(&s, IFA_REMOTE, 5003), 0);
+    /* An alias that has been removed again is equally foreign. */
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_del4(&s, TEST_PRIMARY_IF, IFA_IP_B), 0);
+    ck_assert_int_lt(ifaddr_udp_bind(&s, IFA_IP_B, 5004), 0);
+}
+END_TEST
+
+START_TEST(test_ifaddr_sendto_from_an_alias_uses_it_as_source)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in dst;
+    struct wolfIP_ip_packet *ip;
+    static const uint8_t payload[4] = {'d', 'a', 't', 'a'};
+    int fd;
+
+    ifaddr_setup(&s);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+    fd = ifaddr_udp_bind(&s, IFA_IP_B, 5005);
+    ck_assert_int_ge(fd, 0);
+
+    /* Teach ARP the peer so the datagram can actually leave. */
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, IFA_REMOTE, ifaddr_peer_mac);
+
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = ee16(4444);
+    dst.sin_addr.s_addr = ee32(IFA_REMOTE);
+    last_frame_sent_size = 0;
+    ck_assert_int_gt(wolfIP_sock_sendto(&s, fd, payload, sizeof(payload), 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 0);
+    wolfIP_poll(&s, 1000);
+
+    /* The source address on the wire must be the address the socket was
+     * bound to, not the interface's primary. */
+    ck_assert_uint_gt((uint32_t)last_frame_sent_size, 0u);
+    ip = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_uint_eq(ee32(ip->src), IFA_IP_B);
+}
+END_TEST
+
+START_TEST(test_ifaddr_wildcard_bind_receives_traffic_to_any_local_address)
+{
+    struct wolfIP s;
+    int fd;
+
+    ifaddr_setup(&s);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+
+    fd = ifaddr_udp_bind(&s, IPADDR_ANY, 5006);
+    ck_assert_int_ge(fd, 0);
+
+    /* A wildcard bind must accept traffic to every local address, which is
+     * what INADDR_ANY means on every other stack. */
+    ck_assert_int_eq(ifaddr_udp_delivered(&s, fd, IFA_IP_A, 5006), 1);
+    ck_assert_int_eq(ifaddr_udp_delivered(&s, fd, IFA_IP_B, 5006), 1);
+}
+END_TEST
+
+START_TEST(test_ifaddr_tcp_wildcard_listener_accepts_connections_to_an_alias)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    int fd;
+
+    ifaddr_setup(&s);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5007);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, fd, 1), 0);
+
+    /* A wildcard listener records bound_local_ip == IPADDR_ANY, and the SYN
+     * path filters on that rather than on local_ip, so a connection to an
+     * alias is accepted. */
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(fd)].bound_local_ip,
+                      IPADDR_ANY);
 }
 END_TEST
 

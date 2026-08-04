@@ -2562,9 +2562,20 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         int peer_match = (t->sock.udp.connected == 0) ||
                 ((t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                  (t->remote_ip == 0 || t->remote_ip == src_ip));
+        /* A socket bound to INADDR_ANY is a wildcard and must accept
+         * datagrams addressed to any of our local addresses. bind() resolves
+         * the wildcard to the interface's primary address for source
+         * selection, so local_ip alone cannot express this; bound_local_ip
+         * records what the application actually asked for. Until an
+         * interface could carry more than one address the two were the same
+         * thing and the distinction did not matter. The TCP listen path
+         * already filters on bound_local_ip for the same reason. */
         int addr_match =
                 (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
-                 (t->local_ip == dst_ip && peer_match));
+                 (t->local_ip == dst_ip && peer_match) ||
+                 ((t->local_ip != IPADDR_ANY) &&
+                  (t->bound_local_ip == IPADDR_ANY) && peer_match &&
+                  wolfIP_ifaddr_is_local4(s, dst_ip, NULL)));
 #ifdef IP_MULTICAST
         if (wolfIP_ip_is_multicast(dst_ip)) {
             addr_match = udp_socket_has_mcast(t, if_idx, dst_ip) &&
