@@ -66,6 +66,14 @@ jobs:
           make clean
           make libwolfip.so EXTRA_CFLAGS="-DWOLFIP_IPV6=1"
 
+      # Regression guard for the wc_ForceZero declaration in wolfip.h. This
+      # object is what failed here before: it compiles against whichever
+      # wolfSSL the distribution packages, whose header chain differs from
+      # the source build linux.yml uses, so it is the one environment that
+      # catches a missing include.
+      - name: ESP object builds against the packaged wolfSSL
+        run: make build/esp/wolfip.o
+
       # Informational, not a gate. IPv6 still carries deliberate stubs, so
       # 100% function coverage is not achievable yet; the enforced gate
       # remains the one on src/wolfip.c in wolfip-autocov.yml.
