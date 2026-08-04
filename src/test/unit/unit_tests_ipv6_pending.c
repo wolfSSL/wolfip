@@ -48,31 +48,12 @@
  * ========================================================================= */
 #if WOLFIP_IPV6_HAVE_ICMP6
 
-/* Message types, RFC 4443 sections 4 to 8. */
-START_TEST(test_icmp6_echo_request_is_answered_with_echo_reply)
-{
-    /* Type 128 in, type 129 out, with identifier and sequence number
-     * copied verbatim and the payload echoed unchanged (RFC 4443 s4.2). */
-    ck_abort_msg("pending: ICMPv6 echo");
-}
-END_TEST
+/* Echo Request and Reply, and the receive checksum, are implemented and
+ * have real tests in unit_tests_ipv6_icmp.c. What remains here is the
+ * error-message half of RFC 4443. */
 
-START_TEST(test_icmp6_echo_reply_swaps_source_and_destination)
-{
-    /* The reply's source must be the address the request was sent to, so a
-     * request to a multicast group must be answered from a unicast address
-     * of the receiving interface, never from the group itself. */
-    ck_abort_msg("pending: ICMPv6 echo source selection");
-}
-END_TEST
 
-START_TEST(test_icmp6_checksum_is_verified_on_receive)
-{
-    /* RFC 4443 s2.3: a message with a bad checksum is silently discarded.
-     * The checksum covers the pseudo-header, unlike ICMPv4. */
-    ck_abort_msg("pending: ICMPv6 checksum verification");
-}
-END_TEST
+
 
 START_TEST(test_icmp6_error_is_not_sent_in_response_to_an_error)
 {

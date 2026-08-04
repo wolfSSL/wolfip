@@ -55,6 +55,14 @@
 #define IP6_NEXTHDR_NONE    59
 #define IP6_NEXTHDR_DSTOPTS 60
 
+/* ICMPv6 message types (RFC 4443 sections 4.1 and 4.2). */
+#define ICMP6_ECHO_REQUEST 128
+#define ICMP6_ECHO_REPLY   129
+
+/* An Echo message carries type, code and checksum, then an identifier and a
+ * sequence number: eight bytes before any payload. */
+#define ICMP6_ECHO_MIN_LEN 8
+
 /* Minimum bytes an upper-layer header needs before it can be parsed. */
 #define IP6_MIN_TCP_LEN 20
 #define IP6_MIN_UDP_LEN 8
@@ -324,6 +332,9 @@ static uint32_t ip6_upper_min_len(uint8_t next_hdr)
     }
 }
 
+static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
+                        struct wolfIP_ip6_packet *pkt, uint32_t len);
+
 /* Validate an inbound IPv6 packet.
  *
  * Returns IP6_ACCEPTED when the header is well formed and carries an
@@ -396,8 +407,11 @@ static int ip6_recv(struct wolfIP *s, unsigned int if_idx,
     if (payload_len < min_upper)
         return IP6_DROP_SHORT_TRANSPORT;
 
-    /* Upper-layer delivery arrives with the socket phase. The header is
-     * fully validated at this point and the payload bounds are known good. */
+    /* ICMPv6 is handled in the stack itself and needs no socket. Everything
+     * else waits for the socket phase. The header is fully validated at this
+     * point and the payload bounds are known good. */
+    if (pkt->next_hdr == IP6_NEXTHDR_ICMPV6)
+        icmp6_input(s, if_idx, pkt, len);
     return IP6_ACCEPTED;
 }
 
@@ -487,4 +501,135 @@ static inline int ip6_output_add_header(struct wolfIP *s, unsigned int if_idx,
     (void)nexthop_mac;
 #endif
     return 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* ICMPv6                                                                 */
+/* ---------------------------------------------------------------------- */
+
+/* IPv6 counterpart of wolfIP_if_for_local_ip(): which interface holds this
+ * address, and is it one of ours at all? Same shape as the IPv4 helper, and
+ * like it this searches every interface rather than only the one the packet
+ * arrived on - the weak end-system model of RFC 1122 section 3.3.4.2, which
+ * is what the IPv4 path already implements.
+ *
+ * Once Neighbor Discovery lands this will also need to honour the zone of a
+ * link-local address (RFC 4007): fe80::1 on one interface is a different
+ * address from fe80::1 on another. */
+static unsigned int wolfIP_if_for_local_ip6(struct wolfIP *s, const ip6 *addr,
+                                            int *found)
+{
+    struct wolfIP_ifaddr_info info;
+    unsigned int i;
+
+    if (found)
+        *found = 0;
+    if (!s || !addr)
+        return 0;
+    for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
+        unsigned int count = wolfIP_ifaddr_count(s, i, AF_INET6);
+        unsigned int j;
+
+        for (j = 0; j < count; j++) {
+            if (wolfIP_ifaddr_get(s, i, AF_INET6, j, &info) != 0)
+                continue;
+            if (ip6_cmp(&info.v6, addr) == 0) {
+                if (found)
+                    *found = 1;
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+
+/* ICMPv6 receive path. Deliberately laid out like icmp_input() above it:
+ * length checks, then the checksum, then one arm per message type, with the
+ * echo reply built in place over the request.
+ *
+ * Only Echo is handled so far. That is useful on its own because it needs
+ * neither sockets nor Neighbor Discovery - the reply goes back to the source
+ * MAC of the request, exactly as the IPv4 path does - and it gives
+ * ip6_output_add_header() its first production caller.
+ *
+ * Not handled yet, each with its requirement test already written in
+ * unit_tests_ipv6_pending.c: the error messages of RFC 4443 sections 3.1 to
+ * 3.4, and Echo Requests addressed to a multicast group, which need a
+ * unicast source chosen per RFC 4443 section 4.2.
+ *
+ * Unlike icmp_input() there is no wolfIP_filter_notify_icmp() call: the
+ * packet filter has no IPv6 hooks yet. It belongs here when it grows them.
+ */
+static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
+                        struct wolfIP_ip6_packet *pkt, uint32_t len)
+{
+    struct wolfIP_icmp6_packet *icmp = (struct wolfIP_icmp6_packet *)pkt;
+    uint32_t payload_len = ee16(pkt->payload_len);
+    uint8_t peer_mac[6];
+    ip6 src;
+    ip6 dst;
+
+    /* validate minimum ICMPv6 packet length */
+    if (len < sizeof(struct wolfIP_icmp6_packet))
+        return;
+    /* validate payload_len covers at least the ICMPv6 header */
+    if (payload_len < IP6_MIN_ICMPV6_LEN)
+        return;
+    /* validate payload_len doesn't exceed actual received data */
+    if (len < ((uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + payload_len))
+        return;
+    /* validate ICMPv6 checksum before processing (RFC 4443 section 2.3).
+     * Unlike ICMPv4 this covers the IPv6 pseudo-header. */
+    if (ip6_verify_transport_checksum(pkt) != 0)
+        return;
+
+    ip6_hdr_get_src(pkt, &src);
+    ip6_hdr_get_dst(pkt, &dst);
+
+    if (icmp->type == ICMP6_ECHO_REPLY) {
+        /* icmp_input() hands this to icmp_try_recv() for delivery to an
+         * application ICMP socket. There is no IPv6 socket yet, so the reply
+         * is consumed here; answering it would loop between two hosts. */
+        return;
+    }
+    if (icmp->type == ICMP6_ECHO_REQUEST) {
+        int dst_match = 0;
+
+        /* An Echo needs identifier and sequence as well as the header. */
+        if (payload_len < ICMP6_ECHO_MIN_LEN)
+            return;
+        /* Nowhere to send a reply, and :: as a source is reserved for
+         * duplicate address detection (RFC 4862 section 5.4.2). */
+        if (ip6_is_unspecified(&src))
+            return;
+        /* Same guard as the ICMPv4 arm, for the same reason: only reply to
+         * requests destined to one of our own addresses. Without it an
+         * L2-adjacent attacker can address a frame to our MAC with an
+         * arbitrary destination and have us emit a reply with a source of
+         * their choosing. This also declines multicast destinations, which
+         * need a unicast source selected explicitly. */
+        (void)wolfIP_if_for_local_ip6(s, &dst, &dst_match);
+        if (!dst_match)
+            return;
+
+        /* The Ethernet header is about to be rewritten, so keep the
+         * requester's address first. */
+        memcpy(peer_mac, pkt->eth.src, 6);
+
+        /* Reply in place, as icmp_input() does: the identifier, sequence
+         * number and payload are already where they belong and are left
+         * untouched. Source and destination swap, so the reply comes from
+         * the address that was pinged. */
+        icmp->type = ICMP6_ECHO_REPLY;
+        icmp->code = 0;
+        ip6_output_add_header(s, if_idx, pkt, &dst, &src, IP6_NEXTHDR_ICMPV6,
+                              (uint16_t)payload_len, IP6_HOP_LIMIT_DEFAULT,
+                              peer_mac);
+
+        /* Send exactly the packet, never any Ethernet padding that arrived
+         * with the request. */
+        wolfIP_ll_send_frame(s, if_idx, pkt,
+                             (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) +
+                             payload_len);
+    }
 }
