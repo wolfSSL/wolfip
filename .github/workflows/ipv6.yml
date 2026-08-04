@@ -45,19 +45,26 @@ jobs:
           ./build/test/unit
 
       # The IPv4-only build must be completely unaffected by the IPv6 work.
-      # This is the regression that matters most: every existing port builds
-      # without WOLFIP_IPV6 defined.
+      # This is the regression that matters most.
+      #
+      # Builds the library and the unit tests rather than the full `make`.
+      # The default target also builds the ESP, wolfGuard and supplicant
+      # example binaries, which need a wolfSSL built from source with the
+      # right options - linux.yml installs one from the nightly snapshot for
+      # exactly that reason. Against the apt libwolfssl-dev used here,
+      # src/wolfesp.c fails on an undeclared wc_ForceZero, which has nothing
+      # to do with IPv6 and is already covered by linux.yml.
       - name: IPv4-only build is unchanged
         run: |
           make clean
-          make
+          make libwolfip.so
           make unit
           ./build/test/unit
 
       - name: Library builds with IPv6 enabled
         run: |
           make clean
-          make EXTRA_CFLAGS="-DWOLFIP_IPV6=1"
+          make libwolfip.so EXTRA_CFLAGS="-DWOLFIP_IPV6=1"
 
       # Informational, not a gate. IPv6 still carries deliberate stubs, so
       # 100% function coverage is not achievable yet; the enforced gate
