@@ -1,0 +1,95 @@
+name: wolfIP IPv6
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  ipv6-unit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential check gcovr libwolfssl-dev
+
+      # The IPv6 addressing layer lives in wolfip6.h, which is included
+      # unconditionally, so it is already covered by the default `make unit`
+      # in linux.yml. This job covers everything that needs the IPv6 stack
+      # itself compiled in.
+      - name: Unit tests with IPv6 enabled
+        run: |
+          make clean
+          make unit-ipv6
+          ./build/test/unit
+
+      - name: Unit tests with IPv6 enabled (ASan)
+        run: |
+          make clean
+          make unit-ipv6-asan
+          ./build/test/unit
+
+      - name: Unit tests with IPv6 enabled (UBSan)
+        run: |
+          make clean
+          make unit-ipv6-ubsan
+          ./build/test/unit
+
+      # The IPv4-only build must be completely unaffected by the IPv6 work.
+      # This is the regression that matters most: every existing port builds
+      # without WOLFIP_IPV6 defined.
+      - name: IPv4-only build is unchanged
+        run: |
+          make clean
+          make
+          make unit
+          ./build/test/unit
+
+      - name: Library builds with IPv6 enabled
+        run: |
+          make clean
+          make EXTRA_CFLAGS="-DWOLFIP_IPV6=1"
+
+      # Informational, not a gate. IPv6 still carries deliberate stubs, so
+      # 100% function coverage is not achievable yet; the enforced gate
+      # remains the one on src/wolfip.c in wolfip-autocov.yml.
+      - name: IPv6 coverage report
+        run: |
+          make clean
+          make autocov-ipv6
+          gcovr -r . --exclude "src/test/unit/.*" \
+            --gcov-ignore-parse-errors=all --json -o build/coverage/ipv6.json
+          python3 - <<'PY'
+          import json
+          with open("build/coverage/ipv6.json", encoding="utf-8") as f:
+              data = json.load(f)
+          for name in ("src/wolfip6.c", "wolfip6.h"):
+              entry = next((e for e in data.get("files", [])
+                            if e.get("file", "").endswith(name)), None)
+              if entry is None:
+                  print(f"{name}: no coverage data")
+                  continue
+              fns = entry.get("functions", [])
+              if not fns:
+                  print(f"{name}: no function data")
+                  continue
+              covered = sum(1 for fn in fns if fn.get("execution_count", 0) > 0)
+              print(f"{name}: {covered}/{len(fns)} functions "
+                    f"({covered * 100.0 / len(fns):.2f}%)")
+              for fn in fns:
+                  if fn.get("execution_count", 0) == 0:
+                      print("   uncovered:", fn.get("name"))
+          PY
+
+      # Surfaces how much requirement-derived test material is still switched
+      # off, so the pending set cannot quietly rot.
+      - name: Pending requirement tests
+        run: make unit-ipv6-pending-count
