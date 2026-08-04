@@ -730,6 +730,28 @@ build/test/wolfip_forwarding.o: src/wolfip.c
 	@$(CC) $(CFLAGS) -DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1 -c $< -o $@
 
 build/test/test_ttl_expired.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
+# IPv6 end-to-end ping test. Needs its own wolfip object because
+# WOLFIP_IPV6 has to reach wolfip.h, which is included before config.h.
+build/ipv6/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (ipv6)"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test/test_ipv6_ping.o: src/test/test_ipv6_ping.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test-ipv6-ping: build/ipv6/wolfip.o build/test/test_ipv6_ping.o $(NETDEV_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-ping-test
+ipv6-ping-test: build/test-ipv6-ping
+	@echo "[RUN] $< --selftest (requires root)"
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-ping-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-ipv6-ping --selftest
+
 build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwarding.o $(WOLFIP_TFTP_OBJ)
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
