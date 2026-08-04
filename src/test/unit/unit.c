@@ -41,6 +41,7 @@
 #include "unit_tests_ipv6_addr.c"
 #include "unit_tests_ipv6_hdr.c"
 #include "unit_tests_ipv6_recv.c"
+#include "unit_tests_ipv6_icmp.c"
 #include "unit_tests_ipv6_pending.c"
 
 Suite *wolf_suite(void)
@@ -1094,13 +1095,19 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ip6_demux_ignores_frames_for_other_hosts);
     tcase_add_test(tc_proto, test_ip6_demux_survives_a_truncated_frame);
     tcase_add_test(tc_proto, test_ip6_ethertype_does_not_disturb_ipv4_or_arp);
+    tcase_add_test(tc_proto, test_icmp6_echo_request_is_answered);
+    tcase_add_test(tc_proto, test_icmp6_echo_request_with_no_payload_is_answered);
+    tcase_add_test(tc_proto, test_icmp6_echo_to_link_local_is_answered_from_it);
+    tcase_add_test(tc_proto, test_icmp6_echo_with_bad_checksum_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_to_an_address_that_is_not_ours_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_from_unspecified_source_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_reply_does_not_generate_another_reply);
+    tcase_add_test(tc_proto, test_icmp6_unhandled_types_are_ignored_without_replying);
+    tcase_add_test(tc_proto, test_icmp6_truncated_echo_is_ignored);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
 #if WOLFIP_IPV6_HAVE_ICMP6
-    tcase_add_test(tc_proto, test_icmp6_echo_request_is_answered_with_echo_reply);
-    tcase_add_test(tc_proto, test_icmp6_echo_reply_swaps_source_and_destination);
-    tcase_add_test(tc_proto, test_icmp6_checksum_is_verified_on_receive);
     tcase_add_test(tc_proto, test_icmp6_error_is_not_sent_in_response_to_an_error);
     tcase_add_test(tc_proto, test_icmp6_error_is_not_sent_for_multicast_destinations);
     tcase_add_test(tc_proto, test_icmp6_error_quotes_as_much_as_fits_in_min_mtu);
