@@ -482,6 +482,83 @@ struct wolfIP_sockaddr_ll {
 typedef struct wolfIP_sockaddr_ll wolfIP_sockaddr_ll;
 #endif
 
+/* AF_INET6 is not guaranteed to exist on a bare-metal target, and its value
+ * is not the same everywhere: 10 on Linux, 28 on FreeBSD, 30 on macOS. When
+ * a system header supplies one it wins; this is only the fallback, and it
+ * matters solely for values crossing the wolfIP API boundary, never on the
+ * wire. */
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
+
+/* Per-interface address list.
+ *
+ * struct ipconf above holds the *primary* IPv4 address of an interface and
+ * keeps doing so: it is reached by every board port and by wolfIP_ipconfig_*,
+ * and none of that changes. This list is additive - it holds the additional
+ * addresses, meaning IPv4 aliases and every IPv6 address. The primary is
+ * never copied into it, so the two cannot drift apart.
+ *
+ * Index 0 of an interface's IPv4 list is therefore always the primary, and
+ * higher indices are aliases in insertion order.
+ *
+ * WOLFIP_IF_CONF_MAX caps the total per interface, primary included. It is 1
+ * unless WOLFIP_IF_MULTICONF is enabled, so with the feature off these calls
+ * still work but an interface holds exactly one address and struct wolfIP
+ * does not grow at all. IPv6 requires the feature, because a link-local
+ * address always coexists with any global one; IPv4 aliasing is the same
+ * machinery and is available without IPv6.
+ */
+#define WOLFIP_IFADDR_PREFERRED  0
+#define WOLFIP_IFADDR_TENTATIVE  1  /* IPv6: duplicate address detection */
+#define WOLFIP_IFADDR_DEPRECATED 2  /* IPv6: preferred lifetime expired */
+
+#define WOLFIP_IFADDR_FLAG_PRIMARY   0x01
+#define WOLFIP_IFADDR_FLAG_LINKLOCAL 0x02
+#define WOLFIP_IFADDR_FLAG_SLAAC     0x04
+#define WOLFIP_IFADDR_FLAG_DHCP      0x08
+
+struct wolfIP_ifaddr_info {
+    uint16_t family;      /* AF_INET or AF_INET6 */
+    uint8_t  if_idx;
+    uint8_t  prefix_len;
+    uint8_t  state;       /* WOLFIP_IFADDR_* */
+    uint8_t  flags;       /* WOLFIP_IFADDR_FLAG_* */
+    ip4      v4;          /* valid when family == AF_INET */
+    ip6      v6;          /* valid when family == AF_INET6 */
+    uint32_t valid_lifetime;      /* seconds; 0 means unlimited */
+    uint32_t preferred_lifetime;  /* seconds; 0 means unlimited */
+};
+
+/* Add an address. Returns 0, or negative on a bad argument, a duplicate, or
+ * when the interface has reached WOLFIP_IF_CONF_MAX. Adding the first IPv4
+ * address of an interface sets the primary, so a single-address build is
+ * fully usable through this API alone. */
+int wolfIP_ifaddr_add4(struct wolfIP *s, unsigned int if_idx, ip4 addr,
+                       uint8_t prefix_len);
+int wolfIP_ifaddr_add6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
+                       uint8_t prefix_len);
+
+/* Remove an address. Returns 0, or negative if it is not configured on that
+ * interface. Removing the primary does not disturb the aliases. */
+int wolfIP_ifaddr_del4(struct wolfIP *s, unsigned int if_idx, ip4 addr);
+int wolfIP_ifaddr_del6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr);
+
+/* Number of addresses of `family` on an interface. Zero for a bad argument,
+ * an unknown family, or an unconfigured interface. */
+unsigned int wolfIP_ifaddr_count(struct wolfIP *s, unsigned int if_idx,
+                                 int family);
+
+/* Fetch the index'th address of `family`. Returns 0 on success. */
+int wolfIP_ifaddr_get(struct wolfIP *s, unsigned int if_idx, int family,
+                      unsigned int index, struct wolfIP_ifaddr_info *out);
+
+/* Is this IPv4 address configured on any interface? Returns 1 and, when
+ * if_idx is non-NULL, the owning interface. Aliases count: an address that
+ * did not would be decorative, since inbound traffic to it would be
+ * dropped. IPADDR_ANY is never local. */
+int wolfIP_ifaddr_is_local4(struct wolfIP *s, ip4 addr, unsigned int *if_idx);
+
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol);
 int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr,
                      socklen_t addrlen);

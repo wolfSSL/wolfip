@@ -833,6 +833,7 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_dns_edges.c \
 	src/test/unit/unit_tests_misc_edges.c \
 	src/test/unit/unit_tests_vlan.c \
+	src/test/unit/unit_tests_ifaddr.c \
 	src/test/unit/unit_tests_ipv6_addr.c \
 	src/test/unit/unit_tests_ipv6_hdr.c \
 	src/test/unit/unit_tests_ipv6_recv.c \
@@ -852,6 +853,15 @@ unit-multicast: clean-unit unit
 
 unit-vlan: CFLAGS+=-DWOLFIP_VLAN=1 -DWOLFIP_MAX_INTERFACES=6
 unit-vlan: clean-unit unit
+
+# Multiple addresses per interface without IPv6: IPv4 aliasing uses the same
+# machinery, so the feature is useful and must be tested on its own.
+unit-multiconf: CFLAGS+=-DWOLFIP_IF_MULTICONF=1
+unit-multiconf: clean-unit unit
+
+unit-multiconf-asan: CFLAGS+=-DWOLFIP_IF_MULTICONF=1 -fsanitize=address
+unit-multiconf-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-multiconf-asan: clean-unit build/test/unit
 
 # IPv6. WOLFIP_IPV6 must be passed on the command line rather than set only in
 # config.h: wolfip.c includes wolfip.h *before* config.h, so a macro that
@@ -1210,6 +1220,7 @@ clean-test-wolfguard-interop:
 
 .PHONY: clean all static cppcheck cov autocov autocov-multicast cov-multicast unit-multicast unit-vlan cov-vlan autocov-vlan unit-asan unit-ubsan unit-leaksan clean-unit \
         unit-ipv6 unit-ipv6-asan unit-ipv6-ubsan unit-ipv6-leaksan cov-ipv6 autocov-ipv6 \
+        unit-multiconf unit-multiconf-asan \
         unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \

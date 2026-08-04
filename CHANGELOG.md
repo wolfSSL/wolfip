@@ -20,5 +20,5 @@ Initial public wolfIP release.
 ## Unreleased
 
 - IPv6 groundwork (`WOLFIP_IPV6`, off by default): the `ip6` address type with scope/type predicates, prefix operations and RFC 5952 text conversion; IPv6 header encapsulation and parsing with the RFC 8200 40-byte pseudo-header checksum; ethertype and multicast MAC demux. Upper-layer delivery, ICMPv6, Neighbor Discovery, SLAAC and DHCPv6 are not implemented yet.
-- New `WOLFIP_IF_MULTICONF` configuration knob reserving multiple IP configurations per interface, required by IPv6 and off by default.
+- New `WOLFIP_IF_MULTICONF` feature (off by default): several addresses per interface, via `wolfIP_ifaddr_add4()` / `add6()` / `del4()` / `del6()` / `count()` / `get()` / `is_local4()`. Required by IPv6, and independently useful for IPv4 aliasing. `struct ipconf` still holds the primary IPv4 address of each interface, so every existing caller is unaffected and the default build does not grow.
 - Declared the integration surface for a third-party DLR implementation: `wolfIP_register_l2_handler()` and `struct wolfIP_switch_ops`. See `docs/dlr_integration.md`.

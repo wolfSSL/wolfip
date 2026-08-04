@@ -1407,6 +1407,18 @@ struct wolfIP {
     uint32_t route_generation;
     struct wolfIP_route_entry routes[WOLFIP_MAX_ROUTES];
 #endif
+#if WOLFIP_IF_MULTICONF
+    /* Additional interface addresses: IPv4 aliases and every IPv6 address.
+     * The primary IPv4 address of each interface stays in ipconf[] and is
+     * never duplicated here, so the two cannot drift apart. A flat pool
+     * shared by all interfaces, so its size grows independently of
+     * WOLFIP_MAX_INTERFACES. Compiled out entirely when the feature is off,
+     * which is why struct wolfIP does not grow in the default build. */
+    struct wolfIP_ifaddr_slot {
+        uint8_t used;
+        struct wolfIP_ifaddr_info info;
+    } ifaddr[WOLFIP_IFADDR_MAX];
+#endif
 #ifdef ETHERNET
     struct wolfIP_arp {
         uint64_t last_arp[WOLFIP_MAX_INTERFACES];
@@ -2160,13 +2172,13 @@ static unsigned int wolfIP_if_for_local_ip(struct wolfIP *s, ip4 local_ip, int *
         primary = WOLFIP_PRIMARY_IF_IDX;
     if (local_ip == IPADDR_ANY)
         return primary;
-    for (i = 0; i < s->if_count; i++) {
-        struct ipconf *conf = &s->ipconf[i];
-        if (conf->ip == local_ip) {
-            if (found)
-                *found = 1;
-            return i;
-        }
+    /* Consults the alias list as well as the primary addresses. An alias
+     * that did not resolve to its interface here would be decorative:
+     * binding a socket to it would silently pick the wrong interface. */
+    if (wolfIP_ifaddr_is_local4(s, local_ip, &i) && (i < s->if_count)) {
+        if (found)
+            *found = 1;
+        return i;
     }
     return primary;
 }
@@ -5819,6 +5831,334 @@ static struct packetsocket *wolfIP_packetsocket_from_fd(struct wolfIP *s, int so
 }
 #endif
 
+
+/* ---------------------------------------------------------------------- */
+/* Per-interface address list                                             */
+/* ---------------------------------------------------------------------- */
+
+/* Prefix length to netmask. wolfIP_prefix_mask() does this already but is
+ * compiled only with forwarding enabled, and this API is always present. */
+static uint32_t ifaddr_plen_to_mask(uint8_t prefix_len)
+{
+    if (prefix_len == 0U)
+        return 0U;
+    if (prefix_len >= 32U)
+        return 0xFFFFFFFFU;
+    return 0xFFFFFFFFU << (32U - prefix_len);
+}
+
+static int ifaddr_if_valid(struct wolfIP *s, unsigned int if_idx)
+{
+    if (!s)
+        return 0;
+    if (if_idx >= WOLFIP_MAX_INTERFACES)
+        return 0;
+    return 1;
+}
+
+/* Number of pool entries of `family` belonging to an interface. */
+static unsigned int ifaddr_pool_count(struct wolfIP *s, unsigned int if_idx,
+                                      int family)
+{
+#if WOLFIP_IF_MULTICONF
+    unsigned int n = 0;
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.if_idx != (uint8_t)if_idx)
+            continue;
+        if (s->ifaddr[i].info.family == (uint16_t)family)
+            n++;
+    }
+    return n;
+#else
+    (void)s; (void)if_idx; (void)family;
+    return 0;
+#endif
+}
+
+/* Total addresses on an interface, both families, primary included. */
+static unsigned int ifaddr_total(struct wolfIP *s, unsigned int if_idx)
+{
+    unsigned int n = 0;
+
+    if (s->ipconf[if_idx].ip != IPADDR_ANY)
+        n++;
+    n += ifaddr_pool_count(s, if_idx, AF_INET);
+    n += ifaddr_pool_count(s, if_idx, AF_INET6);
+    return n;
+}
+
+unsigned int wolfIP_ifaddr_count(struct wolfIP *s, unsigned int if_idx,
+                                 int family)
+{
+    unsigned int n;
+
+    if (!ifaddr_if_valid(s, if_idx))
+        return 0;
+    if ((family != AF_INET) && (family != AF_INET6))
+        return 0;
+    n = ifaddr_pool_count(s, if_idx, family);
+    if ((family == AF_INET) && (s->ipconf[if_idx].ip != IPADDR_ANY))
+        n++;
+    return n;
+}
+
+int wolfIP_ifaddr_get(struct wolfIP *s, unsigned int if_idx, int family,
+                      unsigned int index, struct wolfIP_ifaddr_info *out)
+{
+#if WOLFIP_IF_MULTICONF
+    unsigned int seen = 0;
+    unsigned int i;
+#endif
+
+    if (!ifaddr_if_valid(s, if_idx) || !out)
+        return -WOLFIP_EINVAL;
+    if ((family != AF_INET) && (family != AF_INET6))
+        return -WOLFIP_EINVAL;
+
+    /* Index 0 of the IPv4 list is the primary, when there is one. */
+    if ((family == AF_INET) && (s->ipconf[if_idx].ip != IPADDR_ANY)) {
+        if (index == 0) {
+            uint8_t plen = 0;
+
+            memset(out, 0, sizeof(*out));
+            out->family = AF_INET;
+            out->if_idx = (uint8_t)if_idx;
+            out->v4 = s->ipconf[if_idx].ip;
+            if (wolfIP_mask_prefix_len(s->ipconf[if_idx].mask, &plen) != 0)
+                plen = 0;
+            out->prefix_len = plen;
+            out->state = WOLFIP_IFADDR_PREFERRED;
+            out->flags = WOLFIP_IFADDR_FLAG_PRIMARY;
+            return 0;
+        }
+        index--;
+    }
+
+#if WOLFIP_IF_MULTICONF
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.if_idx != (uint8_t)if_idx)
+            continue;
+        if (s->ifaddr[i].info.family != (uint16_t)family)
+            continue;
+        if (seen == index) {
+            memcpy(out, &s->ifaddr[i].info, sizeof(*out));
+            return 0;
+        }
+        seen++;
+    }
+#endif
+    return -WOLFIP_EINVAL;
+}
+
+int wolfIP_ifaddr_is_local4(struct wolfIP *s, ip4 addr, unsigned int *if_idx)
+{
+    unsigned int i;
+
+    if (!s || (addr == IPADDR_ANY))
+        return 0;
+    for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
+        if (s->ipconf[i].ip == addr) {
+            if (if_idx)
+                *if_idx = i;
+            return 1;
+        }
+    }
+#if WOLFIP_IF_MULTICONF
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.family != AF_INET)
+            continue;
+        if (s->ifaddr[i].info.v4 == addr) {
+            if (if_idx)
+                *if_idx = s->ifaddr[i].info.if_idx;
+            return 1;
+        }
+    }
+#endif
+    return 0;
+}
+
+#if WOLFIP_IF_MULTICONF
+/* First unused pool slot, or -1. */
+static int ifaddr_pool_alloc(struct wolfIP *s)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            return (int)i;
+    }
+    return -1;
+}
+#endif
+
+int wolfIP_ifaddr_add4(struct wolfIP *s, unsigned int if_idx, ip4 addr,
+                       uint8_t prefix_len)
+{
+#if WOLFIP_IF_MULTICONF
+    int slot;
+#endif
+
+    if (!ifaddr_if_valid(s, if_idx))
+        return -WOLFIP_EINVAL;
+    if ((addr == IPADDR_ANY) || (prefix_len > 32U))
+        return -WOLFIP_EINVAL;
+    /* An address may live on exactly one interface. */
+    if (wolfIP_ifaddr_is_local4(s, addr, NULL))
+        return -WOLFIP_EINVAL;
+    if (ifaddr_total(s, if_idx) >= WOLFIP_IF_CONF_MAX)
+        return -WOLFIP_ENOMEM;
+
+    /* With no primary yet this becomes it, so a single-address build is
+     * fully usable through this API alone. */
+    if (s->ipconf[if_idx].ip == IPADDR_ANY) {
+        s->ipconf[if_idx].ip = addr;
+        s->ipconf[if_idx].mask = ifaddr_plen_to_mask(prefix_len);
+        return 0;
+    }
+#if WOLFIP_IF_MULTICONF
+    slot = ifaddr_pool_alloc(s);
+    if (slot < 0)
+        return -WOLFIP_ENOMEM;
+    memset(&s->ifaddr[slot].info, 0, sizeof(s->ifaddr[slot].info));
+    s->ifaddr[slot].info.family = AF_INET;
+    s->ifaddr[slot].info.if_idx = (uint8_t)if_idx;
+    s->ifaddr[slot].info.prefix_len = prefix_len;
+    s->ifaddr[slot].info.state = WOLFIP_IFADDR_PREFERRED;
+    s->ifaddr[slot].info.v4 = addr;
+    s->ifaddr[slot].used = 1;
+    return 0;
+#else
+    return -WOLFIP_ENOMEM;
+#endif
+}
+
+int wolfIP_ifaddr_del4(struct wolfIP *s, unsigned int if_idx, ip4 addr)
+{
+#if WOLFIP_IF_MULTICONF
+    unsigned int i;
+#endif
+
+    if (!ifaddr_if_valid(s, if_idx) || (addr == IPADDR_ANY))
+        return -WOLFIP_EINVAL;
+
+    if (s->ipconf[if_idx].ip == addr) {
+#if WOLFIP_IF_MULTICONF
+        /* Promote the first alias so the interface keeps a usable primary;
+         * removing the primary must not strand the aliases. */
+        for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+            if (!s->ifaddr[i].used)
+                continue;
+            if (s->ifaddr[i].info.if_idx != (uint8_t)if_idx)
+                continue;
+            if (s->ifaddr[i].info.family != AF_INET)
+                continue;
+            s->ipconf[if_idx].ip = s->ifaddr[i].info.v4;
+            s->ipconf[if_idx].mask =
+                ifaddr_plen_to_mask(s->ifaddr[i].info.prefix_len);
+            s->ifaddr[i].used = 0;
+            return 0;
+        }
+#endif
+        s->ipconf[if_idx].ip = IPADDR_ANY;
+        s->ipconf[if_idx].mask = 0;
+        return 0;
+    }
+#if WOLFIP_IF_MULTICONF
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.if_idx != (uint8_t)if_idx)
+            continue;
+        if (s->ifaddr[i].info.family != AF_INET)
+            continue;
+        if (s->ifaddr[i].info.v4 == addr) {
+            s->ifaddr[i].used = 0;
+            return 0;
+        }
+    }
+#endif
+    return -WOLFIP_EINVAL;
+}
+
+int wolfIP_ifaddr_add6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
+                       uint8_t prefix_len)
+{
+#if WOLFIP_IPV6
+    unsigned int i;
+    int slot;
+#endif
+
+    if (!ifaddr_if_valid(s, if_idx) || !addr)
+        return -WOLFIP_EINVAL;
+    if (prefix_len > 128U)
+        return -WOLFIP_EINVAL;
+#if !WOLFIP_IPV6
+    /* Nothing can hold a v6 address in this build, and saying so beats
+     * appearing to succeed. */
+    return -WOLFIP_EINVAL;
+#else
+    if (ip6_is_unspecified(addr) || ip6_is_multicast(addr))
+        return -WOLFIP_EINVAL;
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.family != AF_INET6)
+            continue;
+        if (ip6_cmp(&s->ifaddr[i].info.v6, addr) == 0)
+            return -WOLFIP_EINVAL;
+    }
+    if (ifaddr_total(s, if_idx) >= WOLFIP_IF_CONF_MAX)
+        return -WOLFIP_ENOMEM;
+    slot = ifaddr_pool_alloc(s);
+    if (slot < 0)
+        return -WOLFIP_ENOMEM;
+    memset(&s->ifaddr[slot].info, 0, sizeof(s->ifaddr[slot].info));
+    s->ifaddr[slot].info.family = AF_INET6;
+    s->ifaddr[slot].info.if_idx = (uint8_t)if_idx;
+    s->ifaddr[slot].info.prefix_len = prefix_len;
+    s->ifaddr[slot].info.state = WOLFIP_IFADDR_PREFERRED;
+    if (ip6_is_link_local(addr))
+        s->ifaddr[slot].info.flags = WOLFIP_IFADDR_FLAG_LINKLOCAL;
+    ip6_copy(&s->ifaddr[slot].info.v6, addr);
+    s->ifaddr[slot].used = 1;
+    return 0;
+#endif
+}
+
+int wolfIP_ifaddr_del6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr)
+{
+#if WOLFIP_IPV6
+    unsigned int i;
+#endif
+
+    if (!ifaddr_if_valid(s, if_idx) || !addr)
+        return -WOLFIP_EINVAL;
+#if !WOLFIP_IPV6
+    return -WOLFIP_EINVAL;
+#else
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.if_idx != (uint8_t)if_idx)
+            continue;
+        if (s->ifaddr[i].info.family != AF_INET6)
+            continue;
+        if (ip6_cmp(&s->ifaddr[i].info.v6, addr) == 0) {
+            s->ifaddr[i].used = 0;
+            return 0;
+        }
+    }
+    return -WOLFIP_EINVAL;
+#endif
+}
 
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 {

@@ -37,6 +37,7 @@
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
+#include "unit_tests_ifaddr.c"
 #include "unit_tests_ipv6_addr.c"
 #include "unit_tests_ipv6_hdr.c"
 #include "unit_tests_ipv6_recv.c"
@@ -964,6 +965,34 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ip_output_add_header);
     tcase_add_test(tc_utils, test_ip_output_add_header_icmp);
     tcase_add_test(tc_utils, test_regression_icmp_ip_len_below_header);
+
+    /* Per-interface address list. The first group runs in every build,
+     * including the default IPv4-only one. */
+    tcase_add_test(tc_utils, test_ifaddr_primary_is_the_ipconf_address);
+    tcase_add_test(tc_utils, test_ifaddr_unconfigured_interface_has_no_addresses);
+    tcase_add_test(tc_utils, test_ifaddr_add4_sets_the_primary_when_unconfigured);
+    tcase_add_test(tc_utils, test_ifaddr_add4_rejects_a_duplicate);
+    tcase_add_test(tc_utils, test_ifaddr_del4_clears_the_primary);
+    tcase_add_test(tc_utils, test_ifaddr_is_local4_matches_the_primary);
+    tcase_add_test(tc_utils, test_ifaddr_capacity_is_one_without_multiconf);
+    tcase_add_test(tc_utils, test_ifaddr_rejects_invalid_arguments);
+    tcase_add_test(tc_utils, test_ifaddr_v6_requires_ipv6_enabled);
+#if WOLFIP_IF_MULTICONF
+    tcase_add_test(tc_utils, test_ifaddr_multiple_ipv4_addresses_on_one_interface);
+    tcase_add_test(tc_utils, test_ifaddr_aliases_are_local_addresses);
+    tcase_add_test(tc_utils, test_ifaddr_alias_removal_leaves_the_others);
+    tcase_add_test(tc_utils, test_ifaddr_clearing_the_primary_keeps_aliases);
+    tcase_add_test(tc_utils, test_ifaddr_per_interface_capacity_is_enforced);
+    tcase_add_test(tc_utils, test_ifaddr_interfaces_do_not_share_addresses);
+    tcase_add_test(tc_utils, test_ifaddr_the_same_alias_may_not_be_added_twice);
+    tcase_add_test(tc_utils, test_ifaddr_pool_is_shared_across_interfaces);
+    tcase_add_test(tc_utils, test_ifaddr_socket_binds_to_an_alias_on_the_right_interface);
+#endif
+#if WOLFIP_IPV6
+    tcase_add_test(tc_utils, test_ifaddr_v6_addresses_are_independent_of_v4);
+    tcase_add_test(tc_utils, test_ifaddr_v6_duplicate_is_rejected_and_removal_works);
+    tcase_add_test(tc_utils, test_ifaddr_v6_and_v4_share_the_per_interface_budget);
+#endif
 
     /* IPv6 addressing (wolfip6.h). Not gated on WOLFIP_IPV6: the header holds
      * only inline helpers and is always included, so these run in the default
