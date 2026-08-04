@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# wolfHAL commit the wolfHAL jobs build against. CI passes this in from the
+# workflow; the default keeps local runs on the same pinned HAL.
+WOLFHAL_REF="${WOLFHAL_REF:-5302069e8d7baacefeeada94c4c8e5ef7426c1db}"
+
 usage() {
   cat <<'EOF'
 Usage: tools/scripts/run-m33mu-ci-in-container.sh <workflow> [job]
@@ -39,11 +43,33 @@ ensure_repo() {
   fi
 }
 
+ensure_repo_ref() {
+  local name="$1"
+  local url="$2"
+  local ref="$3"
+  if [ ! -d "../${name}/.git" ]; then
+    git init -q "../${name}"
+    git -C "../${name}" remote add origin "${url}"
+    git -C "../${name}" fetch --depth 1 origin "${ref}"
+    git -C "../${name}" checkout -q FETCH_HEAD
+  fi
+}
+
 build_echo() {
   make -C src/port/stm32h563 clean \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   make -C src/port/stm32h563 \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+}
+
+build_echo_wolfhal() {
+  ensure_repo_ref wolfHAL https://github.com/wolfSSL/wolfHAL.git "${WOLFHAL_REF}"
+  make -C src/port/stm32h563 clean TZEN=0 ENABLE_WOLFHAL=1 BOARD=stm32h563zi_nucleo \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+  make -C src/port/stm32h563 TZEN=0 ENABLE_WOLFHAL=1 BOARD=stm32h563zi_nucleo \
+    CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
+  strings src/port/stm32h563/app.bin > /tmp/wolfip-app.strings
+  grep -Fq "Initializing Ethernet (wolfHAL" /tmp/wolfip-app.strings
 }
 
 build_full() {
@@ -437,6 +463,39 @@ job_echo_freertos() {
   trap - EXIT
 }
 
+job_echo_wolfhal() {
+  echo "==> Building stm32h563_m33mu_echo_wolfhal"
+  build_echo_wolfhal
+  echo "==> Running stm32h563_m33mu_echo_wolfhal"
+  trap cleanup_runtime EXIT
+  setup_tap_and_dnsmasq
+  tcpdump -i tap0 -nn -s0 -U -w /tmp/echo.pcap > /tmp/tcpdump.log 2>&1 &
+  printf '%s\n' "$!" > /tmp/tcpdump.pid
+  start_m33mu 180 --quit-on-faults
+  local ip
+  ip="$(wait_for_lease 90)"
+  echo "Leased IP: ${ip}"
+  local ok=0
+  for _ in $(seq 1 60); do
+    check_alive
+    if timeout 10s bash -lc "printf 'wolfip-wolfhal-echo' | nc -w 5 '${ip}' 7" \
+        | tee /tmp/echo.log | grep -q "^wolfip-wolfhal-echo$"; then
+      ok=1
+      break
+    fi
+    sleep 0.5
+  done
+  [ "${ok}" -eq 1 ] || {
+    echo "wolfHAL echo test failed." >&2
+    tail -n 200 /tmp/m33mu.log || true
+    tail -n 200 /tmp/echo.log || true
+    exit 1
+  }
+  echo "wolfHAL echo test succeeded."
+  cleanup_runtime
+  trap - EXIT
+}
+
 job_ssh_tzen() {
   echo "==> Building stm32h563_m33mu_ssh_tzen"
   build_ssh_tzen
@@ -472,6 +531,7 @@ run_job() {
   case "$1" in
     stm32h563_m33mu_echo) job_echo ;;
     stm32h563_m33mu_echo_freertos) job_echo_freertos ;;
+    stm32h563_m33mu_echo_wolfhal) job_echo_wolfhal ;;
     stm32h563_m33mu_full) job_full ;;
     stm32h563_m33mu_https_tls13) job_https_tls13 ;;
     stm32h563_m33mu_https_freertos) job_https_freertos ;;
@@ -492,6 +552,9 @@ run_workflow() {
       ;;
     stm32h563-m33mu-freertos)
       run_job stm32h563_m33mu_echo_freertos
+      ;;
+    stm32h563-m33mu-wolfhal)
+      run_job stm32h563_m33mu_echo_wolfhal
       ;;
     stm32h563-m33mu-ssh-tzen)
       run_job stm32h563_m33mu_ssh_tzen

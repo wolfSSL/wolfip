@@ -24,7 +24,14 @@
 #include <string.h>
 #include "config.h"
 #include "wolfip.h"
+#ifdef ENABLE_WOLFHAL
+#include "board.h"
+#include "wolfhal_eth.h"
+#include <wolfHAL/uart/uart.h>
+#include <wolfHAL/rng/rng.h>
+#else
 #include "stm32_eth.h"
+#endif
 
 #ifdef WOLFIP_USE_FREERTOS
 #include "FreeRTOS.h"
@@ -300,12 +307,16 @@ static int https_status_handler(struct httpd *httpd, struct http_client *hc,
 #define RNG_SR_SEIS           (1u << 6)
 
 static struct wolfIP *IPStack;
+#ifdef ENABLE_WOLFHAL
+static struct wolfhal_eth_ctx eth_ctx;
+#endif
 #ifndef WOLFIP_USE_FREERTOS
 static int listen_fd = -1;
 static int client_fd = -1;
 static uint8_t rx_buf[RX_BUF_SIZE];
 #endif
 
+#ifndef ENABLE_WOLFHAL
 static void rng_init(void)
 {
     uint32_t rng_cr;
@@ -364,9 +375,15 @@ static int rng_get_word(uint32_t *out)
     *out = RNG_DR;
     return 0;
 }
+#endif /* !ENABLE_WOLFHAL */
 
 int custom_rand_gen_block(unsigned char *output, unsigned int sz)
 {
+#ifdef ENABLE_WOLFHAL
+    if (whal_Rng_Generate(&g_whalRng, output, (size_t)sz) != WHAL_SUCCESS)
+        return -1;
+    return 0;
+#else
     uint32_t word;
 
     while (sz >= 4u) {
@@ -392,14 +409,22 @@ int custom_rand_gen_block(unsigned char *output, unsigned int sz)
     }
 
     return 0;
+#endif /* ENABLE_WOLFHAL */
 }
 
 uint32_t wolfIP_getrandom(void)
 {
+#ifdef ENABLE_WOLFHAL
+    uint32_t word = 0u;
+
+    (void)whal_Rng_Generate(&g_whalRng, &word, sizeof(word));
+    return word;
+#else
     uint32_t word = 0u;
 
     (void)rng_get_word(&word);
     return word;
+#endif
 }
 
 /* Simple delay */
@@ -446,6 +471,7 @@ static void led_toggle(void)
 #define USART3_CR3 (*(volatile uint32_t *)(USART3_BASE + 0x08u))
 #define USART3_PRESC (*(volatile uint32_t *)(USART3_BASE + 0x2Cu))
 
+#ifndef ENABLE_WOLFHAL
 /* Initialize USART3 for debug output (115200 baud @ 64MHz HSI) */
 static void uart_init(void)
 {
@@ -486,19 +512,41 @@ static void uart_init(void)
     USART3_CR1 |= (1u << 0);  /* UE */
     delay(100);
 }
+#endif /* !ENABLE_WOLFHAL */
 
 static void uart_putc(char c)
 {
+#ifdef ENABLE_WOLFHAL
+    (void)whal_Uart_Send(&g_whalUart, &c, 1);
+#else
     while ((USART3_ISR & (1u << 7)) == 0) { }  /* Wait for TXE */
     USART3_TDR = (uint32_t)c;
+#endif
 }
 
 void uart_puts(const char *s)
 {
+#ifdef ENABLE_WOLFHAL
+    /* Send whole runs between newlines in a single wolfHAL call, translating
+     * LF -> CRLF at run boundaries (matching the per-char path below). */
+    while (*s) {
+        size_t len = 0;
+        while (s[len] && s[len] != '\n')
+            len++;
+        if (len)
+            (void)whal_Uart_Send(&g_whalUart, s, len);
+        if (s[len] == '\n') {
+            (void)whal_Uart_Send(&g_whalUart, "\r\n", 2);
+            len++;
+        }
+        s += len;
+    }
+#else
     while (*s) {
         if (*s == '\n') uart_putc('\r');
         uart_putc(*s++);
     }
+#endif
 }
 
 void wolfssl_tls13_dbg_hex(const char *tag, const unsigned char *buf,
@@ -627,6 +675,7 @@ static void uart_putip4(ip4 ip)
     uart_putdec(ip & 0xFF);
 }
 
+#ifndef ENABLE_WOLFHAL
 /* Configure GPIO pin for Ethernet alternate function (AF11) */
 static void gpio_eth_pin(uint32_t base, uint32_t pin)
 {
@@ -702,6 +751,7 @@ static void eth_gpio_init(void)
     gpio_eth_pin(GPIOG_BASE, 11);  /* TX_EN */
     gpio_eth_pin(GPIOG_BASE, 13);  /* TXD0 */
 }
+#endif /* !ENABLE_WOLFHAL */
 
 #ifdef ENABLE_TLS_CLIENT
 /* Callback for TLS client responses */
@@ -808,6 +858,17 @@ int main(void)
     uint64_t tick = 0;
     int ret;
 
+#ifdef ENABLE_WOLFHAL
+    /* wolfHAL BSP owns all clock + peripheral bringup: clocks, GPIO, UART,
+     * RNG, system timer, Ethernet MAC + PHY. */
+    if (board_init() != WHAL_SUCCESS) {
+        while (1) { }
+    }
+
+    /* PF4 debug LED stays a driver-independent register poke. */
+    led_init();
+    led_on();  /* LED ON = Reset_Handler ran, main() started */
+#else
 #if TZEN_ENABLED
     revert_sysclk_to_hsi();
 #endif
@@ -819,6 +880,7 @@ int main(void)
     /* Initialize UART for debug output */
     uart_init();
     rng_init();
+#endif
 
     /* Blink to show UART init done */
     led_off();
@@ -849,6 +911,29 @@ int main(void)
     uart_puts("Initializing wolfIP stack...\n");
     wolfIP_init_static(&IPStack);
 
+#ifdef ENABLE_WOLFHAL
+    /* MAC + PHY are already brought up by board_init(). Wait for link,
+     * start the MAC at the negotiated speed/duplex, and bind the wolfIP
+     * device to the wolfHAL Ethernet bridge. */
+    uart_puts("Initializing Ethernet (wolfHAL, waiting for link)...\n");
+    ll = wolfIP_getdev(IPStack);
+    eth_ctx.eth = &g_whalEth;
+    eth_ctx.phy = &g_whalEthPhy;
+    ret = wolfhal_eth_init(ll, &eth_ctx);
+    if (ret < 0) {
+        uart_puts("  ERROR: wolfhal_eth_init failed (");
+        uart_puthex((uint32_t)ret);
+        uart_puts(")\n");
+    } else {
+        int mi;
+        uart_puts("  MAC: ");
+        for (mi = 0; mi < 6; mi++) {
+            if (mi > 0) uart_puts(":");
+            uart_puthex8(ll->mac[mi]);
+        }
+        uart_puts("\n");
+    }
+#else
     /* Initialize GPIO pins for RMII - MUST happen before Ethernet clocks! */
     uart_puts("Configuring GPIO for RMII...\n");
     eth_gpio_init();
@@ -900,6 +985,7 @@ int main(void)
         }
         uart_puts("\n");
     }
+#endif /* ENABLE_WOLFHAL */
 
 #ifdef ENABLE_DOT1X
     /* Wired IEEE 802.1X EAP-TLS: authenticate at layer 2 (EAPOL/0x888E)
@@ -968,8 +1054,12 @@ int main(void)
         } else {
             uart_puts("  DHCP discover sent, waiting for lease...\n");
             /* Wait for DHCP to complete - poll frequently */
+#ifdef ENABLE_WOLFHAL
+            dhcp_start_tick = board_get_tick();
+#else
             dhcp_start_tick = tick;
-#ifdef DEBUG_H5_ETH
+#endif
+#if defined(DEBUG_H5_ETH) && !defined(ENABLE_WOLFHAL)
             {
                 uint32_t dbg_polls = 0, dbg_pkts = 0;
                 volatile uint32_t *probe_ns = (volatile uint32_t *)0x2009aa40u;
@@ -1002,13 +1092,19 @@ int main(void)
             }
 #endif
             while (!dhcp_bound(IPStack) && dhcp_client_is_running(IPStack)) {
+#ifdef ENABLE_WOLFHAL
+                /* Real millisecond tick from the SysTick BSP. */
+                tick = board_get_tick();
+                (void)wolfIP_poll(IPStack, tick);
+#else
                 /* Poll the stack - this processes received packets and sends pending data */
                 (void)wolfIP_poll(IPStack, tick);
                 /* Increment tick counter (approximate 1ms per iteration at 64MHz HSI)
                  * volatile loop ~8 cycles/iter: 8000 * 8 / 64MHz = 1ms */
                 tick++;
                 delay(8000);
-#ifdef DEBUG_H5_ETH
+#endif
+#if defined(DEBUG_H5_ETH) && !defined(ENABLE_WOLFHAL)
                 if ((tick - dhcp_start_tick) % 500 == 0) {
                     uint32_t dbg_polls = 0, dbg_pkts = 0;
                     stm32_eth_get_stats(&dbg_polls, &dbg_pkts);
@@ -1233,7 +1329,12 @@ int main(void)
 #endif
 
     for (;;) {
+#ifdef ENABLE_WOLFHAL
+        tick = board_get_tick();
+        (void)wolfIP_poll(IPStack, tick);
+#else
         (void)wolfIP_poll(IPStack, tick++);
+#endif
 
 #ifdef ENABLE_HTTPS
         /* Update HTTPS server status info for handler */

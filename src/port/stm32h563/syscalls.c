@@ -24,6 +24,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <time.h>
+#ifdef ENABLE_WOLFHAL
+#include <wolfHAL/uart/uart.h>
+#include "board.h"   /* g_whalUart for _write -> UART */
+#endif
 
 extern uint32_t _ebss;
 extern uint32_t _heap_limit;
@@ -33,7 +37,12 @@ static char *heap_end;
 int _write(int file, const char *ptr, int len)
 {
     (void)file;
+#ifdef ENABLE_WOLFHAL
+    if (len > 0)
+        whal_Uart_Send(&g_whalUart, ptr, (size_t)len);
+#else
     (void)ptr;
+#endif
     return len;
 }
 
