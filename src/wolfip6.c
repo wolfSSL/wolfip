@@ -55,9 +55,14 @@
 #define IP6_NEXTHDR_NONE    59
 #define IP6_NEXTHDR_DSTOPTS 60
 
-/* ICMPv6 message types (RFC 4443 sections 4.1 and 4.2). */
-#define ICMP6_ECHO_REQUEST 128
-#define ICMP6_ECHO_REPLY   129
+/* ICMPv6 message types (RFC 4443 sections 4.1 and 4.2, RFC 4861 section 4). */
+#define ICMP6_ECHO_REQUEST     128
+#define ICMP6_ECHO_REPLY       129
+#define ICMP6_ROUTER_SOLICIT   133
+#define ICMP6_ROUTER_ADVERT    134
+#define ICMP6_NEIGHBOR_SOLICIT 135
+#define ICMP6_NEIGHBOR_ADVERT  136
+#define ICMP6_REDIRECT         137
 
 /* An Echo message carries type, code and checksum, then an identifier and a
  * sequence number: eight bytes before any payload. */
@@ -543,6 +548,9 @@ static unsigned int wolfIP_if_for_local_ip6(struct wolfIP *s, const ip6 *addr,
     return 0;
 }
 
+static void nd6_input(struct wolfIP *s, unsigned int if_idx,
+                      struct wolfIP_ip6_packet *pkt, uint32_t payload_len);
+
 /* ICMPv6 receive path. Deliberately laid out like icmp_input() above it:
  * length checks, then the checksum, then one arm per message type, with the
  * echo reply built in place over the request.
@@ -586,6 +594,13 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
     ip6_hdr_get_src(pkt, &src);
     ip6_hdr_get_dst(pkt, &dst);
 
+    /* Neighbor Discovery is ICMPv6 but has its own validation rules, most
+     * importantly the hop limit of 255 that confines it to the local link. */
+    if ((icmp->type >= ICMP6_ROUTER_SOLICIT) &&
+            (icmp->type <= ICMP6_REDIRECT)) {
+        nd6_input(s, if_idx, pkt, payload_len);
+        return;
+    }
     if (icmp->type == ICMP6_ECHO_REPLY) {
         /* icmp_input() hands this to icmp_try_recv() for delivery to an
          * application ICMP socket. There is no IPv6 socket yet, so the reply
@@ -632,4 +647,989 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
                              (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) +
                              payload_len);
     }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Neighbor Discovery (RFC 4861) and DAD (RFC 4862 section 5.4)            */
+/* ---------------------------------------------------------------------- */
+
+/* Option types (RFC 4861 section 4.6). */
+#define ND6_OPT_SLLA   1
+#define ND6_OPT_TLLA   2
+#define ND6_OPT_PREFIX 3
+#define ND6_OPT_MTU    5
+
+/* Neighbor Advertisement flags (RFC 4861 section 4.4). */
+#define ND6_NA_ROUTER    0x80
+#define ND6_NA_SOLICITED 0x40
+#define ND6_NA_OVERRIDE  0x20
+
+/* Prefix Information flags (RFC 4861 section 4.6.2). */
+#define ND6_PREFIX_ONLINK 0x80  /* L */
+#define ND6_PREFIX_AUTO   0x40  /* A */
+
+/* Protocol constants (RFC 4861 section 10, RFC 4862 section 5.1). Values are
+ * the defaults; a Router Advertisement may override the reachable and
+ * retransmit timers, which is not implemented. */
+#define ND6_RETRANS_TIMER_MS        1000U
+#define ND6_REACHABLE_TIME_MS      30000U
+#define ND6_DELAY_FIRST_PROBE_MS    5000U
+#define ND6_MAX_MULTICAST_SOLICIT      3U
+#define ND6_MAX_UNICAST_SOLICIT        3U
+#define ND6_MAX_RTR_SOLICITATIONS      3U
+#define ND6_RTR_SOLICITATION_INTERVAL_MS 4000U
+#define ND6_DUP_ADDR_DETECT_TRANSMITS  1U
+
+/* Every Neighbor Discovery message must arrive with a hop limit of exactly
+ * 255 (RFC 4861 sections 6.1.1, 6.1.2, 7.1.1 and 7.1.2). A router cannot
+ * forward a packet and leave the hop limit at 255, so this single check is
+ * what confines Neighbor Discovery to the local link. It is the most
+ * important validation in this file. */
+#define ND6_HOP_LIMIT 255
+
+/* One periodic tick drives duplicate address detection, router solicitation
+ * retries and every cache expiry. One timer for the whole subsystem rather
+ * than one per address or per neighbour, which keeps the shared timer heap
+ * small and makes the behaviour easy to drive from a test. */
+#define ND6_TICK_MS 100U
+
+/* Neighbor Solicitation and Advertisement share a layout up to the target
+ * address; the byte at `flags` is reserved (and must be zero) in a
+ * solicitation. */
+struct PACKED nd6_msg {
+    struct wolfIP_ip6_packet ip6;
+    uint8_t type, code;
+    uint16_t csum;
+    uint8_t flags;
+    uint8_t reserved[3];
+    uint8_t target[16];
+    uint8_t options[0];
+};
+
+struct PACKED nd6_rs_msg {
+    struct wolfIP_ip6_packet ip6;
+    uint8_t type, code;
+    uint16_t csum;
+    uint32_t reserved;
+    uint8_t options[0];
+};
+
+struct PACKED nd6_ra_msg {
+    struct wolfIP_ip6_packet ip6;
+    uint8_t type, code;
+    uint16_t csum;
+    uint8_t cur_hop_limit;
+    uint8_t flags;
+    uint16_t router_lifetime;
+    uint32_t reachable_time;
+    uint32_t retrans_timer;
+    uint8_t options[0];
+};
+
+struct PACKED nd6_opt_lla {
+    uint8_t type, len;
+    uint8_t mac[6];
+};
+
+struct PACKED nd6_opt_prefix {
+    uint8_t type, len, prefix_len, flags;
+    uint32_t valid_lifetime;
+    uint32_t preferred_lifetime;
+    uint32_t reserved;
+    uint8_t prefix[16];
+};
+
+static void nd6_tick_cb(void *arg);
+
+/* ---------------------------------------------------------------------- */
+/* Option parsing                                                         */
+/* ---------------------------------------------------------------------- */
+
+/* Walk the option area, returning the first option of `want`, or NULL.
+ *
+ * Option lengths are in units of 8 octets and a length of zero is invalid
+ * (RFC 4861 section 4.6). Accepting zero makes this loop run forever on a
+ * frame an attacker controls, so it is rejected explicitly - the same class
+ * of bug as an extension-header chain with no progress. */
+static const uint8_t *nd6_find_option(const uint8_t *opts, uint32_t len,
+                                      uint8_t want)
+{
+    uint32_t off = 0;
+
+    while ((off + 2u) <= len) {
+        uint8_t type = opts[off];
+        uint32_t olen = (uint32_t)opts[off + 1] * 8u;
+
+        if (olen == 0)
+            return NULL;            /* malformed: no forward progress */
+        if ((off + olen) > len)
+            return NULL;            /* runs past the end of the message */
+        if (type == want)
+            return &opts[off];
+        off += olen;
+    }
+    return NULL;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Neighbour cache - the IPv6 counterpart of the arp_* helpers             */
+/* ---------------------------------------------------------------------- */
+
+/* Linear scan by {address, interface}, expiring stale entries lazily the way
+ * arp_neighbor_index() does. Returns the slot index or -1. */
+static int nd6_neighbor_index(struct wolfIP *s, unsigned int if_idx,
+                              const ip6 *addr)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {
+        struct nd6_neighbor *n = &s->nd6.neighbors[i];
+
+        if (n->state == 0)
+            continue;
+        if (n->if_idx != (uint8_t)if_idx)
+            continue;
+        if (ip6_cmp(&n->addr, addr) != 0)
+            continue;
+        return (int)i;
+    }
+    return -1;
+}
+
+/* Insert or refresh an entry. `mac` may be NULL to create an INCOMPLETE
+ * entry for an address whose link-layer address is still unknown.
+ *
+ * Unlike arp_store_neighbor(), which silently refuses when the table is
+ * full, this evicts the oldest entry. A full table that cannot be reclaimed
+ * means one burst of scan traffic locks out every real neighbour. */
+static int nd6_store_neighbor(struct wolfIP *s, unsigned int if_idx,
+                              const ip6 *addr, const uint8_t *mac,
+                              uint8_t state, int is_router)
+{
+    struct nd6_neighbor *n;
+    int idx = nd6_neighbor_index(s, if_idx, addr);
+    unsigned int i;
+
+    if (idx < 0) {
+        int oldest = 0;
+
+        for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {
+            if (s->nd6.neighbors[i].state == 0) {
+                idx = (int)i;
+                break;
+            }
+            if (s->nd6.neighbors[i].ts < s->nd6.neighbors[oldest].ts)
+                oldest = (int)i;
+        }
+        if (idx < 0)
+            idx = oldest;
+        memset(&s->nd6.neighbors[idx], 0, sizeof(struct nd6_neighbor));
+        ip6_copy(&s->nd6.neighbors[idx].addr, addr);
+        s->nd6.neighbors[idx].if_idx = (uint8_t)if_idx;
+    }
+    n = &s->nd6.neighbors[idx];
+    if (mac != NULL)
+        memcpy(n->mac, mac, 6);
+    n->state = state;
+    n->probes = 0;
+    n->ts = s->last_tick;
+    if (is_router)
+        n->is_router = 1;
+    return idx;
+}
+
+/* Resolve an address to a link-layer address. Returns 0 and fills `mac` when
+ * the entry is usable, negative otherwise. Counterpart of arp_lookup(). */
+static int nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
+                      uint8_t *mac)
+{
+    int idx;
+
+    /* Multicast needs no resolution: the mapping is algorithmic. */
+    if (ip6_is_multicast(addr)) {
+        ip6_mcast_to_eth(addr, mac);
+        return 0;
+    }
+    idx = nd6_neighbor_index(s, if_idx, addr);
+    if (idx < 0)
+        return -1;
+    if (s->nd6.neighbors[idx].state == ND6_INCOMPLETE)
+        return -1;
+    memcpy(mac, s->nd6.neighbors[idx].mac, 6);
+    return 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Transmit                                                               */
+/* ---------------------------------------------------------------------- */
+
+/* Send a Neighbor Solicitation for `target`.
+ *
+ * `src` is the source address: a real address of ours for ordinary address
+ * resolution, or the unspecified address during duplicate address detection.
+ * RFC 4861 section 4.3 forbids the Source Link-Layer Address option when the
+ * source is unspecified, which is exactly the DAD case - there is no address
+ * to advertise yet. */
+static void nd6_send_ns(struct wolfIP *s, unsigned int if_idx,
+                        const ip6 *target, const ip6 *src)
+{
+    uint8_t frame[LINK_MTU];
+    struct nd6_msg *ns = (struct nd6_msg *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+    struct nd6_opt_lla *opt;
+    ip6 dst;
+    uint8_t mac[6];
+    uint16_t payload_len = 24; /* type,code,csum,reserved + target */
+    int with_slla = !ip6_is_unspecified(src);
+
+    if (!ll)
+        return;
+    memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN + 32);
+    ns->type = ICMP6_NEIGHBOR_SOLICIT;
+    ns->code = 0;
+    memcpy(ns->target, target->addr, 16);
+    if (with_slla) {
+        opt = (struct nd6_opt_lla *)ns->options;
+        opt->type = ND6_OPT_SLLA;
+        opt->len = 1; /* 8 octets */
+        memcpy(opt->mac, ll->mac, 6);
+        payload_len = (uint16_t)(payload_len + 8u);
+    }
+
+    /* Solicitations go to the target's solicited-node group, so only the
+     * handful of nodes sharing its low 24 bits are interrupted. */
+    ip6_set_solicited_node(&dst, target);
+    ip6_mcast_to_eth(&dst, mac);
+    ip6_output_add_header(s, if_idx, &ns->ip6, src, &dst, IP6_NEXTHDR_ICMPV6,
+                          payload_len, ND6_HOP_LIMIT, mac);
+    wolfIP_ll_send_frame(s, if_idx, frame,
+                         (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) +
+                         payload_len);
+}
+
+/* Send a Neighbor Advertisement for `target` to `dst`/`dst_mac`. */
+static void nd6_send_na(struct wolfIP *s, unsigned int if_idx,
+                        const ip6 *target, const ip6 *src, const ip6 *dst,
+                        const uint8_t *dst_mac, uint8_t flags)
+{
+    uint8_t frame[LINK_MTU];
+    struct nd6_msg *na = (struct nd6_msg *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+    struct nd6_opt_lla *opt;
+    uint16_t payload_len = 24 + 8;
+
+    if (!ll)
+        return;
+    memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN + 32);
+    na->type = ICMP6_NEIGHBOR_ADVERT;
+    na->code = 0;
+    na->flags = flags;
+    memcpy(na->target, target->addr, 16);
+    /* The Target Link-Layer Address option is what actually answers the
+     * question the solicitation asked. */
+    opt = (struct nd6_opt_lla *)na->options;
+    opt->type = ND6_OPT_TLLA;
+    opt->len = 1;
+    memcpy(opt->mac, ll->mac, 6);
+
+    ip6_output_add_header(s, if_idx, &na->ip6, src, dst, IP6_NEXTHDR_ICMPV6,
+                          payload_len, ND6_HOP_LIMIT, dst_mac);
+    wolfIP_ll_send_frame(s, if_idx, frame,
+                         (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) +
+                         payload_len);
+}
+
+/* Send a Router Solicitation to the all-routers group (RFC 4861 s6.3.7). */
+static void nd6_send_rs(struct wolfIP *s, unsigned int if_idx)
+{
+    uint8_t frame[LINK_MTU];
+    struct nd6_rs_msg *rs = (struct nd6_rs_msg *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+    struct nd6_opt_lla *opt;
+    struct wolfIP_ifaddr_info info;
+    ip6 src;
+    ip6 dst;
+    uint8_t mac[6];
+    uint16_t payload_len = 8;
+    unsigned int count;
+    unsigned int i;
+    int have_src = 0;
+
+    if (!ll)
+        return;
+    /* Prefer a link-local source; until DAD completes there may be none, in
+     * which case the unspecified address is used and the Source Link-Layer
+     * Address option must be omitted (RFC 4861 section 4.1). */
+    ip6_set_unspecified(&src);
+    count = wolfIP_ifaddr_count(s, if_idx, AF_INET6);
+    for (i = 0; i < count; i++) {
+        if (wolfIP_ifaddr_get(s, if_idx, AF_INET6, i, &info) != 0)
+            continue;
+        if ((info.state == WOLFIP_IFADDR_PREFERRED) &&
+                ip6_is_link_local(&info.v6)) {
+            ip6_copy(&src, &info.v6);
+            have_src = 1;
+            break;
+        }
+    }
+
+    memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN + 16);
+    rs->type = ICMP6_ROUTER_SOLICIT;
+    rs->code = 0;
+    if (have_src) {
+        opt = (struct nd6_opt_lla *)rs->options;
+        opt->type = ND6_OPT_SLLA;
+        opt->len = 1;
+        memcpy(opt->mac, ll->mac, 6);
+        payload_len = (uint16_t)(payload_len + 8u);
+    }
+
+    ip6_set_all_routers(&dst);
+    ip6_mcast_to_eth(&dst, mac);
+    ip6_output_add_header(s, if_idx, &rs->ip6, &src, &dst, IP6_NEXTHDR_ICMPV6,
+                          payload_len, ND6_HOP_LIMIT, mac);
+    wolfIP_ll_send_frame(s, if_idx, frame,
+                         (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) +
+                         payload_len);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Duplicate address detection (RFC 4862 section 5.4)                     */
+/* ---------------------------------------------------------------------- */
+
+/* Find the address slot holding `addr` on `if_idx`, or NULL. */
+static struct wolfIP_ifaddr_slot *nd6_slot_for(struct wolfIP *s,
+                                               unsigned int if_idx,
+                                               const ip6 *addr)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        struct wolfIP_ifaddr_slot *slot = &s->ifaddr[i];
+
+        if (!slot->used)
+            continue;
+        if (slot->info.family != AF_INET6)
+            continue;
+        if (slot->info.if_idx != (uint8_t)if_idx)
+            continue;
+        if (ip6_cmp(&slot->info.v6, addr) == 0)
+            return slot;
+    }
+    return NULL;
+}
+
+/* Abandon a tentative address that turned out to be a duplicate.
+ *
+ * RFC 4862 section 5.4.5: the address must not be assigned. If it was the
+ * link-local address the interface has no usable IPv6 configuration at all,
+ * which is reported by leaving the interface with no link-local address
+ * rather than by retrying with a different identifier. */
+static void nd6_dad_failed(struct wolfIP *s, struct wolfIP_ifaddr_slot *slot)
+{
+    (void)s;
+    slot->info.state = WOLFIP_IFADDR_DEPRECATED;
+    slot->used = 0;
+}
+
+/* Start duplicate address detection on a tentative address. */
+static void nd6_dad_start(struct wolfIP *s, struct wolfIP_ifaddr_slot *slot)
+{
+    slot->info.state = WOLFIP_IFADDR_TENTATIVE;
+    slot->dad_probes = ND6_DUP_ADDR_DETECT_TRANSMITS;
+    /* Send the first solicitation on the next tick, so that a caller adding
+     * an address mid-poll does not transmit from inside its own call. */
+    slot->dad_due = s->last_tick;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Prefix and router lists                                                */
+/* ---------------------------------------------------------------------- */
+
+static void nd6_prefix_store(struct wolfIP *s, unsigned int if_idx,
+                             const ip6 *prefix, uint8_t prefix_len,
+                             uint8_t onlink, uint8_t autonomous,
+                             uint32_t valid, uint32_t preferred)
+{
+    unsigned int i;
+    int free_slot = -1;
+
+    for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+        struct nd6_prefix *p = &s->nd6.prefixes[i];
+
+        if (!p->used) {
+            if (free_slot < 0)
+                free_slot = (int)i;
+            continue;
+        }
+        if ((p->if_idx == (uint8_t)if_idx) && (p->prefix_len == prefix_len) &&
+                (ip6_prefix_cmp(&p->prefix, prefix, prefix_len) == 0)) {
+            p->onlink = onlink;
+            p->autonomous = autonomous;
+            p->valid_lifetime = valid;
+            p->preferred_lifetime = preferred;
+            p->ts = s->last_tick;
+            return;
+        }
+    }
+    if (free_slot < 0)
+        return; /* table full: the advertisement is ignored, never truncated */
+    {
+        struct nd6_prefix *p = &s->nd6.prefixes[free_slot];
+
+        memset(p, 0, sizeof(*p));
+        ip6_copy(&p->prefix, prefix);
+        p->prefix_len = prefix_len;
+        p->if_idx = (uint8_t)if_idx;
+        p->used = 1;
+        p->onlink = onlink;
+        p->autonomous = autonomous;
+        p->valid_lifetime = valid;
+        p->preferred_lifetime = preferred;
+        p->ts = s->last_tick;
+    }
+}
+
+static void nd6_router_store(struct wolfIP *s, unsigned int if_idx,
+                             const ip6 *addr, uint16_t lifetime)
+{
+    unsigned int i;
+    int free_slot = -1;
+
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        struct nd6_router *r = &s->nd6.routers[i];
+
+        if (!r->used) {
+            if (free_slot < 0)
+                free_slot = (int)i;
+            continue;
+        }
+        if ((r->if_idx == (uint8_t)if_idx) && (ip6_cmp(&r->addr, addr) == 0)) {
+            /* RFC 4861 section 6.3.4: a lifetime of zero means the sender is
+             * no longer a default router. */
+            if (lifetime == 0) {
+                r->used = 0;
+                return;
+            }
+            r->lifetime = lifetime;
+            r->ts = s->last_tick;
+            return;
+        }
+    }
+    if ((lifetime == 0) || (free_slot < 0))
+        return;
+    {
+        struct nd6_router *r = &s->nd6.routers[free_slot];
+
+        memset(r, 0, sizeof(*r));
+        ip6_copy(&r->addr, addr);
+        r->if_idx = (uint8_t)if_idx;
+        r->used = 1;
+        r->lifetime = lifetime;
+        r->ts = s->last_tick;
+    }
+}
+
+/* Is this destination on-link, according to the prefix list? */
+static int nd6_is_onlink(struct wolfIP *s, unsigned int if_idx,
+                         const ip6 *dst)
+{
+    unsigned int i;
+
+    if (ip6_is_link_local(dst) || ip6_is_multicast(dst))
+        return 1;
+    for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+        struct nd6_prefix *p = &s->nd6.prefixes[i];
+
+        if (!p->used || !p->onlink)
+            continue;
+        if (p->if_idx != (uint8_t)if_idx)
+            continue;
+        if (ip6_prefix_cmp(&p->prefix, dst, p->prefix_len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Pick the next hop for a destination: the destination itself when it is
+ * on-link, otherwise a default router. The IPv6 counterpart of
+ * wolfIP_select_nexthop_ex(), driven by the prefix and router lists rather
+ * than by a configured netmask and gateway. Returns 0 on success. */
+static int nd6_select_nexthop(struct wolfIP *s, unsigned int if_idx,
+                              const ip6 *dst, ip6 *nexthop)
+{
+    unsigned int i;
+
+    if (nd6_is_onlink(s, if_idx, dst)) {
+        ip6_copy(nexthop, dst);
+        return 0;
+    }
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        struct nd6_router *r = &s->nd6.routers[i];
+
+        if (!r->used || (r->if_idx != (uint8_t)if_idx))
+            continue;
+        ip6_copy(nexthop, &r->addr);
+        return 0;
+    }
+    return -1; /* no route */
+}
+
+/* ---------------------------------------------------------------------- */
+/* Receive                                                                */
+/* ---------------------------------------------------------------------- */
+
+/* Neighbor Solicitation (RFC 4861 section 7.1.1 and 7.2.3). */
+static void nd6_recv_ns(struct wolfIP *s, unsigned int if_idx,
+                        struct wolfIP_ip6_packet *pkt, uint32_t payload_len)
+{
+    struct nd6_msg *ns = (struct nd6_msg *)pkt;
+    const uint8_t *opt;
+    struct wolfIP_ifaddr_slot *slot;
+    ip6 target;
+    ip6 src;
+    ip6 dst;
+    ip6 reply_dst;
+    uint8_t reply_mac[6];
+    uint8_t flags = ND6_NA_SOLICITED | ND6_NA_OVERRIDE;
+
+    if (payload_len < 24u)
+        return;
+    memcpy(target.addr, ns->target, 16);
+    /* RFC 4861 section 7.1.1: the target must not be a multicast address. */
+    if (ip6_is_multicast(&target))
+        return;
+    ip6_hdr_get_src(pkt, &src);
+    ip6_hdr_get_dst(pkt, &dst);
+
+    slot = nd6_slot_for(s, if_idx, &target);
+    if (slot == NULL)
+        return; /* not our address: nothing to answer */
+
+    if (ip6_is_unspecified(&src)) {
+        /* Somebody else is running duplicate address detection for this
+         * address (RFC 4862 section 5.4.3).
+         *
+         * If it is still tentative for us too, we are both probing at the
+         * same time and neither may use it. If it is already ours, they
+         * must be told, and the answer goes to the all-nodes group because
+         * a node with no address cannot be addressed directly. */
+        if (slot->info.state == WOLFIP_IFADDR_TENTATIVE) {
+            nd6_dad_failed(s, slot);
+            return;
+        }
+        ip6_set_all_nodes(&reply_dst);
+        ip6_mcast_to_eth(&reply_dst, reply_mac);
+        /* Unsolicited: the requester is not yet addressable. */
+        flags = ND6_NA_OVERRIDE;
+        nd6_send_na(s, if_idx, &target, &target, &reply_dst, reply_mac, flags);
+        return;
+    }
+
+    /* A tentative address must not be defended and must not answer: it is
+     * not ours yet. */
+    if (slot->info.state == WOLFIP_IFADDR_TENTATIVE)
+        return;
+
+    /* RFC 4861 section 7.2.3: record the sender so the advertisement has
+     * somewhere to go and the reverse direction is already resolved. */
+    opt = nd6_find_option(ns->options, payload_len - 24u, ND6_OPT_SLLA);
+    if (opt != NULL) {
+        const struct nd6_opt_lla *lla = (const struct nd6_opt_lla *)opt;
+
+        nd6_store_neighbor(s, if_idx, &src, lla->mac, ND6_STALE, 0);
+        memcpy(reply_mac, lla->mac, 6);
+    } else {
+        memcpy(reply_mac, pkt->eth.src, 6);
+    }
+    ip6_copy(&reply_dst, &src);
+    nd6_send_na(s, if_idx, &target, &target, &reply_dst, reply_mac, flags);
+}
+
+/* Neighbor Advertisement (RFC 4861 section 7.1.2 and 7.2.5). */
+static void nd6_recv_na(struct wolfIP *s, unsigned int if_idx,
+                        struct wolfIP_ip6_packet *pkt, uint32_t payload_len)
+{
+    struct nd6_msg *na = (struct nd6_msg *)pkt;
+    const uint8_t *opt;
+    struct wolfIP_ifaddr_slot *slot;
+    struct nd6_neighbor *n;
+    ip6 target;
+    ip6 dst;
+    int idx;
+
+    if (payload_len < 24u)
+        return;
+    memcpy(target.addr, na->target, 16);
+    if (ip6_is_multicast(&target))
+        return;
+    ip6_hdr_get_dst(pkt, &dst);
+    /* RFC 4861 section 7.1.2: a solicited advertisement must not be sent to
+     * a multicast address. */
+    if ((na->flags & ND6_NA_SOLICITED) && ip6_is_multicast(&dst))
+        return;
+
+    /* Somebody is using an address we are still probing for. */
+    slot = nd6_slot_for(s, if_idx, &target);
+    if ((slot != NULL) && (slot->info.state == WOLFIP_IFADDR_TENTATIVE)) {
+        nd6_dad_failed(s, slot);
+        return;
+    }
+
+    idx = nd6_neighbor_index(s, if_idx, &target);
+    if (idx < 0)
+        return; /* unsolicited advertisement for an unknown neighbour */
+    n = &s->nd6.neighbors[idx];
+
+    opt = nd6_find_option(na->options, payload_len - 24u, ND6_OPT_TLLA);
+    if (opt != NULL) {
+        const struct nd6_opt_lla *lla = (const struct nd6_opt_lla *)opt;
+
+        if (n->state == ND6_INCOMPLETE) {
+            /* The answer we were waiting for. */
+            memcpy(n->mac, lla->mac, 6);
+        } else if ((na->flags & ND6_NA_OVERRIDE) == 0) {
+            if (memcmp(n->mac, lla->mac, 6) != 0) {
+                /* RFC 4861 section 7.2.5: without the Override flag a
+                 * differing link-layer address must not replace the one we
+                 * hold - that is what stops an advertisement hijacking an
+                 * established neighbour. A REACHABLE entry still drops to
+                 * STALE so its reachability is re-verified; in any other
+                 * state the advertisement is ignored outright. */
+                if (n->state == ND6_REACHABLE) {
+                    n->state = ND6_STALE;
+                    n->ts = s->last_tick;
+                }
+                return;
+            }
+        } else {
+            memcpy(n->mac, lla->mac, 6);
+        }
+    } else if (n->state == ND6_INCOMPLETE) {
+        /* No link-layer address and none known: nothing has been learned. */
+        return;
+    }
+
+    if (na->flags & ND6_NA_SOLICITED)
+        n->state = ND6_REACHABLE;
+    else if (n->state == ND6_INCOMPLETE)
+        n->state = ND6_STALE;
+    n->probes = 0;
+    n->ts = s->last_tick;
+    if (na->flags & ND6_NA_ROUTER)
+        n->is_router = 1;
+}
+
+/* Router Advertisement (RFC 4861 section 6.3.4). Minimal on purpose: the
+ * default router and the Prefix Information options, which is what an
+ * ordinary site network needs to hand out an address. Managed/Other flags,
+ * MTU, retransmit and reachable timer overrides are parsed past but not
+ * acted on. */
+static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
+                        struct wolfIP_ip6_packet *pkt, uint32_t payload_len)
+{
+    struct nd6_ra_msg *ra = (struct nd6_ra_msg *)pkt;
+    const uint8_t *opts;
+    uint32_t opt_len;
+    uint32_t off;
+    ip6 src;
+
+    if (payload_len < 16u)
+        return;
+    ip6_hdr_get_src(pkt, &src);
+    /* RFC 4861 section 6.1.2: the source of a Router Advertisement must be a
+     * link-local address. Accepting a global source would let anything off
+     * the link install a default route. */
+    if (!ip6_is_link_local(&src))
+        return;
+
+    nd6_router_store(s, if_idx, &src, ee16(ra->router_lifetime));
+    /* The router is a neighbour too, and knowing its MAC saves a round trip
+     * for the first packet we send through it. */
+    nd6_store_neighbor(s, if_idx, &src, pkt->eth.src, ND6_STALE, 1);
+
+    opts = ra->options;
+    opt_len = payload_len - 16u;
+    off = 0;
+    while ((off + 2u) <= opt_len) {
+        uint8_t type = opts[off];
+        uint32_t olen = (uint32_t)opts[off + 1] * 8u;
+
+        if (olen == 0)
+            return;                 /* malformed: would not terminate */
+        if ((off + olen) > opt_len)
+            return;
+        if ((type == ND6_OPT_PREFIX) && (olen >= sizeof(struct nd6_opt_prefix))) {
+            const struct nd6_opt_prefix *po =
+                (const struct nd6_opt_prefix *)&opts[off];
+            ip6 prefix;
+
+            memcpy(prefix.addr, po->prefix, 16);
+            /* RFC 4862 section 5.5.3 (a): an advertised link-local prefix is
+             * silently ignored, which stops a hostile advertisement from
+             * redefining fe80::/10. */
+            if ((po->prefix_len <= 128u) && !ip6_is_link_local(&prefix)) {
+                nd6_prefix_store(s, if_idx, &prefix, po->prefix_len,
+                                 (po->flags & ND6_PREFIX_ONLINK) ? 1 : 0,
+                                 (po->flags & ND6_PREFIX_AUTO) ? 1 : 0,
+                                 ee32(po->valid_lifetime),
+                                 ee32(po->preferred_lifetime));
+                /* RFC 4862 section 5.5.3 (d): only a prefix of exactly 64
+                 * bits leaves room for a 64-bit interface identifier. */
+                if ((po->flags & ND6_PREFIX_AUTO) && (po->prefix_len == 64u) &&
+                        (ee32(po->valid_lifetime) != 0)) {
+                    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+                    ip6 iid;
+                    ip6 formed;
+
+                    if (ll != NULL) {
+                        ip6_iid_from_mac(&iid, ll->mac);
+                        ip6_make_addr(&formed, &prefix, 64, &iid);
+                        /* Adding it is a no-op when it is already there, so
+                         * a repeated advertisement does not restart DAD. */
+                        if (nd6_slot_for(s, if_idx, &formed) == NULL) {
+                            if (wolfIP_ifaddr_add6(s, if_idx, &formed, 64) == 0) {
+                                struct wolfIP_ifaddr_slot *slot =
+                                    nd6_slot_for(s, if_idx, &formed);
+
+                                if (slot != NULL)
+                                    nd6_dad_start(s, slot);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        off += olen;
+    }
+}
+
+/* Neighbor Discovery entry point, called from icmp6_input(). */
+static void nd6_input(struct wolfIP *s, unsigned int if_idx,
+                      struct wolfIP_ip6_packet *pkt, uint32_t payload_len)
+{
+    struct nd6_msg *msg = (struct nd6_msg *)pkt;
+
+    /* RFC 4861 sections 6.1 and 7.1: a hop limit other than 255 means the
+     * message crossed a router and cannot be trusted. This one check is what
+     * keeps Neighbor Discovery on the local link. */
+    if (pkt->hop_limit != ND6_HOP_LIMIT)
+        return;
+    /* All Neighbor Discovery messages carry code 0. */
+    if (msg->code != 0)
+        return;
+
+    switch (msg->type) {
+        case ICMP6_NEIGHBOR_SOLICIT:
+            nd6_recv_ns(s, if_idx, pkt, payload_len);
+            break;
+        case ICMP6_NEIGHBOR_ADVERT:
+            nd6_recv_na(s, if_idx, pkt, payload_len);
+            break;
+        case ICMP6_ROUTER_ADVERT:
+            nd6_recv_ra(s, if_idx, pkt, payload_len);
+            break;
+        case ICMP6_ROUTER_SOLICIT:
+        case ICMP6_REDIRECT:
+        default:
+            /* Router Solicitations are a router's job. Redirect is out of
+             * scope for a host-only stack and must be ignored rather than
+             * acted on. */
+            break;
+    }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Periodic work                                                          */
+/* ---------------------------------------------------------------------- */
+
+static void nd6_tick_cb(void *arg)
+{
+    struct wolfIP *s = (struct wolfIP *)arg;
+    struct wolfIP_timer tmr;
+    unsigned int i;
+
+    if (!s)
+        return;
+
+    /* Duplicate address detection. */
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        struct wolfIP_ifaddr_slot *slot = &s->ifaddr[i];
+
+        if (!slot->used || (slot->info.family != AF_INET6))
+            continue;
+        if (slot->info.state != WOLFIP_IFADDR_TENTATIVE)
+            continue;
+        if (s->last_tick < slot->dad_due)
+            continue;
+        if (slot->dad_probes > 0) {
+            ip6 unspec;
+
+            slot->dad_probes--;
+            ip6_set_unspecified(&unspec);
+            nd6_send_ns(s, slot->info.if_idx, &slot->info.v6, &unspec);
+            slot->dad_due = s->last_tick + ND6_RETRANS_TIMER_MS;
+        } else {
+            /* RFC 4862 section 5.4.4: no answer within the retransmit
+             * interval means the address is unique. */
+            slot->info.state = WOLFIP_IFADDR_PREFERRED;
+        }
+    }
+
+    /* Router solicitation, once the link-local address is usable. */
+    for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
+        if (!s->nd6.started[i] || (s->nd6.rs_left[i] == 0))
+            continue;
+        if (s->last_tick < s->nd6.rs_due[i])
+            continue;
+        s->nd6.rs_left[i]--;
+        nd6_send_rs(s, i);
+        s->nd6.rs_due[i] = s->last_tick + ND6_RTR_SOLICITATION_INTERVAL_MS;
+    }
+
+    /* Neighbour cache ageing: a REACHABLE entry whose confirmation has timed
+     * out drops to STALE rather than being discarded, so the link-layer
+     * address is kept and only its reachability is in doubt. */
+    for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {
+        struct nd6_neighbor *n = &s->nd6.neighbors[i];
+
+        if (n->state == 0)
+            continue;
+        if ((n->state == ND6_REACHABLE) &&
+                ((s->last_tick - n->ts) > ND6_REACHABLE_TIME_MS)) {
+            n->state = ND6_STALE;
+            n->ts = s->last_tick;
+        }
+        if ((n->state == ND6_INCOMPLETE) &&
+                ((s->last_tick - n->ts) > (ND6_RETRANS_TIMER_MS *
+                                           ND6_MAX_MULTICAST_SOLICIT))) {
+            n->state = 0; /* resolution gave up */
+        }
+    }
+
+    /* Prefix and router lifetimes, both in seconds on the wire. */
+    for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+        struct nd6_prefix *p = &s->nd6.prefixes[i];
+
+        if (!p->used || (p->valid_lifetime == 0xFFFFFFFFu))
+            continue;
+        if ((s->last_tick - p->ts) > ((uint64_t)p->valid_lifetime * 1000u))
+            p->used = 0;
+    }
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        struct nd6_router *r = &s->nd6.routers[i];
+
+        if (!r->used)
+            continue;
+        if ((s->last_tick - r->ts) > ((uint64_t)r->lifetime * 1000u))
+            r->used = 0;
+    }
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = s->last_tick + ND6_TICK_MS;
+    tmr.arg = s;
+    tmr.cb = nd6_tick_cb;
+    s->nd6.tick_timer = timers_binheap_insert(&s->timers, tmr);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Public entry points                                                    */
+/* ---------------------------------------------------------------------- */
+
+int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
+{
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ifaddr_slot *slot;
+    struct wolfIP_timer tmr;
+    ip6 prefix;
+    ip6 iid;
+    ip6 link_local;
+
+    if (!s || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    ll = wolfIP_ll_at(s, if_idx);
+    if (!ll)
+        return -WOLFIP_EINVAL;
+
+    /* RFC 4862 section 5.3: the link-local address is formed from fe80::/64
+     * and a modified EUI-64 interface identifier, then verified with
+     * duplicate address detection before it may be used. */
+    if (atoip6("fe80::", &prefix) != 0)
+        return -WOLFIP_EINVAL;
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&link_local, &prefix, 64, &iid);
+
+    slot = nd6_slot_for(s, if_idx, &link_local);
+    if (slot == NULL) {
+        if (wolfIP_ifaddr_add6(s, if_idx, &link_local, 64) != 0)
+            return -WOLFIP_ENOMEM;
+        slot = nd6_slot_for(s, if_idx, &link_local);
+        if (slot == NULL)
+            return -WOLFIP_ENOMEM;
+    }
+    slot->info.flags |= WOLFIP_IFADDR_FLAG_LINKLOCAL;
+    nd6_dad_start(s, slot);
+
+    /* Router solicitations begin once there is a source address to send
+     * them from; the tick handles the ordering. */
+    s->nd6.started[if_idx] = 1;
+    s->nd6.rs_left[if_idx] = (uint8_t)ND6_MAX_RTR_SOLICITATIONS;
+    s->nd6.rs_due[if_idx] = s->last_tick + ND6_RETRANS_TIMER_MS;
+
+    if (s->nd6.tick_timer == NO_TIMER) {
+        memset(&tmr, 0, sizeof(tmr));
+        tmr.expires = s->last_tick + ND6_TICK_MS;
+        tmr.arg = s;
+        tmr.cb = nd6_tick_cb;
+        s->nd6.tick_timer = timers_binheap_insert(&s->timers, tmr);
+    }
+    return 0;
+}
+
+int wolfIP_ipv6_addr_add(struct wolfIP *s, unsigned int if_idx,
+                         const ip6 *addr, uint8_t prefix_len)
+{
+    struct wolfIP_ifaddr_slot *slot;
+    int ret;
+
+    if (!s || !addr || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    ret = wolfIP_ifaddr_add6(s, if_idx, addr, prefix_len);
+    if (ret != 0)
+        return ret;
+    slot = nd6_slot_for(s, if_idx, addr);
+    if (slot == NULL)
+        return -WOLFIP_EINVAL;
+    /* RFC 4862 section 5.4: duplicate address detection applies to every
+     * unicast address, however it was obtained - statically configured ones
+     * included. */
+    nd6_dad_start(s, slot);
+    return 0;
+}
+
+int wolfIP_nd6_neighbor_add(struct wolfIP *s, unsigned int if_idx,
+                            const ip6 *addr, const uint8_t *mac)
+{
+    if (!s || !addr || !mac || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    if (ip6_is_multicast(addr) || ip6_is_unspecified(addr))
+        return -WOLFIP_EINVAL;
+    (void)nd6_store_neighbor(s, if_idx, addr, mac, ND6_REACHABLE, 0);
+    return 0;
+}
+
+int wolfIP_nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
+                      uint8_t *mac)
+{
+    if (!s || !addr || !mac || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    return (nd6_lookup(s, if_idx, addr, mac) == 0) ? 0 : -1;
+}
+
+int wolfIP_ipv6_nexthop(struct wolfIP *s, unsigned int if_idx, const ip6 *dst,
+                        ip6 *nexthop)
+{
+    if (!s || !dst || !nexthop || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    return nd6_select_nexthop(s, if_idx, dst, nexthop);
 }

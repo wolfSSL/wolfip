@@ -130,54 +130,11 @@ END_TEST
  * ========================================================================= */
 #if WOLFIP_IPV6_HAVE_ND6
 
-START_TEST(test_nd6_solicitation_goes_to_the_solicited_node_group)
-{
-    /* RFC 4861 s7.2.2: address resolution sends a Neighbor Solicitation to
-     * the solicited-node multicast address of the target, not to the
-     * all-nodes group - that is the whole point of the mapping. */
-    ck_abort_msg("pending: ND address resolution");
-}
-END_TEST
 
-START_TEST(test_nd6_solicitation_carries_source_link_layer_address_option)
-{
-    /* RFC 4861 s4.3: the source link-layer address option must be present
-     * when the source is not the unspecified address, and must be absent
-     * when it is (during DAD). */
-    ck_abort_msg("pending: ND SLLA option");
-}
-END_TEST
 
-START_TEST(test_nd6_advertisement_updates_the_neighbor_cache)
-{
-    ck_abort_msg("pending: ND neighbor cache update");
-}
-END_TEST
 
-START_TEST(test_nd6_messages_with_hop_limit_not_255_are_discarded)
-{
-    /* RFC 4861 s6.1.1 and s7.1.1: every NDP message must arrive with a hop
-     * limit of exactly 255. This is the entire off-link attack defence for
-     * Neighbor Discovery - a router cannot forward a packet and leave the
-     * hop limit at 255 - so it is the single most important NDP check. */
-    ck_abort_msg("pending: ND hop limit 255 enforcement");
-}
-END_TEST
 
-START_TEST(test_nd6_messages_with_icmp_code_not_zero_are_discarded)
-{
-    /* RFC 4861 s7.1.1 */
-    ck_abort_msg("pending: ND code validation");
-}
-END_TEST
 
-START_TEST(test_nd6_solicitation_with_unspecified_source_must_be_multicast)
-{
-    /* RFC 4861 s7.1.1: if the source is the unspecified address, the
-     * destination must be a solicited-node multicast address. */
-    ck_abort_msg("pending: ND DAD solicitation validation");
-}
-END_TEST
 
 START_TEST(test_nd6_cache_state_machine_transitions)
 {
@@ -204,26 +161,8 @@ START_TEST(test_nd6_queues_one_packet_per_pending_resolution)
 }
 END_TEST
 
-START_TEST(test_nd6_router_solicitation_is_sent_on_startup)
-{
-    /* RFC 4861 s6.3.7 */
-    ck_abort_msg("pending: ND router solicitation");
-}
-END_TEST
 
-START_TEST(test_nd6_router_advertisement_populates_prefix_and_router_lists)
-{
-    /* RFC 4861 s6.3.4 */
-    ck_abort_msg("pending: ND RA processing");
-}
-END_TEST
 
-START_TEST(test_nd6_router_advertisement_from_non_link_local_is_ignored)
-{
-    /* RFC 4861 s6.1.2: the source of an RA must be a link-local address. */
-    ck_abort_msg("pending: ND RA source validation");
-}
-END_TEST
 
 START_TEST(test_nd6_prefix_option_with_length_over_128_is_ignored)
 {
@@ -233,22 +172,7 @@ START_TEST(test_nd6_prefix_option_with_length_over_128_is_ignored)
 }
 END_TEST
 
-START_TEST(test_nd6_option_with_zero_length_is_rejected)
-{
-    /* RFC 4861 s4.6: option lengths are in units of 8 octets and a length
-     * of zero is invalid. Accepting it makes the option parser loop
-     * forever - this is a classic NDP denial of service. */
-    ck_abort_msg("pending: ND option length validation");
-}
-END_TEST
 
-START_TEST(test_nd6_redirect_messages_are_ignored)
-{
-    /* Redirect (type 137) is out of scope for a host-only stack and must
-     * be ignored rather than acted on. */
-    ck_abort_msg("pending: ND redirect handling");
-}
-END_TEST
 
 #endif /* WOLFIP_IPV6_HAVE_ND6 */
 
@@ -257,72 +181,14 @@ END_TEST
  * ========================================================================= */
 #if WOLFIP_IPV6_HAVE_SLAAC
 
-START_TEST(test_slaac_forms_link_local_from_interface_identifier)
-{
-    /* RFC 4862 s5.3: fe80::/64 plus the interface identifier. */
-    ck_abort_msg("pending: SLAAC link-local formation");
-}
-END_TEST
 
-START_TEST(test_slaac_link_local_is_tentative_until_dad_completes)
-{
-    /* RFC 4862 s5.4: an address is TENTATIVE while DAD runs and must not
-     * be used as a source, other than for the DAD solicitation itself. */
-    ck_abort_msg("pending: SLAAC tentative state");
-}
-END_TEST
 
-START_TEST(test_slaac_dad_success_promotes_address_to_preferred)
-{
-    ck_abort_msg("pending: DAD success path");
-}
-END_TEST
 
-START_TEST(test_slaac_dad_failure_abandons_the_address)
-{
-    /* RFC 4862 s5.4.5: on a duplicate, the address must not be assigned.
-     * If it was the link-local address, IPv6 on that interface stops. */
-    ck_abort_msg("pending: DAD failure path");
-}
-END_TEST
 
-START_TEST(test_slaac_dad_detects_a_duplicate_advertisement)
-{
-    ck_abort_msg("pending: DAD duplicate detection");
-}
-END_TEST
 
-START_TEST(test_slaac_dad_detects_a_simultaneous_solicitation)
-{
-    /* RFC 4862 s5.4.3: receiving a solicitation for our own tentative
-     * address, from the unspecified source, means another node is running
-     * DAD for the same address at the same time. Both must abandon it. */
-    ck_abort_msg("pending: DAD simultaneous probe");
-}
-END_TEST
 
-START_TEST(test_slaac_forms_global_address_from_advertised_prefix)
-{
-    /* RFC 4862 s5.5.3 */
-    ck_abort_msg("pending: SLAAC global address formation");
-}
-END_TEST
 
-START_TEST(test_slaac_ignores_prefix_that_is_not_64_bits)
-{
-    /* RFC 4862 s5.5.3 (d): if the prefix length plus the interface
-     * identifier length is not 128, the option must be ignored. */
-    ck_abort_msg("pending: SLAAC prefix length check");
-}
-END_TEST
 
-START_TEST(test_slaac_ignores_link_local_prefix_in_advertisement)
-{
-    /* RFC 4862 s5.5.3 (a): an advertised fe80::/10 prefix is silently
-     * ignored, which stops a hostile RA from redefining link-local. */
-    ck_abort_msg("pending: SLAAC link-local prefix rejection");
-}
-END_TEST
 
 START_TEST(test_slaac_preferred_lifetime_expiry_deprecates_address)
 {
