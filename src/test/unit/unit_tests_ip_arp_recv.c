@@ -559,7 +559,7 @@ END_TEST
  * =========================================================================
  * Branch: opt + 1 >= opt_end || opt[1] < 2 → return
  * A malformed option with length=1 must not loop infinitely, and the rest of
- * the option area is unparseable from there on, so the packet is discarded.
+ * the option area is unparsable from there on, so the packet is discarded.
  */
 START_TEST(test_ip_recv_options_bad_length_aborts_parse)
 {
