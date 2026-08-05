@@ -9705,6 +9705,40 @@ static int dns_skip_name(const uint8_t *buf, int len, int offset)
     return pos;
 }
 
+/* Simple helper function to convert characters
+ * to lower case.
+ * Needed for case insensitive. */
+static uint8_t dns_tolower(uint8_t c)
+{
+    if ((c >= 'A') && (c <= 'Z'))
+        return (uint8_t)(c - 'A' + 'a');
+    return c;
+}
+
+/* Walks the response's question bytes against the copy of the outbound
+ * query already sitting in s->dns_query_buf, and dns_callback calls it.
+ * Returns 1 if they are equal, 0 otherwise.
+ * */
+static int dns_question_matches(struct wolfIP *s, const uint8_t *buf, int len,
+                                int offset)
+{
+    const uint8_t *want = s->dns_query_buf + sizeof(struct dns_header);
+    int want_len = (int)s->dns_query_len - (int)sizeof(struct dns_header);
+    int name_len = want_len - (int)sizeof(struct dns_question);
+    int i;
+
+    if (name_len <= 0)
+        return 0; /* No outstanding query to compare against. */
+    if (offset < 0 || want_len > len - offset)
+        return 0;
+    for (i = 0; i < name_len; i++) {
+        if (dns_tolower(buf[offset + i]) != dns_tolower(want[i]))
+            return 0;
+    }
+    return memcmp(buf + offset + name_len, want + name_len,
+            sizeof(struct dns_question)) == 0;
+}
+
 static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
                          size_t out_len)
 {
@@ -9883,6 +9917,10 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
             pos = sizeof(struct dns_header);
             qcount = ee16(hdr->qdcount);
             ancount = ee16(hdr->ancount);
+            /* A reply to our query echoes back exactly the one question we
+             * asked (RFC 1035 s7.3). */
+            if (qcount != DNS_QUESTION_COUNT)
+                return;
             while (qcount-- > 0) {
                 pos = dns_skip_name((const uint8_t *)buf, dns_len, pos);
                 if (pos < 0 || pos + (int)sizeof(struct dns_question) > dns_len) {
@@ -9891,6 +9929,11 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 }
                 pos += sizeof(struct dns_question);
             }
+            /* Drop a response that answers a different question, but leave the
+             * query outstanding. */
+            if (!dns_question_matches(s, (const uint8_t *)buf, dns_len,
+                    (int)sizeof(struct dns_header)))
+                return;
             while (ancount-- > 0) {
                 struct dns_rr *rr;
                 uint16_t rdlen;
