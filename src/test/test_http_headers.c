@@ -26,9 +26,8 @@
  * headers" and is the only API a handler has for reading them, so a handler
  * that inspects it sees a single line rather than the request's headers.
  *
- * The checks below deliberately do not pin the byte used to separate the
- * accumulated lines but only that every header sent is present and that two
- * requests differing by a header are distinguishable through the field.
+ * The accumulated lines are separated by CRLF, the delimiter they arrived with
+ * on the wire, so a handler can re-split req.headers on "\r\n".
  */
 
 #include <stdio.h>
@@ -160,7 +159,21 @@ int main(void)
         CHECK(with_auth_len > seen_headers_len);
     }
 
-    /* 3. A single header still round-trips exactly, with no separator or
+    /* 3. Accumulated lines are joined with the CRLF they arrived with, so a
+     *    handler re-splitting req.headers on "\r\n" recovers them. */
+    {
+        const char *req =
+            "GET /probe HTTP/1.1\r\n"
+            "Host: victim.local\r\n"
+            "X-Foo: bar\r\n"
+            "\r\n";
+        r = run(&httpd, req, strlen(req));
+        CHECK(r == 0);
+        CHECK(handler_calls == 1);
+        CHECK(strcmp(seen_headers, "Host: victim.local\r\nX-Foo: bar") == 0);
+    }
+
+    /* 4. A single header still round-trips exactly, with no separator or
      *    padding bolted on. */
     {
         const char *req =
@@ -173,7 +186,7 @@ int main(void)
         CHECK(strcmp(seen_headers, "Host: victim.local") == 0);
     }
 
-    /* 4. A request with no headers at all leaves the field empty. */
+    /* 5. A request with no headers at all leaves the field empty. */
     {
         const char *req =
             "GET /probe HTTP/1.1\r\n"
@@ -184,7 +197,7 @@ int main(void)
         CHECK(seen_headers[0] == '\0');
     }
 
-    /* 5. Headers whose total exceeds HTTP_HEADERS_LEN while each individual
+    /* 6. Headers whose total exceeds HTTP_HEADERS_LEN while each individual
      *    line stays under it.  The existing length check bounds a single line,
      *    not the running total, so accumulating without a total bound would
      *    overflow req.headers here.  Either outcome is acceptable - reject the

@@ -428,8 +428,10 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
             if (hdr_len + sep + n >= sizeof(req.headers))
                 goto bad_request;
             if (sep) {
+                /* CRLF, so a consumer can re-split req.headers on the same
+                 * delimiter the lines arrived with on the wire. */
                 req.headers[hdr_len] = '\r';
-                req.headers[hdr_len + 1] = '\r';
+                req.headers[hdr_len + 1] = '\n';
             }
             /* Copy header and terminate */
             memcpy(req.headers + hdr_len + sep, p, n);
