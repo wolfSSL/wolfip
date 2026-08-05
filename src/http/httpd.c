@@ -330,6 +330,8 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
     int has_te = 0;           /* Transfer-Encoding header present */
     struct http_request req;
     struct http_url *url = NULL;
+    size_t hdr_len = 0; /* tracks the bytes accumulated in req.headers */
+
     memset(&req, 0, sizeof(struct http_request));
     if (len < 4)
         goto bad_request;
@@ -421,9 +423,19 @@ static int parse_http_request(struct http_client *hc, uint8_t *buf, size_t len) 
                 has_te = 1;
             }
         }
-        /* Copy header and terminate */
-        memcpy(req.headers, p, n);
-        req.headers[n] = '\0';
+        {
+            size_t sep = (hdr_len > 0) ? 2 : 0;
+            if (hdr_len + sep + n >= sizeof(req.headers))
+                goto bad_request;
+            if (sep) {
+                req.headers[hdr_len] = '\r';
+                req.headers[hdr_len + 1] = '\r';
+            }
+            /* Copy header and terminate */
+            memcpy(req.headers + hdr_len + sep, p, n);
+            hdr_len += sep+n;
+            req.headers[hdr_len] = '\0';
+        }
         p = q + 2;
     }
     /* Parse the body.  The body length is taken from the declared
