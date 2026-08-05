@@ -7179,7 +7179,24 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
             ts->callback_arg = NULL;
             close_socket(ts);
             return 0;
-        } else return -1;
+        } else {
+            /* Never connected and never listened: there is no connection to
+             * tear down, but the slot must still be released or it is lost for
+             * good -- tcp_new_socket() treats any proto != 0 slot as occupied.
+             * The only filter event this socket can have emitted is BINDING,
+             * so DISSOCIATE, not CLOSED, is the matching teardown.
+             * TCP_CLOSED also covers a slot whose teardown close_socket()
+             * deferred for a final CB_EVENT_CLOSED: disarming the callback
+             * before the reap drops that event, which is what an app-initiated
+             * close wants -- it may already have released callback_arg. */
+            (void)wolfIP_filter_notify_socket_event(
+                WOLFIP_FILT_DISSOCIATE, s, ts,
+                ts->local_ip, ts->src_port, IPADDR_ANY, 0);
+            ts->callback = NULL;
+            ts->callback_arg = NULL;
+            close_socket(ts);
+            return 0;
+        }
     } else if (IS_SOCKET_UDP(sockfd)) {
         struct tsocket *ts;
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
