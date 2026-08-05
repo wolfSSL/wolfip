@@ -6159,6 +6159,66 @@ START_TEST(test_dns_callback_missing_question_section_rejected)
 }
 END_TEST
 
+/* RFC 5452 s9.2: the resolver must randomise the query source port, so that an
+ * off-path attacker has to guess the port and the 16-bit ID to have a forged
+ * reply accepted. */
+START_TEST(test_dns_query_source_port_rotates_between_queries)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    uint8_t response[128];
+    int len;
+    unsigned int i, j;
+    uint16_t ports[4];
+    static const uint32_t rand_per_query[4] = {0x2000U, 0x3000U, 0x4000U, 0x5000U};
+    static const uint8_t qname_target[] = {6,'t','a','r','g','e','t',3,'c','o','m',0};
+    static const uint8_t good_ip[DNS_IPV4_RDATA_LEN] = {0x01, 0x02, 0x03, 0x04};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+    test_rand_override_enabled = 1;
+
+    for (i = 0; i < 4; i++) {
+        /* Low 16 bits are >= 1024 and distinct, so each query gets its own
+         * candidate ID and its own candidate source port. */
+        test_rand_override_value = rand_per_query[i];
+
+        ck_assert_int_eq(nslookup(&s, "target.com", &id, test_dns_lookup_cb), 0);
+        /* Re-read the socket every round: a fix is free to close and reopen it,
+         * which may land the DNS socket on a different table slot. */
+        ck_assert_int_gt(s.dns_udp_sd, 0);
+        ports[i] = s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)].src_port;
+
+        /* Complete the lookup the way the real resolver does, so the next
+         * iteration starts from an idle resolver rather than a hand-cleared
+         * one. dns_callback() calls dns_abort_query() on success. */
+        len = build_dns_a_response_for_question(response, sizeof(response), id,
+                qname_target, (int)sizeof(qname_target), DNS_A, DNS_CLASS_IN, 1,
+                good_ip);
+        enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+                (uint16_t)len, DNS_PORT);
+        dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+        ck_assert_int_eq(dns_lookup_calls, (int)i + 1);
+        ck_assert_uint_eq(dns_lookup_ip, 0x01020304U);
+        ck_assert_uint_eq(s.dns_id, 0U);
+    }
+
+    /* Each query must leave from a port of its own. */
+    for (i = 0; i < 4; i++) {
+        ck_assert_uint_ge(ports[i], 1024U);
+        for (j = 0; j < i; j++)
+            ck_assert_uint_ne(ports[i], ports[j]);
+    }
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
 START_TEST(test_regression_dns_callback_high_bit_octet_ip_no_ub)
 {
     /* The dns_callback() A-record reassembly used to compute
