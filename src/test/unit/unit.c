@@ -1571,6 +1571,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_rx_delete_then_dropped);
     tcase_add_test(tc_proto, test_vlan_rx_dei_bit_accepted);
     tcase_add_test(tc_proto, test_vlan_rx_tagged_arp_processed);
+    tcase_add_test(tc_proto, test_vlan_rx_eth_filter_notified_on_subif_after_strip);
+    tcase_add_test(tc_proto, test_vlan_rx_eth_filter_deny_subif_blocks_arp_poisoning);
+    tcase_add_test(tc_proto, test_vlan_rx_unfiltered_arp_reply_learns_neighbor);
     tcase_add_test(tc_proto, test_vlan_mtu_inherited);
     tcase_add_test(tc_proto, test_vlan_delete_purges_arp_neighbor_cache);
 #if WOLFIP_PACKET_SOCKETS

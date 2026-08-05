@@ -184,6 +184,82 @@ static uint32_t inject_tagged_icmp_echo(struct wolfIP *s, unsigned int parent_id
     return last_frame_sent_size;
 }
 
+/* Build an untagged Ethernet/IPv4 ARP frame sent by vlan_remote_mac.
+ * opcode is ARP_REQUEST or ARP_REPLY; buf must hold sizeof(struct arp_packet). */
+static void build_arp_frame(uint8_t *buf, const uint8_t *eth_dst_mac,
+                            uint16_t opcode, ip4 sip, ip4 tip)
+{
+    struct arp_packet *arp = (struct arp_packet *)buf;
+
+    memset(buf, 0, sizeof(struct arp_packet));
+    memcpy(arp->eth.dst, eth_dst_mac, 6);
+    memcpy(arp->eth.src, vlan_remote_mac, 6);
+    arp->eth.type = ee16(ETH_TYPE_ARP);
+    arp->htype    = ee16(1);
+    arp->ptype    = ee16(0x0800);
+    arp->hlen     = 6;
+    arp->plen     = 4;
+    arp->opcode   = ee16(opcode);
+    memcpy(arp->sma, vlan_remote_mac, 6);
+    arp->sip      = ee32(sip);
+    /* A request leaves tma zeroed; a reply addresses the resolver. */
+    if (opcode == ARP_REPLY)
+        memcpy(arp->tma, eth_dst_mac, 6);
+    arp->tip      = ee32(tip);
+}
+
+/* These are eth-layer filter observation helpers.
+ * Record every WOLFIP_FILT_RECEIVING notification raised at the ethernet
+ * layer so a test can assert which interface index and ethertype the policy
+ * callback was shown, in order. */
+#define VLAN_FILTER_MAX_EVENTS 4
+static unsigned int vlan_filter_if[VLAN_FILTER_MAX_EVENTS];
+static uint16_t vlan_filter_type[VLAN_FILTER_MAX_EVENTS];
+static int vlan_filter_count;
+static unsigned int vlan_filter_block_if;
+
+static int vlan_filter_record_cb(void *arg, const struct wolfIP_filter_event *event)
+{
+    (void)arg;
+    if (!event || event->reason != WOLFIP_FILT_RECEIVING
+        || event->meta.ip_proto != WOLFIP_FILTER_PROTO_ETH)
+        return 0;
+    if (vlan_filter_count < VLAN_FILTER_MAX_EVENTS) {
+        vlan_filter_if[vlan_filter_count] = event->if_idx;
+        vlan_filter_type[vlan_filter_count] = event->meta.eth_type;
+    }
+    vlan_filter_count++;
+    return 0;
+}
+
+/* Allow-by-default L2 policy, deny inbound frames on one interface index,
+ * the way a caller would express "this VLAN is quarantined". */
+static int vlan_filter_block_if_cb(void *arg, const struct wolfIP_filter_event *event)
+{
+    (void)arg;
+    if (!event || event->reason != WOLFIP_FILT_RECEIVING
+        || event->meta.ip_proto != WOLFIP_FILTER_PROTO_ETH)
+        return 0;
+    vlan_filter_count++;
+    return (event->if_idx == vlan_filter_block_if) ? 1 : 0;
+}
+
+static void vlan_filter_arm(wolfIP_filter_cb cb)
+{
+    vlan_filter_count = 0;
+    memset(vlan_filter_if, 0, sizeof(vlan_filter_if));
+    memset(vlan_filter_type, 0, sizeof(vlan_filter_type));
+    wolfIP_filter_set_callback(cb, NULL);
+    wolfIP_filter_set_eth_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_RECEIVING));
+}
+
+static void vlan_filter_disarm(void)
+{
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_eth_mask(0);
+    wolfIP_filter_set_mask(0);
+}
+
 /* =========================================================================
  * 1. API edge tests
  * ========================================================================= */
@@ -1274,6 +1350,123 @@ START_TEST(test_vlan_rx_tagged_arp_processed)
     ck_assert_uint_eq(last_frame_sent[13], 0x00u);
     memcpy(&tci_on_wire, &last_frame_sent[14], 2);
     ck_assert_uint_eq(ee16(tci_on_wire) & 0x0FFFu, 100u);
+}
+END_TEST
+
+/* A tagged frame raises two eth-layer RECEIVING notifications: the parent
+ * with the 0x8100 TPID, then the sub-interface with the inner ethertype. */
+START_TEST(test_vlan_rx_eth_filter_notified_on_subif_after_strip)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint8_t plain[sizeof(struct arp_packet)];
+    uint8_t tagged[sizeof(struct arp_packet) + 4];
+    uint32_t tagged_len;
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    wolfIP_ipconfig_set_ex(&s, sub_idx, VLAN_SUB100_IP, 0xFFFFFF00U, 0);
+
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+    phys->send = mock_send;
+
+    build_arp_frame(plain, phys->mac, ARP_REQUEST, VLAN_REMOTE_IP,
+                    VLAN_SUB100_IP);
+    tagged_len = insert_vlan_tag(tagged, sizeof(tagged), plain, sizeof(plain),
+                                 100, 0, 0);
+    ck_assert_uint_gt(tagged_len, 0u);
+
+    vlan_filter_arm(vlan_filter_record_cb);
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, tagged, tagged_len);
+    vlan_filter_disarm();
+
+    /* Two views: the tagged wire frame on the parent, then the demuxed
+     * frame on the sub-interface it was actually delivered to. */
+    ck_assert_int_eq(vlan_filter_count, 2);
+    ck_assert_uint_eq(vlan_filter_if[0], TEST_PRIMARY_IF);
+    ck_assert_uint_eq(vlan_filter_type[0], ee16(ETH_TYPE_VLAN_8021Q));
+    ck_assert_uint_eq(vlan_filter_if[1], sub_idx);
+    ck_assert_uint_eq(vlan_filter_type[1], ee16(ETH_TYPE_ARP));
+}
+END_TEST
+
+/* An eth filter denying the sub-interface index stops a tagged ARP reply
+ * from installing a neighbor entry on that sub-interface. */
+START_TEST(test_vlan_rx_eth_filter_deny_subif_blocks_arp_poisoning)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint8_t plain[sizeof(struct arp_packet)];
+    uint8_t tagged[sizeof(struct arp_packet) + 4];
+    uint32_t tagged_len;
+    uint8_t mac[6];
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    wolfIP_ipconfig_set_ex(&s, sub_idx, VLAN_SUB100_IP, 0xFFFFFF00U, 0);
+
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+    phys->send = mock_send;
+
+    build_arp_frame(plain, phys->mac, ARP_REPLY, VLAN_REMOTE_IP,
+                    VLAN_SUB100_IP);
+    tagged_len = insert_vlan_tag(tagged, sizeof(tagged), plain, sizeof(plain),
+                                 100, 0, 0);
+    ck_assert_uint_gt(tagged_len, 0u);
+
+    vlan_filter_block_if = sub_idx;
+    vlan_filter_arm(vlan_filter_block_if_cb);
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, tagged, tagged_len);
+    vlan_filter_disarm();
+
+    ck_assert_int_ge(vlan_filter_count, 1);
+    /* The frame was denied on sub_idx, so no L2 mapping may be learned. */
+    memset(mac, 0, sizeof(mac));
+    ck_assert_int_eq(wolfIP_arp_lookup_ex(&s, sub_idx, VLAN_REMOTE_IP, mac), -1);
+}
+END_TEST
+
+/* With no filter installed, that same tagged ARP reply does install a
+ * neighbor entry on the sub-interface. */
+START_TEST(test_vlan_rx_unfiltered_arp_reply_learns_neighbor)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint8_t plain[sizeof(struct arp_packet)];
+    uint8_t tagged[sizeof(struct arp_packet) + 4];
+    uint32_t tagged_len;
+    uint8_t mac[6];
+    int ret;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    wolfIP_ipconfig_set_ex(&s, sub_idx, VLAN_SUB100_IP, 0xFFFFFF00U, 0);
+
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+    phys->send = mock_send;
+
+    build_arp_frame(plain, phys->mac, ARP_REPLY, VLAN_REMOTE_IP,
+                    VLAN_SUB100_IP);
+    tagged_len = insert_vlan_tag(tagged, sizeof(tagged), plain, sizeof(plain),
+                                 100, 0, 0);
+    ck_assert_uint_gt(tagged_len, 0u);
+
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, tagged, tagged_len);
+
+    memset(mac, 0, sizeof(mac));
+    ck_assert_int_eq(wolfIP_arp_lookup_ex(&s, sub_idx, VLAN_REMOTE_IP, mac), 0);
+    ck_assert_mem_eq(mac, vlan_remote_mac, 6);
 }
 END_TEST
 

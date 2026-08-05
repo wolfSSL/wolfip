@@ -9482,6 +9482,10 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
         eth = (struct wolfIP_eth_frame *)buf;
         if_idx = sub_idx;
         ll = wolfIP_ll_at(s, if_idx);
+        /* Re-notify the eth-layer filter with the demuxed view. */
+        if (wolfIP_filter_notify_eth(WOLFIP_FILT_RECEIVING, s,
+                    if_idx, eth, len) != 0)
+            return;
     }
 #endif /* WOLFIP_VLAN */
 #if WOLFIP_PACKET_SOCKETS
