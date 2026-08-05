@@ -555,10 +555,11 @@ START_TEST(test_ip_recv_options_rr_stripped_and_delivered)
 END_TEST
 
 /* =========================================================================
- * ip_recv: option bad length (opt[1] < 2) — parsing aborts (break)
+ * ip_recv: option bad length (opt[1] < 2) — packet dropped
  * =========================================================================
- * Branch: opt + 1 >= opt_end || opt[1] < 2 → break
- * A malformed option with length=1 must not loop infinitely.
+ * Branch: opt + 1 >= opt_end || opt[1] < 2 → return
+ * A malformed option with length=1 must not loop infinitely, and the rest of
+ * the option area is unparseable from there on, so the packet is discarded.
  */
 START_TEST(test_ip_recv_options_bad_length_aborts_parse)
 {
@@ -601,9 +602,9 @@ START_TEST(test_ip_recv_options_bad_length_aborts_parse)
     fix_udp_checksum_raw(ip, udp_hdr, udp_len);
     fix_ip_checksum_with_hlen(ip, (uint16_t)(IP_HEADER_LEN + 4));
 
-    /* Must not crash; packet may or may not be delivered, but parse terminates */
+    /* Must not crash or loop; the packet must not be delivered either */
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
-    /* (no assertion on delivery — the goal is no infinite loop / crash) */
+    ck_assert_ptr_null(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
 
