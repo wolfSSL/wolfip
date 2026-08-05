@@ -5323,14 +5323,18 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
 
-                /* RFC 7323 §3.2 PAWS: if timestamps were negotiated,
-                 * reject segments with stale TSval (send ACK, drop). */
+                /* RFC 7323 §3.2 PAWS: if timestamps were negotiated, reject
+                 * segments that omit the TSopt or carry a stale TSval. */
                 if (t->sock.tcp.ts_enabled &&
                         !(tcp->flags & TCP_FLAG_RST)) {
                     struct tcp_parsed_opts po;
                     tcp_parse_options(tcp, frame_len, &po);
-                    if (po.ts_found &&
-                            tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts))) {
+                    /* Once TSopt is negotiated the peer must carry it in every
+                     * non-RST segment, so one that arrives without it is
+                     * dropped silently. */
+                    if (!po.ts_found)
+                        continue;
+                    if (tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts))) {
                         tcp_send_ack(t);
                         continue;
                     }
