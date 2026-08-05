@@ -452,6 +452,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_callback_mismatched_question_name_rejected);
     tcase_add_test(tc_utils, test_dns_callback_mismatched_question_type_class_rejected);
     tcase_add_test(tc_utils, test_dns_callback_missing_question_section_rejected);
+    tcase_add_test(tc_utils, test_dns_query_source_port_rotates_between_queries);
     tcase_add_test(tc_utils, test_regression_dns_callback_high_bit_octet_ip_no_ub);
     tcase_add_test(tc_utils, test_dns_callback_bad_name);
     tcase_add_test(tc_utils, test_dns_callback_short_header_ignored);

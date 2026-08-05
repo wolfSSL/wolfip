@@ -9848,6 +9848,13 @@ static void dns_abort_query(struct wolfIP *s)
     if (!s)
         return;
     dns_cancel_timer(s);
+    /* RFC 5452 s9.2: the source port is part of the anti-spoofing entropy, so
+     * it must not outlive the query it was drawn for. Releasing it here makes
+     * the next wolfIP_sock_sendto() draw a fresh one, and leaves the socket
+     * bound to no port in between, so a late forged reply aimed at the retired
+     * port no longer matches in udp_try_recv(). */
+    if (s->dns_udp_sd > 0 && SOCKET_UNMARK(s->dns_udp_sd) < MAX_UDPSOCKETS)
+        s->udpsockets[SOCKET_UNMARK(s->dns_udp_sd)].src_port = 0;
     s->dns_id = 0;
     s->dns_retry_count = 0;
     s->dns_query_type = DNS_QUERY_TYPE_NONE;
@@ -10040,6 +10047,16 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
     dns_srv.sin_family = AF_INET;
     dns_srv.sin_port = ee16(DNS_PORT);
     dns_srv.sin_addr.s_addr = ee32(s->dns_server);
+    /* RFC 1035 s4.2.1: the reply comes back from the server's port 53.
+     * Connecting engages udp_try_recv()'s peer filter, so a forged reply from
+     * any other source is dropped by the demux instead of being queued for
+     * dns_callback() to sift through. */
+    if (wolfIP_sock_connect(s, s->dns_udp_sd, (struct wolfIP_sockaddr *)&dns_srv,
+            sizeof(struct wolfIP_sockaddr_in)) < 0) {
+        dns_abort_query(s);
+        *id = DNS_ID_NONE;
+        return -1;
+    }
     ret = wolfIP_sock_sendto(s, s->dns_udp_sd, buf, s->dns_query_len, 0,
             (struct wolfIP_sockaddr *)&dns_srv, sizeof(struct wolfIP_sockaddr_in));
     if (ret < 0) {
