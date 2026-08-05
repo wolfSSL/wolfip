@@ -199,6 +199,7 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-evloop build/test-dns build/test-wolfssl-forwarding \
 	build/test-ttl-expired build/test-wolfssl build/test-httpd \
 	build/test-http-smuggle build/test-http-arg-oob \
+	build/test-http-headers \
 	build/test-http-close-notify \
 	build/test-freertos-close-last-ack \
 	build/test-posix-errno \
@@ -751,6 +752,14 @@ build/test-http-arg-oob: src/test/test_http_arg_oob.c src/http/httpd.c
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ src/test/test_http_arg_oob.c $(LDFLAGS) -lwolfssl
+
+# Standalone regression test for header accumulation in parse_http_request
+# every header line must be reachable through struct http_request.headers.
+build/test-http-headers:CFLAGS+=-Wno-cpp -DWOLFSSL_DEBUG -DWOLFSSL_WOLFIP -DWOLFIP_ENABLE_HTTP -Isrc/http
+build/test-http-headers: src/test/test_http_headers.c src/http/httpd.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ src/test/test_http_headers.c $(LDFLAGS) -lwolfssl
 
 # Standalone regression test for TLS close_notify on every close path (F-5732).
 # It #includes httpd.c directly and stubs the wolfSSL teardown calls to record
