@@ -9219,7 +9219,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             if (type == 0x83 || type == 0x89) /* LSRR or SSRR */
                 return;
             if (opt + 1 >= opt_end || opt[1] < 2)
-                break;
+                return;
             if (opt[1] > (uint8_t)(opt_end - opt))
                 return;
             opt += opt[1];
