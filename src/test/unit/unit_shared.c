@@ -676,6 +676,45 @@ static int enqueue_tcp_tx_with_payload(struct tsocket *ts, const uint8_t *payloa
     return fifo_push(&ts->sock.tcp.txbuf, tcp, frame_len);
 }
 
+/* Wire-format QNAMEs (length-prefixed labels + terminator) matching the
+ * question sections the DNS tests build into their synthetic responses. */
+static const uint8_t dns_qname_example_com[] =
+        {7,'e','x','a','m','p','l','e',3,'c','o','m',0};
+static const uint8_t dns_qname_a[] = {1,'a',0};
+static const uint8_t dns_qname_a_com[] = {1,'a',3,'c','o','m',0};
+
+/* Arm an outstanding DNS query the way dns_send_query() would, for tests that
+ * synthesize a response directly instead of going through nslookup(). Since
+ * dns_callback() verifies the response's question section against
+ * s->dns_query_buf (RFC 1035 s7.3), a hand-set dns_id alone is no longer
+ * enough to reach the answer section. qname is the wire-format name
+ * (length-prefixed labels + terminator) the test builds into its response. */
+static void arm_dns_query(struct wolfIP *s, uint16_t id, const uint8_t *qname,
+                          int qname_len, uint16_t qtype)
+{
+    struct dns_header *hdr = (struct dns_header *)s->dns_query_buf;
+    struct dns_question *q;
+    int pos = (int)sizeof(struct dns_header);
+
+    ck_assert_uint_le((size_t)(pos + qname_len + (int)sizeof(struct dns_question)),
+            sizeof(s->dns_query_buf));
+    memset(s->dns_query_buf, 0, sizeof(s->dns_query_buf));
+    hdr->id = ee16(id);
+    hdr->flags = ee16(DNS_QUERY | DNS_RD);
+    hdr->qdcount = ee16(DNS_QUESTION_COUNT);
+    memcpy(s->dns_query_buf + pos, qname, (size_t)qname_len);
+    pos += qname_len;
+    q = (struct dns_question *)(s->dns_query_buf + pos);
+    q->qtype = ee16(qtype);
+    q->qclass = ee16(DNS_CLASS_IN);
+    pos += (int)sizeof(struct dns_question);
+
+    s->dns_query_len = (uint16_t)pos;
+    s->dns_id = id;
+    s->dns_query_type = (qtype == DNS_PTR) ? DNS_QUERY_TYPE_PTR :
+            DNS_QUERY_TYPE_A;
+}
+
 static void enqueue_udp_rx(struct tsocket *ts, const void *payload, uint16_t payload_len, uint16_t src_port)
 {
     uint8_t buf[sizeof(struct wolfIP_udp_datagram) + 1024];

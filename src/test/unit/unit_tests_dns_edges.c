@@ -129,8 +129,8 @@ START_TEST(test_dns_callback_zero_ancount_no_delivery)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_id     = 0xABCD;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
+    arm_dns_query(&s, 0xABCD, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
     dns_lookup_calls = 0;
     dns_lookup_ip    = 0;
     s.dns_lookup_cb  = test_dns_lookup_cb;
@@ -165,8 +165,8 @@ START_TEST(test_dns_callback_aaaa_answer_skipped_for_a_query)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_id     = 0x1111;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
+    arm_dns_query(&s, 0x1111, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
     dns_lookup_calls = 0;
     dns_lookup_ip    = 0;
     s.dns_lookup_cb  = test_dns_lookup_cb;
@@ -210,8 +210,8 @@ START_TEST(test_dns_callback_rr_rdlen_truncated_aborts_query)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_id     = 0x2222;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
+    arm_dns_query(&s, 0x2222, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
     dns_lookup_calls = 0;
     dns_lookup_ip    = 0;
     s.dns_lookup_cb  = test_dns_lookup_cb;
@@ -297,8 +297,7 @@ START_TEST(test_dns_callback_answer_forward_ptr_aborts_query)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_id     = 0x4444;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
+    arm_dns_query(&s, 0x4444, dns_qname_a, (int)sizeof(dns_qname_a), DNS_A);
     s.dns_lookup_cb  = test_dns_lookup_cb;
     s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(s.dns_udp_sd, 0);
@@ -565,8 +564,7 @@ START_TEST(test_dns_callback_ptr_bad_copy_name_stays_pending)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_id     = 0xBBBB;
-    s.dns_query_type = DNS_QUERY_TYPE_PTR;
+    arm_dns_query(&s, 0xBBBB, dns_qname_a, (int)sizeof(dns_qname_a), DNS_PTR);
     s.dns_ptr_cb     = test_dns_ptr_cb;
     s.dns_lookup_cb  = NULL;
     s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);

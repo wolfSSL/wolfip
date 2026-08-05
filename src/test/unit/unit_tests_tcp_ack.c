@@ -326,8 +326,7 @@ START_TEST(test_dns_callback_bad_rr_rdlen)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_a, (int)sizeof(dns_qname_a), DNS_A);
     s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(s.dns_udp_sd, 0);
 

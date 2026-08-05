@@ -5184,8 +5184,8 @@ START_TEST(test_dns_callback_ptr_response)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_PTR;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_a_com, (int)sizeof(dns_qname_a_com),
+            DNS_PTR);
     s.dns_ptr_cb = test_dns_ptr_cb;
     s.dns_lookup_cb = NULL;
     s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
@@ -5966,6 +5966,199 @@ START_TEST(test_dns_inflight_query_state_not_clobbered_by_second_call)
 }
 END_TEST
 
+/*
+ * Helper that writes the bytes of a fake DNS reply into buf and returns
+ * how many bytes it wrote.
+ * */
+static int build_dns_a_response_for_question(uint8_t *buf, size_t buf_sz,
+                                             uint16_t id,
+                                             const uint8_t *qname, int qname_len,
+                                             uint16_t qtype, uint16_t qclass,
+                                             uint16_t qdcount,
+                                             const uint8_t *ip_bytes)
+{
+    struct dns_header *hdr = (struct dns_header *)buf;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    int pos;
+    int qname_off;
+
+    memset(buf, 0, buf_sz);
+    hdr->id      = ee16(id);
+    hdr->flags   = ee16(DNS_FLAGS_RESPONSE_RD);   /* QR|RD, RCODE 0, TC clear */
+    hdr->qdcount = ee16(qdcount);
+    hdr->ancount = ee16(1);
+    pos = (int)sizeof(struct dns_header);
+    qname_off = pos;
+
+    memcpy(buf + pos, qname, (size_t)qname_len);
+    pos += qname_len;
+    if (qdcount != 0) {
+        q = (struct dns_question *)(buf + pos);
+        q->qtype  = ee16(qtype);
+        q->qclass = ee16(qclass);
+        pos += (int)sizeof(struct dns_question);
+        buf[pos++] = DNS_COMPRESSION_PTR_VALUE;
+        buf[pos++] = (uint8_t)qname_off;
+    }
+
+    rr = (struct dns_rr *)(buf + pos);
+    rr->type     = ee16(DNS_A);
+    rr->class    = ee16(DNS_CLASS_IN);
+    rr->ttl      = ee32(60);
+    rr->rdlength = ee16(DNS_IPV4_RDATA_LEN);
+    pos += (int)sizeof(struct dns_rr);
+    memcpy(buf + pos, ip_bytes, DNS_IPV4_RDATA_LEN);
+    pos += DNS_IPV4_RDATA_LEN;
+
+    ck_assert_uint_le((size_t)pos, buf_sz);
+    return pos;
+}
+
+/* RFC 1035 s7.3: matching the header ID is only the *preliminary* check. The
+ * resolver must then "verify that the question section corresponds to the
+ * information currently desired".
+ * Dropping the mismatch must not cancel the query. Aborting on an unmatched
+ * response would let one spoofed packet deny the lookup, so the resolver has
+ * to stay armed for the legitimate answer still in flight. */
+START_TEST(test_dns_callback_mismatched_question_name_rejected)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    uint8_t response[128];
+    int len;
+    static const uint8_t qname_evil[]   = {4,'e','v','i','l',3,'c','o','m',0};
+    static const uint8_t qname_target[] = {6,'t','a','r','g','e','t',3,'c','o','m',0};
+    static const uint8_t evil_ip[DNS_IPV4_RDATA_LEN] = {0x06, 0x06, 0x06, 0x06};
+    static const uint8_t good_ip[DNS_IPV4_RDATA_LEN] = {0x01, 0x02, 0x03, 0x04};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+
+    /* Real query: "target.com" IN A. dns_send_query() stores it in
+     * s->dns_query_buf, which is the reference the response must match. */
+    ck_assert_int_eq(nslookup(&s, "target.com", &id, test_dns_lookup_cb), 0);
+    ck_assert_uint_ne(id, 0U);
+
+    /* Well-formed, right ID, RCODE 0, one A/IN answer but the question is
+     * for a name this resolver never queried. */
+    len = build_dns_a_response_for_question(response, sizeof(response), id,
+            qname_evil, (int)sizeof(qname_evil), DNS_A, DNS_CLASS_IN, 1,
+            evil_ip);
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)len, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 0);
+    ck_assert_uint_eq(dns_lookup_ip, 0U);
+    /* Still armed for the real answer. */
+    ck_assert_uint_eq(s.dns_id, id);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+    ck_assert_ptr_eq(s.dns_lookup_cb, test_dns_lookup_cb);
+
+    /* The response that does match the outstanding question still resolves. */
+    len = build_dns_a_response_for_question(response, sizeof(response), id,
+            qname_target, (int)sizeof(qname_target), DNS_A, DNS_CLASS_IN, 1,
+            good_ip);
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)len, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0x01020304U);
+    ck_assert_uint_eq(s.dns_id, 0U);
+}
+END_TEST
+
+/* Similar test to the one above but it's reached through
+ * QTYPE and QCLASS instead of the name. */
+START_TEST(test_dns_callback_mismatched_question_type_class_rejected)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    uint8_t response[128];
+    int len;
+    static const uint8_t qname_target[] = {6,'t','a','r','g','e','t',3,'c','o','m',0};
+    static const uint8_t evil_ip[DNS_IPV4_RDATA_LEN] = {0x06, 0x06, 0x06, 0x06};
+    const uint16_t dns_class_ch = 0x0003;   /* CHAOS, RFC 1035 s3.2.4 */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+
+    ck_assert_int_eq(nslookup(&s, "target.com", &id, test_dns_lookup_cb), 0);
+
+    /* Right name, but with wrong QTYPE. */
+    len = build_dns_a_response_for_question(response, sizeof(response), id,
+            qname_target, (int)sizeof(qname_target), DNS_PTR, DNS_CLASS_IN, 1,
+            evil_ip);
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)len, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 0);
+    ck_assert_uint_eq(s.dns_id, id);
+
+    /* Right name and QTYPE but with wrong QCLASS. */
+    len = build_dns_a_response_for_question(response, sizeof(response), id,
+            qname_target, (int)sizeof(qname_target), DNS_A, dns_class_ch, 1,
+            evil_ip);
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)len, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 0);
+    ck_assert_uint_eq(dns_lookup_ip, 0U);
+    ck_assert_uint_eq(s.dns_id, id);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+}
+END_TEST
+
+/* Part of the same checks as above, in this case the skip loop is driven
+ * by the response's qdcount, so a response can declare qdcount == 0,
+ * place its answers directly after the header and skip the question
+ * section altogether. */
+START_TEST(test_dns_callback_missing_question_section_rejected)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    uint8_t response[128];
+    int len;
+    static const uint8_t qname_target[] = {6,'t','a','r','g','e','t',3,'c','o','m',0};
+    static const uint8_t evil_ip[DNS_IPV4_RDATA_LEN] = {0x06, 0x06, 0x06, 0x06};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+    s.last_tick = 100U;
+    dns_lookup_calls = 0;
+    dns_lookup_ip = 0;
+
+    ck_assert_int_eq(nslookup(&s, "target.com", &id, test_dns_lookup_cb), 0);
+
+    /* qdcount == 0 so no question at all, answer RR owner name is the queried
+     * name so only the question-count check can reject this. */
+    len = build_dns_a_response_for_question(response, sizeof(response), id,
+            qname_target, (int)sizeof(qname_target), DNS_A, DNS_CLASS_IN, 0,
+            evil_ip);
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)], response,
+            (uint16_t)len, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    ck_assert_int_eq(dns_lookup_calls, 0);
+    ck_assert_uint_eq(dns_lookup_ip, 0U);
+    ck_assert_uint_eq(s.dns_id, id);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_A);
+}
+END_TEST
+
 START_TEST(test_regression_dns_callback_high_bit_octet_ip_no_ub)
 {
     /* The dns_callback() A-record reassembly used to compute
@@ -5988,8 +6181,8 @@ START_TEST(test_regression_dns_callback_high_bit_octet_ip_no_ub)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_example_com,
+            (int)sizeof(dns_qname_example_com), DNS_A);
     s.dns_lookup_cb = test_dns_lookup_cb;
     dns_lookup_calls = 0;
     dns_lookup_ip = 0;
@@ -6155,8 +6348,8 @@ START_TEST(test_dns_callback_non_in_a_answer_ignored)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_example_com,
+            (int)sizeof(dns_qname_example_com), DNS_A);
     s.dns_lookup_cb = test_dns_lookup_cb;
     dns_lookup_calls = 0;
     dns_lookup_ip = 0;
@@ -6210,8 +6403,8 @@ START_TEST(test_dns_callback_non_in_ptr_answer_ignored)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_PTR;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_a_com, (int)sizeof(dns_qname_a_com),
+            DNS_PTR);
     s.dns_ptr_cb = test_dns_ptr_cb;
     s.dns_lookup_cb = NULL;
     s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
@@ -6262,8 +6455,7 @@ START_TEST(test_dns_callback_malformed_compressed_name_aborts_query)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_a, (int)sizeof(dns_qname_a), DNS_A);
     s.dns_lookup_cb = test_dns_lookup_cb;
     dns_lookup_calls = 0;
     dns_lookup_ip = 0;
