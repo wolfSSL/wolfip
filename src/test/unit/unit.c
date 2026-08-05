@@ -1333,7 +1333,7 @@ Suite *wolf_suite(void)
 #ifdef IP_MULTICAST
     tcase_add_test(tc_core, test_poll_tx_udp_multicast_arp_skipped_uses_mcast_mac);
 #endif /* IP_MULTICAST */
-    /* --- unit_tests_dhcp_edges.c (46 tests) --- */
+    /* --- unit_tests_dhcp_edges.c (52 tests) --- */
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_zero_lease_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_null_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_renew_gt_lease_clamped);
@@ -1382,6 +1382,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_timer_cb_null_arg_noop);
     tcase_add_test(tc_core, test_dhcp_renew_rerandomizes_xid_rejecting_stale_ack);
     tcase_add_test(tc_core, test_dhcp_parse_ack_without_lease_time_rejected);
+    tcase_add_test(tc_core, test_dhcp_lease_expiry_relearns_dns_server);
+    tcase_add_test(tc_core, test_dhcp_nak_relearns_dns_server);
+    tcase_add_test(tc_core, test_dhcp_lease_expiry_keeps_pinned_dns_server);
     tcase_add_test(tc_core, test_dhcp_public_apis_null_stack_safe);
     /* --- unit_tests_ip_arp_recv.c (35 tests) --- */
     tcase_add_test(tc_core, test_ip_recv_limited_broadcast_dst_is_local);

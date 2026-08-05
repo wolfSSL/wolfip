@@ -1374,6 +1374,7 @@ struct wolfIP {
     uint64_t dhcp_lease_expires; /* Lease expiration time */
     uint64_t dhcp_start_tick; /* Start time of current DHCP acquisition/renewal */
     ip4 dns_server;
+    uint8_t dns_server_pinned; /* dns_server is configured out-of-band, not leased */
     uint16_t dns_id;
     int dns_udp_sd;
     uint32_t dns_timer;
@@ -7953,6 +7954,8 @@ static void dhcp_deconfigure_lease(struct wolfIP *s)
     wolfIP_ipconfig_set(s, 0, 0, 0);
     s->dhcp_ip = 0;
     s->dhcp_server_ip = 0;
+    if (!s->dns_server_pinned)
+        s->dns_server = 0;
 }
 
 #define DHCP_OPT_data_to_u32(opt)                    \
@@ -9106,6 +9109,7 @@ void wolfIP_init_static(struct wolfIP **s)
     if (wolfIP_static.dns_server == 0) {
 #ifdef WOLFIP_STATIC_DNS_IP
         wolfIP_static.dns_server = atoip4(WOLFIP_STATIC_DNS_IP);
+        wolfIP_static.dns_server_pinned = 1;
 #endif
     }
     *s = &wolfIP_static;
