@@ -1239,6 +1239,151 @@ START_TEST(test_dhcp_parse_ack_without_lease_time_rejected)
 }
 END_TEST
 
+/* A lease that expires drops the DNS server along with the address, mask and
+ * gateway, so the fresh DORA adopts the resolver advertised by whichever server
+ * answers next. */
+START_TEST(test_dhcp_lease_expiry_relearns_dns_server)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    const uint32_t first_srv  = 0x0A0000FEU; /* 10.0.0.254 */
+    const uint32_t first_dns  = 0x0A0000FEU;
+    const uint32_t second_srv = 0x0A000001U; /* 10.0.0.1 */
+    const uint32_t second_dns = 0x08080808U; /* 8.8.8.8 */
+    const uint32_t client_ip  = 0x0A000064U;
+    const uint32_t mask       = 0xFFFFFF00U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    /* First lease: the resolver comes from the server that answered first. */
+    s.dhcp_xid = 0x11110001U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    build_full_ack(&s, &msg, first_srv, client_ip, mask, first_srv,
+                   first_dns, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(s.dns_server, first_dns);
+    ck_assert_uint_ne(s.dhcp_lease_expires, 0U);
+
+    /* The lease expires: every parameter it carried is released. */
+    s.last_tick = s.dhcp_lease_expires;
+    dhcp_timer_cb(&s);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(primary->gw, 0U);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0U);
+    ck_assert_uint_eq(s.dns_server, 0U);
+
+    /* The next lease installs its own resolver, not the released one. */
+    s.dhcp_xid = 0x22220002U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    build_full_ack(&s, &msg, second_srv, client_ip, mask, second_srv,
+                   second_dns, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(s.dhcp_server_ip, second_srv);
+    ck_assert_uint_eq(s.dns_server, second_dns);
+}
+END_TEST
+
+/* A DHCPNAK drops the DNS server along with the rest of the lease. */
+START_TEST(test_dhcp_nak_relearns_dns_server)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    uint8_t *p;
+    const uint32_t first_srv = 0x0A0000FEU;
+    const uint32_t first_dns = 0x0A0000FEU;
+    const uint32_t client_ip = 0x0A000064U;
+    const uint32_t mask      = 0xFFFFFF00U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    s.dhcp_xid = 0x33330003U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    build_full_ack(&s, &msg, first_srv, client_ip, mask, first_srv,
+                   first_dns, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_uint_eq(s.dns_server, first_dns);
+
+    /* RFC 2131 s4.4.1: a DHCPNAK restarts configuration from scratch. */
+    s.dhcp_state = DHCP_RENEWING;
+    build_dhcp_msg_base(&s, &msg, DHCP_NAK);
+    p = (uint8_t *)msg.options + 3;
+    append_opt4(&p, DHCP_OPTION_SERVER_ID, first_srv);
+    append_end(&p);
+    ck_assert_int_eq(dhcp_msg_type(&s, &msg, sizeof(msg)), DHCP_NAK);
+    dhcp_deconfigure_lease(&s);
+
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0U);
+    ck_assert_uint_eq(s.dns_server, 0U);
+}
+END_TEST
+
+/* A resolver configured out-of-band survives a lease loss and is never replaced
+ * by the one a DHCPACK advertises. */
+START_TEST(test_dhcp_lease_expiry_keeps_pinned_dns_server)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    const uint32_t server_ip  = 0x0A000001U;
+    const uint32_t pinned_dns = 0x09090909U; /* 9.9.9.9, set out-of-band */
+    const uint32_t offered_dns = 0x08080808U;
+    const uint32_t client_ip  = 0x0A000064U;
+    const uint32_t mask       = 0xFFFFFF00U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dns_server = pinned_dns;
+    s.dns_server_pinned = 1;
+
+    s.dhcp_xid = 0x44440004U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    build_full_ack(&s, &msg, server_ip, client_ip, mask, server_ip,
+                   offered_dns, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_uint_eq(s.dns_server, pinned_dns);
+
+    s.last_tick = s.dhcp_lease_expires;
+    dhcp_timer_cb(&s);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(s.dns_server, pinned_dns);
+
+    /* The next lease does not get to install its resolver either. */
+    s.dhcp_xid = 0x55550005U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    build_full_ack(&s, &msg, server_ip, client_ip, mask, server_ip,
+                   offered_dns, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_uint_eq(s.dns_server, pinned_dns);
+}
+END_TEST
+
 /* F-5485: the public DHCP helper APIs must tolerate a NULL stack pointer and
  * return a deterministic value instead of dereferencing it. */
 START_TEST(test_dhcp_public_apis_null_stack_safe)
