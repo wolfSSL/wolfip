@@ -556,7 +556,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_close_tcp_close_wait_full_txbuf_preserves_state);
     tcase_add_test(tc_utils, test_sock_close_tcp_other_state_closes);
     tcase_add_test(tc_utils, test_sock_close_tcp_cancels_rto_timer);
-    tcase_add_test(tc_utils, test_sock_close_tcp_closed_returns_minus_one);
+    tcase_add_test(tc_utils, test_sock_close_tcp_closed_releases_slot);
+    tcase_add_test(tc_utils, test_sock_close_tcp_closed_frees_pool_slot);
+    tcase_add_test(tc_utils, test_sock_close_tcp_closed_reaps_deferred_notify);
     tcase_add_test(tc_utils, test_tcp_syn_sent_to_established);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_unexpected_flags);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_transitions);

@@ -4888,7 +4888,7 @@ START_TEST(test_sock_close_tcp_cancels_rto_timer)
 }
 END_TEST
 
-START_TEST(test_sock_close_tcp_closed_returns_minus_one)
+START_TEST(test_sock_close_tcp_closed_releases_slot)
 {
     struct wolfIP s;
     struct tsocket *ts;
@@ -4902,7 +4902,66 @@ START_TEST(test_sock_close_tcp_closed_returns_minus_one)
     ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
     ts->sock.tcp.state = TCP_CLOSED;
 
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -1);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+/* Closing a never-connected TCP socket returns its pool slot, so repeated
+ * socket()/close() cycles do not exhaust the pool. */
+START_TEST(test_sock_close_tcp_closed_frees_pool_slot)
+{
+    struct wolfIP s;
+    int sd;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+        ck_assert_int_gt(sd, 0);
+        ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state, TCP_CLOSED);
+        ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+        ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].proto, 0);
+    }
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+}
+END_TEST
+
+/* An app-initiated close of a slot holding a deferred CB_EVENT_CLOSED reaps it
+ * without dispatching the callback. */
+START_TEST(test_sock_close_tcp_closed_reaps_deferred_notify)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    int sd;
+    int callback_arg = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
+
+    /* Involuntary teardown from the RX path defers one final CB_EVENT_CLOSED. */
+    close_socket(ts);
+    ck_assert_uint_eq(ts->close_notify_pending, 1);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_int_ne(ts->proto, 0);
+
+    socket_cb_calls = 0;
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->proto, 0);
+    ck_assert_uint_eq(ts->close_notify_pending, 0);
+
+    (void)wolfIP_poll(&s, 1);
+    ck_assert_int_eq(socket_cb_calls, 0);
 }
 END_TEST
 START_TEST(test_fifo_push_and_pop_multiple) {
