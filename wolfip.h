@@ -584,6 +584,13 @@ int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx);
 int wolfIP_ipv6_addr_add(struct wolfIP *s, unsigned int if_idx,
                          const ip6 *addr, uint8_t prefix_len);
 
+/* Stop Neighbor Discovery on an interface: no more router solicitation,
+ * and anything still tentative is dropped. Addresses that already passed
+ * duplicate address detection are kept and still answered for. When no
+ * interface is left running, the periodic tick releases its slot in the
+ * shared timer heap. */
+int wolfIP_ipv6_stop(struct wolfIP *s, unsigned int if_idx);
+
 /* Install a static neighbour cache entry. Useful before Router
  * Advertisements have been seen, and for talking to a peer that does not
  * answer solicitations. */

@@ -1127,6 +1127,12 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ula_is_verified_by_dad_and_then_usable);
     tcase_add_test(tc_proto, test_ula_is_defended_and_survives_a_router_advertisement);
     tcase_add_test(tc_proto, test_ula_duplicate_is_rejected);
+    tcase_add_test(tc_proto, test_nd_uses_one_timer_slot_for_the_whole_stack);
+    tcase_add_test(tc_proto, test_nd_recovers_when_the_timer_heap_is_full);
+    tcase_add_test(tc_proto, test_nd_stop_releases_the_timer_slot);
+    tcase_add_test(tc_proto, test_nd_stop_drops_a_tentative_address);
+    tcase_add_test(tc_proto, test_nd_restarts_after_being_stopped);
+    tcase_add_test(tc_proto, test_nd_stop_rejects_invalid_arguments);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */

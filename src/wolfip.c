@@ -1489,12 +1489,10 @@ struct wolfIP {
         struct nd6_neighbor neighbors[WOLFIP_ND6_CACHE_SIZE];
         struct nd6_prefix prefixes[WOLFIP_ND6_PREFIX_MAX];
         struct nd6_router routers[WOLFIP_ND6_ROUTER_MAX];
-        uint64_t last_ns[WOLFIP_MAX_INTERFACES];  /* NS rate limit, per iface */
         uint64_t rs_due[WOLFIP_MAX_INTERFACES];   /* next router solicitation */
         uint8_t rs_left[WOLFIP_MAX_INTERFACES];   /* solicitations remaining */
         uint8_t started[WOLFIP_MAX_INTERFACES];   /* wolfIP_ipv6_start() called */
         uint32_t tick_timer;
-        uint64_t tick_due;
     } nd6;
 #endif
 #ifdef ETHERNET
@@ -11114,6 +11112,12 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     s->last_tick = now;
 
     /* Poll the device */
+#if WOLFIP_IPV6
+    /* Re-arms the Neighbor Discovery tick when there is work and no timer
+     * running: the wake-up after an idle period, and the recovery path if an
+     * earlier insert lost to a full heap. */
+    nd6_poll(s);
+#endif
     poll_devices(s);
 
     /* Handle timers */
