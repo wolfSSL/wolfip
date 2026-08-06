@@ -6686,6 +6686,146 @@ START_TEST(test_regression_paws_drops_segment_without_timestamp_option)
 }
 END_TEST
 
+/* RFC 7323 §3.2: LAST_ACK is a synchronized state, so a final ACK that
+ * arrives without a TSopt is silently dropped instead of closing the
+ * connection. */
+START_TEST(test_regression_paws_drops_last_ack_segment_without_timestamp_option)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+    uint32_t tcp_hlen = TCP_HEADER_LEN;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+    last_frame_sent_count = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.last = 999; /* FIN was at seq 999 */
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.last_ts = ee32(5000);  /* TS.Recent = 5000 */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* In-window ACK covering our FIN, carrying no options at all, so the
+     * header is the bare 20 bytes and tcp_parse_options finds no TSopt. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + tcp_hlen);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(ts->local_ip);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.hlen = (uint8_t)(tcp_hlen << 2);
+    seg.flags = TCP_FLAG_ACK;
+    seg.seq = ee32(100);  /* == rcv_nxt, in-window */
+    seg.ack = ee32(1001); /* ACKs the FIN */
+    seg.win = ee16(65535);
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + tcp_hlen));
+
+    /* Dropped: the connection must not be torn down by a segment that
+     * never passed PAWS.  Silently: nothing is queued or transmitted. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.tcp.txbuf));
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+/* RFC 7323 §3.2: TIME_WAIT is a synchronized state, so a retransmitted FIN
+ * that arrives without a TSopt is silently dropped instead of being
+ * answered with an ACK. */
+START_TEST(test_regression_paws_drops_time_wait_segment_without_timestamp_option)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg fin_retx;
+    uint32_t tcp_hlen = TCP_HEADER_LEN;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+    last_frame_sent_count = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_TIME_WAIT;
+    /* Peer FIN had seq=100; we already advanced rcv_nxt past it. */
+    ts->sock.tcp.ack = 101;
+    ts->sock.tcp.seq = 200;
+    ts->sock.tcp.snd_una = 200;
+    ts->sock.tcp.cwnd = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.last_ts = ee32(5000);  /* TS.Recent = 5000 */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&fin_retx, 0, sizeof(fin_retx));
+    fin_retx.ip.ver_ihl = 0x45;
+    fin_retx.ip.ttl = 64;
+    fin_retx.ip.proto = WI_IPPROTO_TCP;
+    fin_retx.ip.len = ee16(IP_HEADER_LEN + tcp_hlen);
+    fin_retx.ip.src = ee32(ts->remote_ip);
+    fin_retx.ip.dst = ee32(ts->local_ip);
+    fin_retx.dst_port = ee16(ts->src_port);
+    fin_retx.src_port = ee16(ts->dst_port);
+    fin_retx.hlen = (uint8_t)(tcp_hlen << 2);
+    fin_retx.flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
+    fin_retx.seq = ee32(100);
+    fin_retx.ack = ee32(ts->sock.tcp.seq);
+    fin_retx.win = ee16(65535);
+    fix_tcp_checksums(&fin_retx);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &fin_retx,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + tcp_hlen));
+
+    /* Dropped silently: no ACK is queued for a segment that never passed
+     * PAWS.  The socket stays in TIME_WAIT under its own close timer. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.tcp.txbuf));
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
 
 /* RFC 2131 s4.4.1: if the client receives a DHCPNAK, it must restart
  * the configuration process.  The current code silently ignores NAKs
