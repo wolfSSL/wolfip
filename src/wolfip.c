@@ -9274,7 +9274,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 }
             }
         }
-        if (!is_local && !l2_group) {
+        if (!is_local) {
             ip4 src = ee32(ip->src);
             int rpf_drop = 0;
 
@@ -9324,7 +9324,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             if (rpf_drop)
                 return;
 
-            {
+            if (!l2_group) {
             int out_if = wolfIP_forward_interface(s, if_idx, dest);
             if (out_if >= 0) {
                 uint8_t mac[6];
