@@ -972,6 +972,25 @@ START_TEST(test_nd_uses_one_timer_slot_for_the_whole_stack)
     /* And it stays at one across many firings. */
     nd_advance(&s, &now, 2000);
     ck_assert_uint_eq(s.timers.size, before + 1u);
+
+    /* Arming is idempotent: nd6_arm_tick() cancels any live timer before
+     * inserting, so a repeated start cannot leave a stray entry running
+     * alongside the new one. Counted as live entries rather than heap size,
+     * because cancellation only tombstones with expires = 0 and the slot is
+     * reclaimed later. */
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    {
+        unsigned int i;
+        int live = 0;
+
+        for (i = 0; i < s.timers.size; i++) {
+            if ((s.timers.timers[i].expires != 0) &&
+                    (s.timers.timers[i].cb == nd6_tick_cb))
+                live++;
+        }
+        ck_assert_int_eq(live, 1);
+    }
 }
 END_TEST
 
