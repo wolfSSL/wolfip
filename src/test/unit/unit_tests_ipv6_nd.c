@@ -927,4 +927,191 @@ START_TEST(test_ula_duplicate_is_rejected)
 }
 END_TEST
 
+/* =========================================================================
+ * 6. Timer lifecycle
+ * =========================================================================
+ * Neighbor Discovery adds exactly one entry to the shared timer heap for
+ * the whole stack, not one per interface or per address. Everything else -
+ * duplicate address detection, router solicitation retries, cache ageing,
+ * prefix and router lifetimes - is a deadline field that this one tick
+ * polls.
+ */
+
+/* Fill the timer heap with entries that never fire. */
+static void nd_fill_timer_heap(struct wolfIP *s)
+{
+    while (s->timers.size < MAX_TIMERS) {
+        struct wolfIP_timer tmr;
+
+        memset(&tmr, 0, sizeof(tmr));
+        tmr.expires = s->last_tick + 1000000u;
+        tmr.arg = s;
+        tmr.cb = nd6_tick_cb;
+        if (timers_binheap_insert(&s->timers, tmr) == NO_TIMER)
+            break;
+    }
+}
+
+START_TEST(test_nd_uses_one_timer_slot_for_the_whole_stack)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint32_t before;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    before = s.timers.size;
+
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_eq(s.timers.size, before + 1u);
+
+    /* A second interface reuses the same tick rather than arming another. */
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_SECOND_IF), 0);
+    ck_assert_uint_eq(s.timers.size, before + 1u);
+
+    /* And it stays at one across many firings. */
+    nd_advance(&s, &now, 2000);
+    ck_assert_uint_eq(s.timers.size, before + 1u);
+}
+END_TEST
+
+START_TEST(test_nd_recovers_when_the_timer_heap_is_full)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 ll6;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+
+    /* No slot available when IPv6 starts. Duplicate address detection would
+     * otherwise never run, and nothing would notice: timers_binheap_insert()
+     * returns 0 on a full heap and NO_TIMER is 0, so the failure is
+     * indistinguishable from "not armed". */
+    nd_fill_timer_heap(&s);
+    ck_assert_uint_eq(s.timers.size, MAX_TIMERS);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_eq(s.nd6.tick_timer, NO_TIMER);
+
+    nd_our_link_local(&s, &ll6);
+    nd_advance(&s, &now, 2000);
+    /* Still stuck, because there is genuinely nowhere to put the timer. */
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_TENTATIVE);
+
+    /* Free a slot. wolfIP_poll() must notice and arm the tick; without that
+     * recovery the stack would never do Neighbor Discovery again. */
+    timers_binheap_pop(&s.timers);
+    nd_advance(&s, &now, 2000);
+    ck_assert_uint_ne(s.nd6.tick_timer, NO_TIMER);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+}
+END_TEST
+
+START_TEST(test_nd_stop_releases_the_timer_slot)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint32_t before;
+    ip6 ll6;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    before = s.timers.size;
+
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_our_link_local(&s, &ll6);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+    ck_assert_uint_ne(s.nd6.tick_timer, NO_TIMER);
+
+    /* Nothing else is running, so stopping must give the slot back rather
+     * than leave the tick scanning five tables every 100ms forever.
+     *
+     * timer_binheap_cancel() is lazy: it tombstones the entry with
+     * expires = 0 and the slot is reclaimed by the drain loop at the top of
+     * timers_binheap_insert(). So heap->size does not drop straight away,
+     * and asserting on it here would be asserting the wrong contract. What
+     * matters is that the tick is disarmed, does not fire again, and does
+     * not leak the slot. */
+    ck_assert_int_eq(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_eq(s.nd6.tick_timer, NO_TIMER);
+
+    /* Tombstoned, so it can never fire. */
+    {
+        unsigned int i;
+        int live = 0;
+
+        for (i = 0; i < s.timers.size; i++) {
+            if (s.timers.timers[i].expires != 0)
+                live++;
+        }
+        ck_assert_int_eq(live, 0);
+    }
+
+    /* An address that had already passed detection is kept, and is still
+     * answered for. */
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+    nd_advance(&s, &now, 500);
+    ck_assert_uint_eq(s.nd6.tick_timer, NO_TIMER);
+
+    /* The slot is reclaimed rather than leaked: starting again reuses it
+     * instead of growing the heap. */
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_eq(s.timers.size, before + 1u);
+}
+END_TEST
+
+START_TEST(test_nd_stop_drops_a_tentative_address)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 ll6;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_our_link_local(&s, &ll6);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_TENTATIVE);
+
+    /* Detection never completed, so the address was never ours. Leaving it
+     * behind would strand it tentative for good. */
+    ck_assert_int_eq(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), -1);
+}
+END_TEST
+
+START_TEST(test_nd_restarts_after_being_stopped)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 ll6;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_eq(s.nd6.tick_timer, NO_TIMER);
+
+    /* Starting again re-arms and duplicate address detection runs afresh. */
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_ne(s.nd6.tick_timer, NO_TIMER);
+    nd_our_link_local(&s, &ll6);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+}
+END_TEST
+
+START_TEST(test_nd_stop_rejects_invalid_arguments)
+{
+    struct wolfIP s;
+
+    nd_setup(&s);
+    ck_assert_int_lt(wolfIP_ipv6_stop(NULL, TEST_PRIMARY_IF), 0);
+    ck_assert_int_lt(wolfIP_ipv6_stop(&s, 99), 0);
+    /* Stopping an interface that was never started is not an error. */
+    ck_assert_int_eq(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), 0);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

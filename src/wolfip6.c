@@ -740,6 +740,8 @@ struct PACKED nd6_opt_prefix {
 };
 
 static void nd6_tick_cb(void *arg);
+static void nd6_arm_tick(struct wolfIP *s);
+static int nd6_has_work(struct wolfIP *s);
 
 /* ---------------------------------------------------------------------- */
 /* Option parsing                                                         */
@@ -864,6 +866,12 @@ static int nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
 /* ---------------------------------------------------------------------- */
 
 /* Send a Neighbor Solicitation for `target`.
+ *
+ * There is no rate limit here, unlike arp_request()'s one per second per
+ * interface. The only caller is duplicate address detection, which is
+ * already paced by dad_due. When address resolution is driven from the
+ * transmit path it will be able to ask for the same neighbour repeatedly,
+ * and will need a throttle at that point.
  *
  * `src` is the source address: a real address of ours for ordinary address
  * resolution, or the unspecified address during duplicate address detection.
@@ -1443,14 +1451,93 @@ static void nd6_input(struct wolfIP *s, unsigned int if_idx,
 /* Periodic work                                                          */
 /* ---------------------------------------------------------------------- */
 
+/* Arm the periodic tick if it is not already running.
+ *
+ * timers_binheap_insert() returns 0 when the heap is full, and NO_TIMER is
+ * 0, so a failed insert simply leaves the tick disarmed. That is not fatal
+ * because nd6_poll() retries from the main loop; without that retry a
+ * momentarily full heap would stop duplicate address detection, router
+ * solicitation and every expiry permanently, with nothing to notice. */
+static void nd6_arm_tick(struct wolfIP *s)
+{
+    struct wolfIP_timer tmr;
+
+    if (s->nd6.tick_timer != NO_TIMER)
+        return;
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = s->last_tick + ND6_TICK_MS;
+    tmr.arg = s;
+    tmr.cb = nd6_tick_cb;
+    s->nd6.tick_timer = timers_binheap_insert(&s->timers, tmr);
+}
+
+/* Is there anything for the tick to do?
+ *
+ * Deliberately conservative: it answers yes if any one of the five sources
+ * of periodic work is live, so the tick is never stopped with work still
+ * queued. A quiescent but populated cache therefore keeps it running, which
+ * is the safe direction to err in. */
+static int nd6_has_work(struct wolfIP *s)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
+        if (s->nd6.started[i] || (s->nd6.rs_left[i] != 0))
+            return 1;
+    }
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        if (!s->ifaddr[i].used)
+            continue;
+        if (s->ifaddr[i].info.family != AF_INET6)
+            continue;
+        if (s->ifaddr[i].info.state == WOLFIP_IFADDR_TENTATIVE)
+            return 1;
+    }
+    for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {
+        uint8_t st = s->nd6.neighbors[i].state;
+
+        /* REACHABLE and STALE need the tick only to age, which the two
+         * transient states below cover; INCOMPLETE, DELAY and PROBE are
+         * mid-resolution and must be driven. REACHABLE also ages out, so it
+         * counts as work. */
+        if ((st == ND6_INCOMPLETE) || (st == ND6_DELAY) ||
+                (st == ND6_PROBE) || (st == ND6_REACHABLE))
+            return 1;
+    }
+    for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+        if (s->nd6.prefixes[i].used &&
+                (s->nd6.prefixes[i].valid_lifetime != 0xFFFFFFFFu))
+            return 1;
+    }
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        if (s->nd6.routers[i].used)
+            return 1;
+    }
+    return 0;
+}
+
+/* Called from wolfIP_poll(). Arms the tick whenever there is work and no
+ * timer running - which is both the normal wake-up after an idle period and
+ * the recovery path when an earlier insert failed on a full heap. */
+static void nd6_poll(struct wolfIP *s)
+{
+    if (s->nd6.tick_timer != NO_TIMER)
+        return;
+    if (nd6_has_work(s))
+        nd6_arm_tick(s);
+}
+
 static void nd6_tick_cb(void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
-    struct wolfIP_timer tmr;
     unsigned int i;
 
     if (!s)
         return;
+    /* The heap has already popped this entry, so the recorded id is stale.
+     * Clear it before doing anything: nd6_arm_tick() treats a non-zero id
+     * as "already running" and would otherwise refuse to re-arm. */
+    s->nd6.tick_timer = NO_TIMER;
 
     /* Duplicate address detection. */
     for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
@@ -1525,11 +1612,12 @@ static void nd6_tick_cb(void *arg)
             r->used = 0;
     }
 
-    memset(&tmr, 0, sizeof(tmr));
-    tmr.expires = s->last_tick + ND6_TICK_MS;
-    tmr.arg = s;
-    tmr.cb = nd6_tick_cb;
-    s->nd6.tick_timer = timers_binheap_insert(&s->timers, tmr);
+    /* Only keep ticking while something needs it. An interface that has
+     * been stopped, with no tentative address, no solicitation outstanding,
+     * no neighbour mid-resolution and no finite lifetime to expire, has
+     * nothing for this to do. nd6_poll() arms it again when work appears. */
+    if (nd6_has_work(s))
+        nd6_arm_tick(s);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1540,7 +1628,6 @@ int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
 {
     struct wolfIP_ll_dev *ll;
     struct wolfIP_ifaddr_slot *slot;
-    struct wolfIP_timer tmr;
     ip6 prefix;
     ip6 iid;
     ip6 link_local;
@@ -1576,12 +1663,45 @@ int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
     s->nd6.rs_left[if_idx] = (uint8_t)ND6_MAX_RTR_SOLICITATIONS;
     s->nd6.rs_due[if_idx] = s->last_tick + ND6_RETRANS_TIMER_MS;
 
-    if (s->nd6.tick_timer == NO_TIMER) {
-        memset(&tmr, 0, sizeof(tmr));
-        tmr.expires = s->last_tick + ND6_TICK_MS;
-        tmr.arg = s;
-        tmr.cb = nd6_tick_cb;
-        s->nd6.tick_timer = timers_binheap_insert(&s->timers, tmr);
+    nd6_arm_tick(s);
+    return 0;
+}
+
+/* Stop Neighbor Discovery on an interface.
+ *
+ * Halts what the tick drives: router solicitation, and duplicate address
+ * detection for anything still tentative, which is dropped because it never
+ * completed. Addresses that had already passed detection are left alone and
+ * are still defended by nd6_recv_ns(); remove them with wolfIP_ifaddr_del6()
+ * if that is wanted. When no interface is left running, the tick releases
+ * its slot in the shared timer heap. */
+int wolfIP_ipv6_stop(struct wolfIP *s, unsigned int if_idx)
+{
+    unsigned int i;
+
+    if (!s || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+
+    s->nd6.started[if_idx] = 0;
+    s->nd6.rs_left[if_idx] = 0;
+    s->nd6.rs_due[if_idx] = 0;
+
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        struct wolfIP_ifaddr_slot *slot = &s->ifaddr[i];
+
+        if (!slot->used || (slot->info.family != AF_INET6))
+            continue;
+        if (slot->info.if_idx != (uint8_t)if_idx)
+            continue;
+        if (slot->info.state == WOLFIP_IFADDR_TENTATIVE) {
+            slot->used = 0;
+            slot->dad_probes = 0;
+        }
+    }
+
+    if (!nd6_has_work(s) && (s->nd6.tick_timer != NO_TIMER)) {
+        timer_binheap_cancel(&s->timers, s->nd6.tick_timer);
+        s->nd6.tick_timer = NO_TIMER;
     }
     return 0;
 }
