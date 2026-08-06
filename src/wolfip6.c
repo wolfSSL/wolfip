@@ -1451,7 +1451,12 @@ static void nd6_input(struct wolfIP *s, unsigned int if_idx,
 /* Periodic work                                                          */
 /* ---------------------------------------------------------------------- */
 
-/* Arm the periodic tick if it is not already running.
+/* Arm the periodic tick, replacing any timer already armed.
+ *
+ * Shaped like dhcp_schedule_timer_at(): the id is simply overwritten, so
+ * there is no "am I already running" flag for callers to keep in sync. Any
+ * live timer is cancelled first, which makes calling this twice harmless
+ * rather than leaving a stray entry in the heap.
  *
  * timers_binheap_insert() returns 0 when the heap is full, and NO_TIMER is
  * 0, so a failed insert simply leaves the tick disarmed. That is not fatal
@@ -1463,7 +1468,7 @@ static void nd6_arm_tick(struct wolfIP *s)
     struct wolfIP_timer tmr;
 
     if (s->nd6.tick_timer != NO_TIMER)
-        return;
+        timer_binheap_cancel(&s->timers, s->nd6.tick_timer);
     memset(&tmr, 0, sizeof(tmr));
     tmr.expires = s->last_tick + ND6_TICK_MS;
     tmr.arg = s;
@@ -1535,8 +1540,9 @@ static void nd6_tick_cb(void *arg)
     if (!s)
         return;
     /* The heap has already popped this entry, so the recorded id is stale.
-     * Clear it before doing anything: nd6_arm_tick() treats a non-zero id
-     * as "already running" and would otherwise refuse to re-arm. */
+     * Clearing it here keeps the field truthful for the rest of the tick:
+     * nd6_arm_tick() then has nothing to cancel, and nd6_poll() sees the
+     * tick as unarmed if this pass decides not to re-arm. */
     s->nd6.tick_timer = NO_TIMER;
 
     /* Duplicate address detection. */
