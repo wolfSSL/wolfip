@@ -4509,6 +4509,30 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     return 0;
 }
 
+#define TCP_PAWS_OK 0
+#define TCP_PAWS_DROP 1
+#define TCP_PAWS_ACK_DROP 2
+
+/* RFC 7323 §3.2 PAWS: if timestamps were negotiated, reject segments
+ * that omit the TSopt or carry a stale TSval. */
+static int tcp_paws_check(const struct tsocket *t,
+        const struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
+{
+    struct tcp_parsed_opts po;
+
+    if (!t->sock.tcp.ts_enabled || (tcp->flags & TCP_FLAG_RST))
+        return TCP_PAWS_OK;
+    tcp_parse_options(tcp, frame_len, &po);
+    /* Once TSopt is negotiated the peer must carry it in every
+     * non-RST segment, so one that arrives without it is
+     * dropped silently. */
+    if (!po.ts_found)
+        return TCP_PAWS_DROP;
+    if (tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts)))
+        return TCP_PAWS_ACK_DROP;
+    return TCP_PAWS_OK;
+}
+
 /* Apply RFC6298-style implementation bounds to computed RTO (milliseconds). */
 static uint32_t tcp_rto_clamp(uint32_t rto_ms)
 {
@@ -5289,6 +5313,11 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                  * caused by our final ACK being lost) is to re-ACK so the
                  * peer can complete its close. RST and SYN are filtered out
                  * earlier in tcp_input. */
+                {
+                    int paws = tcp_paws_check(t, tcp, frame_len);
+                    if (paws == TCP_PAWS_DROP)
+                        continue;
+                }
                 tcp_send_ack(t);
                 continue;
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
@@ -5297,6 +5326,13 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 if (!tcp_segment_acceptable(t, tcp, tcplen)) {
                     tcp_send_ack(t);
                     continue;
+                }
+                {
+                    int paws = tcp_paws_check(t, tcp, frame_len);
+                    if (paws == TCP_PAWS_ACK_DROP)
+                        tcp_send_ack(t);
+                    if (paws != TCP_PAWS_OK)
+                        continue;
                 }
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
                  * synchronized connection, send a challenge ACK and
@@ -5323,21 +5359,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
 
-                /* RFC 7323 §3.2 PAWS: if timestamps were negotiated, reject
-                 * segments that omit the TSopt or carry a stale TSval. */
-                if (t->sock.tcp.ts_enabled &&
-                        !(tcp->flags & TCP_FLAG_RST)) {
-                    struct tcp_parsed_opts po;
-                    tcp_parse_options(tcp, frame_len, &po);
-                    /* Once TSopt is negotiated the peer must carry it in every
-                     * non-RST segment, so one that arrives without it is
-                     * dropped silently. */
-                    if (!po.ts_found)
-                        continue;
-                    if (tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts))) {
+                {
+                    int paws = tcp_paws_check(t, tcp, frame_len);
+                    if (paws == TCP_PAWS_ACK_DROP)
                         tcp_send_ack(t);
+                    if (paws != TCP_PAWS_OK)
                         continue;
-                    }
                 }
 
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
