@@ -209,9 +209,9 @@ int main(void)
         int i;
         off += (size_t)snprintf(req + off, sizeof(req) - off,
                                 "GET /probe HTTP/1.1\r\n");
-        for (i = 0; i < 12; i++) {
-            /* ~60 bytes per line * 12 = ~720 bytes total, each line well
-             * under the 512-byte HTTP_HEADERS_LEN cap. */
+        for (i = 0; i < 20; i++) {
+            /* ~55 bytes per line * 20 = ~1100 bytes total, each line well
+             * under the 1024-byte HTTP_HEADERS_LEN cap. */
             off += (size_t)snprintf(req + off, sizeof(req) - off,
                                     "X-Filler-%02d: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n",
                                     i);

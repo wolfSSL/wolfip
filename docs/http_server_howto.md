@@ -193,7 +193,7 @@ struct http_request {
     char method[HTTP_METHOD_LEN];   /* "GET", "POST"            (max 8)   */
     char path[HTTP_PATH_LEN];       /* URL path, percent-decoded (max 128) */
     char query[HTTP_QUERY_LEN];     /* raw query string         (max 256) */
-    char headers[HTTP_HEADERS_LEN]; /* last header line seen    (max 512) */
+    char headers[HTTP_HEADERS_LEN]; /* header block, CRLF-joined (max 1024) */
     char body[HTTP_BODY_LEN];       /* request body             (max 1024) */
     size_t body_len;
 };
@@ -204,10 +204,11 @@ response. A negative return from your handler causes the module to close the
 client connection (`http_recv_cb()` treats a negative parse/handler result as a
 failure and tears the connection down).
 
-> **Note.** `req->headers` holds only the **last** header line parsed, not the
-> full header block — the parser reuses one buffer. Use it for at most a single
-> expected header; framing headers (`Content-Length`, `Transfer-Encoding`) are
-> consumed internally and are not meant to be re-read here.
+> **Note.** `req->headers` holds the request's header lines joined with the CRLF
+> they arrived with, so a handler can re-split it on `"\r\n"`. A request whose
+> header block does not fit is rejected; framing headers (`Content-Length`,
+> `Transfer-Encoding`) are consumed internally and are not meant to be re-read
+> here.
 
 ## 7. Reading the request: methods, query and form args
 
