@@ -211,6 +211,40 @@ static void nd_send_ra(struct wolfIP *s, const char *src_str,
     nd_deliver(s, frame, &src, &dst, payload_len, hop_limit, nd_router_mac);
 }
 
+/* Deliberately flexible RA builder for malformed/adversarial PIO cases. */
+static void nd_send_ra_pio_raw(struct wolfIP *s, const char *dst_str,
+                               const char *prefix_str, uint8_t prefix_len,
+                               uint8_t pio_flags, uint32_t valid,
+                               uint32_t preferred, uint8_t option_units)
+{
+    uint8_t frame[LINK_MTU];
+    struct nd6_ra_msg *ra = (struct nd6_ra_msg *)frame;
+    struct nd6_opt_prefix *po = (struct nd6_opt_prefix *)ra->options;
+    uint16_t payload_len = (uint16_t)(16u + ((uint16_t)option_units * 8u));
+    ip6 src;
+    ip6 dst;
+    ip6 prefix;
+
+    memset(frame, 0, sizeof(frame));
+    ck_assert_int_eq(atoip6("fe80::1", &src), 0);
+    if (dst_str != NULL)
+        ck_assert_int_eq(atoip6(dst_str, &dst), 0);
+    else
+        ip6_set_all_nodes(&dst);
+    ck_assert_int_eq(atoip6(prefix_str, &prefix), 0);
+    ra->type = ICMP6_ROUTER_ADVERT;
+    ra->code = 0;
+    ra->router_lifetime = 0;
+    po->type = ND6_OPT_PREFIX;
+    po->len = option_units;
+    po->prefix_len = prefix_len;
+    po->flags = pio_flags;
+    po->valid_lifetime = ee32(valid);
+    po->preferred_lifetime = ee32(preferred);
+    memcpy(po->prefix, prefix.addr, 16);
+    nd_deliver(s, frame, &src, &dst, payload_len, 255, nd_router_mac);
+}
+
 static void nd_setup(struct wolfIP *s)
 {
     wolfIP_init(s);
@@ -482,6 +516,32 @@ START_TEST(test_nd_na_from_unspecified_source_is_refused)
 }
 END_TEST
 
+START_TEST(test_nd_na_for_a_foreign_destination_is_refused)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint8_t mac[6];
+    ip6 peer;
+    ip6 foreign;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(atoip6("fe80::2", &peer), 0);
+    ck_assert_int_eq(atoip6("2001:db8:dead::1", &foreign), 0);
+    (void)nd6_store_neighbor(&s, TEST_PRIMARY_IF, &peer, NULL,
+                             ND6_INCOMPLETE, 0);
+
+    /* A frame forced to our Ethernet MAC is not ours when its IPv6
+     * destination belongs to another node. It must not poison our cache. */
+    nd_send_na(&s, &peer, &foreign, &peer,
+               ND6_NA_SOLICITED | ND6_NA_OVERRIDE, nd_peer_mac, 255,
+               nd_peer_mac);
+    ck_assert_int_lt(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &peer, mac), 0);
+}
+END_TEST
+
 START_TEST(test_nd_solicitation_for_our_address_is_answered)
 {
     struct wolfIP s;
@@ -539,6 +599,57 @@ START_TEST(test_nd_solicitation_for_a_foreign_address_is_ignored)
     last_frame_sent_size = 0;
     nd_send_ns(&s, &peer, &foreign, &foreign, nd_peer_mac, 255, nd_peer_mac);
     ck_assert_ptr_null(nd_sent());
+}
+END_TEST
+
+START_TEST(test_nd_solicitation_to_a_foreign_destination_is_ignored)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint8_t mac[6];
+    ip6 ll6;
+    ip6 peer;
+    ip6 foreign;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_our_link_local(&s, &ll6);
+    ck_assert_int_eq(atoip6("fe80::2", &peer), 0);
+    ck_assert_int_eq(atoip6("2001:db8:dead::1", &foreign), 0);
+
+    last_frame_sent_size = 0;
+    nd_send_ns(&s, &peer, &foreign, &ll6, nd_peer_mac, 255, nd_peer_mac);
+    ck_assert_ptr_null(nd_sent());
+    ck_assert_int_lt(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &peer, mac), 0);
+}
+END_TEST
+
+START_TEST(test_nd_solicitation_with_spoofed_slla_is_ignored)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint8_t mac[6];
+    ip6 ll6;
+    ip6 peer;
+    ip6 solicited;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_our_link_local(&s, &ll6);
+    ck_assert_int_eq(atoip6("fe80::2", &peer), 0);
+    ip6_set_solicited_node(&solicited, &ll6);
+
+    /* On Ethernet, the SLLA is the sender's address and must agree with the
+     * frame source. Otherwise an attacker can redirect our reply and cache
+     * entry to an uninvolved victim. */
+    last_frame_sent_size = 0;
+    nd_send_ns(&s, &peer, &solicited, &ll6, nd_other_mac, 255, nd_peer_mac);
+    ck_assert_ptr_null(nd_sent());
+    ck_assert_int_lt(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &peer, mac), 0);
 }
 END_TEST
 
@@ -887,6 +998,118 @@ START_TEST(test_ra_with_a_zero_length_option_terminates)
     ck_assert_int_eq(atoip6("2001:db8:99::1", &offlink), 0);
     ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
                                          &nexthop), 0);
+}
+END_TEST
+
+START_TEST(test_ra_for_a_foreign_destination_is_ignored)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    struct nd6_ra_msg *ra = (struct nd6_ra_msg *)frame;
+    uint64_t now = 1000;
+    ip6 src;
+    ip6 foreign;
+    ip6 offlink;
+    ip6 nexthop;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    memset(frame, 0, sizeof(frame));
+    ck_assert_int_eq(atoip6("fe80::1", &src), 0);
+    ck_assert_int_eq(atoip6("2001:db8:dead::1", &foreign), 0);
+    ra->type = ICMP6_ROUTER_ADVERT;
+    ra->router_lifetime = ee16(1800);
+    nd_deliver(&s, frame, &src, &foreign, 16, 255, nd_router_mac);
+
+    ck_assert_int_eq(atoip6("2001:db8:99::1", &offlink), 0);
+    ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
+}
+END_TEST
+
+START_TEST(test_ra_ignores_oversized_prefix_information_option)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 onlink;
+    ip6 nexthop;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:44::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 7200, 7200, 5);
+
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 1);
+    ck_assert_int_eq(atoip6("2001:db8:44::99", &onlink), 0);
+    ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &onlink,
+                                         &nexthop), 0);
+}
+END_TEST
+
+START_TEST(test_ra_ignores_prefix_with_preferred_lifetime_above_valid)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 onlink;
+    ip6 nexthop;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:45::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 100, 101, 4);
+
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 1);
+    ck_assert_int_eq(atoip6("2001:db8:45::99", &onlink), 0);
+    ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &onlink,
+                                         &nexthop), 0);
+}
+END_TEST
+
+START_TEST(test_ra_zero_valid_lifetime_withdraws_prefix_immediately)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 onlink;
+    ip6 nexthop;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_send_ra(&s, "fe80::1", 0, "2001:db8:46::", 64,
+               ND6_PREFIX_ONLINK, 7200, 255);
+    ck_assert_int_eq(atoip6("2001:db8:46::99", &onlink), 0);
+    ck_assert_int_eq(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &onlink,
+                                         &nexthop), 0);
+
+    nd_send_ra(&s, "fe80::1", 0, "2001:db8:46::", 64,
+               ND6_PREFIX_ONLINK, 0, 255);
+    ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &onlink,
+                                         &nexthop), 0);
+}
+END_TEST
+
+START_TEST(test_nd_static_neighbor_rejects_non_wire_addresses)
+{
+    struct wolfIP s;
+    ip6 addr;
+
+    nd_setup(&s);
+    ck_assert_int_eq(atoip6("::1", &addr), 0);
+    ck_assert_int_lt(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &addr,
+                                             nd_peer_mac), 0);
+    ck_assert_int_eq(atoip6("::ffff:192.0.2.1", &addr), 0);
+    ck_assert_int_lt(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &addr,
+                                             nd_peer_mac), 0);
+    ck_assert_int_eq(atoip6("::192.0.2.1", &addr), 0);
+    ck_assert_int_lt(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &addr,
+                                             nd_peer_mac), 0);
 }
 END_TEST
 

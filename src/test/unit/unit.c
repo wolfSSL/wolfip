@@ -1101,6 +1101,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp6_echo_request_with_no_payload_is_answered);
     tcase_add_test(tc_proto, test_icmp6_echo_to_link_local_is_answered_from_it);
     tcase_add_test(tc_proto, test_icmp6_echo_with_bad_checksum_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_with_nonzero_code_is_ignored);
     tcase_add_test(tc_proto, test_icmp6_echo_to_an_address_that_is_not_ours_is_ignored);
     tcase_add_test(tc_proto, test_icmp6_echo_from_unspecified_source_is_ignored);
     tcase_add_test(tc_proto, test_icmp6_echo_to_tentative_address_is_ignored);
@@ -1115,8 +1116,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_na_without_override_may_not_replace_a_known_mac);
     tcase_add_test(tc_proto, test_nd_messages_with_wrong_hop_limit_are_refused);
     tcase_add_test(tc_proto, test_nd_na_from_unspecified_source_is_refused);
+    tcase_add_test(tc_proto, test_nd_na_for_a_foreign_destination_is_refused);
     tcase_add_test(tc_proto, test_nd_solicitation_for_our_address_is_answered);
     tcase_add_test(tc_proto, test_nd_solicitation_for_a_foreign_address_is_ignored);
+    tcase_add_test(tc_proto, test_nd_solicitation_to_a_foreign_destination_is_ignored);
+    tcase_add_test(tc_proto, test_nd_solicitation_with_spoofed_slla_is_ignored);
     tcase_add_test(tc_proto, test_dad_succeeds_when_nobody_answers);
     tcase_add_test(tc_proto, test_dad_fails_when_a_neighbour_advertises_the_address);
     tcase_add_test(tc_proto, test_dad_fails_on_a_simultaneous_probe_from_another_node);
@@ -1129,6 +1133,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ra_prefix_that_is_not_64_bits_forms_no_address);
     tcase_add_test(tc_proto, test_ra_with_zero_router_lifetime_is_not_a_default_route);
     tcase_add_test(tc_proto, test_ra_with_a_zero_length_option_terminates);
+    tcase_add_test(tc_proto, test_ra_for_a_foreign_destination_is_ignored);
+    tcase_add_test(tc_proto, test_ra_ignores_oversized_prefix_information_option);
+    tcase_add_test(tc_proto, test_ra_ignores_prefix_with_preferred_lifetime_above_valid);
+    tcase_add_test(tc_proto, test_ra_zero_valid_lifetime_withdraws_prefix_immediately);
+    tcase_add_test(tc_proto, test_nd_static_neighbor_rejects_non_wire_addresses);
     tcase_add_test(tc_proto, test_ula_is_verified_by_dad_and_then_usable);
     tcase_add_test(tc_proto, test_ula_is_defended_and_survives_a_router_advertisement);
     tcase_add_test(tc_proto, test_ula_duplicate_is_rejected);
