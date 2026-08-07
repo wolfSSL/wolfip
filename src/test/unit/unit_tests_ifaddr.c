@@ -681,6 +681,24 @@ START_TEST(test_ifaddr_v6_duplicate_is_rejected_and_removal_works)
 }
 END_TEST
 
+START_TEST(test_ifaddr_v6_link_local_address_is_scoped_per_interface)
+{
+    struct wolfIP s;
+    ip6 ll6;
+
+    ifaddr_setup(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    ck_assert_int_eq(atoip6("fe80::1", &ll6), 0);
+
+    /* RFC 4007 section 5: the zone is part of a link-local address's
+     * identity, so the same numeric address may exist on two links. */
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &ll6, 64), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_SECOND_IF, &ll6, 64), 0);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 1);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_SECOND_IF, AF_INET6), 1);
+}
+END_TEST
+
 START_TEST(test_ifaddr_v6_and_v4_share_the_per_interface_budget)
 {
     struct wolfIP s;
