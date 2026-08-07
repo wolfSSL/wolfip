@@ -66,6 +66,21 @@ jobs:
           make clean
           make libwolfip.so EXTRA_CFLAGS="-DWOLFIP_IPV6=1"
 
+      # Every board port ships its own config.h with the same include guard
+      # and replaces the one at the top of the tree, so a macro defined only
+      # there is invisible to a port build. This compiles wolfip.c against
+      # each port's configuration, which is what the embedded jobs would
+      # otherwise be the first to notice.
+      - name: wolfip.c builds against every port config
+        run: |
+          set -e
+          for c in src/port/*/config.h; do
+            d=$(mktemp -d)
+            cp "$c" "$d/config.h"
+            echo "-- $(dirname $c)"
+            gcc -w -I"$d" -I. -D_GNU_SOURCE -c src/wolfip.c -o /dev/null
+          done
+
       # Regression guard for the wc_ForceZero declaration in wolfip.h. This
       # object is what failed here before: it compiles against whichever
       # wolfSSL the distribution packages, whose header chain differs from

@@ -30,7 +30,17 @@
 #include <netinet/in.h>
 #endif
 #include "wolfip.h"
+/* WOLFIP_CONFIG names an alternative configuration header, so a port or a
+ * test build can select one without editing the tree:
+ *   -DWOLFIP_CONFIG='"myconfig.h"'
+ */
+#ifdef WOLFIP_CONFIG
+#include WOLFIP_CONFIG
+#else
 #include "config.h"
+#endif
+/* Applies the IPv6 defaults on top of whichever configuration was used. */
+#include "wolfip6_config.h"
 
 #ifndef LINK_MTU_MIN
 #define LINK_MTU_MIN 64U
