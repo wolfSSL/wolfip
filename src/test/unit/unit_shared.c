@@ -608,11 +608,21 @@ static uint32_t build_udp_frame(uint8_t *frame, struct wolfIP *s,
     static const uint8_t src_mac[6] = {0x90, 0x91, 0x92, 0x93, 0x94, 0x95};
 
     ck_assert_ptr_nonnull(ll);
-    memset(udp, 0, sizeof(frame));
+    /* Not sizeof(frame): frame is a pointer here, so that would clear eight
+     * bytes and leave the rest of the header holding whatever was on the
+     * stack. Zero exactly the frame being built. */
+    memset(frame, 0, (size_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                              UDP_HEADER_LEN) + payload_len);
     memcpy(udp->ip.eth.dst, ll->mac, 6);
     memcpy(udp->ip.eth.src, src_mac, 6);
     udp->ip.eth.type = ee16(ETH_TYPE_IP);
     udp->ip.ver_ihl = 0x45;
+    /* Set explicitly rather than relying on the caller's buffer being
+     * zeroed. A non-zero flags_fo in particular makes ip_recv() drop the
+     * frame as a fragment, silently. */
+    udp->ip.tos = 0;
+    udp->ip.id = 0;
+    udp->ip.flags_fo = 0;
     udp->ip.ttl = 64;
     udp->ip.proto = WI_IPPROTO_UDP;
     udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + payload_len);
