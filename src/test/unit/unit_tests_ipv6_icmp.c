@@ -243,6 +243,36 @@ START_TEST(test_icmp6_echo_with_bad_checksum_is_ignored)
 }
 END_TEST
 
+START_TEST(test_icmp6_echo_with_nonzero_code_is_ignored)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_icmp6_packet *icmp = (struct wolfIP_icmp6_packet *)frame;
+    union transport6_pseudo_header ph;
+    uint32_t len;
+    uint16_t upper_len;
+    ip6 src;
+    ip6 dst;
+
+    icmp6_setup(&s);
+    len = icmp6_build(frame, &s, ICMP6_PEER_ADDR, ICMP6_OUR_ADDR,
+                      ICMP6_ECHO_REQUEST, 1, 1, NULL, 0, 0);
+    icmp->code = 7;
+    icmp->csum = 0;
+    upper_len = ee16(icmp->ip6.payload_len);
+    ip6_hdr_get_src(&icmp->ip6, &src);
+    ip6_hdr_get_dst(&icmp->ip6, &dst);
+    transport6_pseudo_header_init(&ph, &src, &dst, upper_len,
+                                  IP6_NEXTHDR_ICMPV6);
+    icmp->csum = ee16(transport6_checksum(&ph, &icmp->type));
+
+    /* RFC 4443 section 4.1 defines Code as zero. A valid checksum must not
+     * make an otherwise malformed Echo Request actionable. */
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, len);
+    ck_assert_ptr_null(icmp6_reply());
+}
+END_TEST
+
 START_TEST(test_icmp6_echo_to_an_address_that_is_not_ours_is_ignored)
 {
     struct wolfIP s;
