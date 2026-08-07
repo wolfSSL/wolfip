@@ -1830,8 +1830,24 @@ Suite *wolf_suite(void)
 int main(void)
 {
     int n_fail = 0;
+
+    /* The build configuration this binary was compiled with. Printed because
+     * the suite is compiled from one source but the resulting test set
+     * depends on these, and a platform computing them differently shows up
+     * only as a differing check count. */
+
     Suite *s;
     SRunner *sr;
+
+    printf("wolfIP unit config: WOLFIP_IPV6=%d WOLFIP_IF_MULTICONF=%d "
+           "WOLFIP_IF_CONF_MAX=%d WOLFIP_MAX_INTERFACES=%d "
+           "WOLFIP_ENABLE_LOOPBACK=%d WOLFIP_ENABLE_FORWARDING=%d "
+           "AF_INET=%d AF_INET6=%d\n",
+           (int)WOLFIP_IPV6, (int)WOLFIP_IF_MULTICONF,
+           (int)WOLFIP_IF_CONF_MAX, (int)WOLFIP_MAX_INTERFACES,
+           (int)WOLFIP_ENABLE_LOOPBACK, (int)WOLFIP_ENABLE_FORWARDING,
+           (int)AF_INET, (int)AF_INET6);
+    fflush(stdout);
 
     s = wolf_suite();
     sr = srunner_create(s);
