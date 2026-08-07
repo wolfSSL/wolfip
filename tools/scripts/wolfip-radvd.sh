@@ -27,6 +27,10 @@ HOSTADDR="${4:-2001:db8:1:2::1/64}"
 
 CONF="/tmp/wolfip-radvd-${IFACE}.conf"
 PIDFILE="/tmp/wolfip-radvd-${IFACE}.pid"
+# Prior forwarding setting, saved on start so stop can put it back rather
+# than assuming it was off. Running this against a real interface would
+# otherwise silently disable forwarding on it.
+FWSAVE="/tmp/wolfip-radvd-${IFACE}.fwd"
 
 die() { echo "wolfip-radvd: $*" >&2; exit 1; }
 
@@ -38,7 +42,10 @@ start)
     ip link show "$IFACE" >/dev/null 2>&1 || \
         die "interface $IFACE does not exist (start the wolfIP test first)"
 
-    # radvd will not advertise unless the interface forwards.
+    # radvd will not advertise unless the interface forwards. Remember what
+    # it was so stop can restore it.
+    sysctl -n "net.ipv6.conf.${IFACE}.forwarding" > "$FWSAVE" 2>/dev/null || \
+        echo 0 > "$FWSAVE"
     sysctl -qw "net.ipv6.conf.${IFACE}.forwarding=1"
     # An address in the prefix, so the host can reach whatever wolfIP picks.
     ip -6 addr replace "$HOSTADDR" dev "$IFACE" nodad
@@ -81,8 +88,14 @@ stop)
         rm -f "$PIDFILE"
     fi
     rm -f "$CONF"
-    # Leave the interface as we found it.
-    sysctl -qw "net.ipv6.conf.${IFACE}.forwarding=0" 2>/dev/null || true
+    # Put the interface back as it was: drop the address this script added,
+    # and restore the forwarding setting rather than forcing it off.
+    ip -6 addr del "$HOSTADDR" dev "$IFACE" 2>/dev/null || true
+    if [ -f "$FWSAVE" ]; then
+        sysctl -qw "net.ipv6.conf.${IFACE}.forwarding=$(cat "$FWSAVE")" \
+            2>/dev/null || true
+        rm -f "$FWSAVE"
+    fi
     echo "wolfip-radvd: stopped on $IFACE"
     ;;
 

@@ -23,29 +23,18 @@
  */
 
 /*
- * Needs root, for the TAP device and for the neighbour entry described
- * below. With a VDE switch, build with BUILD_VDE=1 and point
- * VDE_SOCKET_PATH at the switch's control socket.
+ * Needs root, for the TAP device. With a VDE switch, build with BUILD_VDE=1
+ * and point VDE_SOCKET_PATH at the switch's control socket.
  *
  *   sudo ./build/test-ipv6-ping            # run and wait, ping it yourself
  *   sudo ./build/test-ipv6-ping --selftest # run ping(8) against it and exit
  *
- * IMPORTANT - why a static neighbour entry is needed
- *
- * Neighbor Discovery is not implemented yet. Before the host can send us an
- * Echo Request it has to learn our link-layer address, and it would normally
- * do that with a Neighbor Solicitation that this stack cannot yet answer. So
- * the neighbour entry is installed by hand:
- *
- *   ip -6 neigh replace <our-link-local> lladdr <our-mac> dev <iface> \
- *       nud permanent
- *
- * --selftest does this for you. Once NDP lands the entry becomes
- * unnecessary and this comment, and the code that installs it, should go.
- *
- * Answering the ping itself needs nothing further: the reply goes back to
- * the source MAC of the request, so no address resolution happens on our
- * side. That is exactly why Echo Reply is implementable before NDP.
+ * The addresses here are configured directly rather than by SLAAC, which
+ * keeps this test narrow: it exercises ICMPv6 Echo and nothing else. The
+ * host still has to resolve our link-layer address first, and Neighbor
+ * Discovery answers that solicitation, so no static neighbour entry is
+ * needed. test_ipv6_slaac.c is the wider test, where nothing at all is
+ * configured on the wolfIP side.
  */
 
 #include <stdio.h>
@@ -160,7 +149,6 @@ int main(int argc, char **argv)
     struct wolfIP *s = NULL;
     struct wolfIP_ll_dev *dev;
     char ll_str[WOLFIP_IP6_ADDRSTRLEN];
-    char cmd[256];
     ip6 link_local;
     ip6 prefix;
     ip6 iid;
@@ -235,27 +223,14 @@ int main(int argc, char **argv)
     printf("global    : %s\n", PING_GLOBAL);
     printf("\n");
 
-    /* Neighbor Discovery is not implemented, so the host cannot resolve our
-     * MAC on its own. Install the mapping by hand. */
-    snprintf(cmd, sizeof(cmd),
-             "ip -6 neigh replace %s lladdr %02x:%02x:%02x:%02x:%02x:%02x "
-             "dev %s nud permanent",
-             ll_str, dev->mac[0], dev->mac[1], dev->mac[2],
-             dev->mac[3], dev->mac[4], dev->mac[5], dev->ifname);
-
     if (!selftest) {
-        printf("Neighbor Discovery is not implemented yet, so run this\n"
-               "once before pinging:\n\n  sudo %s\n\n", cmd);
-        printf("then, from another terminal:\n\n"
+        printf("From another terminal:\n\n"
                "  ping -6 -c 3 %s%%%s\n\n", ll_str, dev->ifname);
         printf("Running. Ctrl-C to stop.\n");
         rc = run_stack(s, now_ms() + (3600u * 1000u), 0);
         pcap_stop();
         return rc;
     }
-
-    if (system(cmd) != 0)
-        fprintf(stderr, "warning: could not install neighbour entry\n");
 
     {
         pid_t child = fork();
