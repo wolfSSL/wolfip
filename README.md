@@ -42,7 +42,10 @@ wolfIP exposes a BSD-like `socket(2)` API for IPv4 sockets:
 | **Network** | IPv4 | Datagram delivery, TTL handling | [RFC 791](https://datatracker.ietf.org/doc/html/rfc791) |
 | **Network** | IPv4 Forwarding | Multi-interface routing (optional) | [RFC 1812](https://datatracker.ietf.org/doc/html/rfc1812) |
 | **Network** | ICMP | Echo request/reply, TTL exceeded | [RFC 792](https://datatracker.ietf.org/doc/html/rfc792) |
-| **Network** | IPv6 | Header encapsulation and parsing, upper-layer checksum (in progress; addressing, ICMPv6, NDP, SLAAC and DHCPv6 not yet implemented) | [RFC 8200](https://datatracker.ietf.org/doc/html/rfc8200) |
+| **Network** | IPv6 | Header encapsulation and parsing, upper-layer checksum. No extension headers or fragmentation; sockets and DHCPv6 not yet implemented | [RFC 8200](https://datatracker.ietf.org/doc/html/rfc8200) |
+| **Network** | ICMPv6 | Echo request/reply. Error messages not yet implemented | [RFC 4443](https://datatracker.ietf.org/doc/html/rfc4443) |
+| **Network** | Neighbor Discovery | Address resolution (NS/NA), router discovery (RS/RA), neighbour cache | [RFC 4861](https://datatracker.ietf.org/doc/html/rfc4861) |
+| **Network** | SLAAC | Link-local and global address formation, duplicate address detection | [RFC 4862](https://datatracker.ietf.org/doc/html/rfc4862) |
 | **Network** | IPv6 Addressing | Address types, scopes, prefix operations, RFC 5952 text form | [RFC 4291](https://datatracker.ietf.org/doc/html/rfc4291), [RFC 4193](https://datatracker.ietf.org/doc/html/rfc4193), [RFC 5952](https://datatracker.ietf.org/doc/html/rfc5952) |
 | **Network** | IGMPv3 | ASM membership reports for IPv4 multicast (optional) | [RFC 3376](https://datatracker.ietf.org/doc/html/rfc3376) |
 | **Network** | IPsec | ESP Transport mode | [RFC 4303](https://datatracker.ietf.org/doc/html/rfc4303) |
