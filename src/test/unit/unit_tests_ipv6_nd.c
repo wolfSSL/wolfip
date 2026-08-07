@@ -455,6 +455,33 @@ START_TEST(test_nd_messages_with_wrong_hop_limit_are_refused)
 }
 END_TEST
 
+START_TEST(test_nd_na_from_unspecified_source_is_refused)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint8_t mac[6];
+    ip6 unspec;
+    ip6 ll6;
+    ip6 peer;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_our_link_local(&s, &ll6);
+    ip6_set_unspecified(&unspec);
+    ck_assert_int_eq(atoip6("fe80::2", &peer), 0);
+    (void)nd6_store_neighbor(&s, TEST_PRIMARY_IF, &peer, NULL,
+                             ND6_INCOMPLETE, 0);
+
+    /* RFC 4861 section 7.1.2 requires the source of an NA to be unicast. */
+    nd_send_na(&s, &unspec, &ll6, &peer,
+               ND6_NA_SOLICITED | ND6_NA_OVERRIDE, nd_peer_mac, 255,
+               nd_peer_mac);
+    ck_assert_int_lt(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &peer, mac), 0);
+}
+END_TEST
+
 START_TEST(test_nd_solicitation_for_our_address_is_answered)
 {
     struct wolfIP s;
@@ -588,6 +615,33 @@ START_TEST(test_dad_fails_on_a_simultaneous_probe_from_another_node)
     ck_assert_int_eq(nd_addr_state(&s, &ll6), -1);
     /* And it must not have been defended: a tentative address is not ours. */
     ck_assert_ptr_null(nd_sent());
+}
+END_TEST
+
+START_TEST(test_dad_ignores_malformed_neighbor_solicitations)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 ll6;
+    ip6 unspec;
+    ip6 solicited;
+    ip6 all_nodes;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_our_link_local(&s, &ll6);
+    ip6_set_unspecified(&unspec);
+    ip6_set_solicited_node(&solicited, &ll6);
+    ip6_set_all_nodes(&all_nodes);
+
+    /* RFC 4861 section 7.1.1: an NS from :: is a DAD probe only when sent to
+     * the target's solicited-node address and without an SLLA option. */
+    nd_send_ns(&s, &unspec, &all_nodes, &ll6, NULL, 255, nd_other_mac);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_TENTATIVE);
+    nd_send_ns(&s, &unspec, &solicited, &ll6, nd_other_mac, 255,
+               nd_other_mac);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_TENTATIVE);
 }
 END_TEST
 
@@ -805,6 +859,8 @@ START_TEST(test_ra_with_a_zero_length_option_terminates)
     uint64_t now = 1000;
     ip6 src;
     ip6 dst;
+    ip6 offlink;
+    ip6 nexthop;
 
     nd_setup(&s);
     wolfIP_poll(&s, now);
@@ -825,8 +881,12 @@ START_TEST(test_ra_with_a_zero_length_option_terminates)
     ra->options[1] = 0; /* invalid */
     nd_deliver(&s, frame, &src, &dst, (uint16_t)(16 + 8), 255, nd_router_mac);
 
-    /* Reached, so the walk terminated. */
+    /* The whole advertisement is invalid, so none of its state may be
+     * installed before the malformed option is discovered. */
     ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 1);
+    ck_assert_int_eq(atoip6("2001:db8:99::1", &offlink), 0);
+    ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
 }
 END_TEST
 
@@ -991,6 +1051,23 @@ START_TEST(test_nd_uses_one_timer_slot_for_the_whole_stack)
         }
         ck_assert_int_eq(live, 1);
     }
+}
+END_TEST
+
+START_TEST(test_nd_timer_quiesces_when_periodic_work_is_finished)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+
+    /* DAD and all three Router Solicitations have finite schedules. Once
+     * those finish, merely having IPv6 enabled is not periodic work. */
+    nd_advance(&s, &now, 15000);
+    ck_assert_uint_eq(s.nd6.rs_left[TEST_PRIMARY_IF], 0);
+    ck_assert_uint_eq(s.nd6.tick_timer, NO_TIMER);
 }
 END_TEST
 

@@ -999,6 +999,7 @@ Suite *wolf_suite(void)
 #if WOLFIP_IPV6
     tcase_add_test(tc_utils, test_ifaddr_v6_addresses_are_independent_of_v4);
     tcase_add_test(tc_utils, test_ifaddr_v6_duplicate_is_rejected_and_removal_works);
+    tcase_add_test(tc_utils, test_ifaddr_v6_link_local_address_is_scoped_per_interface);
     tcase_add_test(tc_utils, test_ifaddr_v6_and_v4_share_the_per_interface_budget);
 #endif
 
@@ -1102,6 +1103,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp6_echo_with_bad_checksum_is_ignored);
     tcase_add_test(tc_proto, test_icmp6_echo_to_an_address_that_is_not_ours_is_ignored);
     tcase_add_test(tc_proto, test_icmp6_echo_from_unspecified_source_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_to_tentative_address_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_link_local_address_is_not_local_on_another_interface);
     tcase_add_test(tc_proto, test_icmp6_echo_reply_does_not_generate_another_reply);
     tcase_add_test(tc_proto, test_icmp6_unhandled_types_are_ignored_without_replying);
     tcase_add_test(tc_proto, test_icmp6_truncated_echo_is_ignored);
@@ -1111,11 +1114,13 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_na_without_target_lla_resolves_nothing);
     tcase_add_test(tc_proto, test_nd_na_without_override_may_not_replace_a_known_mac);
     tcase_add_test(tc_proto, test_nd_messages_with_wrong_hop_limit_are_refused);
+    tcase_add_test(tc_proto, test_nd_na_from_unspecified_source_is_refused);
     tcase_add_test(tc_proto, test_nd_solicitation_for_our_address_is_answered);
     tcase_add_test(tc_proto, test_nd_solicitation_for_a_foreign_address_is_ignored);
     tcase_add_test(tc_proto, test_dad_succeeds_when_nobody_answers);
     tcase_add_test(tc_proto, test_dad_fails_when_a_neighbour_advertises_the_address);
     tcase_add_test(tc_proto, test_dad_fails_on_a_simultaneous_probe_from_another_node);
+    tcase_add_test(tc_proto, test_dad_ignores_malformed_neighbor_solicitations);
     tcase_add_test(tc_proto, test_dad_tentative_address_is_not_defended);
     tcase_add_test(tc_proto, test_ra_assigns_a_global_address_and_a_default_router);
     tcase_add_test(tc_proto, test_ra_from_a_non_link_local_source_is_ignored);
@@ -1128,6 +1133,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ula_is_defended_and_survives_a_router_advertisement);
     tcase_add_test(tc_proto, test_ula_duplicate_is_rejected);
     tcase_add_test(tc_proto, test_nd_uses_one_timer_slot_for_the_whole_stack);
+    tcase_add_test(tc_proto, test_nd_timer_quiesces_when_periodic_work_is_finished);
     tcase_add_test(tc_proto, test_nd_recovers_when_the_timer_heap_is_full);
     tcase_add_test(tc_proto, test_nd_stop_releases_the_timer_slot);
     tcase_add_test(tc_proto, test_nd_stop_drops_a_tentative_address);

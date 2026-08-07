@@ -6209,8 +6209,15 @@ int wolfIP_ifaddr_add6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
             continue;
         if (s->ifaddr[i].info.family != AF_INET6)
             continue;
-        if (ip6_cmp(&s->ifaddr[i].info.v6, addr) == 0)
-            return -WOLFIP_EINVAL;
+        if (ip6_cmp(&s->ifaddr[i].info.v6, addr) == 0) {
+            /* Link-local addresses are identified by {address, zone}. The
+             * same numeric address on another interface is not a duplicate
+             * (RFC 4007 section 5). Other unicast addresses remain unique
+             * across this host. */
+            if (!ip6_is_link_local(addr) ||
+                    (s->ifaddr[i].info.if_idx == (uint8_t)if_idx))
+                return -WOLFIP_EINVAL;
+        }
     }
     if (ifaddr_total(s, if_idx) >= WOLFIP_IF_CONF_MAX)
         return -WOLFIP_ENOMEM;

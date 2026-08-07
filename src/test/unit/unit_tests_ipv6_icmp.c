@@ -276,6 +276,52 @@ START_TEST(test_icmp6_echo_from_unspecified_source_is_ignored)
 }
 END_TEST
 
+START_TEST(test_icmp6_echo_to_tentative_address_is_ignored)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    uint32_t len;
+    ip6 tentative;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ck_assert_int_eq(atoip6(ICMP6_OUR_ADDR, &tentative), 0);
+    ck_assert_int_eq(wolfIP_ipv6_addr_add(&s, TEST_PRIMARY_IF, &tentative,
+                                         64), 0);
+
+    /* RFC 4862 section 5.4.5: a tentative address is not assigned to the
+     * interface yet and may only be used by Duplicate Address Detection. */
+    last_frame_sent_size = 0;
+    len = icmp6_build(frame, &s, ICMP6_PEER_ADDR, ICMP6_OUR_ADDR,
+                      ICMP6_ECHO_REQUEST, 1, 1, NULL, 0, 0);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, len);
+    ck_assert_ptr_null(icmp6_reply());
+}
+END_TEST
+
+START_TEST(test_icmp6_link_local_address_is_not_local_on_another_interface)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    uint32_t len;
+    ip6 ll6;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    ck_assert_int_eq(atoip6(ICMP6_OUR_LL, &ll6), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_SECOND_IF, &ll6, 64), 0);
+
+    /* The numeric address belongs to the second link's zone, not the ingress
+     * link. Answering here would violate RFC 4007 scoping. */
+    last_frame_sent_size = 0;
+    len = icmp6_build(frame, &s, "fe80::2", ICMP6_OUR_LL,
+                      ICMP6_ECHO_REQUEST, 1, 1, NULL, 0, 0);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, len);
+    ck_assert_ptr_null(icmp6_reply());
+}
+END_TEST
+
 START_TEST(test_icmp6_echo_reply_does_not_generate_another_reply)
 {
     struct wolfIP s;
