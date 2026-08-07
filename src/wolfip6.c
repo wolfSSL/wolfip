@@ -620,6 +620,9 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
         /* An Echo needs identifier and sequence as well as the header. */
         if (payload_len < ICMP6_ECHO_MIN_LEN)
             return;
+        /* RFC 4443 section 4.1 assigns only Code 0 to Echo Request. */
+        if (icmp->code != 0)
+            return;
         /* Nowhere to send a reply, and :: as a source is reserved for
          * duplicate address detection (RFC 4862 section 5.4.2). */
         if (ip6_is_unspecified(&src))
@@ -1056,6 +1059,22 @@ static struct wolfIP_ifaddr_slot *nd6_slot_for(struct wolfIP *s,
     return NULL;
 }
 
+/* Neighbor Discovery is link-scoped even for globally routable addresses.
+ * A unicast destination is actionable only when it is assigned on the
+ * ingress interface and has completed DAD. Unsolicited RA/NA messages may
+ * instead use the all-nodes multicast group. */
+static int nd6_destination_is_local(struct wolfIP *s, unsigned int if_idx,
+                                    const ip6 *dst)
+{
+    struct wolfIP_ifaddr_slot *slot;
+
+    if (ip6_is_all_nodes(dst))
+        return 1;
+    slot = nd6_slot_for(s, if_idx, dst);
+    return ((slot != NULL) &&
+            (slot->info.state != WOLFIP_IFADDR_TENTATIVE)) ? 1 : 0;
+}
+
 /* Abandon a tentative address that turned out to be a duplicate.
  *
  * RFC 4862 section 5.4.5: the address must not be assigned. If it was the
@@ -1101,6 +1120,12 @@ static void nd6_prefix_store(struct wolfIP *s, unsigned int if_idx,
         }
         if ((p->if_idx == (uint8_t)if_idx) && (p->prefix_len == prefix_len) &&
                 (ip6_prefix_cmp(&p->prefix, prefix, prefix_len) == 0)) {
+            /* RFC 4861 section 6.3.4: zero invalidates an on-link prefix
+             * immediately, rather than at the next timer tick. */
+            if (valid == 0) {
+                p->used = 0;
+                return;
+            }
             p->onlink = onlink;
             p->autonomous = autonomous;
             p->valid_lifetime = valid;
@@ -1109,6 +1134,8 @@ static void nd6_prefix_store(struct wolfIP *s, unsigned int if_idx,
             return;
         }
     }
+    if (valid == 0)
+        return;
     if (free_slot < 0)
         return; /* table full: the advertisement is ignored, never truncated */
     {
@@ -1275,6 +1302,18 @@ static void nd6_recv_ns(struct wolfIP *s, unsigned int if_idx,
         return;
     }
 
+    {
+        ip6 solicited;
+
+        /* RFC 4861 sections 4.3 and 7.1.1: ordinary address resolution uses
+         * either the target's solicited-node group or the target itself for
+         * Neighbor Unreachability Detection. */
+        ip6_set_solicited_node(&solicited, &target);
+        if ((ip6_cmp(&dst, &target) != 0) &&
+                (ip6_cmp(&dst, &solicited) != 0))
+            return;
+    }
+
     /* A tentative address must not be defended and must not answer: it is
      * not ours yet. */
     if (slot->info.state == WOLFIP_IFADDR_TENTATIVE)
@@ -1287,6 +1326,11 @@ static void nd6_recv_ns(struct wolfIP *s, unsigned int if_idx,
         const struct nd6_opt_lla *lla = (const struct nd6_opt_lla *)opt;
 
         if (lla->len != 1u)
+            return;
+        /* RFC 2464 section 6: on Ethernet the SLLA is the sender's link-layer
+         * address. A disagreement would redirect both our reply and cache
+         * entry to an uninvolved host. */
+        if (memcmp(lla->mac, pkt->eth.src, 6) != 0)
             return;
         nd6_store_neighbor(s, if_idx, &src, lla->mac, ND6_STALE, 0);
         memcpy(reply_mac, lla->mac, 6);
@@ -1322,6 +1366,8 @@ static void nd6_recv_na(struct wolfIP *s, unsigned int if_idx,
     if (ip6_is_unspecified(&src))
         return;
     ip6_hdr_get_dst(pkt, &dst);
+    if (!nd6_destination_is_local(s, if_idx, &dst))
+        return;
     /* RFC 4861 section 7.1.2: a solicited advertisement must not be sent to
      * a multicast address. */
     if ((na->flags & ND6_NA_SOLICITED) && ip6_is_multicast(&dst))
@@ -1393,6 +1439,7 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
     uint32_t opt_len;
     uint32_t off;
     ip6 src;
+    ip6 dst;
 
     if (payload_len < 16u)
         return;
@@ -1401,6 +1448,9 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
      * link-local address. Accepting a global source would let anything off
      * the link install a default route. */
     if (!ip6_is_link_local(&src))
+        return;
+    ip6_hdr_get_dst(pkt, &dst);
+    if (!nd6_destination_is_local(s, if_idx, &dst))
         return;
 
     opts = ra->options;
@@ -1421,25 +1471,28 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
             return;                 /* malformed: would not terminate */
         if ((off + olen) > opt_len)
             return;
-        if ((type == ND6_OPT_PREFIX) && (olen >= sizeof(struct nd6_opt_prefix))) {
+        if ((type == ND6_OPT_PREFIX) &&
+                (olen == sizeof(struct nd6_opt_prefix))) {
             const struct nd6_opt_prefix *po =
                 (const struct nd6_opt_prefix *)&opts[off];
             ip6 prefix;
+            uint32_t valid = ee32(po->valid_lifetime);
+            uint32_t preferred = ee32(po->preferred_lifetime);
 
             memcpy(prefix.addr, po->prefix, 16);
             /* RFC 4862 section 5.5.3 (a): an advertised link-local prefix is
              * silently ignored, which stops a hostile advertisement from
              * redefining fe80::/10. */
-            if ((po->prefix_len <= 128u) && !ip6_is_link_local(&prefix)) {
+            if ((po->prefix_len <= 128u) && !ip6_is_link_local(&prefix) &&
+                    (preferred <= valid)) {
                 nd6_prefix_store(s, if_idx, &prefix, po->prefix_len,
                                  (po->flags & ND6_PREFIX_ONLINK) ? 1 : 0,
                                  (po->flags & ND6_PREFIX_AUTO) ? 1 : 0,
-                                 ee32(po->valid_lifetime),
-                                 ee32(po->preferred_lifetime));
+                                 valid, preferred);
                 /* RFC 4862 section 5.5.3 (d): only a prefix of exactly 64
                  * bits leaves room for a 64-bit interface identifier. */
                 if ((po->flags & ND6_PREFIX_AUTO) && (po->prefix_len == 64u) &&
-                        (ee32(po->valid_lifetime) != 0)) {
+                        (valid != 0)) {
                     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
                     ip6 iid;
                     ip6 formed;
@@ -1792,7 +1845,9 @@ int wolfIP_nd6_neighbor_add(struct wolfIP *s, unsigned int if_idx,
 {
     if (!s || !addr || !mac || (if_idx >= WOLFIP_MAX_INTERFACES))
         return -WOLFIP_EINVAL;
-    if (ip6_is_multicast(addr) || ip6_is_unspecified(addr))
+    if (ip6_is_multicast(addr) || ip6_is_unspecified(addr) ||
+            ip6_is_loopback(addr) || ip6_is_v4mapped(addr) ||
+            ip6_is_v4compat(addr))
         return -WOLFIP_EINVAL;
     (void)nd6_store_neighbor(s, if_idx, addr, mac, ND6_REACHABLE, 0);
     return 0;
