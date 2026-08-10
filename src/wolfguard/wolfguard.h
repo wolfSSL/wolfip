@@ -68,6 +68,54 @@
 #define WG_HEADER_LEN           16   /* type(4) + receiver(4) + counter(8) */
 #define WG_AEAD_NONCE_LEN       16   /* AES-GCM IV */
 
+/*
+ * Tunnel MTU
+ *
+ * wg0 carries plaintext IP packets.  Each one is padded up to a 16-byte
+ * multiple, wrapped in a WG data header plus auth tag, and handed to the outer
+ * UDP socket as a single datagram.  wolfIP does not fragment, so a datagram
+ * that overshoots the outer interface's budget is rejected by sendto() and the
+ * packet is lost, so wg0 must be sized by working backwards from that budget.
+ *
+ * Two wolfIP conventions drive the arithmetic, and both are easy to miss:
+ *   - a per-interface MTU is a link-layer *frame* budget, from which the stack
+ *     subtracts an ethernet header to reach the IP budget.  It does this on
+ *     non-ethernet interfaces, wg0 included, so the reservation has to be
+ *     added back when calling wolfIP_mtu_set();
+ *   - that IP budget is then capped at 1500, the IPv4 payload maximum,
+ *     however large the link frame is (LINK_MTU is commonly 1536).
+ */
+#define WG_LL_HEADER_LEN        14U   /* per-frame reservation in wolfIP */
+#define WG_IP_PAYLOAD_MAX       1500U /* wolfIP's IP_MTU_MAX */
+#define WG_OUTER_IP_HEADER_LEN  20U   /* IPv4, no options */
+#define WG_OUTER_UDP_HEADER_LEN 8U
+
+/* WG data message overhead: header + auth tag, i.e. sizeof(struct wg_msg_data)
+ * + WG_AUTHTAG_LEN, spelled out so it stays usable by the preprocessor. */
+#define WG_DATA_MSG_OVERHEAD    (WG_HEADER_LEN + WG_AUTHTAG_LEN)
+
+/* Largest outer IP payload an interface in this build can emit. */
+#define WG_OUTER_IP_MTU \
+    (((LINK_MTU - WG_LL_HEADER_LEN) < WG_IP_PAYLOAD_MAX) \
+     ? (LINK_MTU - WG_LL_HEADER_LEN) : WG_IP_PAYLOAD_MAX)
+
+#define WG_OUTER_UDP_PAYLOAD_MAX \
+    (WG_OUTER_IP_MTU - WG_OUTER_IP_HEADER_LEN - WG_OUTER_UDP_HEADER_LEN)
+
+/* Inner IP budget, rounded *down* to a 16-byte multiple: the plaintext is
+ * padded up to one before encryption, so a budget that is not a multiple of 16
+ * cannot be filled to the byte anyway. */
+#define WG_INNER_IP_MTU \
+    ((WG_OUTER_UDP_PAYLOAD_MAX - WG_DATA_MSG_OVERHEAD) & ~15U)
+
+/* ...and back into the frame budget wolfIP_mtu_set() expects.
+ * With the usual LINK_MTU of 1536 this works out to 1440 + 14 = 1454. */
+#define WG_IF_MTU               (WG_INNER_IP_MTU + WG_LL_HEADER_LEN)
+
+#if WG_OUTER_UDP_PAYLOAD_MAX <= WG_DATA_MSG_OVERHEAD || WG_IF_MTU < LINK_MTU_MIN
+#error "LINK_MTU is too small to carry a wolfGuard tunnel"
+#endif
+
 /* Message Types */
 
 #define WG_MSG_INITIATION       1 /* starts the handshake process */
