@@ -188,10 +188,10 @@ void wolfguard_destroy(struct wg_device *dev);
 ```
 
 - `wolfguard_init` zeroes `dev`, initialises its RNG, configures `wg_if_idx` as
-  the `wg0` L3 interface (and sets its MTU to `LINK_MTU - 60` to leave room for
-  the outer IP/UDP/WireGuard overhead), opens the outer UDP socket, binds it to
-  `listen_port`, and registers the RX callback. Returns `0` on success, `-1` on
-  failure.
+  the `wg0` L3 interface (and sets its MTU to `WG_IF_MTU`, derived so that a
+  full-size inner packet still fits in one outer UDP datagram after padding and
+  encapsulation), opens the outer UDP socket, binds it to `listen_port`, and
+  registers the RX callback. Returns `0` on success, `-1` on failure.
 - `wolfguard_set_private_key` stores the 32-byte private key and derives the
   device's 65-byte public key (`wg_pubkey_from_private`). It must be called
   before adding peers; calling it again rotates the identity and drops live
@@ -406,6 +406,12 @@ wolfIP stacks.
 - **It will not talk to stock WireGuard.** Expected — wolfGuard uses the FIPS
   suite (P-256 / AES-GCM / SHA-256) and is interoperable only with other
   wolfGuard peers (kernel module or another wolfIP instance).
-- **Inner MTU surprises.** `wolfguard_init` sets the `wg0` MTU to
-  `LINK_MTU - 60` to reserve the outer IP/UDP/WireGuard overhead; size inner
-  payloads accordingly.
+- **Inner MTU surprises.** `wolfguard_init` sets the `wg0` MTU to `WG_IF_MTU`
+  (1454 with the usual `LINK_MTU` of 1536), leaving a 1440-byte inner IP budget
+  and 1412 bytes of UDP payload; size inner payloads accordingly. The
+  reservation is not a flat header sum: the plaintext is padded up to a 16-byte
+  multiple before encryption, the outer IP payload is capped at 1500 rather
+  than `LINK_MTU`, and wolfIP subtracts a 14-byte link header from every
+  interface MTU including this one. Raising the `wg0` MTU past `WG_IF_MTU`
+  black-holes the largest packets rather than failing loudly, since the outer
+  `sendto()` rejects them after wolfIP has already accepted them.

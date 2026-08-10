@@ -989,12 +989,63 @@ START_TEST(test_multi_peer)
 END_TEST
 
 /*
+ * MTU encapsulation budget
+ *
+ * Structural companion to the sweep below, this test doesn't send/receive any
+ * traffic, it just checks the arithmetic that
+ * wolfguard_init() has to get right.
+ */
+START_TEST(test_mtu_encap_fits_transport)
+{
+    uint64_t now;
+    int wg0_ip_mtu;      /* largest inner IP packet wolfIP accepts on wg0 */
+    int outer_udp_max;   /* largest outer UDP payload the phys iface carries */
+    int wg_overhead;     /* WG data header + auth tag */
+    int carry_cap;       /* largest inner IP packet that survives encapsulation */
+
+    setup_loopback_stacks(&now);
+
+    wg_overhead = (int)(sizeof(struct wg_msg_data) + WG_AUTHTAG_LEN);
+    wg0_ip_mtu = (int)wolfIP_ip_mtu(&stack_a, TEST_WG_IF);
+    outer_udp_max = (int)wolfIP_ip_mtu(&stack_a, TEST_PHYS_IF)
+                    - (IP_HEADER_LEN + UDP_HEADER_LEN);
+    /* Padding rounds the inner length up to a 16-byte multiple, so the largest
+     * inner packet that still fits is the budget rounded *down* to one. */
+    carry_cap = outer_udp_max - wg_overhead;
+    carry_cap -= carry_cap % 16;
+
+    ck_assert_int_gt(carry_cap, 0);
+    ck_assert_msg(wg0_ip_mtu <= carry_cap,
+                  "wg0 advertises a %d-byte IP MTU but only %d bytes of inner "
+                  "IP survive encapsulation: pad16(%d) + %d = %d, over the "
+                  "%d-byte outer UDP budget.  Inner packets of %d..%d bytes "
+                  "are accepted and then silently dropped.",
+                  wg0_ip_mtu, carry_cap,
+                  wg0_ip_mtu, wg_overhead,
+                  (int)wg_pad_len((size_t)wg0_ip_mtu) + wg_overhead,
+                  outer_udp_max,
+                  carry_cap + 1, wg0_ip_mtu);
+
+    teardown_stacks();
+}
+END_TEST
+
+/*
  * MTU boundary sweep
  *
- * Sweeps the inner UDP payload across the wg0 MTU in 1-byte
- * steps.  wolfguard_init() sets wg0 MTU = LINK_MTU - 60, and IPv4(20)+UDP(8)
- * headers eat 28 more, so payloads up to (LINK_MTU - 88) fit and larger ones
- * exceed the tunnel MTU.
+ * Sweeps the inner UDP payload across the wg0 MTU in 1-byte steps.
+ *
+ * The contract under test is that wg0 must not advertise capacity the outer
+ * transport cannot carry: every payload wolfIP accepts on wg0 has to arrive
+ * intact at the far end, and nothing beyond that may arrive at all.  Both
+ * halves matter.  A one-sided "never exceeds the MTU" check passes happily
+ * while the tunnel black-holes the top of its own advertised range, which is
+ * precisely the failure this test exists to catch, so the boundary is pinned
+ * from both directions.
+ *
+ * Nothing here is hardcoded to a particular LINK_MTU: the accept cap is read
+ * back from wolfIP and the carry cap is recomputed from the wire format, so
+ * the test tracks whatever MTU wolfguard_init() actually installs.
  */
 START_TEST(test_mtu_boundary_sweep)
 {
@@ -1002,15 +1053,23 @@ START_TEST(test_mtu_boundary_sweep)
     int app_sock_a, app_sock_b;
     struct wolfIP_sockaddr_in bind_addr, dst_addr;
     uint8_t sndbuf[LINK_MTU];
-    const int wg0_mtu = LINK_MTU - 60;      /* set by wolfguard_init() */
-    const int max_payload = wg0_mtu - 28;   /* wg0 MTU minus IPv4(20)+UDP(8) */
     const int anchor = 1000;                /* known-deliverable (cf. flood) */
-    const int top = max_payload + 16;       /* just above the wg0 MTU */
+    /* Read back from the live stack once it is up, never hardcoded. */
+    int accept_cap;      /* largest app payload wolfIP accepts on wg0 */
+    int top;             /* sweep ceiling, just past the advertised MTU */
     int max_delivered = -1;
     int anchor_delivered = 0;
+    int first_gap = -1;                     /* first accepted-but-lost size */
+    int over_delivered = -1;                /* first past-cap size delivered */
     int p, i, ret;
 
     setup_loopback_stacks(&now);
+
+    accept_cap = (int)wolfIP_ip_mtu(&stack_a, TEST_WG_IF)
+                 - (IP_HEADER_LEN + UDP_HEADER_LEN);
+    top = accept_cap + 16;
+    ck_assert_int_gt(accept_cap, anchor);
+    ck_assert_int_lt(top, (int)sizeof(sndbuf));
 
     /* B listens on 7777, A binds a source port on 9999 */
     app_sock_b = wolfIP_sock_socket(&stack_b, AF_INET, SOCK_DGRAM, 0);
@@ -1050,10 +1109,7 @@ START_TEST(test_mtu_boundary_sweep)
     ck_assert_ptr_nonnull(wg_dev_a.peers[0].keypairs.current);
 
     /* Sweep the inner payload up to just past the tunnel MTU, one byte at a
-     * time.  The loopback ring caps the outer frame below the wg0 MTU, so we
-     * don't hardcode where delivery stops; instead we require that every
-     * delivered packet is byte-exact and that delivery never exceeds the wg0
-     * MTU.  Timers are frozen (step_ms = 0) so a single session persists, a
+     * time.  Timers are frozen (step_ms = 0) so a single session persists, a
      * live clock would trip the spec's stale-receive rekey, since B is a pure
      * sink that never replies. */
     for (p = anchor; p <= top; p++) {
@@ -1063,11 +1119,20 @@ START_TEST(test_mtu_boundary_sweep)
         app_recv_count = 0;
         app_recv_len = 0;
 
-        /* sendto may reject an over-MTU payload (no fragmentation), so
-         * either a rejection here or a silent drop downstream is acceptable. */
-        (void)wolfIP_sock_sendto(&stack_a, app_sock_a, sndbuf, p, 0,
+        ret = wolfIP_sock_sendto(&stack_a, app_sock_a, sndbuf, p, 0,
                                  (const struct wolfIP_sockaddr *)&dst_addr,
                                  sizeof(dst_addr));
+        /* wolfIP does not fragment, so the accept/reject split has to land
+         * exactly on the wg0 MTU. */
+        if (p <= accept_cap)
+            ck_assert_msg(ret >= 0,
+                          "sendto rejected a %d-byte payload, at or below the "
+                          "%d-byte wg0 cap", p, accept_cap);
+        else
+            ck_assert_msg(ret < 0,
+                          "sendto accepted a %d-byte payload, above the "
+                          "%d-byte wg0 cap", p, accept_cap);
+
         pump_stacks(&now, 20, 0);
 
         if (app_recv_count > 0) {
@@ -1079,16 +1144,34 @@ START_TEST(test_mtu_boundary_sweep)
                                   (uint8_t)((i * 31 + p) & 0xff));
             if (p == anchor)
                 anchor_delivered = 1;
+            if (p > accept_cap && over_delivered < 0)
+                over_delivered = p;
             max_delivered = p;
+        }
+        else if (p <= accept_cap && first_gap < 0) {
+            first_gap = p;
         }
     }
 
-    /* ~1 KB packets flow intact, and delivery never exceeds the wg0 MTU
-     * (an over-MTU inner packet is dropped, not truncated, since wolfIP has no
-     * fragmentation, a larger max_delivered would mean a buffer overrun). */
+    /* Pin the boundary from both sides.
+     *
+     * Below the cap: everything wg0 accepted has to arrive.  A gap means the
+     * interface is advertising an MTU its own transport cannot carry, and the
+     * packets in that band vanish with no error and no ICMP, the black hole a
+     * one-sided "never exceeds the MTU" check would sail straight past.
+     *
+     * Above the cap: nothing may arrive.  wolfIP has no fragmentation, so an
+     * over-MTU delivery would mean truncation or a buffer overrun. */
     ck_assert_int_eq(anchor_delivered, 1);
-    ck_assert_int_ge(max_delivered, anchor);
-    ck_assert_int_le(max_delivered, max_payload);
+    ck_assert_msg(first_gap < 0,
+                  "%d-byte payload accepted by wg0 (cap %d) but never "
+                  "delivered: the top %d bytes of the advertised MTU are a "
+                  "black hole", first_gap, accept_cap,
+                  accept_cap - first_gap + 1);
+    ck_assert_msg(over_delivered < 0,
+                  "%d-byte payload delivered above the %d-byte wg0 cap",
+                  over_delivered, accept_cap);
+    ck_assert_int_eq(max_delivered, accept_cap);
 
     wolfIP_sock_close(&stack_a, app_sock_a);
     wolfIP_sock_close(&stack_b, app_sock_b);
@@ -1235,9 +1318,11 @@ static Suite *wolfguard_integration_suite(void)
     tcase_add_test(tc, test_multi_peer);
     suite_add_tcase(s, tc);
 
-    /* MTU boundary: 1-byte payload sweep across the wg0 MTU */
+    /* MTU boundary: encapsulation budget, then a 1-byte payload sweep
+     * across the wg0 MTU */
     tc = tcase_create("mtu_boundary");
     tcase_set_timeout(tc, 120);
+    tcase_add_test(tc, test_mtu_encap_fits_transport);
     tcase_add_test(tc, test_mtu_boundary_sweep);
     suite_add_tcase(s, tc);
 

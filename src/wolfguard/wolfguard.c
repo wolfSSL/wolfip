@@ -129,8 +129,12 @@ int wolfguard_init(struct wg_device *dev, struct wolfIP *stack,
     ll->priv = dev;
     strncpy(ll->ifname, "wg0", sizeof(ll->ifname) - 1);
 
-    /* Set wg0 MTU = outer MTU - 60 (IP + UDP + WG header overhead) */
-    wolfIP_mtu_set(stack, wg_if_idx, LINK_MTU - 60);
+    /* Size wg0 so a full-MTU inner packet still fits in one outer UDP datagram
+     * once padded and encapsulated.  A too-generous MTU here does not fail
+     * loudly: wolfIP accepts the oversized packet, the outer sendto() in
+     * wg_packet_send() rejects the encapsulated datagram, and it is dropped
+     * with no error to the sender and no ICMP to the peer.  See WG_IF_MTU. */
+    wolfIP_mtu_set(stack, wg_if_idx, WG_IF_MTU);
 
     /* Create UDP socket for outer transport */
     dev->udp_sock_fd = wolfIP_sock_socket(stack, AF_INET, SOCK_DGRAM, 0);
