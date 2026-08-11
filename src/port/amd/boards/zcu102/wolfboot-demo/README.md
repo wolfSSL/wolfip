@@ -51,6 +51,8 @@ SD=/dev/sdX ./program-sd.sh
 
 This copies `BOOT.BIN` into the FAT boot partition and `dd`s the signed v1 app to the raw `OFP_A` partition (needs root). Add `WIPE_OFP_B=1` to also clear `OFP_B` so the board boots `A:v1` fresh (handy for demoing the update). Then put the card in the ZCU102, set boot-mode `SW6 = SD`, and power on.
 
+Both scripts refuse a `SD=` that is not a whole disk, is not removable/hotplug (your system drive), or is bigger than 256 GB. Override with `FORCE=1` for an unusual card reader, or raise the size cap with `MAX_GB=`.
+
 ## Run
 
 On the serial console (PS-UART0, 115200 8N1) you should see FSBL -> wolfBoot (which verifies the signature) -> the wolfIP banner, DHCP bind, and `Ready`. A modified or unsigned `OFP_A` image fails wolfBoot's check and is not booted.
@@ -110,8 +112,8 @@ The reset after "update staged" is intentional - the app reboots so wolfBoot re-
 | File | Purpose |
 |------|---------|
 | `build.sh` | Build wolfBoot + sign the app (v1 + v2) + assemble `BOOT.BIN` |
-| `program-sd.sh` | Write `BOOT.BIN` + signed app to an SD card (`WIPE_OFP_B=1` for a clean slate) |
-| `partition-sd.sh` | Create the demo MBR layout on a blank card |
+| `program-sd.sh` | Write `BOOT.BIN` + signed app to an SD card (`WIPE_OFP_B=1` for a clean slate, `FORCE=1` to skip the target checks) |
+| `partition-sd.sh` | Create the demo MBR layout on a blank card (`FORCE=1` to skip the target checks) |
 | `update.sh` | Stage the update image + trigger it over the network |
 | `boot.bif.in` | bootgen template (FSBL/PMUFW/BL31/wolfBoot) |
 | `out/` | Build output |

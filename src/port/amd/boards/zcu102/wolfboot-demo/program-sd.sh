@@ -13,6 +13,9 @@
 # so the signed image is dd'd to the start of p2 (this needs root). Copying
 # BOOT.BIN into the FAT p1 does not.
 #
+# The script refuses a partition, a non-removable disk, or one bigger than
+# MAX_GB - set FORCE=1 to override those checks.
+#
 # Usage:  SD=/dev/sdX ./program-sd.sh         (X = your card reader, NOT a board)
 #         WIPE_OFP_B=1 SD=/dev/sdX ./program-sd.sh   also zero OFP_B so the board
 #                                     boots A:v1 fresh (for a clean A->B update demo)
@@ -27,6 +30,41 @@ SD="${SD:?set SD=/dev/sdX (your SD card reader block device - double-check with 
 [ -f "$OUT/BOOT.BIN" ] || { echo "missing $OUT/BOOT.BIN - run ./build.sh first" >&2; exit 1; }
 [ -f "$SIGNED" ]       || { echo "missing $SIGNED - run ./build.sh first" >&2; exit 1; }
 [ -b "$SD" ]           || { echo "$SD is not a block device" >&2; exit 1; }
+
+# Reject obviously-wrong targets before anything destructive happens: a
+# partition instead of a whole disk, a fixed (non-removable) drive such as your
+# system disk, or a device far larger than any demo SD card. FORCE=1 overrides
+# the removable and size checks; MAX_GB= raises the size cap.
+check_target_disk() {
+    local devtype removable hotplug bytes maxbytes
+
+    devtype="$(lsblk -ndo TYPE "$SD" | tr -d '[:space:]')"
+    if [ "$devtype" != "disk" ]; then
+        echo "ERROR: $SD is a '$devtype', not a whole disk - pass the card" >&2
+        echo "       reader itself (/dev/sdX), not a partition (/dev/sdX1)." >&2
+        exit 1
+    fi
+
+    # lsblk pads a column to its (suppressed) header width, hence the tr. A
+    # reader that reports RM=0 but HOTPLUG=1 (PCIe/rtsx, some USB bridges) is
+    # still fine.
+    removable="$(lsblk -ndo RM "$SD" | tr -d '[:space:]')"
+    hotplug="$(lsblk -ndo HOTPLUG "$SD" | tr -d '[:space:]')"
+    if [ "$removable" != 1 ] && [ "$hotplug" != 1 ] && [ "${FORCE:-0}" != 1 ]; then
+        echo "ERROR: $SD is not removable or hotplug (RM=$removable," >&2
+        echo "       HOTPLUG=$hotplug) - refusing. Set FORCE=1 to override." >&2
+        exit 1
+    fi
+
+    bytes="$(lsblk -ndbo SIZE "$SD" | tr -d '[:space:]')"
+    maxbytes=$(( ${MAX_GB:-256} * 1024 * 1024 * 1024 ))
+    if [ "$bytes" -gt "$maxbytes" ] && [ "${FORCE:-0}" != 1 ]; then
+        echo "ERROR: $SD is $((bytes / 1024 / 1024 / 1024))GB, over the" >&2
+        echo "       ${MAX_GB:-256}GB sanity limit - refusing. Set MAX_GB= or FORCE=1." >&2
+        exit 1
+    fi
+}
+check_target_disk
 
 # Partition node suffix: /dev/sdX -> sdX1 ; /dev/mmcblkN|nvmeN|loopN -> ...p1
 case "$SD" in
