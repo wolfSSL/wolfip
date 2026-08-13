@@ -345,6 +345,11 @@ git clone https://github.com/wolfSSL/wolfssh.git
 make ENABLE_SSH=1
 ```
 
+The port builds a minimal, explicit set of wolfSSH sources. Keep wolfIP and
+wolfSSH on current compatible revisions (or update them together when using
+development branches); do not substitute selected wolfSSH source files from a
+different revision.
+
 Or specify a custom wolfSSH path:
 
 ```bash
