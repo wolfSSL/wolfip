@@ -32,9 +32,18 @@ handler that FreeRTOS also needs.
 
 `ENABLE_WOLFHAL=1` selects `boards/stm32h563zi_nucleo/` (its own
 `startup.c`/`ivt.c`/`syscalls.c`/`linker.ld` plus `board.c`/`board.h`/`board.mk`),
-pulls the wolfHAL STM32H5 driver TUs from a sibling wolfHAL checkout
-(`WOLFHAL_ROOT ?= ../wolfHAL`), and compiles the port's `main.c` against
+pulls the wolfHAL STM32H5 driver TUs from the `lib/wolfHAL` submodule
+(`WOLFHAL_ROOT ?= lib/wolfHAL`), and compiles the port's `main.c` against
 wolfHAL drivers instead of the hand-rolled bare-metal ones.
+
+Initialize the submodule once with
+
+```
+git submodule update --init lib/wolfHAL
+```
+
+or point `WOLFHAL_ROOT` at an external checkout to build against a
+different HAL.
 
 ## Port API
 

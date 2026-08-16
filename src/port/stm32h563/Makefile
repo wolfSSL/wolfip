@@ -13,7 +13,7 @@ TZEN ?= 0
 # boards/$(BOARD). First cut supports TZEN=0 and FREERTOS=0 only.
 ENABLE_WOLFHAL ?= 0
 BOARD ?= stm32h563zi_nucleo
-WOLFHAL_ROOT ?= $(ROOT)/../wolfHAL
+WOLFHAL_ROOT ?= $(ROOT)/lib/wolfHAL
 
 # TLS support: set ENABLE_TLS=1 to include wolfSSL TLS server
 # Requires wolfSSL cloned alongside wolfip (or set WOLFSSL_ROOT)
@@ -149,7 +149,7 @@ ifeq ($(FREERTOS),1)
 endif
 
 ifeq ($(wildcard $(WOLFHAL_ROOT)/wolfHAL/wolfHAL.h),)
-  $(error wolfHAL not found at $(WOLFHAL_ROOT). Clone it alongside wolfip: git clone https://github.com/wolfSSL/wolfHAL.git (or set WOLFHAL_ROOT))
+  $(error wolfHAL not found at $(WOLFHAL_ROOT). Initialize the submodule: git -C $(abspath $(ROOT)) submodule update --init lib/wolfHAL (or set WOLFHAL_ROOT to an external checkout))
 endif
 
 BOARD_DIR := boards/$(BOARD)
@@ -682,7 +682,7 @@ help:
 	@echo "  WOLFSSL_ROOT=   Path to wolfSSL (default: ../wolfssl)"
 	@echo "  WOLFSSH_ROOT=   Path to wolfSSH (default: ../wolfssh)"
 	@echo "  WOLFMQTT_ROOT=  Path to wolfMQTT (default: ../wolfmqtt)"
-	@echo "  WOLFHAL_ROOT=   Path to wolfHAL (default: ../wolfHAL)"
+	@echo "  WOLFHAL_ROOT=   Path to wolfHAL (default: lib/wolfHAL submodule)"
 	@echo "  CC=             C compiler (default: arm-none-eabi-gcc)"
 	@echo "  OBJCOPY=        Objcopy tool (default: arm-none-eabi-objcopy)"
 	@echo ""

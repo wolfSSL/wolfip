@@ -1,0 +1,3 @@
+[submodule "lib/wolfHAL"]
+	path = lib/wolfHAL
+	url = https://github.com/wolfSSL/wolfHAL.git

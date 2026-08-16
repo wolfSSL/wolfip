@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# wolfHAL commit the wolfHAL jobs build against. CI passes this in from the
-# workflow; the default keeps local runs on the same pinned HAL.
-WOLFHAL_REF="${WOLFHAL_REF:-5302069e8d7baacefeeada94c4c8e5ef7426c1db}"
-
 usage() {
   cat <<'EOF'
 Usage: tools/scripts/run-m33mu-ci-in-container.sh <workflow> [job]
@@ -43,18 +39,6 @@ ensure_repo() {
   fi
 }
 
-ensure_repo_ref() {
-  local name="$1"
-  local url="$2"
-  local ref="$3"
-  if [ ! -d "../${name}/.git" ]; then
-    git init -q "../${name}"
-    git -C "../${name}" remote add origin "${url}"
-    git -C "../${name}" fetch --depth 1 origin "${ref}"
-    git -C "../${name}" checkout -q FETCH_HEAD
-  fi
-}
-
 build_echo() {
   make -C src/port/stm32h563 clean \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
@@ -63,7 +47,11 @@ build_echo() {
 }
 
 build_echo_wolfhal() {
-  ensure_repo_ref wolfHAL https://github.com/wolfSSL/wolfHAL.git "${WOLFHAL_REF}"
+  # wolfHAL comes from the lib/wolfHAL submodule. CI checks it out with the
+  # repo; initialize it here for local runs.
+  if [ ! -f lib/wolfHAL/wolfHAL/wolfHAL.h ]; then
+    git submodule update --init lib/wolfHAL
+  fi
   make -C src/port/stm32h563 clean TZEN=0 ENABLE_WOLFHAL=1 BOARD=stm32h563zi_nucleo \
     CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy
   make -C src/port/stm32h563 TZEN=0 ENABLE_WOLFHAL=1 BOARD=stm32h563zi_nucleo \
