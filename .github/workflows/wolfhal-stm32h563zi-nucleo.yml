@@ -6,32 +6,22 @@ on:
   pull_request:
     branches: [ '*' ]
 
-env:
-  # wolfHAL pinned to a wolfSSL/wolfHAL main commit for reproducible CI.
-  # Bump WOLFHAL_REF to build against a newer HAL.
-  WOLFHAL_REF: 5302069e8d7baacefeeada94c4c8e5ef7426c1db
-
 jobs:
   wolfhal_stm32h563zi_nucleo_build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
+      # wolfHAL comes from the lib/wolfHAL submodule.
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Install ARM toolchain
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y gcc-arm-none-eabi
-
-      - name: Fetch wolfHAL (pinned to ${{ env.WOLFHAL_REF }})
-        run: |
-          set -euo pipefail
-          git init -q ../wolfHAL
-          git -C ../wolfHAL remote add origin https://github.com/wolfSSL/wolfHAL.git
-          git -C ../wolfHAL fetch --depth 1 origin "$WOLFHAL_REF"
-          git -C ../wolfHAL checkout -q FETCH_HEAD
 
       - name: Build STM32H563 port with the wolfHAL driver backend
         run: |
@@ -54,6 +44,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: DHCP + TCP echo under m33mu with the wolfHAL driver backend
         run: /bin/bash tools/scripts/run-m33mu-ci-in-container.sh stm32h563-m33mu-wolfhal stm32h563_m33mu_echo_wolfhal
