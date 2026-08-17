@@ -1235,6 +1235,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_ack_with_fin_enters_close_wait);
     tcase_add_test(tc_core, test_tcp_input_window_grows_from_zero_stops_persist);
     tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_timeout_closes_socket);
+    tcase_add_test(tc_core, test_accept_synack_retransmit_repeats_isn);
     tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_wrong_state_stops_timer);
     tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_not_needed_stops);
     tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_maxretries_nonlistener_closes);

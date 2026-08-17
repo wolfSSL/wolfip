@@ -6124,7 +6124,10 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 return -WOLFIP_EAGAIN;
             }
             ts->events &= ~CB_EVENT_READABLE;
-            newts->sock.tcp.seq++;
+            /* Keep seq at the ISN while in SYN_RCVD: control RTO
+             * retransmits rebuild the SYN-ACK from seq, and a retransmitted
+             * SYN-ACK must repeat the original ISN. The final ACK handler
+             * advances seq to ISN+1 when the connection is established. */
             newts->sock.tcp.ctrl_rto_retries = 0;
             tcp_ctrl_rto_start(newts, s->last_tick);
             if (sin) {

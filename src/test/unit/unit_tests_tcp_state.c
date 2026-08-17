@@ -2525,3 +2525,80 @@ START_TEST(test_last_ack_final_ack_delivers_close_event)
     ck_assert_uint_ne(socket_cb_last_events & CB_EVENT_CLOSED, 0);
 }
 END_TEST
+
+/* A SYN-ACK retransmitted by the control RTO on an accepted socket must
+ * repeat the ISN advertised by the original SYN-ACK; the peer's final ACK
+ * is validated against ISN+1, so a changed sequence number turns loss
+ * recovery into a RST. */
+START_TEST(test_accept_synack_retransmit_repeats_isn)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *syn_rcvd = NULL;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    int syn_rcvd_sd;
+    int acc_sd;
+    int i;
+    uint32_t isn;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    /* Peer SYN triggers passive open; the SYN-ACK carries the clone's ISN. */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    wolfIP_poll(&s, 1000);
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        if (s.tcpsockets[i].sock.tcp.state == TCP_SYN_RCVD) {
+            syn_rcvd = &s.tcpsockets[i];
+            break;
+        }
+    }
+    ck_assert_ptr_nonnull(syn_rcvd);
+    isn = syn_rcvd->sock.tcp.seq;
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    {
+        const struct wolfIP_tcp_seg *synack =
+            (const struct wolfIP_tcp_seg *)last_frame_sent;
+        ck_assert_uint_eq(ee32(synack->seq), isn);
+    }
+
+    /* accept() sends a duplicate SYN-ACK from the new socket, same ISN. */
+    syn_rcvd_sd = (int)(syn_rcvd - s.tcpsockets) | MARK_TCP_SOCKET;
+    acc_sd = wolfIP_sock_accept(&s, syn_rcvd_sd, NULL, 0);
+    ck_assert_int_gt(acc_sd, 0);
+    accepted = &s.tcpsockets[SOCKET_UNMARK(acc_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+    /* Poll before the accept-armed control RTO (last_tick 1000 + 1000ms
+     * default) expires, so this flushes accept's own SYN-ACK. */
+    wolfIP_poll(&s, 1500);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    {
+        const struct wolfIP_tcp_seg *synack2 =
+            (const struct wolfIP_tcp_seg *)last_frame_sent;
+        ck_assert_uint_eq(ee32(synack2->seq), isn);
+    }
+
+    /* Control RTO retransmit: same flags, same ISN. */
+    tcp_rto_cb(accepted);
+    wolfIP_poll(&s, 3000);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    {
+        const struct wolfIP_tcp_seg *retrans =
+            (const struct wolfIP_tcp_seg *)last_frame_sent;
+        ck_assert_int_eq(retrans->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
+                         TCP_FLAG_SYN | TCP_FLAG_ACK);
+        ck_assert_uint_eq(ee32(retrans->seq), isn);
+    }
+}
+END_TEST

@@ -2425,7 +2425,9 @@ START_TEST(test_sock_accept_initializes_snd_una)
     ck_assert_int_gt(client_sd, 0);
 
     accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
-    ck_assert_uint_eq(accepted->sock.tcp.seq, (uint32_t)(0x80000000U + 1U));
+    /* While in SYN_RCVD the socket's seq stays at the ISN; the final ACK
+     * handler advances it to ISN+1 on establishment. */
+    ck_assert_uint_eq(accepted->sock.tcp.seq, 0x80000000U);
     ck_assert_uint_eq(accepted->sock.tcp.snd_una, 0x80000000U);
     ck_assert_int_eq(tcp_seq_leq(accepted->sock.tcp.snd_una, accepted->sock.tcp.seq), 1);
 }
@@ -2739,7 +2741,8 @@ START_TEST(test_sock_accept_ack_transitions_to_established)
     ack.src_port = ee16(40000);      /* Remote port from inject_tcp_syn */
     ack.dst_port = ee16(1234);
     ack.seq = ee32(accepted->sock.tcp.ack);
-    ack.ack = ee32(accepted->sock.tcp.seq);
+    /* The client's final ACK is at the server's snd.nxt: ISN+1. */
+    ack.ack = ee32(tcp_seq_inc(accepted->sock.tcp.snd_una, 1));
     ack.hlen = TCP_HEADER_LEN << 2;
     ack.flags = TCP_FLAG_ACK;
     ack.win = ee16(65535);

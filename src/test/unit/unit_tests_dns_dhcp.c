@@ -3190,7 +3190,8 @@ START_TEST(test_sock_accept_ack_with_payload_completes_handshake)
     seg->dst_port = ee16(local_port);
     base_seq = new_ts->sock.tcp.ack;
     seg->seq = ee32(base_seq);
-    seg->ack = ee32(new_ts->sock.tcp.seq);
+    /* The client's ACK is at the server's snd.nxt: ISN+1. */
+    seg->ack = ee32(tcp_seq_inc(new_ts->sock.tcp.snd_una, 1));
     seg->hlen = TCP_HEADER_LEN << 2;
     seg->flags = TCP_FLAG_ACK;
     memcpy(seg->data, payload, sizeof(payload));
@@ -3250,7 +3251,8 @@ START_TEST(test_sock_accept_ack_at_snd_nxt_completes_handshake)
     ackseg.src_port = ee16(remote_port);
     ackseg.dst_port = ee16(local_port);
     ackseg.seq = ee32(new_ts->sock.tcp.ack);
-    ackseg.ack = ee32(new_ts->sock.tcp.seq);
+    /* The client's final ACK is at the server's snd.nxt: ISN+1. */
+    ackseg.ack = ee32(tcp_seq_inc(new_ts->sock.tcp.snd_una, 1));
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = TCP_FLAG_ACK;
     fix_tcp_checksums(&ackseg);
@@ -3311,7 +3313,8 @@ START_TEST(test_sock_accept_ack_psh_with_payload_completes_handshake)
     seg->dst_port = ee16(local_port);
     base_seq = new_ts->sock.tcp.ack;
     seg->seq = ee32(base_seq);
-    seg->ack = ee32(new_ts->sock.tcp.seq);
+    /* The client's ACK is at the server's snd.nxt: ISN+1. */
+    seg->ack = ee32(tcp_seq_inc(new_ts->sock.tcp.snd_una, 1));
     seg->hlen = TCP_HEADER_LEN << 2;
     seg->flags = (TCP_FLAG_ACK | TCP_FLAG_PSH);
     memcpy(seg->data, payload, sizeof(payload));
