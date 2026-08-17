@@ -9414,6 +9414,36 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 
             if (!l2_group) {
             int out_if = wolfIP_forward_interface(s, if_idx, dest);
+            ip4 next_hop = dest;
+            if (out_if < 0) {
+                /* No connected egress: resolve the destination in the
+                 * static route table (longest prefix, then order, then
+                 * interface) and forward to the route's gateway. */
+                unsigned int ri;
+                uint8_t best_plen = 0;
+                uint32_t best_order = UINT32_MAX;
+                for (ri = 0; ri < WOLFIP_MAX_ROUTES; ri++) {
+                    const struct wolfIP_route_entry *route = &s->routes[ri];
+                    if (!route->used)
+                        continue;
+                    if (!wolfIP_route_match_prefix(dest, route->prefix,
+                            route->prefix_len))
+                        continue;
+                    if (out_if < 0 || route->prefix_len > best_plen ||
+                            (route->prefix_len == best_plen &&
+                             (route->order < best_order ||
+                              (route->order == best_order &&
+                               route->if_idx < (unsigned int)out_if)))) {
+                        out_if = (int)route->if_idx;
+                        best_plen = route->prefix_len;
+                        best_order = route->order;
+                        next_hop = route->gateway != IPADDR_ANY ?
+                                   route->gateway : dest;
+                    }
+                }
+                if (out_if >= 0 && (unsigned int)out_if == if_idx)
+                    out_if = -1;
+            }
             if (out_if >= 0) {
                 uint8_t mac[6];
                 int broadcast = 0;
@@ -9429,8 +9459,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
-                if (!wolfIP_forward_prepare(s, out_if, dest, mac, &broadcast)) {
-                    arp_queue_packet(s, out_if, dest, ip, len);
+                if (!wolfIP_forward_prepare(s, out_if, next_hop, mac,
+                        &broadcast)) {
+                    arp_queue_packet(s, out_if, next_hop, ip, len);
                     return;
                 }
                 ip->ttl--;
