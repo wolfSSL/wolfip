@@ -10683,7 +10683,18 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
              * not the socket's current one. */
             ip4 desc_dst = ee32(ip->dst);
 #ifdef ETHERNET
-            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, desc_dst);
+            ip4 nexthop;
+#ifdef IP_MULTICAST
+            if (is_udp && wolfIP_ip_is_multicast(desc_dst) &&
+                    t->sock.udp.mcast_if_set) {
+                /* IP_MULTICAST_IF pins this socket's multicast egress; the
+                 * route lookup's no-route fallback would move the frame to
+                 * another interface. */
+                tx_if = t->sock.udp.mcast_if_idx;
+                nexthop = desc_dst;
+            } else
+#endif
+                nexthop = wolfIP_select_nexthop_ex(s, &tx_if, desc_dst);
             if (wolfIP_is_loopback_if(tx_if)) {
                 struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                 if (loop)
