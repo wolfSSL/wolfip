@@ -6488,8 +6488,14 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             total_len = (uint32_t)len + ETH_HEADER_LEN;
             if (dst_ip == 0)
                 dst_ip = ee32(rip->dst);
-            else
+            else {
+                /* The override changes a field covered by the IPv4 header
+                 * checksum, and the flush path trusts the caller's header
+                 * as-is, so recompute it for the transmitted destination. */
                 rip->dst = ee32(dst_ip);
+                rip->csum = 0;
+                iphdr_set_checksum(rip);
+            }
             if (rs->remote_ip == 0 && dst_ip != 0)
                 rs->remote_ip = dst_ip;
             rs->local_ip = ee32(rip->src);

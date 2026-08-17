@@ -1159,6 +1159,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sock_sendto_raw_null_dest_uses_stored_remote_ip);
     tcase_add_test(tc_core, test_sock_sendto_raw_null_dest_no_remote_ip);
     tcase_add_test(tc_core, test_sock_sendto_raw_hdrincl_dst_from_buf);
+    tcase_add_test(tc_core, test_raw_hdrincl_dst_override_recomputes_ip_checksum);
     tcase_add_test(tc_core, test_sock_sendto_raw_invalid_fd);
     tcase_add_test(tc_core, test_sock_sendto_raw_fifo_full_returns_eagain);
     tcase_add_test(tc_core, test_sock_setsockopt_raw_hdrincl);
