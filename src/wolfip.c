@@ -5321,18 +5321,20 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 tcp_send_ack(t);
                 continue;
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
-                /* RFC 9293 s3.10.7.2: segment acceptability applies
-                 * to all synchronized states including LAST_ACK. */
-                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
-                    tcp_send_ack(t);
-                    continue;
-                }
+                /* RFC 7323 §5.3: PAWS takes precedence over the regular
+                 * acceptability test on synchronized connections. */
                 {
                     int paws = tcp_paws_check(t, tcp, frame_len);
                     if (paws == TCP_PAWS_ACK_DROP)
                         tcp_send_ack(t);
                     if (paws != TCP_PAWS_OK)
                         continue;
+                }
+                /* RFC 9293 s3.10.7.2: segment acceptability applies
+                 * to all synchronized states including LAST_ACK. */
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
                 }
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
                  * synchronized connection, send a challenge ACK and
@@ -5354,17 +5356,19 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_2) ||
                     (t->sock.tcp.state == TCP_CLOSING)) {
-                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
-                    tcp_send_ack(t);
-                    continue;
-                }
-
+                /* RFC 7323 §5.3: PAWS takes precedence over the regular
+                 * acceptability test on synchronized connections. */
                 {
                     int paws = tcp_paws_check(t, tcp, frame_len);
                     if (paws == TCP_PAWS_ACK_DROP)
                         tcp_send_ack(t);
                     if (paws != TCP_PAWS_OK)
                         continue;
+                }
+
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
                 }
 
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a

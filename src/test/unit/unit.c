@@ -942,6 +942,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);
     tcase_add_test(tc_proto, test_regression_paws_accepts_wrapped_newer_timestamp);
     tcase_add_test(tc_proto, test_regression_paws_drops_segment_without_timestamp_option);
+    tcase_add_test(tc_proto, test_regression_paws_preempts_acceptability_for_replayed_segment);
     tcase_add_test(tc_proto, test_regression_paws_drops_last_ack_segment_without_timestamp_option);
     tcase_add_test(tc_proto, test_regression_paws_drops_time_wait_segment_without_timestamp_option);
     tcase_add_test(tc_proto, test_regression_dhcp_nak_restarts_configuration);
