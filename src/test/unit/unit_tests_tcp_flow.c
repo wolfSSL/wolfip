@@ -2526,6 +2526,67 @@ START_TEST(test_tcp_ack_cwnd_grows_when_payload_acked_is_mss_minus_options)
 }
 END_TEST
 
+/* RFC 5681: a duplicate ACK carries no data and repeats the previously
+ * advertised receive window. Peer data segments that do not advance our
+ * snd_una (normal in bidirectional transfer) must not inflate the dup
+ * count into a spurious fast retransmit. */
+START_TEST(test_tcp_ack_data_segments_not_counted_as_dup_acks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct pkt_desc *desc;
+    uint8_t pbuf[sizeof(struct wolfIP_tcp_seg) + 8];
+    struct wolfIP_tcp_seg *pseg = (struct wolfIP_tcp_seg *)pbuf;
+    uint32_t seq = 1000;
+    int i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* One in-flight segment so the dup-ACK branch is reachable. */
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* Three peer data segments, none acknowledging the in-flight one. */
+    memset(pbuf, 0, sizeof(pbuf));
+    pseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 8);
+    pseg->hlen = TCP_HEADER_LEN << 2;
+    pseg->flags = TCP_FLAG_ACK;
+    pseg->win = ee16(65535);
+    pseg->ack = ee32(seq);
+    memset(pseg->data, 0x5A, 8);
+    for (i = 0; i < 3; i++) {
+        pseg->seq = ee32(500 + i * 8);
+        tcp_ack(ts, pseg);
+    }
+
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+    ck_assert_int_eq(ts->sock.tcp.fast_recovery, 0);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, seq);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, TCP_MSS);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_inflight_deflate_sets_writable_without_acked_desc)
 {
     struct wolfIP s;

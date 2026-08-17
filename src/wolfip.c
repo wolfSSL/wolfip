@@ -1141,6 +1141,9 @@ struct tcpsocket {
     ip4 local_ip, remote_ip;
     uint32_t peer_rwnd;
     uint16_t peer_mss;
+    /* Raw receive window advertised by the previously processed ACK; dup
+     * ACK detection compares against it (RFC 5681 condition e). */
+    uint16_t last_peer_win;
     uint8_t snd_wscale, rcv_wscale, ws_enabled, ws_offer;
     uint8_t ts_enabled, ts_offer;
     uint8_t sack_offer, sack_permitted;
@@ -4760,6 +4763,12 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     int recovery_exit_ack = 0;
     uint32_t inflight_pre = t->sock.tcp.bytes_in_flight;
 
+    /* Every caller presents an ACK-flagged segment, so each one is the new
+     * "previously received ACK" for dup detection. */
+    uint16_t adv_win = ee16(tcp->win);
+    int win_changed = (adv_win != t->sock.tcp.last_peer_win);
+    t->sock.tcp.last_peer_win = adv_win;
+
     if (t->sock.tcp.state == TCP_LAST_ACK && tcp_seq_leq(fin_acked, ack)) {
         tcp_ctrl_rto_stop(t);
         t->sock.tcp.state = TCP_CLOSED;
@@ -4926,10 +4935,20 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                 t->events |= CB_EVENT_WRITABLE;
         }
     } else {
-        /* Duplicate ack (no advance in snd_una). */
+        /* Duplicate ack (no advance in snd_una). RFC 5681: only a segment
+         * that carries no data and repeats the previously advertised
+         * receive window counts as a duplicate ACK, so data-bearing
+         * segments and window updates must not inflate the count or
+         * trigger fast retransmit. */
+        uint32_t ip_len = ee16(tcp->ip.len);
+        uint32_t hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
         if (ack != t->sock.tcp.snd_una)
             return;
         if (inflight_pre == 0)
+            return;
+        if (ip_len > hdr_len)
+            return;
+        if (win_changed)
             return;
         if (t->sock.tcp.dup_acks < 255)
             t->sock.tcp.dup_acks++;

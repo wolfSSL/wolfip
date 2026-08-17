@@ -6278,6 +6278,9 @@ START_TEST(test_regression_fast_recovery_cwnd_ssthresh_rfc5681)
     ts->sock.tcp.ssthresh = 20 * smss;
     ts->sock.tcp.peer_rwnd = 20 * smss;
     ts->sock.tcp.bytes_in_flight = flight_size;
+    /* The peer has advertised this window since the handshake, so the
+     * phase-1 ACKs repeat it rather than establish it. */
+    ts->sock.tcp.last_peer_win = 65535;
 
     queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
