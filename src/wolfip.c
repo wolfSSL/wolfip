@@ -838,20 +838,18 @@ static uint32_t wolfip_filter_mask_tcp;
 static uint32_t wolfip_filter_mask_udp;
 static uint32_t wolfip_filter_mask_icmp;
 static int wolfip_filter_lock;
-/* Set while a callback is registered and every reason mask is still at its
- * zero default; cleared by the first explicit mask configuration. Until
- * cleared, dispatch consults the callback for every reason so a freshly
+/* Set by the first explicit mask configuration (any value, including 0)
+ * after the last uninstall; reset by uninstalling the callback. While
+ * unset, dispatch consults the callback for every reason so a freshly
  * installed filter cannot fail open. */
 static int wolfip_filter_mask_touched;
 
 void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg)
 {
+    if (cb == NULL)
+        wolfip_filter_mask_touched = 0;
     wolfip_filter_cb = cb;
     wolfip_filter_arg = arg;
-    wolfip_filter_mask_touched = (cb == NULL) || (wolfip_filter_mask != 0) ||
-            (wolfip_filter_mask_eth != 0) || (wolfip_filter_mask_ip != 0) ||
-            (wolfip_filter_mask_tcp != 0) || (wolfip_filter_mask_udp != 0) ||
-            (wolfip_filter_mask_icmp != 0);
 }
 
 void wolfIP_filter_set_mask(uint32_t mask)

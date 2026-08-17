@@ -233,29 +233,33 @@ START_TEST(test_filter_dispatch_mask_not_set)
 }
 END_TEST
 
-/* A freshly registered callback must not fail open: while every reason
- * mask is still at its zero default, dispatch consults the callback for
- * every reason; the first explicit mask configuration (even a zero mask)
- * switches to the configured reasons only. */
+/* A freshly installed callback must not fail open: with no explicit mask
+ * configuration since the last uninstall, dispatch consults the callback
+ * for every reason; any explicit mask configuration (even a zero mask,
+ * even one made before installing the callback) switches to the
+ * configured reasons only. */
 START_TEST(test_filter_fresh_callback_consulted_before_mask_configured)
 {
     struct wolfIP s;
     struct wolfIP_filter_metadata meta;
 
     memset(&s, 0, sizeof(s));
-    wolfIP_filter_set_callback(NULL, NULL);
+    /* Clear stale masks from other tests, then return to the initial
+     * state: uninstall resets the all-reasons default. */
     wolfIP_filter_set_mask(0);
     wolfIP_filter_set_eth_mask(0);
     wolfIP_filter_set_ip_mask(0);
     wolfIP_filter_set_tcp_mask(0);
     wolfIP_filter_set_udp_mask(0);
     wolfIP_filter_set_icmp_mask(0);
-
-    filter_cb_calls = 0;
-    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_callback(NULL, NULL);
 
     wolfIP_filter_init_metadata(&meta);
     meta.ip_proto = WOLFIP_FILTER_PROTO_TCP;
+
+    /* Fresh install, no mask configuration: consulted for all reasons. */
+    filter_cb_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
     wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
     ck_assert_int_eq(filter_cb_calls, 1);
 
@@ -268,6 +272,15 @@ START_TEST(test_filter_fresh_callback_consulted_before_mask_configured)
     /* An explicit empty mask silences the filter. */
     wolfIP_filter_set_mask(0);
     filter_cb_calls = 0;
+    wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
+    ck_assert_int_eq(filter_cb_calls, 0);
+
+    /* Explicit zero configured *before* installing the callback must be
+     * honored, not overridden by the all-reasons default. */
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+    filter_cb_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
     wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
     ck_assert_int_eq(filter_cb_calls, 0);
 
