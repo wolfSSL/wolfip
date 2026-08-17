@@ -3346,6 +3346,109 @@ START_TEST(test_dhcp_parse_offer_option_overload)
     ck_assert_uint_eq(s.ipconf[TEST_PRIMARY_IF].mask, 0xFFFFFF00U);
 }
 END_TEST
+
+/* An option split across a region boundary is a continuation of the
+ * option stream (RFC 2132 §9.3), not the start of a new option list:
+ * the server id must be parsed across the split in each boundary
+ * shape. */
+START_TEST(test_dhcp_parse_offer_option_split_across_region_boundary)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    uint8_t *opt;
+    uint8_t *sn;
+    uint8_t *fl;
+    uint32_t opt_len;
+    int ret;
+
+    /* --- Scenario 1: the server id's code byte is the last byte of
+     * the options field; its length, data and END continue in sname. --- */
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 2;
+    opt += 3;
+    *opt++ = DHCP_OPTION_SERVER_ID;  /* last byte of the options field */
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    sn = (uint8_t *)msg.sname;
+    sn[0] = 4; /* length continues in sname */
+    sn[1] = 0x0A; sn[2] = 0x00; sn[3] = 0x00; sn[4] = 0x64;
+    sn[5] = DHCP_OPTION_END;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+    ck_assert_uint_eq(s.dhcp_ip, 0x0A00000AU);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+
+    /* --- Scenario 2: code + length are the last two bytes of the
+     * options field; the four data bytes split 2 + 2 into sname. --- */
+    memset(&s, 0, sizeof(s));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 2;
+    opt += 3;
+    *opt++ = DHCP_OPTION_SERVER_ID;
+    *opt++ = 4; /* last two bytes of the options field */
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    sn = (uint8_t *)msg.sname;
+    sn[0] = 0x0A; sn[1] = 0x00; /* first half of the data */
+    sn[2] = 0x00; sn[3] = 0x64; /* second half */
+    sn[4] = DHCP_OPTION_END;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+
+    /* --- Scenario 3: overload = both; the server id starts at the
+     * end of sname (pads precede it) and its data runs into file. --- */
+    memset(&s, 0, sizeof(s));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 3;
+    opt += 3;
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    sn = (uint8_t *)msg.sname;
+    fl = (uint8_t *)msg.file;
+    sn[60] = DHCP_OPTION_SERVER_ID; sn[61] = 4;
+    sn[62] = 0x0A; sn[63] = 0x00; /* data starts in sname */
+    fl[0] = 0x00; fl[1] = 0x64;   /* ...and ends in file */
+    fl[2] = DHCP_OPTION_END;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+}
+END_TEST
 START_TEST(test_fifo_push_and_pop) {
     struct fifo f;
     struct pkt_desc *desc, *desc2;

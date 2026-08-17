@@ -294,6 +294,101 @@ START_TEST(test_ip_recv_forward_static_route_uses_gateway)
 }
 END_TEST
 
+/* A transit packet whose only matching static route points back at the
+ * ingress interface must be dropped (hairpin), not forwarded back onto
+ * the interface it arrived on. */
+START_TEST(test_ip_recv_forward_static_route_hairpin_dropped)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint16_t *udp;
+    ip4 primary_ip   = 0x0A000001U;   /* 10.0.0.1 on if1 (ingress) */
+    ip4 secondary_ip = 0xC0A80101U;   /* 192.168.1.1 on if2 */
+    ip4 dest_ip      = 0x0A020005U;   /* 10.2.0.5 — route on if1 only */
+    ip4 src_ip       = 0x0A000002U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_PRIMARY_IF, 0x0A020000U, 24,
+                                      IPADDR_ANY), 0);
+
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+    udp = (uint16_t *)(frame + ETH_HEADER_LEN + IP_HEADER_LEN);
+    udp[0] = ee16(9999); udp[1] = ee16(53);
+    udp[2] = ee16(UDP_HEADER_LEN); udp[3] = 0;
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* The route matches but points at the ingress interface: drop. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* A 0.0.0.0/0 default route must catch transit destinations that no
+ * connected subnet covers and forward them via the route's gateway. */
+START_TEST(test_ip_recv_forward_static_route_default)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    struct wolfIP_ip_packet *sent;
+    uint16_t *udp;
+    ip4 primary_ip   = 0x0A000001U;   /* 10.0.0.1  on if1 */
+    ip4 secondary_ip = 0xC0A80101U;   /* 192.168.1.1 on if2 */
+    ip4 dest_ip      = 0x08080808U;   /* 8.8.8.8 — default route only */
+    ip4 src_ip       = 0x0A000002U;
+    ip4 gw_ip        = 0xC0A801FEU;   /* 192.168.1.254, route gateway */
+    static const uint8_t gw_mac[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_SECOND_IF, 0x00000000U, 0,
+                                      gw_ip), 0);
+
+    /* ARP is known for the gateway. */
+    arp_store_neighbor(&s, TEST_SECOND_IF, gw_ip, gw_mac);
+
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+    udp = (uint16_t *)(frame + ETH_HEADER_LEN + IP_HEADER_LEN);
+    udp[0] = ee16(9999); udp[1] = ee16(53);
+    udp[2] = ee16(UDP_HEADER_LEN); udp[3] = 0;
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Forwarded out if2 to the gateway, IP dst preserved, TTL 63. */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_mem_eq(last_frame_sent + 0, gw_mac, 6);
+    sent = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_uint_eq(ee32(sent->dst), dest_ip);
+    ck_assert_uint_eq(sent->ttl, 63);
+}
+END_TEST
+
 /* The declared IPv4 total length must match the bytes actually received:
  * a frame whose header claims more payload than it carries is dropped
  * (it must not be relayed with an inconsistent length), and a frame with

@@ -525,6 +525,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_send_query_rejects_empty_labels);
     tcase_add_test(tc_utils, test_dns_callback_rejects_a_record_with_wrong_rdlength);
     tcase_add_test(tc_utils, test_dhcp_parse_offer_option_overload);
+    tcase_add_test(tc_utils,
+                   test_dhcp_parse_offer_option_split_across_region_boundary);
     tcase_add_test(tc_utils, test_dhcp_discover_first_retry_delay_rfc2131);
     tcase_add_test(tc_utils, test_dhcp_discover_retry_delay_small_base_no_underflow);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
@@ -1414,6 +1416,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_ip_recv_ipaddr_any_dst_is_local);
     tcase_add_test(tc_core, test_ip_recv_forward_arp_hit_sends_immediately);
     tcase_add_test(tc_core, test_ip_recv_forward_static_route_uses_gateway);
+    tcase_add_test(tc_core, test_ip_recv_forward_static_route_hairpin_dropped);
+    tcase_add_test(tc_core, test_ip_recv_forward_static_route_default);
     tcase_add_test(tc_core, test_ip_recv_forward_declared_length_checked);
     tcase_add_test(tc_core, test_ip_recv_forward_unconfigured_iface_skipped);
     tcase_add_test(tc_core, test_ip_recv_forward_link_local_src_rpf_drop);

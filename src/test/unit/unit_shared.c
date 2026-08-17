@@ -114,6 +114,9 @@ void mock_link_capture_reset(void)
     last_frame_sent_size = 0;
     last_frame_sent_count = 0;
     mock_sent_frames_count = 0;
+    /* Disarm so a test that fails before consuming the flag cannot
+     * poison the next transmit in a later test. */
+    mock_send_eagain_armed = 0;
 }
 
 static int mock_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
