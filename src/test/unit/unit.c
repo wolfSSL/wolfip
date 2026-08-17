@@ -534,6 +534,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_tcp_noop);
     tcase_add_test(tc_utils, test_tcp_rto_cb_non_established_noop);
     tcase_add_test(tc_utils, test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer);
+    tcase_add_test(tc_utils, test_tcp_syn_retransmit_duration_meets_rfc9293_r2);
     tcase_add_test(tc_utils, test_tcp_input_synack_cancels_control_rto);
     tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_requeues_finack_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_full_txbuf_keeps_retry_budget);

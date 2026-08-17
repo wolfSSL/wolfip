@@ -148,7 +148,12 @@ struct wolfIP_icmp_packet;
 /* Compatibility alias for legacy fixed-size uses. */
 #define TCP_MSS TCP_MSS_MAX
 #define TCP_DEFAULT_MSS 536U
-#define TCP_CTRL_RTO_MAXRTX 6U
+/* Control-segment (SYN/SYN-ACK/FIN) retry budget. RFC 9293 §3.5 gives the
+ * R2 retransmission timeout for SYN and FIN segments a 3-minute default,
+ * so the retry schedule must accumulate at least 180 s: with the 1 s base
+ * RTO and the 64 s backoff cap the arms are 1,2,4,8,16,32,64,64,64 = 255 s
+ * before the 8th timeout gives up. */
+#define TCP_CTRL_RTO_MAXRTX 8U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
 #ifdef IP_MULTICAST

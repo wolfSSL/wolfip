@@ -3684,6 +3684,59 @@ START_TEST(test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer)
 }
 END_TEST
 
+/* RFC 9293 §3.5: the R2 retransmission timeout for SYN segments defaults
+ * to 3 minutes, so an unanswered active-open SYN must not be abandoned
+ * before 180 s have elapsed. */
+START_TEST(test_tcp_syn_retransmit_duration_meets_rfc9293_r2)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint64_t expiry = 0;
+    int found = 0;
+    int iterations = 0;
+    int i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.rto = TCP_RTO_MIN_MS;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* The first SYN went out at t=0 with the control RTO armed. */
+    s.last_tick = 0;
+    tcp_ctrl_rto_start(ts, 0);
+
+    /* No answer ever arrives: drive the retransmission timer until the
+     * stack gives up. */
+    while (ts->sock.tcp.state == TCP_SYN_SENT && iterations < 64) {
+        expiry = 0;
+        found = 0;
+        for (i = 0; i < (int)s.timers.size; i++) {
+            if (s.timers.timers[i].id == ts->sock.tcp.tmr_rto) {
+                expiry = s.timers.timers[i].expires;
+                found = 1;
+                break;
+            }
+        }
+        ck_assert_int_eq(found, 1);
+        s.last_tick = expiry;
+        tcp_rto_cb(ts);
+        iterations++;
+    }
+
+    ck_assert_int_ne(ts->sock.tcp.state, TCP_SYN_SENT);
+    ck_assert_uint_ge(s.last_tick, 180000);
+}
+END_TEST
+
 START_TEST(test_tcp_input_synack_cancels_control_rto)
 {
     struct wolfIP s;
