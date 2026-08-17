@@ -523,6 +523,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_send_query_invalid_name);
     tcase_add_test(tc_utils, test_dns_send_query_rejects_empty_labels);
     tcase_add_test(tc_utils, test_dns_callback_rejects_a_record_with_wrong_rdlength);
+    tcase_add_test(tc_utils, test_dhcp_parse_offer_option_overload);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
     tcase_add_test(tc_utils, test_wolfip_ip_is_multicast_variants);

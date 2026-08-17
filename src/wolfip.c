@@ -1061,6 +1061,7 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
 #define DHCP_OPTION_MSG_TYPE 53
+#define DHCP_OPTION_OVERLOAD 52
 #define DHCP_OPTION_SUBNET_MASK 1
 #define DHCP_OPTION_ROUTER 3
 #define DHCP_OPTION_DNS 6
@@ -8092,10 +8093,120 @@ static void dhcp_deconfigure_lease(struct wolfIP *s)
  */
 #define DHCP_DEFAULT_24BIT_NETMASK (0xFFFFFF00u)
 
+/* Iterator over a DHCP reply's option stream.
+ *
+ * RFC 2132 §9.3: option 52 (Overload) tells the client that the reply's
+ * sname (value bit 2) and/or file (value bit 1) fields carry additional
+ * options, interpreted after the standard options field is exhausted.
+ * The stream is therefore scanned options -> sname -> file (wire order),
+ * each region with its own bounds, and ends at option 255 or when the
+ * last active region runs out. Non-overloaded sname/file fields hold
+ * plain strings (TFTP server, bootfile) and are never scanned. */
+struct dhcp_opt_stream {
+    uint8_t *ptr;
+    uint8_t *end;
+    uint8_t *region_sname;
+    uint8_t *region_sname_end;
+    uint8_t *region_file;
+    uint8_t *region_file_end;
+    uint8_t region;  /* 0 options, 1 sname, 2 file */
+    uint8_t overload;
+    int strict;      /* -1 on malformed, or treat as end of stream */
+};
+
+static void dhcp_opt_stream_init(struct dhcp_opt_stream *st,
+                                 struct dhcp_msg *msg, uint32_t msg_len,
+                                 int strict)
+{
+    uint32_t opt_space = msg_len - DHCP_HEADER_LEN;
+    if (opt_space > sizeof(msg->options))
+        opt_space = sizeof(msg->options);
+    st->ptr = (uint8_t *)msg->options;
+    st->end = st->ptr + opt_space;
+    st->region_sname = (uint8_t *)msg->sname;
+    st->region_sname_end = st->region_sname + sizeof(msg->sname);
+    st->region_file = (uint8_t *)msg->file;
+    st->region_file_end = st->region_file + sizeof(msg->file);
+    st->region = 0;
+    st->overload = 0;
+    st->strict = strict;
+}
+
+/* Return 1 with the out-params set to the next option (option 255 is
+ * delivered as code 255, len 0), 0 at end of stream (option 255 consumed
+ * or every active region exhausted without END), or -1 on malformed
+ * options in strict mode (non-strict callers get 0 instead). */
+static int dhcp_opt_stream_next(struct dhcp_opt_stream *st, uint8_t *code,
+                                uint8_t *len, uint8_t **data)
+{
+    while (1) {
+        uint8_t c;
+        uint8_t l;
+        if (st->ptr + 1 > st->end)
+            goto region_end;
+        c = st->ptr[0];
+        if (c == DHCP_OPTION_END) {
+            *code = c;
+            *len = 0;
+            *data = st->ptr;
+            st->ptr = st->end; /* stream ends here */
+            return 1;
+        }
+        if (c == 0) { /* Pad */
+            st->ptr++;
+            continue;
+        }
+        if (st->ptr + 2 > st->end)
+            goto region_end;
+        l = st->ptr[1];
+        if (st->ptr + 2 + l > st->end)
+            goto region_end;
+        if (st->region == 0 && c == DHCP_OPTION_OVERLOAD) {
+            /* RFC 2132 §9.3: length 1, values 1 (file), 2 (sname), 3. */
+            if (l != 1 || st->ptr[2] < 1 || st->ptr[2] > 3)
+                goto region_end;
+            st->overload = st->ptr[2];
+        }
+        *code = c;
+        *len = l;
+        /* Points at the option's code byte, so callers may cast it to
+         * struct dhcp_option * (whose data[] member starts 2 bytes in). */
+        *data = st->ptr;
+        st->ptr += 2 + l;
+        return 1;
+region_end:
+        /* Region exhausted without END: continue into the overloaded
+         * fields (sname, then file) if option 52 selected them. */
+        if (st->region == 0) {
+            if (st->overload & 2) {
+                st->region = 1;
+                st->ptr = st->region_sname;
+                st->end = st->region_sname_end;
+                continue;
+            }
+            if (st->overload & 1) {
+                st->region = 2;
+                st->ptr = st->region_file;
+                st->end = st->region_file_end;
+                continue;
+            }
+        } else if (st->region == 1) {
+            if (st->overload & 1) {
+                st->region = 2;
+                st->ptr = st->region_file;
+                st->end = st->region_file_end;
+                continue;
+            }
+        }
+        if (st->strict)
+            return -1;
+        return 0;
+    }
+}
+
 static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
-    uint8_t *opt = (uint8_t *)msg->options;
-    uint8_t *opt_end;
+    struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
     uint32_t ip;
@@ -8109,66 +8220,48 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
         return -1;
     if (ee32(msg->xid) != s->dhcp_xid)
         return -1;
-    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
-        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
-    else
-        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
-    while (opt < opt_end) {
+    dhcp_opt_stream_init(&st, msg, msg_len, 1);
+    while (1) {
         uint8_t code;
         uint8_t len;
-        if (opt + 1 > opt_end)
+        uint8_t *data;
+        int r = dhcp_opt_stream_next(&st, &code, &len, &data);
+        if (r < 0)
+            return -1;
+        if (r == 0)
             break;
-        code = opt[0];
         if (code == DHCP_OPTION_END) {
             saw_end = 1;
             break;
         }
-        if (code == 0) { /* Pad */
-            opt++;
-            continue;
-        }
-        if (opt + 2 > opt_end)
-            return -1;
-        len = opt[1];
-        if (opt + 2 + len > opt_end)
-            return -1;
         if (code == DHCP_OPTION_MSG_TYPE) {
             if (len != 1)
                 return -1;
-            if (opt[2] == DHCP_OFFER) {
-                opt += 2 + len;
-                saw_end = 0;
-                while (opt < opt_end) {
-                    struct dhcp_option *inner;
-                    if (opt + 1 > opt_end)
+            if (data[2] == DHCP_OFFER) {
+                while (1) {
+                    uint8_t *idata;
+                    r = dhcp_opt_stream_next(&st, &code, &len, &idata);
+                    if (r < 0)
+                        return -1;
+                    if (r == 0)
                         break;
-                    code = opt[0];
                     if (code == DHCP_OPTION_END) {
                         saw_end = 1;
                         break;
                     }
-                    if (code == 0) {
-                        opt++;
-                        continue;
-                    }
-                    if (opt + 2 > opt_end)
-                        return -1;
-                    len = opt[1];
-                    if (opt + 2 + len > opt_end)
-                        return -1;
-                    inner = (struct dhcp_option *)opt;
                     if (code == DHCP_OPTION_SERVER_ID) {
                         if (len < 4)
                             return -1;
-                        s->dhcp_server_ip = DHCP_OPT_data_to_u32(inner);
+                        s->dhcp_server_ip =
+                            DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                         saw_server_id = 1;
                     }
                     if (code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
-                        netmask = DHCP_OPT_data_to_u32(inner);
+                        netmask =
+                            DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     }
-                    opt += 2 + len;
                 }
                 if (!saw_end || !saw_server_id)
                     return -1;
@@ -8183,7 +8276,6 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                 return 0;
             }
         }
-        opt += 2 + len;
     }
     if (!saw_end)
         return -1;
@@ -8198,8 +8290,10 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
 /* Return the DHCP message type from a validated message, or -1 on error. */
 static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
-    uint8_t *opt = (uint8_t *)msg->options;
-    uint8_t *opt_end;
+    struct dhcp_opt_stream st;
+    uint8_t code;
+    uint8_t len;
+    uint8_t *data;
     int msg_type = -1;
     int saw_server_id = 0;
     uint32_t server_id = 0;
@@ -8211,31 +8305,18 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
         return -1;
     if (msg->op != BOOT_REPLY)
         return -1;
-    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
-        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
-    else
-        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
-    while (opt < opt_end) {
-        uint8_t code = opt[0];
-        uint8_t len;
+    /* Non-strict: a truncated option stream ends the scan instead of
+     * failing the message. */
+    dhcp_opt_stream_init(&st, msg, msg_len, 0);
+    while (dhcp_opt_stream_next(&st, &code, &len, &data) == 1) {
         if (code == DHCP_OPTION_END)
             break;
-        if (code == 0) {
-            opt++;
-            continue;
-        }
-        if (opt + 2 > opt_end)
-            break;
-        len = opt[1];
-        if (opt + 2 + len > opt_end)
-            break;
         if (code == DHCP_OPTION_MSG_TYPE && len == 1) {
-            msg_type = opt[2];
+            msg_type = data[2];
         } else if (code == DHCP_OPTION_SERVER_ID && len >= 4) {
-            server_id = DHCP_OPT_data_to_u32((struct dhcp_option *)opt);
+            server_id = DHCP_OPT_data_to_u32((struct dhcp_option *)data);
             saw_server_id = 1;
         }
-        opt += 2 + len;
     }
     /* Reject a reply that does not carry the server identifier of the
      * server we committed to during the OFFER phase. */
@@ -8247,8 +8328,7 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
 
 static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
-    uint8_t *opt = (uint8_t *)msg->options;
-    uint8_t *opt_end;
+    struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
@@ -8263,99 +8343,79 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         return -1;
     if (ee32(msg->xid) != s->dhcp_xid)
         return -1;
-    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
-        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
-    else
-        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
-    while (opt < opt_end) {
+    dhcp_opt_stream_init(&st, msg, msg_len, 1);
+    while (1) {
         uint8_t code;
         uint8_t len;
-        if (opt + 1 > opt_end)
+        uint8_t *data;
+        int r = dhcp_opt_stream_next(&st, &code, &len, &data);
+        if (r < 0)
+            return -1;
+        if (r == 0)
             break;
-        code = opt[0];
         if (code == DHCP_OPTION_END) {
             saw_end = 1;
             break;
         }
-        if (code == 0) { /* Pad */
-            opt++;
-            continue;
-        }
-        if (opt + 2 > opt_end)
-            return -1;
-        len = opt[1];
-        if (opt + 2 + len > opt_end)
-            return -1;
         if (code == DHCP_OPTION_MSG_TYPE) {
             if (len != 1)
                 return -1;
-            if (opt[2] == DHCP_ACK) {
-                opt += 2 + len;
-                saw_end = 0;
-                while (opt < opt_end) {
-                    struct dhcp_option *inner;
-                    uint32_t data;
-                    if (opt + 1 > opt_end)
+            if (data[2] == DHCP_ACK) {
+                while (1) {
+                    uint8_t *idata;
+                    uint32_t val;
+                    r = dhcp_opt_stream_next(&st, &code, &len, &idata);
+                    if (r < 0)
+                        return -1;
+                    if (r == 0)
                         break;
-                    code = opt[0];
                     if (code == DHCP_OPTION_END) {
                         saw_end = 1;
                         break;
                     }
-                    if (code == 0) {
-                        opt++;
-                        continue;
-                    }
-                    if (opt + 2 > opt_end)
-                        return -1;
-                    len = opt[1];
-                    if (opt + 2 + len > opt_end)
-                        return -1;
-                    inner = (struct dhcp_option *)opt;
                     if (code == DHCP_OPTION_SERVER_ID) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                         /* Reject ACK from a server other than the one
                          * we committed to during the OFFER phase. */
-                        if (s->dhcp_server_ip != 0 && data != s->dhcp_server_ip)
+                        if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip)
                             return -1;
-                        s->dhcp_server_ip = data;
+                        s->dhcp_server_ip = val;
                         saw_server_id = 1;
                     } else if (primary && code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        primary->ip = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        primary->ip = val;
                     } else if (primary && code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        primary->mask = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        primary->mask = val;
                     } else if (primary && code == DHCP_OPTION_ROUTER) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        primary->gw = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        primary->gw = val;
                     } else if ((code == DHCP_OPTION_DNS) && (s->dns_server == 0)) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        s->dns_server = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        s->dns_server = val;
                     } else if (code == DHCP_OPTION_LEASE_TIME) {
                         if (len < 4)
                             return -1;
-                        lease_s = DHCP_OPT_data_to_u32(inner);
+                        lease_s = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     } else if (code == DHCP_OPTION_RENEWAL_TIME) {
                         if (len < 4)
                             return -1;
-                        renew_s = DHCP_OPT_data_to_u32(inner);
+                        renew_s = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     } else if (code == DHCP_OPTION_REBIND_TIME) {
                         if (len < 4)
                             return -1;
-                        rebind_s = DHCP_OPT_data_to_u32(inner);
+                        rebind_s = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     }
-                    opt += 2 + len;
                 }
                 if (!saw_end)
                     return -1;
@@ -8372,9 +8432,8 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                     return 0;
                 }
             }
-            break;
+            break; /* the message type was seen; nothing else to scan */
         }
-        opt += 2 + len;
     }
     return -1;
 }
