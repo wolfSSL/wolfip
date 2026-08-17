@@ -10187,8 +10187,19 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
             tok_end++;
         }
         label_len = (uint32_t)(tok_end - tok_start);
-        if (label_len > MAX_DNS_LABEL_LEN) return -22;
-        if (tok_len + label_len + 1 > MAX_DNS_NAME_LEN) return -22;
+        if (label_len > MAX_DNS_LABEL_LEN) {
+            /* Unencodable name: roll back the armed query state, or every
+             * later lookup would fail the busy guard with no timer to
+             * clear it. */
+            dns_abort_query(s);
+            *id = DNS_ID_NONE;
+            return -22;
+        }
+        if (tok_len + label_len + 1 > MAX_DNS_NAME_LEN) {
+            dns_abort_query(s);
+            *id = DNS_ID_NONE;
+            return -22;
+        }
         *q_name = (char)label_len;
         q_name++;
         memcpy(q_name, tok_start, label_len);

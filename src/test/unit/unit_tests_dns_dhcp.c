@@ -3052,8 +3052,10 @@ START_TEST(test_dns_send_query_invalid_name)
     memcpy(name + 65, "com", 3);
     name[68] = 0;
     ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+    /* The failed encode must not leave the resolver armed. */
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
 
-    s.dns_id = 0;
     memset(name, 'a', sizeof(name));
     pos = 0;
     memset(name + pos, 'a', 63);
@@ -3069,6 +3071,14 @@ START_TEST(test_dns_send_query_invalid_name)
     pos += 63;
     name[pos] = 0;
     ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+
+    /* A subsequent lookup must not be blocked by the failed ones. */
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+    ck_assert_uint_ne(s.dns_id, 0);
+    dns_abort_query(&s);
+    ck_assert_uint_eq(s.dns_id, 0);
 }
 END_TEST
 START_TEST(test_fifo_push_and_pop) {
