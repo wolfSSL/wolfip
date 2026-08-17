@@ -7928,6 +7928,21 @@ static uint64_t dhcp_backoff_delay(const struct wolfIP *s, uint32_t base_ms)
     return delay;
 }
 
+/* DHCPDISCOVER retry delay: the backoff base with the RFC's uniform
+ * ±1 s jitter centered on it. When the configured base is smaller than
+ * the jitter half-window the window is anchored at zero instead, so a
+ * small base cannot underflow into a far-future retry. */
+static uint64_t dhcp_discover_retry_delay(const struct wolfIP *s,
+                                          uint32_t base_ms)
+{
+    uint64_t base = dhcp_backoff_delay(s, base_ms);
+    uint64_t jitter = wolfIP_getrandom() % (2U * DHCP_DISCOVER_JITTER_MS + 1U);
+
+    base = (base > DHCP_DISCOVER_JITTER_MS) ?
+            base - DHCP_DISCOVER_JITTER_MS : 0U;
+    return base + jitter;
+}
+
 static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
 {
     uint64_t next;
@@ -8671,9 +8686,7 @@ static int dhcp_send_discover(struct wolfIP *s)
      * is 4 s, randomized uniformly by plus or minus 1 s; the base doubles
      * per attempt. */
     dhcp_schedule_timer_at(s, s->last_tick +
-            dhcp_backoff_delay(s, DHCP_DISCOVER_TIMEOUT) -
-            DHCP_DISCOVER_JITTER_MS +
-            (wolfIP_getrandom() % (2U * DHCP_DISCOVER_JITTER_MS + 1U)));
+            dhcp_discover_retry_delay(s, DHCP_DISCOVER_TIMEOUT));
     s->dhcp_state = DHCP_DISCOVER_SENT;
     return 0;
 }

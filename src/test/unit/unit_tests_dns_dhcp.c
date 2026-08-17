@@ -1159,6 +1159,28 @@ START_TEST(test_dhcp_discover_first_retry_delay_rfc2131)
 }
 END_TEST
 
+/* A configured discover base smaller than the jitter half-window must not
+ * underflow the centered jitter window (which would schedule the retry
+ * far in the future). */
+START_TEST(test_dhcp_discover_retry_delay_small_base_no_underflow)
+{
+    struct wolfIP s;
+    uint64_t delay;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* Default base: 4 s ± 1 s window. */
+    delay = dhcp_discover_retry_delay(&s, 4000U);
+    ck_assert_uint_ge(delay, 3000U);
+    ck_assert_uint_le(delay, 5000U);
+
+    /* Base below the jitter half-window stays bounded. */
+    delay = dhcp_discover_retry_delay(&s, 200U);
+    ck_assert_uint_le(delay, 2000U);
+}
+END_TEST
+
 
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
