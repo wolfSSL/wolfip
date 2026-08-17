@@ -2673,6 +2673,51 @@ START_TEST(test_tcp_connect_syn_advertises_interface_mss)
 }
 END_TEST
 
+/* A TCP active OPEN has no defined destination semantics for broadcast or
+ * multicast addresses (multiple hosts would answer one SYN; there is no
+ * single peer for a group). connect() must reject them before mutating the
+ * socket, the same way the inbound SYN path rejects such sources. */
+START_TEST(test_tcp_connect_rejects_broadcast_multicast_dest)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5004);
+
+    /* Limited broadcast. */
+    sin.sin_addr.s_addr = ee32(0xFFFFFFFFU);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(ts->remote_ip, 0U);
+
+    /* All-hosts multicast group. */
+    sin.sin_addr.s_addr = ee32(0xE0000001U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(ts->remote_ip, 0U);
+
+    /* The socket is reusable: a unicast destination still proceeds. */
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
 START_TEST(test_tcp_connect_syn_limits_options_to_small_mtu)
 {
     struct wolfIP s;

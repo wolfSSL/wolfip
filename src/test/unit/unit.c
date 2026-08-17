@@ -638,6 +638,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_peer_rwnd_growth_sets_writable);
     tcase_add_test(tc_utils, test_tcp_input_synack_negotiates_peer_mss);
     tcase_add_test(tc_utils, test_tcp_connect_syn_advertises_interface_mss);
+    tcase_add_test(tc_utils, test_tcp_connect_rejects_broadcast_multicast_dest);
     tcase_add_test(tc_utils, test_tcp_connect_syn_limits_options_to_small_mtu);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_respects_negotiated_peer_mss);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_defaults_to_rfc_mss_when_unset_by_peer);

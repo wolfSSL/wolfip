@@ -6003,6 +6003,14 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         uint8_t new_if_idx;
         ip4 new_local_ip;
 
+        /* A TCP connection is a single peer: broadcast destinations get
+         * answers from every host on the segment and multicast groups have
+         * no single peer, so an active OPEN to either is invalid. Reject
+         * before mutating the socket, mirroring the inbound SYN filter. */
+        if (wolfIP_ip_is_broadcast(s, new_remote_ip) ||
+                wolfIP_ip_is_multicast(new_remote_ip))
+            return -WOLFIP_EINVAL;
+
         /* Resolve and validate the local binding into locals before mutating
          * the socket. A failed validation here must not leave the socket in
          * TCP_SYN_SENT (no SYN queued, no RTO timer), which would make every
