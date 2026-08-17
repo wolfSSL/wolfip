@@ -838,41 +838,56 @@ static uint32_t wolfip_filter_mask_tcp;
 static uint32_t wolfip_filter_mask_udp;
 static uint32_t wolfip_filter_mask_icmp;
 static int wolfip_filter_lock;
+/* Set while a callback is registered and every reason mask is still at its
+ * zero default; cleared by the first explicit mask configuration. Until
+ * cleared, dispatch consults the callback for every reason so a freshly
+ * installed filter cannot fail open. */
+static int wolfip_filter_mask_touched;
 
 void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg)
 {
     wolfip_filter_cb = cb;
     wolfip_filter_arg = arg;
+    wolfip_filter_mask_touched = (cb == NULL) || (wolfip_filter_mask != 0) ||
+            (wolfip_filter_mask_eth != 0) || (wolfip_filter_mask_ip != 0) ||
+            (wolfip_filter_mask_tcp != 0) || (wolfip_filter_mask_udp != 0) ||
+            (wolfip_filter_mask_icmp != 0);
 }
 
 void wolfIP_filter_set_mask(uint32_t mask)
 {
     wolfip_filter_mask = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_eth_mask(uint32_t mask)
 {
     wolfip_filter_mask_eth = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_ip_mask(uint32_t mask)
 {
     wolfip_filter_mask_ip = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_tcp_mask(uint32_t mask)
 {
     wolfip_filter_mask_tcp = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_udp_mask(uint32_t mask)
 {
     wolfip_filter_mask_udp = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_icmp_mask(uint32_t mask)
 {
     wolfip_filter_mask_icmp = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 uint32_t wolfIP_filter_get_mask(void)
@@ -918,6 +933,8 @@ static int wolfIP_filter_dispatch(enum wolfIP_filter_reason reason,
         mask = wolfip_filter_mask;
     else
         mask = wolfIP_filter_mask_for_proto(meta->ip_proto);
+    if (!wolfip_filter_mask_touched)
+        mask = ~0U;
     if ((mask & (1U << reason)) == 0)
         return 0;
     if (wolfip_filter_lock)

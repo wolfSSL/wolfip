@@ -66,7 +66,27 @@ struct wolfIP_filter_event {
 
 typedef int (*wolfIP_filter_cb)(void *arg, const struct wolfIP_filter_event *event);
 
+/*
+ * Install the filter callback. The callback is only consulted for the
+ * reasons selected in the reason masks; a reason bit left clear in a
+ * configured mask means the stack silently allows that traffic (no
+ * callback, no error). To keep a freshly installed filter from failing
+ * open, a callback registered while every reason mask is still zero is
+ * consulted for all reasons until the first explicit mask configuration
+ * (wolfIP_filter_set_mask() or any per-proto setter); afterwards only
+ * the configured reasons are consulted. Passing a NULL callback
+ * uninstalls it (masks are left as configured).
+ */
 void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg);
+
+/*
+ * Select the reasons the callback is consulted for (all protocols).
+ * This is the first explicit mask configuration: it ends the
+ * all-reasons default of a freshly registered callback. Once configured,
+ * an all-zero mask disables all notifications and silently allows every
+ * packet and socket event. Per-proto masks (eth/ip/tcp/udp/icmp) take
+ * precedence over this one when non-zero.
+ */
 void wolfIP_filter_set_mask(uint32_t mask);
 void wolfIP_filter_set_eth_mask(uint32_t mask);
 void wolfIP_filter_set_ip_mask(uint32_t mask);

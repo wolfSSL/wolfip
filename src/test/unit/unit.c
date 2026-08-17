@@ -177,6 +177,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_filter_notify_tcp_metadata);
     tcase_add_test(tc_utils, test_filter_dispatch_no_callback);
     tcase_add_test(tc_utils, test_filter_dispatch_mask_not_set);
+    tcase_add_test(tc_utils, test_filter_fresh_callback_consulted_before_mask_configured);
     tcase_add_test(tc_utils, test_filter_dispatch_lock_blocks);
     tcase_add_test(tc_utils, test_filter_dispatch_meta_null_initializes);
     tcase_add_test(tc_utils, test_filter_socket_event_unknown_proto);
