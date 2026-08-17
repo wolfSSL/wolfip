@@ -3395,6 +3395,10 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     tcp->win = ee16(tcp_adv_win(t, 1));
     ip_output_add_header(t, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
             (uint16_t)(frame_len - ETH_HEADER_LEN));
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if))
+        eth_output_add_header(t->S, tx_if, t->nexthop_mac, &tcp->ip.eth, ETH_TYPE_IP);
+#endif
 
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, tcp, frame_len) != 0)
         return -1;
@@ -3914,6 +3918,10 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
 #endif
     ip_output_add_header(t, (struct wolfIP_ip_packet *)probe, WI_IPPROTO_TCP,
             (uint16_t)(IP_HEADER_LEN + TCP_HEADER_LEN + opt_len + 1));
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if))
+        eth_output_add_header(t->S, tx_if, t->nexthop_mac, &probe->ip.eth, ETH_TYPE_IP);
+#endif
 
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, probe, frame_len) != 0)
         return -1;
@@ -4431,7 +4439,6 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
                                 uint8_t proto, uint16_t len)
 {
     union transport_pseudo_header ph;
-    unsigned int if_idx;
     memset(&ph, 0, sizeof(ph));
     memset(ip, 0, sizeof(struct wolfIP_ip_packet));
     ip->src = ee32(t->local_ip);
@@ -4473,15 +4480,10 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
         icmp->csum = 0;
         icmp->csum = ee16(icmp_checksum(icmp, ee16(ph.ph.len)));
     }
-#ifdef ETHERNET
-    if_idx = wolfIP_socket_if_idx(t);
-    if (!wolfIP_ll_is_non_ethernet(t->S, if_idx)) {
-        eth_output_add_header(t->S, if_idx, t->nexthop_mac, (struct wolfIP_eth_frame *)ip,
-                              ETH_TYPE_IP);
-    }
-#else
-    (void)if_idx;
-#endif
+    /* The link-layer header is added by the caller once the egress interface
+     * and next-hop MAC are known. Datagram callers fill this in at enqueue
+     * time so a queued frame keeps the destination it was sent to; TCP fills
+     * it in per segment. */
     return 0;
 }
 
@@ -6311,6 +6313,11 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         udp->len = ee16(len + UDP_HEADER_LEN);
         udp->csum = 0;
         memcpy(udp->data, buf, len);
+        /* Pin the IP header to this datagram's destination/source while the
+         * socket's routing state still matches it; the flush only adds the
+         * link-layer header. */
+        ip_output_add_header(ts, &udp->ip, WI_IPPROTO_UDP,
+                (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, udp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
         return len;
@@ -6371,8 +6378,11 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         memcpy(frame + sizeof(struct wolfIP_ip_packet), buf, payload_len);
         if (icmp->type == ICMP_ECHO_REQUEST)
             icmp_set_echo_id(icmp, ts->src_port);
-        icmp->csum = 0;
-        icmp->csum = ee16(icmp_checksum(icmp, (uint16_t)payload_len));
+        /* Pin the IP header and ICMP checksum to this datagram's
+         * destination/source at enqueue time; the flush only adds the
+         * link-layer header. */
+        ip_output_add_header(ts, &icmp->ip, WI_IPPROTO_ICMP,
+                (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, icmp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
         return (int)payload_len;
@@ -10360,6 +10370,10 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     tcp->ack = ee32(ts->sock.tcp.ack);
                     tcp->win = ee16(tcp_adv_win(ts, 1));
                     ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
+#ifdef ETHERNET
+                    if (!wolfIP_ll_is_non_ethernet(ts->S, tx_if))
+                        eth_output_add_header(ts->S, tx_if, ts->nexthop_mac, &tcp->ip.eth, ETH_TYPE_IP);
+#endif
                     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
                         break;
                     }
@@ -10453,22 +10467,25 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
         struct tsocket *t = &socks[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
         int tx_drained = 0;
-        int len;
         while (desc) {
             struct wolfIP_ip_packet *ip =
                 (struct wolfIP_ip_packet *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
             int send_ret = 0;
+            /* The IP header was filled at enqueue time and carries this
+             * descriptor's destination; route and resolve for that address,
+             * not the socket's current one. */
+            ip4 desc_dst = ee32(ip->dst);
 #ifdef ETHERNET
-            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, t->remote_ip);
+            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, desc_dst);
             if (wolfIP_is_loopback_if(tx_if)) {
                 struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
 #ifdef IP_MULTICAST
-                if (is_udp && wolfIP_ip_is_multicast(t->remote_ip)) {
-                    mcast_ip_to_eth(t->remote_ip, t->nexthop_mac);
+                if (is_udp && wolfIP_ip_is_multicast(desc_dst)) {
+                    mcast_ip_to_eth(desc_dst, t->nexthop_mac);
                 } else
 #endif
                     if (!wolfIP_ip_is_broadcast(s, nexthop) &&
@@ -10481,8 +10498,10 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif
-            len = desc->len - ETH_HEADER_LEN;
-            ip_output_add_header(t, ip, proto, len);
+#ifdef ETHERNET
+            if (!wolfIP_ll_is_non_ethernet(s, tx_if))
+                eth_output_add_header(s, tx_if, t->nexthop_mac, &ip->eth, ETH_TYPE_IP);
+#endif
 
             if (is_udp) {
                 if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, tx_if,
@@ -10508,7 +10527,7 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
                 /* IPsec not configured on this interface.
                  * Send plaintext instead.
                  * */
-                if (esp_send(ll, ip, len) == 1)
+                if (esp_send(ll, ip, (uint16_t)(desc->len - ETH_HEADER_LEN)) == 1)
                     send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
             } else {
                 send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
@@ -10524,7 +10543,7 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
              * when a SENDING filter blocked the frame or the driver returned
              * -EAGAIN: the descriptor stays in the txbuf and every subsequent
              * wolfIP_poll() re-enters the loop and re-loops the datagram. */
-            if (is_udp && wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop)
+            if (is_udp && wolfIP_ip_is_multicast(desc_dst) && t->sock.udp.mcast_loop)
                 udp_try_recv(s, tx_if, (struct wolfIP_udp_datagram *)ip, desc->len);
 #endif
             fifo_pop(&t->sock.udp.txbuf);

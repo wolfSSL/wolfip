@@ -1778,6 +1778,72 @@ START_TEST(test_sendto_udp_txbuf_full_eagain)
 }
 END_TEST
 
+/* Queued datagram keeps its enqueue-time destination: a descriptor left in
+ * the txbuf after a failed flush must not be re-targeted to the destination
+ * of a later sendto() on the same socket. */
+START_TEST(test_udp_sendto_queued_datagram_keeps_enqueue_dst)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct wolfIP_sockaddr_in sin;
+    static const uint8_t mac_a[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    static const uint8_t mac_b[6] = {0x03, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    uint8_t payload_a[8];
+    uint8_t payload_b[8];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    /* Resolve both destinations up front so the flush does not stall on ARP. */
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, 0x0A000002U, mac_a);
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, 0x0A000003U, mac_b);
+
+    memset(payload_a, 0xA5, sizeof(payload_a));
+    memset(payload_b, 0x5A, sizeof(payload_b));
+    mock_link_capture_reset();
+    mock_send_eagain_armed = 1;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(9000);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, payload_a, sizeof(payload_a), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload_a));
+
+    /* The flush fails with -EAGAIN; the first descriptor stays queued. */
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 0U);
+
+    /* Second datagram on the same socket, different destination. */
+    sin.sin_port = ee16(9001);
+    sin.sin_addr.s_addr = ee32(0x0A000003U);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, payload_b, sizeof(payload_b), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload_b));
+
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 2U);
+
+    {
+        const struct wolfIP_ip_packet *ip0 =
+            (const struct wolfIP_ip_packet *)mock_sent_frames[0];
+        const struct wolfIP_udp_datagram *udp0 =
+            (const struct wolfIP_udp_datagram *)mock_sent_frames[0];
+        const struct wolfIP_ip_packet *ip1 =
+            (const struct wolfIP_ip_packet *)mock_sent_frames[1];
+        /* First transmitted frame is the first-enqueued datagram, carrying
+         * the destination and payload it had when it was queued. */
+        ck_assert_uint_eq(ip0->dst, ee32(0x0A000002U));
+        ck_assert_uint_eq(udp0->dst_port, ee16(9000));
+        ck_assert_mem_eq(udp0->data, payload_a, sizeof(payload_a));
+        /* Second transmitted frame is the second datagram. */
+        ck_assert_uint_eq(ip1->dst, ee32(0x0A000003U));
+    }
+}
+END_TEST
+
 /* ---- wolfIP_sock_sendto: bound_local_ip mismatch on ICMP ---- */
 
 START_TEST(test_sendto_icmp_no_remote_after_addr_zero)

@@ -1057,6 +1057,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_route_for_ip_gateway_fallback);
     tcase_add_test(tc_core, test_route_for_ip_first_non_loop_fallback);
     tcase_add_test(tc_core, test_sendto_udp_txbuf_full_eagain);
+    tcase_add_test(tc_core, test_udp_sendto_queued_datagram_keeps_enqueue_dst);
     tcase_add_test(tc_core, test_sendto_icmp_no_remote_after_addr_zero);
     tcase_add_test(tc_core, test_ip_recv_with_ip_options_strips_and_dispatches);
     tcase_add_test(tc_core, test_ip_recv_wrong_version_dropped);

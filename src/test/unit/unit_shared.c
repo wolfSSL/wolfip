@@ -81,13 +81,39 @@ static uint8_t last_frame_sent[LINK_MTU];
 static uint32_t last_frame_sent_size = 0;
 static uint32_t last_frame_sent_count = 0;
 
+/* When armed, the next send() returns -WOLFIP_EAGAIN without transmitting,
+ * leaving any in-flight descriptor queued in the socket txbuf. */
+static int mock_send_eagain_armed = 0;
+
+/* Ring of the most recent frames actually transmitted (up to 4). */
+#define MOCK_SENT_FRAMES_MAX 4
+static uint8_t mock_sent_frames[MOCK_SENT_FRAMES_MAX][LINK_MTU];
+static uint32_t mock_sent_frames_size[MOCK_SENT_FRAMES_MAX];
+static uint32_t mock_sent_frames_count = 0;
+
 static int mock_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t  len)
 {
     (void)dev;
+    if (mock_send_eagain_armed) {
+        mock_send_eagain_armed = 0;
+        return -WOLFIP_EAGAIN;
+    }
     memcpy(last_frame_sent, frame, len);
     last_frame_sent_size = len;
     last_frame_sent_count++;
+    if (mock_sent_frames_count < MOCK_SENT_FRAMES_MAX) {
+        memcpy(mock_sent_frames[mock_sent_frames_count], frame, len);
+        mock_sent_frames_size[mock_sent_frames_count] = len;
+        mock_sent_frames_count++;
+    }
     return 0;
+}
+
+void mock_link_capture_reset(void)
+{
+    last_frame_sent_size = 0;
+    last_frame_sent_count = 0;
+    mock_sent_frames_count = 0;
 }
 
 static int mock_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
