@@ -3112,6 +3112,69 @@ START_TEST(test_dns_send_query_rejects_empty_labels)
     ck_assert_uint_eq(s.dns_id, 0);
 }
 END_TEST
+
+/* RFC 1035 §3.4.1: A RDATA is exactly a 32-bit address. An A RR whose
+ * RDLENGTH is not 4 is malformed and must not be accepted as the answer;
+ * the query stays outstanding for the retry/timeout path. */
+START_TEST(test_dns_callback_rejects_a_record_with_wrong_rdlength)
+{
+    struct wolfIP s;
+    uint8_t response[192];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0x1234, dns_qname_a_com, (int)sizeof(dns_qname_a_com),
+            DNS_A);
+    s.dns_lookup_cb = test_dns_lookup_cb;
+    dns_lookup_ip = 0;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)];
+
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(s.dns_id);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = (int)sizeof(struct dns_header);
+    response[pos++] = 1; response[pos++] = 'a';
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(1);
+    pos += (int)sizeof(struct dns_question);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type = ee16(DNS_A);
+    rr->class = ee16(1);
+    rr->ttl = ee32(60);
+    rr->rdlength = ee16(5);  /* malformed: A RDATA is exactly 4 bytes */
+    pos += (int)sizeof(struct dns_rr);
+    response[pos++] = 0x0A;
+    response[pos++] = 0x00;
+    response[pos++] = 0x00;
+    response[pos++] = 0x02;
+    response[pos++] = 0x55;  /* trailing junk beyond the 4-byte address */
+
+    enqueue_udp_rx(ts, response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* Not delivered as an answer, and the query not retired. */
+    ck_assert_uint_eq(dns_lookup_ip, 0);
+    ck_assert_int_ne(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_uint_ne(s.dns_id, 0);
+    dns_abort_query(&s);
+}
+END_TEST
 START_TEST(test_fifo_push_and_pop) {
     struct fifo f;
     struct pkt_desc *desc, *desc2;

@@ -10122,7 +10122,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 if (s->dns_query_type == DNS_QUERY_TYPE_A &&
                         ee16(rr->type) == DNS_A &&
                         ee16(rr->class) == DNS_CLASS_IN &&
-                        rdlen >= DNS_IPV4_RDATA_LEN) {
+                        rdlen == DNS_IPV4_RDATA_LEN) {
                     uint32_t ip;
                     ip = get_be32((const uint8_t *)buf + pos);
                     if (s->dns_lookup_cb)
