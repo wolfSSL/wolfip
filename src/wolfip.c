@@ -10187,6 +10187,16 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
             tok_end++;
         }
         label_len = (uint32_t)(tok_end - tok_start);
+        if (label_len == 0) {
+            /* A zero-length label is the wire-format root terminator
+             * (RFC 1035 §3.1), only legal at the end of the name. The
+             * trailing-dot presentation form ends the loop before an
+             * empty token is encoded, so any zero-length label here is
+             * a leading or interior dot: invalid. */
+            dns_abort_query(s);
+            *id = DNS_ID_NONE;
+            return -22;
+        }
         if (label_len > MAX_DNS_LABEL_LEN) {
             /* Unencodable name: roll back the armed query state, or every
              * later lookup would fail the busy guard with no timer to

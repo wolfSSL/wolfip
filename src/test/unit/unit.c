@@ -521,6 +521,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dns_abort_query_clears_timer_and_query_state);
     tcase_add_test(tc_utils, test_dns_timeout_retries_then_aborts_and_allows_new_query);
     tcase_add_test(tc_utils, test_dns_send_query_invalid_name);
+    tcase_add_test(tc_utils, test_dns_send_query_rejects_empty_labels);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);
     tcase_add_test(tc_utils, test_wolfip_ip_is_multicast_variants);

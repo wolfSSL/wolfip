@@ -3081,6 +3081,37 @@ START_TEST(test_dns_send_query_invalid_name)
     ck_assert_uint_eq(s.dns_id, 0);
 }
 END_TEST
+
+/* A zero-length label is the wire-format root terminator (RFC 1035
+ * §3.1); it is only legal at the end of the name. Leading or interior
+ * dots must be rejected, while the trailing-dot FQDN presentation form
+ * stays valid. */
+START_TEST(test_dns_send_query_rejects_empty_labels)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+
+    /* Leading dot. */
+    ck_assert_int_eq(dns_send_query(&s, ".com", &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+
+    /* Interior dot. */
+    ck_assert_int_eq(dns_send_query(&s, "a..com", &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+
+    /* Trailing root dot: valid FQDN presentation form. */
+    ck_assert_int_eq(dns_send_query(&s, "example.com.", &id, DNS_A), 0);
+    ck_assert_uint_ne(s.dns_id, 0);
+    dns_abort_query(&s);
+    ck_assert_uint_eq(s.dns_id, 0);
+}
+END_TEST
 START_TEST(test_fifo_push_and_pop) {
     struct fifo f;
     struct pkt_desc *desc, *desc2;
