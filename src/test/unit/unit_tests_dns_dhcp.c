@@ -1136,6 +1136,30 @@ START_TEST(test_dhcp_messages_set_secs_from_process_start)
 }
 END_TEST
 
+START_TEST(test_dhcp_discover_first_retry_delay_rfc2131)
+{
+    struct wolfIP s;
+    uint64_t delay;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+
+    ck_assert_int_eq(dhcp_send_discover(&s), 0);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    delay = find_timer_expiry(&s, s.dhcp_timer) - s.last_tick;
+    /* RFC 2131 §4.1 (10 Mb/s Ethernet example): first retransmission
+     * at 4 s, randomized uniformly by plus or minus 1 s. */
+    ck_assert_uint_ge(delay, 3000U);
+    ck_assert_uint_le(delay, 5000U);
+}
+END_TEST
+
+
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
     struct wolfIP s;

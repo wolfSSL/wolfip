@@ -1072,7 +1072,10 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_OPTION_REBIND_TIME 59
 #define DHCP_OPTION_OFFER_IP 50
 #define DHCP_OPTION_END 0xFF
-#define DHCP_DISCOVER_TIMEOUT 2000
+/* RFC 2131 §4.1 (10 Mb/s Ethernet example): the first DHCPDISCOVER
+ * retransmission is due 4 s after the initial send. */
+#define DHCP_DISCOVER_TIMEOUT 4000
+#define DHCP_DISCOVER_JITTER_MS 1000U /* uniform ±1 s */
 #ifndef DHCP_DISCOVER_RETRIES
 #define DHCP_DISCOVER_RETRIES 3
 #endif
@@ -7893,9 +7896,10 @@ static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
 }
 
 /* Exponential-backoff retransmission delay: double the base timeout for each
- * prior attempt (dhcp_timeout_count), saturating at DHCP_BACKOFF_MAX_MS, plus
- * the existing small jitter. The shift is clamped first because renew/rebind do
- * not cap dhcp_timeout_count, so it can grow past the point of UB. */
+ * prior attempt (dhcp_timeout_count), saturating at DHCP_BACKOFF_MAX_MS.
+ * Callers add their own jitter. The shift is clamped first because
+ * renew/rebind do not cap dhcp_timeout_count, so it can grow past the point
+ * of UB. */
 static uint64_t dhcp_backoff_delay(const struct wolfIP *s, uint32_t base_ms)
 {
     uint32_t count = s ? s->dhcp_timeout_count : 0;
@@ -7906,7 +7910,7 @@ static uint64_t dhcp_backoff_delay(const struct wolfIP *s, uint32_t base_ms)
     delay = (uint64_t)base_ms << count;
     if (delay > DHCP_BACKOFF_MAX_MS)
         delay = DHCP_BACKOFF_MAX_MS;
-    return delay + (wolfIP_getrandom() % 200U);
+    return delay;
 }
 
 static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
@@ -7915,7 +7919,8 @@ static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
 
     if (!s)
         return;
-    next = s->last_tick + dhcp_backoff_delay(s, DHCP_REQUEST_TIMEOUT);
+    next = s->last_tick + dhcp_backoff_delay(s, DHCP_REQUEST_TIMEOUT) +
+            (wolfIP_getrandom() % 200U);
     if (deadline != 0 && next > deadline)
         next = deadline;
     dhcp_schedule_timer_at(s, next);
@@ -8647,7 +8652,13 @@ static int dhcp_send_discover(struct wolfIP *s)
         dhcp_schedule_timer_at(s, retry_at);
         return ret;
     }
-    dhcp_schedule_timer_at(s, s->last_tick + dhcp_backoff_delay(s, DHCP_DISCOVER_TIMEOUT));
+    /* RFC 2131 §4.1 (10 Mb/s Ethernet example): the first retransmission
+     * is 4 s, randomized uniformly by plus or minus 1 s; the base doubles
+     * per attempt. */
+    dhcp_schedule_timer_at(s, s->last_tick +
+            dhcp_backoff_delay(s, DHCP_DISCOVER_TIMEOUT) -
+            DHCP_DISCOVER_JITTER_MS +
+            (wolfIP_getrandom() % (2U * DHCP_DISCOVER_JITTER_MS + 1U)));
     s->dhcp_state = DHCP_DISCOVER_SENT;
     return 0;
 }
