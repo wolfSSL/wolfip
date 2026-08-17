@@ -9269,6 +9269,11 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         return;
     if (ee16(ip->len) < ip_hlen)
         return;
+    /* The declared total length cannot exceed the bytes actually received,
+     * or the datagram would be relayed or delivered with a header claiming
+     * more payload than exists on the wire. */
+    if (ee16(ip->len) > len - ETH_HEADER_LEN)
+        return;
     /* validate IP header checksum per RFC 1122 */
     if (iphdr_verify_checksum(ip) != 0)
         return;
@@ -9415,6 +9420,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             if (!l2_group) {
             int out_if = wolfIP_forward_interface(s, if_idx, dest);
             ip4 next_hop = dest;
+            /* Forward the datagram at its declared length so trailing
+             * link-layer padding is not relayed as IP payload. */
+            uint32_t fwd_len = ETH_HEADER_LEN + ee16(ip->len);
             if (out_if < 0) {
                 /* No connected egress: resolve the destination in the
                  * static route table (longest prefix, then order, then
@@ -9461,13 +9469,14 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 }
                 if (!wolfIP_forward_prepare(s, out_if, next_hop, mac,
                         &broadcast)) {
-                    arp_queue_packet(s, out_if, next_hop, ip, len);
+                    arp_queue_packet(s, out_if, next_hop, ip, fwd_len);
                     return;
                 }
                 ip->ttl--;
                 ip->csum = 0;
                 iphdr_set_checksum(ip);
-                wolfIP_forward_packet(s, out_if, ip, len, broadcast ? NULL : mac, broadcast);
+                wolfIP_forward_packet(s, out_if, ip, fwd_len, broadcast ? NULL : mac,
+                        broadcast);
                 return;
             }
             }

@@ -1407,6 +1407,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_ip_recv_ipaddr_any_dst_is_local);
     tcase_add_test(tc_core, test_ip_recv_forward_arp_hit_sends_immediately);
     tcase_add_test(tc_core, test_ip_recv_forward_static_route_uses_gateway);
+    tcase_add_test(tc_core, test_ip_recv_forward_declared_length_checked);
     tcase_add_test(tc_core, test_ip_recv_forward_unconfigured_iface_skipped);
     tcase_add_test(tc_core, test_ip_recv_forward_link_local_src_rpf_drop);
     tcase_add_test(tc_core, test_ip_recv_forward_self_ip_src_dropped);

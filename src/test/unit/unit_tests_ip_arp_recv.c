@@ -294,6 +294,75 @@ START_TEST(test_ip_recv_forward_static_route_uses_gateway)
 }
 END_TEST
 
+/* The declared IPv4 total length must match the bytes actually received:
+ * a frame whose header claims more payload than it carries is dropped
+ * (it must not be relayed with an inconsistent length), and a frame with
+ * trailing link-layer padding is forwarded at the declared length, not
+ * the padded frame length. */
+START_TEST(test_ip_recv_forward_declared_length_checked)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;   /* 192.168.1.85 — local to if2 */
+    ip4 src_ip       = 0x0A000002U;
+    static const uint8_t dest_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint32_t ip_len = IP_HEADER_LEN + UDP_HEADER_LEN;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    arp_store_neighbor(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+
+    /* Scenario 1: header declares 16 more payload bytes than the frame
+     * carries; the checksum is valid for the (inconsistent) header. */
+    last_frame_sent_size = 0;
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(ip_len + 16);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+    {
+        uint16_t *udp = (uint16_t *)(frame + ETH_HEADER_LEN + IP_HEADER_LEN);
+        udp[0] = ee16(9999); udp[1] = ee16(53);
+        udp[2] = ee16(UDP_HEADER_LEN); udp[3] = 0;
+    }
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, ETH_HEADER_LEN + ip_len);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* Scenario 2: well-formed datagram plus 4 bytes of link-layer
+     * padding; the forwarded frame must be exactly the declared length. */
+    last_frame_sent_size = 0;
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(ip_len);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+    {
+        uint16_t *udp = (uint16_t *)(frame + ETH_HEADER_LEN + IP_HEADER_LEN);
+        udp[0] = ee16(9999); udp[1] = ee16(53);
+        udp[2] = ee16(UDP_HEADER_LEN); udp[3] = 0;
+    }
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, ETH_HEADER_LEN + ip_len + 4);
+    ck_assert_uint_eq(last_frame_sent_size, ETH_HEADER_LEN + ip_len);
+}
+END_TEST
+
 /* =========================================================================
  * ip_recv: forward interface with no configured IP is skipped
  * =========================================================================
