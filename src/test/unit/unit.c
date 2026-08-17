@@ -635,6 +635,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_progress_resets_rto_recovery_state);
     tcase_add_test(tc_utils, test_tcp_ack_cwnd_grows_when_payload_acked_is_mss_minus_options);
     tcase_add_test(tc_utils, test_tcp_ack_data_segments_not_counted_as_dup_acks);
+    tcase_add_test(tc_utils, test_tcp_rto_backoff_capped_at_64s);
     tcase_add_test(tc_utils, test_tcp_ack_inflight_deflate_sets_writable_without_acked_desc);
     tcase_add_test(tc_utils, test_tcp_input_peer_rwnd_growth_sets_writable);
     tcase_add_test(tc_utils, test_tcp_input_synack_negotiates_peer_mss);

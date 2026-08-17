@@ -2587,6 +2587,73 @@ START_TEST(test_tcp_ack_data_segments_not_counted_as_dup_acks)
 }
 END_TEST
 
+/* RFC 6298 §5.5: on a retransmission timeout the new RTO is min(2*RTO, G)
+ * with G the maximum timer value, 64 s. With a 2 s base RTO and six
+ * backoff doublings the uncapped interval would be 128 s; the re-armed
+ * timer must land at 64 s. */
+START_TEST(test_tcp_rto_backoff_capped_at_64s)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct pkt_desc *desc;
+    uint64_t now = 100000;
+    uint32_t seq = 1000;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.rto = 2000;
+    ts->sock.tcp.rto_backoff = 6;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* In-flight segment covering snd_una so the timeout retransmits and
+     * re-arms the RTO timer. */
+    memset(&segbuf, 0, sizeof(segbuf));
+    segbuf.seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS);
+    segbuf.seg.hlen = TCP_HEADER_LEN << 2;
+    segbuf.seg.seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    s.last_tick = now;
+    tcp_rto_cb(ts);
+
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    {
+        uint32_t armed_expires = 0;
+        int found = 0;
+        int i;
+        for (i = 0; i < (int)s.timers.size; i++) {
+            if (s.timers.timers[i].id == ts->sock.tcp.tmr_rto) {
+                armed_expires = s.timers.timers[i].expires;
+                found = 1;
+                break;
+            }
+        }
+        ck_assert_int_eq(found, 1);
+        ck_assert_uint_eq(armed_expires, now + TCP_RTO_BACKOFF_MAX_MS);
+    }
+}
+END_TEST
+
 START_TEST(test_tcp_ack_inflight_deflate_sets_writable_without_acked_desc)
 {
     struct wolfIP s;

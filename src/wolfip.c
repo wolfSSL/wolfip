@@ -160,6 +160,8 @@ struct wolfIP_icmp_packet;
 #define TCP_RTO_MIN_MS 1000U
 #define TCP_RTO_MAX_MS 60000U
 #define TCP_RTO_G_MS 1U
+/* RFC 6298 §5.5: maximum timer value G; caps the backed-off RTO. */
+#define TCP_RTO_BACKOFF_MAX_MS 64000U
 #define TCP_PERSIST_MIN_MS 1000U
 #define TCP_PERSIST_MAX_MS 60000U
 #ifndef TCP_FIN_WAIT_2_TIMEOUT_MS
@@ -3694,6 +3696,16 @@ static void tcp_ctrl_rto_stop(struct tsocket *t)
     t->sock.tcp.ctrl_rto_retries = 0;
 }
 
+/* RFC 6298 §5.5: the RTO is doubled per retransmission timeout but MUST be
+ * capped at the maximum timer value G (64 s). */
+static uint32_t tcp_backoff_rto_ms(uint32_t rto_ms, uint32_t retries)
+{
+    uint64_t rto = (uint64_t)rto_ms << retries;
+    if (rto > TCP_RTO_BACKOFF_MAX_MS)
+        rto = TCP_RTO_BACKOFF_MAX_MS;
+    return (uint32_t)rto;
+}
+
 /* Arm/re-arm control-RTO timer using exponential backoff over the current base RTO.
  * This path is dedicated to SYN/SYN-ACK/FIN reliability (not data-loss recovery). */
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
@@ -3707,7 +3719,7 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
         timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
         t->sock.tcp.tmr_rto = NO_TIMER;
     }
-    shift_rto = (uint64_t)t->sock.tcp.rto << t->sock.tcp.ctrl_rto_retries;
+    shift_rto = tcp_backoff_rto_ms(t->sock.tcp.rto, t->sock.tcp.ctrl_rto_retries);
     tmr.expires = now + shift_rto;
     tmr.arg = t;
     tmr.cb = tcp_rto_cb;
@@ -5646,7 +5658,8 @@ static void tcp_rto_cb(void *arg)
         ts->sock.tcp.recovery_point = ts->sock.tcp.snd_una;
 
         ptmr = &tmr;
-        ptmr->expires = ts->S->last_tick + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+        ptmr->expires = ts->S->last_tick +
+                tcp_backoff_rto_ms(ts->sock.tcp.rto, ts->sock.tcp.rto_backoff);
         ptmr->arg = ts;
         ptmr->cb = tcp_rto_cb;
         ts->sock.tcp.tmr_rto = timers_binheap_insert(&ts->S->timers, *ptmr);
@@ -5690,7 +5703,8 @@ static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t n
     if (has_sent_payload && ts->sock.tcp.tmr_rto == NO_TIMER) {
         struct wolfIP_timer new_tmr = {};
         new_tmr.cb = tcp_rto_cb;
-        new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                ts->sock.tcp.rto_backoff);
         new_tmr.arg = ts;
         ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
     } else if (!has_sent_payload && ts->sock.tcp.tmr_rto != NO_TIMER) {
@@ -10457,7 +10471,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                             ts->sock.tcp.tmr_rto = NO_TIMER;
                         }
                         new_tmr.cb = tcp_rto_cb;
-                        new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+                        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                                ts->sock.tcp.rto_backoff);
                         new_tmr.arg = ts;
                         ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
                         if (!is_retrans) {
