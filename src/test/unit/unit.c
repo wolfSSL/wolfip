@@ -639,6 +639,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_synack_negotiates_peer_mss);
     tcase_add_test(tc_utils, test_tcp_connect_syn_advertises_interface_mss);
     tcase_add_test(tc_utils, test_tcp_connect_rejects_broadcast_multicast_dest);
+    tcase_add_test(tc_utils, test_tcp_parse_options_keeps_sub_default_advertised_mss);
     tcase_add_test(tc_utils, test_tcp_connect_syn_limits_options_to_small_mtu);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_respects_negotiated_peer_mss);
     tcase_add_test(tc_utils, test_sock_sendto_tcp_defaults_to_rfc_mss_when_unset_by_peer);
@@ -1220,7 +1221,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_parse_options_timestamp_parsed);
     tcase_add_test(tc_core, test_tcp_parse_options_timestamp_overlong_ignored);
     tcase_add_test(tc_core, test_tcp_parse_options_mss_zero_ignored);
-    tcase_add_test(tc_core, test_tcp_parse_options_mss_below_floor_clamped);
+    tcase_add_test(tc_core, test_tcp_parse_options_mss_below_default_kept_verbatim);
     tcase_add_test(tc_core, test_tcp_parse_options_sack_permitted_parsed);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_bad_seq_ignored);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen);

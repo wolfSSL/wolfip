@@ -1005,6 +1005,31 @@ START_TEST(test_tcp_parse_options_parses_mss_sack_permitted_timestamp_and_two_sa
 }
 END_TEST
 
+/* An explicitly advertised MSS is the peer's commitment about what it will
+ * receive; the 536 default applies only when no MSS option is present. */
+START_TEST(test_tcp_parse_options_keeps_sub_default_advertised_mss)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 4) << 2);
+    seg->data[0] = TCP_OPTION_MSS;
+    seg->data[1] = TCP_OPTION_MSS_LEN;
+    seg->data[2] = 0x01;
+    seg->data[3] = 0x2C; /* 300 */
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+
+    memset(&po, 0, sizeof(po));
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.mss_found, 1);
+    ck_assert_uint_eq(po.mss, 300U);
+}
+END_TEST
+
 START_TEST(test_tcp_parse_options_ignores_unknown_option_kinds)
 {
     uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 8];

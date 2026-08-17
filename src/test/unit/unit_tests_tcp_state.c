@@ -466,13 +466,13 @@ START_TEST(test_tcp_parse_options_mss_zero_ignored)
 }
 END_TEST
 
-/* A peer-advertised MSS below the RFC 9293 floor (536) must be clamped up to
- * TCP_DEFAULT_MSS, so a malicious tiny MSS cannot coerce us into emitting 1-byte
- * segments (small-MSS DoS amplification). Symmetric with the ICMP PTB floor. */
-START_TEST(test_tcp_parse_options_mss_below_floor_clamped)
+/* An explicitly advertised MSS is kept verbatim, even below the 536 IPv4
+ * default: it is the peer's commitment about what it will receive, and the
+ * effective send MSS must not exceed it (RFC 9293 §3.7.1). */
+START_TEST(test_tcp_parse_options_mss_below_default_kept_verbatim)
 {
     uint8_t opts[] = {
-        TCP_OPTION_MSS, 4, 0x00, 0x01,  /* MSS=1: below the 536 floor */
+        TCP_OPTION_MSS, 4, 0x00, 0x01,  /* MSS=1: below the 536 default */
         TCP_OPTION_EOO
     };
     struct wolfIP s;
@@ -494,8 +494,8 @@ START_TEST(test_tcp_parse_options_mss_below_floor_clamped)
         1, 0, TCP_FLAG_SYN,
         opts, (uint8_t)sizeof(opts), NULL, 0);
 
-    /* Sub-floor MSS must not drag peer_mss below TCP_DEFAULT_MSS. */
-    ck_assert_uint_ge(ts->sock.tcp.peer_mss, TCP_DEFAULT_MSS);
+    /* The advertised value is recorded as-is. */
+    ck_assert_uint_eq(ts->sock.tcp.peer_mss, 1U);
 }
 END_TEST
 

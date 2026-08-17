@@ -3052,13 +3052,11 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
             memcpy(&mss, opt + 2, sizeof(mss));
             mss = ee16(mss);
             if (mss > 0) {
-                /* RFC 9293 §3.7.1: IPv4 default MSS is 536. Floor the
-                 * advertised value so a peer cannot drag peer_mss below it
-                 * and coerce us into tiny segments (small-MSS DoS
-                 * amplification). Symmetric with the ICMP PTB floor in
-                 * icmp_try_deliver_tcp_error(). */
-                if (mss < TCP_DEFAULT_MSS)
-                    mss = TCP_DEFAULT_MSS;
+                /* Keep the advertised value as-is: it is the peer's
+                 * commitment about what it will receive (RFC 9293 §3.7.1),
+                 * and the effective send MSS must not exceed it. The 536
+                 * default is applied by the caller only when no MSS option
+                 * is present. */
                 po->mss = mss;
                 po->mss_found = 1;
             }
