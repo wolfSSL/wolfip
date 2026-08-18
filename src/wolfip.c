@@ -1049,6 +1049,7 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_REQUEST 3
 #define DHCP_ACK 5
 #define DHCP_NAK 6
+#define DHCP_DECLINE 7
 
 #define DHCP_MAGIC 0x63825363
 #define DHCP_SERVER_PORT 67
@@ -1075,6 +1076,10 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 /* RFC 2131 §4.1: retransmission delay doubles each attempt up to a 64s ceiling. */
 #define DHCP_BACKOFF_MAX_MS 64000U
 
+/* RFC 4331 / RFC 5227: probe the address after a DHCPACK before using it. */
+#define DHCP_DAD_PROBES 3
+#define DHCP_DAD_INTERVAL_MS 1000U
+
 enum dhcp_state {
     DHCP_OFF = 0,
     DHCP_DISCOVER_SENT,
@@ -1082,6 +1087,7 @@ enum dhcp_state {
     DHCP_BOUND,
     DHCP_RENEWING,
     DHCP_REBINDING,
+    DHCP_DAD, /* RFC 4331: probing the address received in a DHCPACK */
 };
 
 #define DHCP_IS_RUNNING(s) \
@@ -1367,6 +1373,7 @@ struct wolfIP {
     int dhcp_udp_sd; /* DHCP socket descriptor. DHCP uses an UDP socket */
     uint32_t dhcp_timer; /* Timer for DHCP */
     uint32_t dhcp_timeout_count; /* DHCP timeout counter */
+    uint8_t dhcp_dad_probes; /* DAD probes sent (0 = DAD inactive) */
     ip4 dhcp_server_ip; /* DHCP server IP */
     ip4 dhcp_ip; /* IP address assigned by DHCP */
     uint64_t dhcp_renew_at; /* Renewal time (T1) */
@@ -7804,6 +7811,10 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
 
 static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
+#ifdef ETHERNET
+static int dhcp_send_dad_probe(struct wolfIP *s);
+#endif
+static void dhcp_dad_conflict(struct wolfIP *s);
 static void dhcp_timer_cb(void *arg);
 static void dhcp_cancel_timer(struct wolfIP *s);
 static void dhcp_deconfigure_lease(struct wolfIP *s);
@@ -7976,6 +7987,27 @@ static void dhcp_timer_cb(void *arg)
             if (ret >= 0)
                 s->dhcp_timeout_count++;
             break;
+#ifdef ETHERNET
+        case DHCP_DAD:
+            if (s->dhcp_dad_probes < DHCP_DAD_PROBES) {
+                if (dhcp_send_dad_probe(s) < 0) {
+                    /* Probe could not be sent; retry on the next tick. */
+                    dhcp_schedule_timer_at(s,
+                            s->last_tick + 1);
+                    break;
+                }
+                s->dhcp_dad_probes++;
+                dhcp_schedule_timer_at(s,
+                        s->last_tick + DHCP_DAD_INTERVAL_MS);
+            } else {
+                /* All probes unanswered: the address is ours. The lease
+                 * timers were armed when the ACK was parsed. */
+                s->dhcp_dad_probes = 0;
+                s->dhcp_state = DHCP_BOUND;
+                dhcp_schedule_timer_at(s, s->dhcp_renew_at);
+            }
+            break;
+#endif
         default:
             break;
     }
@@ -8296,8 +8328,24 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 if (primary && saw_server_id && lease_s != 0 &&
                     (primary->ip != 0) && (primary->mask != 0)) {
                     dhcp_cancel_timer(s);
+                    s->dhcp_ip = primary->ip;
+#ifdef ETHERNET
+                    /* RFC 4331: probe the address before using it. The
+                     * lease timers are armed now so they are in place when
+                     * the probes complete; the short DAD timer overrides
+                     * them until then. A conflicting answer is detected in
+                     * arp_recv (dhcp_dad_conflict). */
+                    s->dhcp_state = DHCP_DAD;
+                    s->dhcp_dad_probes = 0;
+                    dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+                    if (dhcp_send_dad_probe(s) == 0)
+                        s->dhcp_dad_probes = 1;
+                    dhcp_schedule_timer_at(s,
+                            s->last_tick + DHCP_DAD_INTERVAL_MS);
+#else
                     s->dhcp_state = DHCP_BOUND;
                     dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+#endif
                     return 0;
                 }
             }
@@ -8570,6 +8618,68 @@ int dhcp_client_init(struct wolfIP *s)
     return dhcp_send_discover(s);
 }
 
+/* RFC 2131 §4.4: DECLINE — sent when the client detects that the address
+ * in a received DHCPACK is already in use on the link. */
+static int dhcp_send_decline(struct wolfIP *s)
+{
+    struct dhcp_msg dec;
+    struct dhcp_option *opt = (struct dhcp_option *)(dec.options);
+    struct wolfIP_sockaddr_in sin;
+    uint32_t opt_sz = 0;
+
+    if (!s || s->dhcp_udp_sd <= 0)
+        return -1;
+
+    memset(&dec, 0, sizeof(struct dhcp_msg));
+    dec.op = BOOT_REQUEST;
+    dec.htype = 1; /* Ethernet */
+    dec.hlen = 6; /* MAC */
+    dec.xid = ee32(s->dhcp_xid);
+    dec.ciaddr = ee32(s->dhcp_ip); /* the address being declined */
+    dec.secs = ee16(dhcp_elapsed_secs(s));
+    dec.magic = ee32(DHCP_MAGIC);
+    {
+        struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
+        if (ll)
+            memcpy(dec.chaddr, ll->mac, 6);
+    }
+
+    memset(dec.options, 0xFF, sizeof(dec.options));
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_DECLINE;
+    opt_sz += 3;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    if (s->dhcp_server_ip != 0) {
+        opt->code = DHCP_OPTION_SERVER_ID;
+        opt->len = 4;
+        DHCP_OPT_u32_to_data(opt, s->dhcp_server_ip);
+        opt_sz += 6;
+    }
+    opt_sz++; /* END marker */
+
+    memset(&sin, 0, sizeof(struct wolfIP_sockaddr_in));
+    sin.sin_port = ee16(DHCP_SERVER_PORT);
+    sin.sin_addr.s_addr = ee32(0xFFFFFFFF); /* Broadcast */
+    sin.sin_family = AF_INET;
+    return wolfIP_sock_sendto(s, s->dhcp_udp_sd, &dec, DHCP_HEADER_LEN + opt_sz, 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(struct wolfIP_sockaddr_in));
+}
+
+/* A DAD probe was answered by a host other than us: the address is in
+ * use. RFC 4331: decline it and restart address configuration. */
+static void dhcp_dad_conflict(struct wolfIP *s)
+{
+    /* Decline first: it carries the address, which deconfigure erases. */
+    dhcp_send_decline(s);
+    s->dhcp_dad_probes = 0;
+    dhcp_cancel_timer(s);
+    dhcp_deconfigure_lease(s);
+    s->dhcp_state = DHCP_OFF;
+    s->dhcp_timeout_count = 0;
+    dhcp_send_discover(s);
+}
+
 /* ARP */
 #ifdef ETHERNET
 
@@ -8806,6 +8916,40 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
     wolfIP_ll_send_frame(s, if_idx, &arp, sizeof(struct arp_packet));
 }
 
+/* RFC 4331 §2.1 DAD probe: an ARP request with sip = 0.0.0.0 and tip =
+ * the address being tested. A host that owns the address answers it; the
+ * reply is detected in arp_recv (dhcp_dad_conflict). Deliberately bypasses
+ * the 1 req/s rate limit: DAD is at most 3 probes per acquisition, one
+ * per second, and must not starve behind ordinary traffic. */
+static int dhcp_send_dad_probe(struct wolfIP *s)
+{
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *primary;
+
+    ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
+    if (!ll || ll->non_ethernet)
+        return -1;
+    primary = wolfIP_ipconf_at(s, WOLFIP_PRIMARY_IF_IDX);
+    if (!primary || primary->ip == IPADDR_ANY)
+        return -1;
+
+    memset(&arp, 0, sizeof(arp));
+    eth_output_add_header(s, WOLFIP_PRIMARY_IF_IDX, NULL, &arp.eth,
+                          ETH_TYPE_ARP);
+    arp.htype  = ee16(1); /* Ethernet */
+    arp.ptype  = ee16(0x0800);
+    arp.hlen   = 6;
+    arp.plen   = 4;
+    arp.opcode = ee16(ARP_REQUEST);
+    memcpy(arp.sma, ll->mac, 6);
+    arp.sip    = ee32(IPADDR_ANY); /* RFC 4331: sender IP is 0.0.0.0 */
+    memset(arp.tma, 0, 6);
+    arp.tip    = ee32(primary->ip);
+    return wolfIP_ll_send_frame(s, WOLFIP_PRIMARY_IF_IDX, &arp,
+                                sizeof(struct arp_packet));
+}
+
 static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
 {
     struct arp_packet *arp = (struct arp_packet *)buf;
@@ -8863,6 +9007,14 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     else if (arp->opcode == ee16(ARP_REPLY)) {
         ip4 sip = ee32(arp->sip);
         int pending;
+        /* RFC 4331 DAD: a reply claiming the address being probed means
+         * it is in use, unless it came from our own MAC (looped probe).
+         * This is the one case where a reply for our own IP is acted on. */
+        if (s->dhcp_state == DHCP_DAD && sip == conf->ip) {
+            if (memcmp(arp->sma, ll->mac, 6) != 0)
+                dhcp_dad_conflict(s);
+            return;
+        }
         /* Validate sender IP: reject broadcast, multicast, zero, and
          * our own address -- same checks as the ARP request handler. */
         if (sip == IPADDR_ANY || sip == conf->ip ||
