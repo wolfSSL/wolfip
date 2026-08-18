@@ -6146,6 +6146,84 @@ START_TEST(test_regression_loopback_ack_retry_pending_requeued_on_poll)
 }
 END_TEST
 
+/* F-10261: a pure ACK that takes the immediate path (TX FIFO saturated)
+ * with an unresolved nexthop: the ARP miss must report -WOLFIP_EAGAIN so
+ * the retry is scheduled instead of being lost; once the solicited reply
+ * arrives, the next tcp_send_ack transmits and clears the flag. */
+START_TEST(test_regression_pure_ack_arp_miss_schedules_retry)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_ll_dev *ll;
+    struct arp_packet reply;
+    uint8_t payload[256];
+    uint8_t mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0x01};
+    ip4 remote_ip = 0x0A000020U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+    s.last_tick = 5000;
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = remote_ip;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Saturate the shared data/control TX FIFO so tcp_send_empty() takes
+     * the immediate pure-ACK path. Large pushes leave a small slack that
+     * an ACK segment would still fit in, so top up with minimal pushes
+     * until the FIFO is truly full. */
+    memset(payload, 0, sizeof(payload));
+    while (fifo_push(&ts->sock.tcp.txbuf, payload, sizeof(payload)) == 0)
+        ;
+    while (fifo_push(&ts->sock.tcp.txbuf, payload, 4) == 0)
+        ;
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    last_frame_sent_size = 0;
+
+    /* ARP miss: no segment can go out, the request is sent instead, and
+     * the pure-ACK retry must be scheduled (previously discarded). */
+    tcp_send_ack(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 1U);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+
+    /* The owner answers our request: the solicited reply installs the
+     * entry, and the next tcp_send_ack transmits, clearing the flag. */
+    memset(&reply, 0, sizeof(reply));
+    memcpy(reply.eth.dst, ll->mac, 6);
+    memcpy(reply.eth.src, mac, 6);
+    reply.eth.type = ee16(ETH_TYPE_ARP);
+    reply.htype = ee16(1);
+    reply.ptype = ee16(0x0800);
+    reply.hlen = 6;
+    reply.plen = 4;
+    reply.opcode = ee16(ARP_REPLY);
+    memcpy(reply.sma, mac, 6);
+    reply.sip = ee32(remote_ip);
+    reply.tip = ee32(0x0A000001U);
+    last_frame_sent_size = 0;
+    arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
+    ck_assert_int_gt(arp_neighbor_index(&s, TEST_PRIMARY_IF, remote_ip), -1);
+
+    tcp_send_ack(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 0U);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_regression_loopback_queue_full_pure_ack_backpressure_retry)
 {
     struct wolfIP s;

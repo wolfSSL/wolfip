@@ -938,6 +938,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_loopback_udp_tx_backpressure_retries_after_queue_drain);
     tcase_add_test(tc_proto, test_regression_ll_send_frame_returns_wolfip_error_codes);
     tcase_add_test(tc_proto, test_regression_loopback_ack_retry_pending_requeued_on_poll);
+    tcase_add_test(tc_proto, test_regression_pure_ack_arp_miss_schedules_retry);
     tcase_add_test(tc_proto, test_regression_loopback_queue_full_pure_ack_backpressure_retry);
     tcase_add_test(tc_proto, test_regression_tcp_tx_desc_payload_len_keeps_descriptor_layout_sanity);
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);

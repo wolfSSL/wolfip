@@ -3385,7 +3385,10 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
 
         if (arp_lookup(t->S, tx_if, nexthop, t->nexthop_mac) < 0) {
             arp_request(t->S, tx_if, nexthop);
-            return -1;
+            /* The segment (a pure ACK here) is retryable once the request
+             * resolves; report EAGAIN so the caller schedules the retry
+             * instead of dropping the segment (F-10261). */
+            return -WOLFIP_EAGAIN;
         }
     }
 #endif
