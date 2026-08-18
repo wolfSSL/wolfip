@@ -21,8 +21,8 @@
 /* =========================================================================
  * ARP neighbor-table regression fixtures
  *
- * Derived from the wire-level PoCs of security-scan candidate
- * candidate-3d6f7442d4b3ac81 (F-9805: unsolicited ARP reply pre-poison),
+ * Derived from the wire-level PoCs of the security scan
+ * (candidate-3d6f7442d4b3ac81, F-9805: unsolicited ARP reply pre-poison),
  * inverted to assert the fixed behavior: a neighbor entry is installed or
  * updated only in answer to a request the stack itself sent (a pending
  * match in arp_recv). Unsolicited frames never touch the table.

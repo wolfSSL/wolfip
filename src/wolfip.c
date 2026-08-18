@@ -8877,7 +8877,9 @@ static int dhcp_send_decline(struct wolfIP *s)
     dec.htype = 1; /* Ethernet */
     dec.hlen = 6; /* MAC */
     dec.xid = ee32(s->dhcp_xid);
-    dec.ciaddr = ee32(s->dhcp_ip); /* the address being declined */
+    /* ciaddr stays 0.0.0.0: the client never bound the address. The
+     * declined address is carried in option 50 (Requested IP). */
+    dec.ciaddr = ee32(0);
     dec.secs = ee16(dhcp_elapsed_secs(s));
     dec.magic = ee32(DHCP_MAGIC);
     {
@@ -8897,7 +8899,13 @@ static int dhcp_send_decline(struct wolfIP *s)
         opt->len = 4;
         DHCP_OPT_u32_to_data(opt, s->dhcp_server_ip);
         opt_sz += 6;
+        opt = (struct dhcp_option *)((uint8_t *)opt + 6);
     }
+    /* RFC 2131 §4.4: carry the declined address in option 50. */
+    opt->code = DHCP_OPTION_OFFER_IP; /* Requested IP */
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, s->dhcp_ip);
+    opt_sz += 6;
     opt_sz++; /* END marker */
 
     memset(&sin, 0, sizeof(struct wolfIP_sockaddr_in));

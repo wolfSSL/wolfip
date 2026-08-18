@@ -1695,3 +1695,53 @@ START_TEST(test_dhcp_dad_probe_count_len_returning_driver)
     ck_assert_uint_eq(dad_len_send_count, DHCP_DAD_PROBES);
 }
 END_TEST
+
+/* DECLINE wire format (RFC 2131 §4.4): the client never bound the address,
+ * so ciaddr stays 0.0.0.0; the declined address is carried in option 50
+ * (Requested IP), alongside the server ID. */
+START_TEST(test_dhcp_decline_wire_format)
+{
+    struct wolfIP s;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *dec;
+    struct dhcp_option *opt;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    ck_assert_int_eq(dhcp_client_init(&s), 0);
+
+    /* The ACK offered client_ip; DAD detected a conflict. */
+    s.dhcp_ip = client_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_state = DHCP_DAD;
+
+    last_frame_sent_size = 0;
+    ck_assert_int_ge(dhcp_send_decline(&s), 0);
+    (void)wolfIP_poll(&s, s.last_tick);
+
+    /* L2 frame: the udp datagram struct carries its own eth + IP + UDP
+     * headers; the sent DHCP payload is DHCP_HEADER_LEN + the options
+     * actually used, not the whole struct. */
+    ck_assert_uint_gt(last_frame_sent_size,
+                      (uint32_t)sizeof(struct wolfIP_udp_datagram) +
+                      DHCP_HEADER_LEN);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    dec = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(dec->op, BOOT_REQUEST);
+    ck_assert_uint_eq(dec->ciaddr, 0U); /* never bound */
+
+    opt = (struct dhcp_option *)dec->options;
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_MSG_TYPE);
+    ck_assert_uint_eq(opt->data[0], DHCP_DECLINE);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_SERVER_ID);
+    ck_assert_uint_eq(DHCP_OPT_data_to_u32(opt), server_ip);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_OFFER_IP); /* option 50 */
+    ck_assert_uint_eq(opt->len, 4);
+    ck_assert_uint_eq(DHCP_OPT_data_to_u32(opt), client_ip);
+}
+END_TEST
