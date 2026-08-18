@@ -1677,7 +1677,7 @@ START_TEST(test_arp_flush_pending_ttl_expired)
     arp_reply.plen = 4;
     arp_reply.opcode = ee16(ARP_REPLY);
     arp_reply.sip = ee32(dest_ip);
-    memcpy(arp_reply.sma, "\x01\x02\x03\x04\x05\x06", 6);
+    memcpy(arp_reply.sma, "\x66\x55\x44\x33\x22\x11", 6); /* unicast sender */
     arp_recv(&s, TEST_SECOND_IF, &arp_reply, sizeof(arp_reply));
     ck_assert_uint_eq(last_frame_sent_size, 0);
     ck_assert_uint_eq(s.arp_pending[0].dest, IPADDR_ANY);
@@ -2314,7 +2314,7 @@ START_TEST(test_arp_recv_request_sends_reply)
     arp_req.plen = 4;
     arp_req.opcode = ee16(ARP_REQUEST);
     arp_req.sip = ee32(0x0A000002U);
-    memcpy(arp_req.sma, "\x01\x02\x03\x04\x05\x06", 6);
+    memcpy(arp_req.sma, "\x66\x55\x44\x33\x22\x11", 6); /* unicast sender */
     arp_req.tip = ee32(0x0A000001U);
 
     arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));

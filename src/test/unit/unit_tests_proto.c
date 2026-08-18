@@ -2783,7 +2783,8 @@ START_TEST(test_arp_reply_with_pending_request_updates)
     struct arp_packet arp_reply;
     uint32_t reply_ip = 0xC0A80003; /* 192.168.0.3 */
     uint8_t old_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
-    uint8_t new_mac[6] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26};
+    /* Sender MAC must be unicast (group bit 0) or arp_recv drops the frame */
+    uint8_t new_mac[6] = {0x20, 0x22, 0x23, 0x24, 0x25, 0x26};
     struct wolfIP s;
 
     memset(&arp_reply, 0, sizeof(arp_reply));
@@ -2950,7 +2951,8 @@ START_TEST(test_arp_reply_updates_expired_entry)
     struct arp_packet arp_reply;
     uint32_t reply_ip = 0xC0A80003; /* 192.168.0.3 */
     uint8_t old_mac[6] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
-    uint8_t new_mac[6] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26};
+    /* Sender MAC must be unicast (group bit 0) or arp_recv drops the frame */
+    uint8_t new_mac[6] = {0x20, 0x22, 0x23, 0x24, 0x25, 0x26};
     struct wolfIP s;
 
     memset(&arp_reply, 0, sizeof(arp_reply));

@@ -1423,6 +1423,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_arp_recv_reply_sender_multicast_rejected);
     tcase_add_test(tc_core, test_arp_recv_reply_sender_own_ip_rejected);
     tcase_add_test(tc_core, test_arp_recv_reply_sender_zero_ip_rejected);
+    tcase_add_test(tc_core, test_arp_recv_reply_broadcast_sma_dropped);
+    tcase_add_test(tc_core, test_arp_recv_reply_multicast_sma_dropped);
+    tcase_add_test(tc_core, test_arp_recv_request_broadcast_sma_dropped);
+    tcase_add_test(tc_core, test_arp_recv_request_multicast_sma_dropped);
     tcase_add_test(tc_core, test_arp_recv_request_replies_but_reply_caches_neighbor);
     tcase_add_test(tc_core, test_arp_recv_forged_request_cannot_poison_pending);
     tcase_add_test(tc_core, test_arp_recv_runt_packet_dropped);

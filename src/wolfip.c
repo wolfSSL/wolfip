@@ -8825,6 +8825,11 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
         arp->hlen != 6 || arp->plen != 4)
         return;
 
+    /* Reject a broadcast/multicast sender MAC (group bit set): a group
+     * address cannot identify the unicast host an entry would bind to. */
+    if (arp->sma[0] & 0x01)
+        return;
+
     if (arp->opcode == ee16(ARP_REQUEST) && arp->tip == ee32(conf->ip)) {
         uint32_t sender_ip = arp->sip;
         uint8_t sender_mac[6];
