@@ -1462,6 +1462,13 @@ START_TEST(test_vlan_rx_unfiltered_arp_reply_learns_neighbor)
                                  100, 0, 0);
     ck_assert_uint_gt(tagged_len, 0u);
 
+    /* The pending-only policy installs neighbors only in answer to a
+     * request we sent, so ask for the address first; the VLAN RX path must
+     * still deliver the tagged reply to the subinterface's arp_recv.
+     * last_tick advances past the 1 req/s rate-limit window that a fresh
+     * stack (last_arp = 0, tick = 0) would still be in. */
+    s.last_tick = 1000U;
+    arp_request(&s, sub_idx, VLAN_REMOTE_IP);
     wolfIP_recv_on(&s, TEST_PRIMARY_IF, tagged, tagged_len);
 
     memset(mac, 0, sizeof(mac));

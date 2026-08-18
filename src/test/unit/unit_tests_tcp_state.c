@@ -2558,6 +2558,33 @@ START_TEST(test_accept_synack_retransmit_repeats_isn)
     /* Peer SYN triggers passive open; the SYN-ACK carries the clone's ISN. */
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
     wolfIP_poll(&s, 1000);
+    /* The SYN-ACK is held behind ARP resolution: the stack no longer learns
+     * the neighbor from the incoming SYN (pending-only policy), so the flush
+     * sent an ARP request for 10.0.0.161 and parked the segment. Answer our
+     * own request — the peer's MAC is the one inject_tcp_syn used — so the
+     * pending SYN-ACK can actually go out. */
+    {
+        struct arp_packet reply;
+        struct wolfIP_ll_dev *ll2 = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+        static const uint8_t peer_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+        ck_assert_ptr_nonnull(ll2);
+        memset(&reply, 0, sizeof(reply));
+        memcpy(reply.eth.dst, ll2->mac, 6);
+        memcpy(reply.eth.src, peer_mac, 6);
+        reply.eth.type = ee16(ETH_TYPE_ARP);
+        reply.htype = ee16(1);
+        reply.ptype = ee16(0x0800);
+        reply.hlen = 6;
+        reply.plen = 4;
+        reply.opcode = ee16(ARP_REPLY);
+        memcpy(reply.sma, peer_mac, 6);
+        reply.sip = ee32(0x0A0000A1U);
+        memcpy(reply.tma, ll2->mac, 6);
+        reply.tip = ee32(0x0A000001U);
+        arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
+        wolfIP_poll(&s, 1050);
+    }
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         if (s.tcpsockets[i].sock.tcp.state == TCP_SYN_RCVD) {
             syn_rcvd = &s.tcpsockets[i];
