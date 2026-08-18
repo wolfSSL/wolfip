@@ -1555,6 +1555,49 @@ START_TEST(test_dhcp_dad_own_mac_reply_ignored)
 }
 END_TEST
 
+/* The ACK must leave exactly one DHCP timer in the heap (the DAD timer),
+ * and DAD completion must leave exactly one (the renew timer): the lease
+ * timer is swapped out, not stacked, or handle_timers would fire the
+ * renewal twice. */
+START_TEST(test_dhcp_dad_single_dhcp_timer_in_heap)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    uint32_t i, count;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA05U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    wolfIP_primary_ipconf(&s)->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    count = 0;
+    for (i = 0; i < s.timers.size; i++)
+        if (s.timers.timers[i].expires != 0 &&
+            s.timers.timers[i].cb == dhcp_timer_cb)
+            count++;
+    ck_assert_uint_eq(count, 1U);
+
+    dhcp_test_complete_dad(&s);
+
+    count = 0;
+    for (i = 0; i < s.timers.size; i++)
+        if (s.timers.timers[i].expires != 0 &&
+            s.timers.timers[i].cb == dhcp_timer_cb)
+            count++;
+    ck_assert_uint_eq(count, 1U);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
+}
+END_TEST
+
 /* During DAD, a reply for a different IP is not a conflict: the hook only
  * acts on replies claiming the address being probed. */
 START_TEST(test_dhcp_dad_reply_for_other_ip_ignored)

@@ -7813,8 +7813,8 @@ static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
 #ifdef ETHERNET
 static int dhcp_send_dad_probe(struct wolfIP *s);
-#endif
 static void dhcp_dad_conflict(struct wolfIP *s);
+#endif
 static void dhcp_timer_cb(void *arg);
 static void dhcp_cancel_timer(struct wolfIP *s);
 static void dhcp_deconfigure_lease(struct wolfIP *s);
@@ -8337,7 +8337,14 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                      * arp_recv (dhcp_dad_conflict). */
                     s->dhcp_state = DHCP_DAD;
                     s->dhcp_dad_probes = 0;
+                    /* Arm the lease absolutes, then swap the renew timer for
+                     * the DAD timer: handle_timers() fires every expired
+                     * entry, so leaving both in the heap would double-fire
+                     * the renew. The absolutes survive; the DAD completion
+                     * re-arms the renew timer. */
                     dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+                    timer_binheap_cancel(&s->timers, s->dhcp_timer);
+                    s->dhcp_timer = NO_TIMER;
                     if (dhcp_send_dad_probe(s) == 0)
                         s->dhcp_dad_probes = 1;
                     dhcp_schedule_timer_at(s,
@@ -8618,8 +8625,10 @@ int dhcp_client_init(struct wolfIP *s)
     return dhcp_send_discover(s);
 }
 
+#ifdef ETHERNET
 /* RFC 2131 §4.4: DECLINE — sent when the client detects that the address
- * in a received DHCPACK is already in use on the link. */
+ * in a received DHCPACK is already in use on the link. Only sent from the
+ * DAD conflict path, which is ethernet-only. */
 static int dhcp_send_decline(struct wolfIP *s)
 {
     struct dhcp_msg dec;
@@ -8667,7 +8676,8 @@ static int dhcp_send_decline(struct wolfIP *s)
 }
 
 /* A DAD probe was answered by a host other than us: the address is in
- * use. RFC 4331: decline it and restart address configuration. */
+ * use. RFC 4331: decline it and restart address configuration. Only
+ * reachable from the arp_recv DAD hook, which is ethernet-only. */
 static void dhcp_dad_conflict(struct wolfIP *s)
 {
     /* Decline first: it carries the address, which deconfigure erases. */
@@ -8679,6 +8689,7 @@ static void dhcp_dad_conflict(struct wolfIP *s)
     s->dhcp_timeout_count = 0;
     dhcp_send_discover(s);
 }
+#endif
 
 /* ARP */
 #ifdef ETHERNET

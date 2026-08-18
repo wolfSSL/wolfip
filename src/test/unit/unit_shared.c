@@ -402,8 +402,10 @@ static void dhcp_test_complete_dad(struct wolfIP *s)
 {
     int iter = 0;
     while (s->dhcp_state == DHCP_DAD && iter < 16) {
+        /* Drive the real dispatch: handle_timers pops each fired timer,
+         * so the heap stays clean exactly as in production. */
         s->last_tick += DHCP_DAD_INTERVAL_MS;
-        dhcp_timer_cb(s);
+        handle_timers(s, s->last_tick);
         iter++;
     }
     ck_assert_int_eq(s->dhcp_state, DHCP_BOUND);
