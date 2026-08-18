@@ -1277,6 +1277,9 @@ START_TEST(test_arp_flush_pending_drops_ttl1)
     ip.dst = ee32(0x0A000050U);
     arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A000050U, &ip, sizeof(ip));
 
+    /* The store (and thus the flush) now requires a pending request we sent. */
+    arp_pending_record(&s, TEST_PRIMARY_IF, 0x0A000050U);
+
     memset(&reply, 0, sizeof(reply));
     reply.htype = ee16(1);
     reply.ptype = ee16(0x0800);

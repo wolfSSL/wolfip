@@ -2739,6 +2739,9 @@ START_TEST(test_arp_reply_handling) {
     arp_reply.sip = ee32(reply_ip);
     memcpy(arp_reply.sma, reply_mac, 6);
 
+    /* Installs only in answer to a request we sent (pending-only gate). */
+    arp_pending_record(&s, TEST_PRIMARY_IF, reply_ip);
+
     /* Call arp_recv with the ARP reply */
     arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
 
@@ -2964,6 +2967,9 @@ START_TEST(test_arp_reply_updates_expired_entry)
     s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
     s.arp.neighbors[0].ts = 0;
     memcpy(s.arp.neighbors[0].mac, old_mac, 6);
+
+    /* The update happens only in answer to a request we sent. */
+    arp_pending_record(&s, TEST_PRIMARY_IF, reply_ip);
 
     arp_reply.htype = ee16(1);
     arp_reply.ptype = ee16(0x0800);

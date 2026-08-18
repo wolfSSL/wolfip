@@ -8860,19 +8860,20 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     }
     else if (arp->opcode == ee16(ARP_REPLY)) {
         ip4 sip = ee32(arp->sip);
-        int idx, pending;
+        int pending;
         /* Validate sender IP: reject broadcast, multicast, zero, and
          * our own address -- same checks as the ARP request handler. */
         if (sip == IPADDR_ANY || sip == conf->ip ||
                 wolfIP_ip_is_broadcast(s, sip) ||
                 wolfIP_ip_is_multicast(sip))
             return;
-        idx = arp_neighbor_index(s, if_idx, sip);
         pending = arp_pending_match_and_clear(s, if_idx, sip);
-        /* Security trade-off: allow quick-path add, but block unsolicited overwrite. */
-        if (pending || idx < 0) {
+        /* A neighbor entry is installed or updated only in answer to a
+         * request we ourselves sent (pending match). Unsolicited replies —
+         * GARP, pre-poisoning, first-install of a stranger — never touch
+         * the table. */
+        if (pending)
             arp_store_neighbor(s, if_idx, sip, arp->sma);
-        }
     }
 }
 

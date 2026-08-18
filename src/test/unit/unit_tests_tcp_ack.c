@@ -1670,6 +1670,9 @@ START_TEST(test_arp_flush_pending_ttl_expired)
     arp_queue_packet(&s, TEST_SECOND_IF, dest_ip, &ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN));
     ck_assert_uint_eq(s.arp_pending[0].dest, dest_ip);
 
+    /* The store (and thus the flush) now requires a pending request we sent. */
+    arp_pending_record(&s, TEST_SECOND_IF, dest_ip);
+
     memset(&arp_reply, 0, sizeof(arp_reply));
     arp_reply.htype = ee16(1);
     arp_reply.ptype = ee16(0x0800);
