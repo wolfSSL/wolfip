@@ -8653,39 +8653,44 @@ static void arp_store_neighbor(struct wolfIP *s, unsigned int if_idx, ip4 ip,
                                const uint8_t *mac)
 {
     int i;
-    int stored = 0;
+    int slot = -1;
     if (!s)
         return;
     for (i = 0; i < MAX_NEIGHBORS; i++) {
         if (s->arp.neighbors[i].ip == ip && s->arp.neighbors[i].if_idx == if_idx) {
-            memcpy(s->arp.neighbors[i].mac, mac, 6);
-            s->arp.neighbors[i].ts = s->last_tick;
-            stored = 1;
+            slot = i;
             break;
         }
+        if (slot < 0 && s->arp.neighbors[i].ip == IPADDR_ANY)
+            slot = i;
     }
-    if (!stored) {
-        for (i = 0; i < MAX_NEIGHBORS; i++) {
-            if (s->arp.neighbors[i].ip == IPADDR_ANY) {
-                s->arp.neighbors[i].ip = ip;
-                s->arp.neighbors[i].if_idx = (uint8_t)if_idx;
-                memcpy(s->arp.neighbors[i].mac, mac, 6);
-                s->arp.neighbors[i].ts = s->last_tick;
-                stored = 1;
-                break;
+    if (slot < 0) {
+        /* Table full: evict the least recently used entry. MAX_NEIGHBORS is
+         * a working-set size, not a ceiling — a flood can churn the cache
+         * but never lock out resolution of a live peer (F-6212). */
+        uint64_t oldest_ts = s->arp.neighbors[0].ts;
+        slot = 0;
+        for (i = 1; i < MAX_NEIGHBORS; i++) {
+            if (s->arp.neighbors[i].ts < oldest_ts) {
+                oldest_ts = s->arp.neighbors[i].ts;
+                slot = i;
             }
         }
     }
-    if (stored) {
+    s->arp.neighbors[slot].ip = ip;
+    s->arp.neighbors[slot].if_idx = (uint8_t)if_idx;
+    memcpy(s->arp.neighbors[slot].mac, mac, 6);
+    s->arp.neighbors[slot].ts = s->last_tick;
 #if WOLFIP_ENABLE_FORWARDING
-        arp_flush_pending(s, if_idx, ip);
+    arp_flush_pending(s, if_idx, ip);
 #endif
-    }
 }
 
 /* Lookup neighbor entry by IP/interface.
  * Returns the index, or -1 if not found.
  * If the entry has aged out, it is evicted and -1 is returned.
+ * A successful lookup refreshes the timestamp (use-based aging): live
+ * conversations never age out, dead entries reclaim at the timeout.
  */
 static int arp_neighbor_index(struct wolfIP *s, unsigned int if_idx, ip4 ip)
 {
@@ -8702,6 +8707,7 @@ static int arp_neighbor_index(struct wolfIP *s, unsigned int if_idx, ip4 ip)
                 memset(s->arp.neighbors[i].mac, 0, 6);
                 return -1;
             }
+            s->arp.neighbors[i].ts = s->last_tick;
             return i;
         }
     }

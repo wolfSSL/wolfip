@@ -780,6 +780,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_pending_record_prefers_empty_slot);
     tcase_add_test(tc_proto, test_arp_pending_match_and_clear_time_goes_back);
     tcase_add_test(tc_proto, test_arp_store_neighbor_no_space);
+    tcase_add_test(tc_proto, test_arp_full_table_solicited_reply_installs_via_eviction);
+    tcase_add_test(tc_proto, test_arp_lookup_refreshes_ts_use_based_aging);
+    tcase_add_test(tc_proto, test_arp_aging_exact_boundary);
     tcase_add_test(tc_proto, test_arp_store_neighbor_null_stack);
     tcase_add_test(tc_proto, test_arp_lookup_if_idx_mismatch);
     tcase_add_test(tc_proto, test_arp_request_missing_conf);

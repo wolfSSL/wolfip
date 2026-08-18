@@ -2268,21 +2268,28 @@ END_TEST
 START_TEST(test_arp_store_neighbor_full_table)
 {
     struct wolfIP s;
-    uint8_t mac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    uint8_t mac[6] = {0x10, 0x22, 0x33, 0x44, 0x55, 0x66};
     int i;
     wolfIP_init(&s);
     mock_link_init(&s);
+    s.last_tick = 1000;
     for (i = 0; i < MAX_NEIGHBORS; i++) {
         s.arp.neighbors[i].ip = 0x0A000010U + (uint32_t)i;
         s.arp.neighbors[i].if_idx = TEST_PRIMARY_IF;
-        s.arp.neighbors[i].ts = 1;
+        /* Distinct ages; slot 0 is the least recently used. */
+        s.arp.neighbors[i].ts = 1U + (uint64_t)i;
         memset(s.arp.neighbors[i].mac, (uint8_t)i, 6);
     }
-    /* Table is full and no slot matches: store should silently fail. */
+    /* Table is full and no slot matches: the least recently used entry is
+     * evicted and the new neighbor takes its slot (F-6212). */
     arp_store_neighbor(&s, TEST_PRIMARY_IF, 0x0A0000A1U, mac);
-    /* Confirm none of the existing slots was overwritten. */
-    for (i = 0; i < MAX_NEIGHBORS; i++) {
-        ck_assert_uint_ne(s.arp.neighbors[i].ip, 0x0A0000A1U);
+    ck_assert_uint_eq(s.arp.neighbors[0].ip, 0x0A0000A1U);
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, mac, 6);
+    ck_assert_uint_eq(s.arp.neighbors[0].ts, 1000U);
+    /* The rest of the working set is untouched. */
+    for (i = 1; i < MAX_NEIGHBORS; i++) {
+        ck_assert_uint_eq(s.arp.neighbors[i].ip, 0x0A000010U + (uint32_t)i);
+        ck_assert_uint_eq(s.arp.neighbors[i].ts, 1U + (uint64_t)i);
     }
 }
 END_TEST
