@@ -181,6 +181,21 @@ wait_for_lease() {
       ip="$(tail -n1 /tmp/dnsmasq.leases | cut -d' ' -f3)"
     fi
     if [ -n "${ip}" ]; then
+      # The host grants the lease at the DHCP ACK, but the device may still
+      # be running RFC 4331 DAD (3 probes) before it binds the address and
+      # starts serving. Under the emulated (paced) tick rate that window is
+      # several seconds, longer than a short nc retry burst, so the test
+      # would give up while the device is still legitimately probing. The
+      # plain app prints a ready line when it is bound; wait for it (other
+      # apps print no DHCP marker and keep the old behavior).
+      if grep -q "Starting DHCP client" /tmp/m33mu.log 2>/dev/null; then
+        for _ in $(seq 1 "${retries}"); do
+          if grep -q "DHCP configuration received" /tmp/m33mu.log 2>/dev/null; then
+            break
+          fi
+          sleep 1
+        done
+      fi
       printf '%s\n' "${ip}"
       return 0
     fi
