@@ -5211,6 +5211,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         t->remote_ip = IPADDR_ANY;
                         t->dst_port = 0;
                         t->sock.tcp.ack = 0;
+                        /* Drop the RST'd connection's parked SYN-ACK; it must
+                         * not be retransmitted for the next connection (see
+                         * the accept() revert for why). */
+                        fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
                         continue;
                     }
                     /* An accepted (cloned) connection has no listen role: a peer
@@ -5548,6 +5552,10 @@ static void tcp_rto_cb(void *arg)
                 ts->remote_ip = 0;
                 ts->dst_port = 0;
                 ts->events = 0;
+                /* The timed-out SYN-ACK is gone with the connection; drop it
+                 * so the next connection starts with an empty TX FIFO (see
+                 * the accept() revert for why). */
+                fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
                 if (ts->bound_local_ip != IPADDR_ANY) {
                     int bound_match = 0;
                     unsigned int bound_if = wolfIP_if_for_local_ip(
@@ -6207,6 +6215,13 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             }
             ts->sock.tcp.state = TCP_LISTEN;
             tcp_ctrl_rto_stop(ts);
+            /* The accepted connection owns the handshake now (its SYN-ACK
+             * lives in the clone's TX FIFO). Drop segments parked by the
+             * half-open connection: the flush refreshes a parked segment's
+             * ack from the socket's current state, so a stale SYN-ACK would
+             * be retransmitted for the listener's next connection with the
+             * new connection's ack value and a wrong destination port. */
+            fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
             ts->sock.tcp.seq = wolfIP_getrandom();
             if (ts->bound_local_ip != IPADDR_ANY) {
                 int bound_match = 0;

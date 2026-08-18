@@ -1258,6 +1258,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_input_window_grows_from_zero_stops_persist);
     tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_timeout_closes_socket);
     tcase_add_test(tc_core, test_accept_synack_retransmit_repeats_isn);
+    tcase_add_test(tc_core, test_accept_clears_listener_tx_fifo);
+    tcase_add_test(tc_core, test_rst_listener_fallback_clears_tx_fifo);
+    tcase_add_test(tc_core, test_no_stale_synack_after_accept_new_conn);
     tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_wrong_state_stops_timer);
     tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_not_needed_stops);
     tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_maxretries_nonlistener_closes);

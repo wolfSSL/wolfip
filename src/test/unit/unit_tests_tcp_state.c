@@ -2629,3 +2629,190 @@ START_TEST(test_accept_synack_retransmit_repeats_isn)
     }
 }
 END_TEST
+
+/* ---- listener TX FIFO must not leak segments into the next connection ---- */
+
+START_TEST(test_accept_clears_listener_tx_fifo)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct tsocket *accepted;
+    struct wolfIP_sockaddr_in sin;
+    int acc_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    /* Peer SYN: the listener goes SYN_RCVD and parks its SYN-ACK (the
+     * neighbor is unresolved under the pending-only ARP policy). */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    wolfIP_poll(&s, 1000);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_int_eq(fifo_is_empty(&listener->sock.tcp.txbuf), 0);
+
+    /* accept() hands the handshake to the clone; the listener must revert
+     * to LISTEN with an empty TX FIFO. */
+    acc_sd = wolfIP_sock_accept(&s, listen_sd, NULL, 0);
+    ck_assert_int_gt(acc_sd, 0);
+    accepted = &s.tcpsockets[SOCKET_UNMARK(acc_sd)];
+    ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
+    /* The clone carries the connection's SYN-ACK. */
+    ck_assert_int_eq(fifo_is_empty(&accepted->sock.tcp.txbuf), 0);
+    /* The listener's parked SYN-ACK belongs to the abandoned half-open
+     * connection and must be dropped. */
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(fifo_is_empty(&listener->sock.tcp.txbuf), 1);
+}
+END_TEST
+
+START_TEST(test_rst_listener_fallback_clears_tx_fifo)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    /* Peer SYN, SYN-ACK parked as in test_accept_clears_listener_tx_fifo. */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    wolfIP_poll(&s, 1000);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_int_eq(fifo_is_empty(&listener->sock.tcp.txbuf), 0);
+
+    /* Peer RST with seq == rcv_nxt tears down the half-open connection; the
+     * listener falls back to LISTEN with an empty TX FIFO. */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U, 40000, 1234,
+            listener->sock.tcp.ack, 0, TCP_FLAG_RST);
+    wolfIP_poll(&s, 1100);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(fifo_is_empty(&listener->sock.tcp.txbuf), 1);
+}
+END_TEST
+
+START_TEST(test_no_stale_synack_after_accept_new_conn)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    int acc_sd;
+    uint32_t count_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    /* Connection A: SYN parked behind unresolved ARP. */
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    wolfIP_poll(&s, 1000);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    acc_sd = wolfIP_sock_accept(&s, listen_sd, NULL, 0);
+    ck_assert_int_gt(acc_sd, 0);
+
+    /* Connection B: a second client port from the same peer while A's
+     * SYN-ACK is still parked. */
+    {
+        struct wolfIP_tcp_seg syn;
+        struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+        union transport_pseudo_header ph;
+        static const uint8_t src_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+        ck_assert_ptr_nonnull(ll);
+        memset(&syn, 0, sizeof(syn));
+        memcpy(syn.ip.eth.dst, ll->mac, 6);
+        memcpy(syn.ip.eth.src, src_mac, 6);
+        syn.ip.eth.type = ee16(ETH_TYPE_IP);
+        syn.ip.ver_ihl = 0x45;
+        syn.ip.ttl = 64;
+        syn.ip.proto = WI_IPPROTO_TCP;
+        syn.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+        syn.ip.src = ee32(0x0A0000A1U);
+        syn.ip.dst = ee32(0x0A000001U);
+        syn.ip.csum = 0;
+        iphdr_set_checksum(&syn.ip);
+        syn.src_port = ee16(40001);
+        syn.dst_port = ee16(1234);
+        syn.seq = ee32(7);
+        syn.ack = 0;
+        syn.hlen = TCP_HEADER_LEN << 2;
+        syn.flags = TCP_FLAG_SYN;
+        syn.win = ee16(65535);
+        syn.csum = 0;
+        syn.urg = 0;
+        memset(&ph, 0, sizeof(ph));
+        ph.ph.src = syn.ip.src;
+        ph.ph.dst = syn.ip.dst;
+        ph.ph.proto = 0x06;
+        ph.ph.len = ee16(TCP_HEADER_LEN);
+        syn.csum = ee16(transport_checksum(&ph, &syn.src_port));
+        tcp_input(&s, TEST_PRIMARY_IF, &syn,
+                sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
+    }
+    wolfIP_poll(&s, 1200);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    /* Resolve the ARP (answer our own request) and flush. Exactly two
+     * SYN-ACKs may go out: the clone's for A and the listener's for B. A
+     * stale SYN-ACK from A's abandoned half-open state would be a third
+     * frame carrying A's destination port with B's ack value. */
+    {
+        struct arp_packet reply;
+        struct wolfIP_ll_dev *ll2 = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+        static const uint8_t peer_mac[6] = {0x10, 0x20, 0x30, 0x40, 0x50, 0x60};
+
+        ck_assert_ptr_nonnull(ll2);
+        memset(&reply, 0, sizeof(reply));
+        memcpy(reply.eth.dst, ll2->mac, 6);
+        memcpy(reply.eth.src, peer_mac, 6);
+        reply.eth.type = ee16(ETH_TYPE_ARP);
+        reply.htype = ee16(1);
+        reply.ptype = ee16(0x0800);
+        reply.hlen = 6;
+        reply.plen = 4;
+        reply.opcode = ee16(ARP_REPLY);
+        memcpy(reply.sma, peer_mac, 6);
+        reply.sip = ee32(0x0A0000A1U);
+        memcpy(reply.tma, ll2->mac, 6);
+        reply.tip = ee32(0x0A000001U);
+        arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
+    }
+    count_before = last_frame_sent_count;
+    wolfIP_poll(&s, 1300);
+    ck_assert_uint_eq(last_frame_sent_count - count_before, 2U);
+}
+END_TEST
