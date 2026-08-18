@@ -9146,10 +9146,16 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
     if (!conf)
         return;
 
-    if (s->arp.last_arp[if_idx] + 1000 > s->last_tick) {
+    /* One request per second per interface. last_arp == 0 means "never
+     * sent" (fresh boot, or a tick-source restart that reset the limiter),
+     * so the first request is never held back by the window. */
+    if (s->arp.last_arp[if_idx] != 0 &&
+            s->arp.last_arp[if_idx] + 1000 > s->last_tick) {
         return;
     }
-    s->arp.last_arp[if_idx] = s->last_tick;
+    /* Store tick+1 so a request sent at tick 0 is distinguishable from
+     * "never sent" (last_arp == 0). */
+    s->arp.last_arp[if_idx] = s->last_tick + 1;
     memset(&arp, 0, sizeof(struct arp_packet));
     eth_output_add_header(s, if_idx, NULL, &arp.eth, ETH_TYPE_ARP);
     arp.htype = ee16(1); /* Ethernet */
@@ -11149,6 +11155,20 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 {
     if (!s)
         return -WOLFIP_EINVAL;
+
+#ifdef ETHERNET
+    if (now < s->last_tick) {
+        unsigned int i;
+        /* The tick source restarted from a lower value (e.g. the app
+         * handed off from a bare-metal tick loop to an RTOS tick). Absolute
+         * tick values from the previous domain are no longer comparable,
+         * so reset the ARP rate limit: otherwise a stale last_arp from the
+         * old domain holds the first request in the new domain for the
+         * whole stale offset. */
+        for (i = 0; i < s->if_count; i++)
+            s->arp.last_arp[i] = 0;
+    }
+#endif
 
     s->last_tick = now;
 

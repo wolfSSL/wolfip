@@ -495,3 +495,53 @@ START_TEST(test_regression_unsolicited_reply_overwrite_still_blocked)
     ck_assert_mem_eq(s.arp.neighbors[idx].mac, arp_regr_own_mac, 6);
 }
 END_TEST
+
+/* ---- arp_request: first request is never rate-limited ---- */
+
+START_TEST(test_arp_request_first_not_rate_limited)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    /* Fresh stack at tick 0 (last_arp == 0): the very first request must go
+     * out immediately. Holding it back for the whole 1000-tick window would
+     * delay the first address resolution of a tick domain that just started
+     * (e.g. an RTOS tick handed over from a bare-metal loop). */
+    last_frame_sent_size = 0;
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000002U);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    ck_assert_uint_eq(s.arp.last_arp[TEST_PRIMARY_IF], 1U);
+
+    /* A second request in the same tick is still suppressed. */
+    last_frame_sent_size = 0;
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000003U);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
+START_TEST(test_arp_tick_restart_resets_rate_limit)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    /* Old tick domain: a request went out at tick 5000. */
+    s.last_tick = 5000;
+    s.arp.last_arp[TEST_PRIMARY_IF] = 5000;
+
+    /* The app switches tick sources (e.g. vTaskStartScheduler): the new
+     * domain starts at 0. The stale last_arp must not hold the first
+     * request in the new domain for the whole stale offset. */
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(s.arp.last_arp[TEST_PRIMARY_IF], 0U);
+
+    last_frame_sent_size = 0;
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000002U);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+}
+END_TEST
