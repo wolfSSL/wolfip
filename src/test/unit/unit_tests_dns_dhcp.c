@@ -1138,6 +1138,52 @@ START_TEST(test_dhcp_messages_set_secs_from_process_start)
 }
 END_TEST
 
+START_TEST(test_dhcp_discover_first_retry_delay_rfc2131)
+{
+    struct wolfIP s;
+    uint64_t delay;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+
+    ck_assert_int_eq(dhcp_send_discover(&s), 0);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    delay = find_timer_expiry(&s, s.dhcp_timer) - s.last_tick;
+    /* RFC 2131 §4.1 (10 Mb/s Ethernet example): first retransmission
+     * at 4 s, randomized uniformly by plus or minus 1 s. */
+    ck_assert_uint_ge(delay, 3000U);
+    ck_assert_uint_le(delay, 5000U);
+}
+END_TEST
+
+/* A configured discover base smaller than the jitter half-window must not
+ * underflow the centered jitter window (which would schedule the retry
+ * far in the future). */
+START_TEST(test_dhcp_discover_retry_delay_small_base_no_underflow)
+{
+    struct wolfIP s;
+    uint64_t delay;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* Default base: 4 s ± 1 s window. */
+    delay = dhcp_discover_retry_delay(&s, 4000U);
+    ck_assert_uint_ge(delay, 3000U);
+    ck_assert_uint_le(delay, 5000U);
+
+    /* Base below the jitter half-window stays bounded. */
+    delay = dhcp_discover_retry_delay(&s, 200U);
+    ck_assert_uint_le(delay, 2000U);
+}
+END_TEST
+
+
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
     struct wolfIP s;
@@ -3054,8 +3100,10 @@ START_TEST(test_dns_send_query_invalid_name)
     memcpy(name + 65, "com", 3);
     name[68] = 0;
     ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+    /* The failed encode must not leave the resolver armed. */
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
 
-    s.dns_id = 0;
     memset(name, 'a', sizeof(name));
     pos = 0;
     memset(name + pos, 'a', 63);
@@ -3071,6 +3119,336 @@ START_TEST(test_dns_send_query_invalid_name)
     pos += 63;
     name[pos] = 0;
     ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+
+    /* A subsequent lookup must not be blocked by the failed ones. */
+    ck_assert_int_eq(dns_send_query(&s, "example.com", &id, DNS_A), 0);
+    ck_assert_uint_ne(s.dns_id, 0);
+    dns_abort_query(&s);
+    ck_assert_uint_eq(s.dns_id, 0);
+}
+END_TEST
+
+/* A zero-length label is the wire-format root terminator (RFC 1035
+ * §3.1); it is only legal at the end of the name. Leading or interior
+ * dots must be rejected, while the trailing-dot FQDN presentation form
+ * stays valid. */
+START_TEST(test_dns_send_query_rejects_empty_labels)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+
+    /* Leading dot. */
+    ck_assert_int_eq(dns_send_query(&s, ".com", &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+
+    /* Interior dot. */
+    ck_assert_int_eq(dns_send_query(&s, "a..com", &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+
+    /* Trailing root dot: valid FQDN presentation form. */
+    ck_assert_int_eq(dns_send_query(&s, "example.com.", &id, DNS_A), 0);
+    ck_assert_uint_ne(s.dns_id, 0);
+    dns_abort_query(&s);
+    ck_assert_uint_eq(s.dns_id, 0);
+}
+END_TEST
+
+/* RFC 1035 §3.4.1: A RDATA is exactly a 32-bit address. An A RR whose
+ * RDLENGTH is not 4 is malformed and must not be accepted as the answer;
+ * the query stays outstanding for the retry/timeout path. */
+START_TEST(test_dns_callback_rejects_a_record_with_wrong_rdlength)
+{
+    struct wolfIP s;
+    uint8_t response[192];
+    int pos;
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0x1234, dns_qname_a_com, (int)sizeof(dns_qname_a_com),
+            DNS_A);
+    s.dns_lookup_cb = test_dns_lookup_cb;
+    dns_lookup_ip = 0;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)];
+
+    memset(response, 0, sizeof(response));
+    hdr->id = ee16(s.dns_id);
+    hdr->flags = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = (int)sizeof(struct dns_header);
+    response[pos++] = 1; response[pos++] = 'a';
+    response[pos++] = 3; memcpy(&response[pos], "com", 3); pos += 3;
+    response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype = ee16(DNS_A);
+    q->qclass = ee16(1);
+    pos += (int)sizeof(struct dns_question);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type = ee16(DNS_A);
+    rr->class = ee16(1);
+    rr->ttl = ee32(60);
+    rr->rdlength = ee16(5);  /* malformed: A RDATA is exactly 4 bytes */
+    pos += (int)sizeof(struct dns_rr);
+    response[pos++] = 0x0A;
+    response[pos++] = 0x00;
+    response[pos++] = 0x00;
+    response[pos++] = 0x02;
+    response[pos++] = 0x55;  /* trailing junk beyond the 4-byte address */
+
+    enqueue_udp_rx(ts, response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* Not delivered as an answer, and the query not retired. */
+    ck_assert_uint_eq(dns_lookup_ip, 0);
+    ck_assert_int_ne(s.dns_query_type, DNS_QUERY_TYPE_NONE);
+    ck_assert_uint_ne(s.dns_id, 0);
+    dns_abort_query(&s);
+}
+END_TEST
+
+/* RFC 2132 §9.3: option 52 (Overload) marks the reply's sname (value
+ * bit 2) and/or file (value bit 1) fields as carrying additional
+ * options. The option stream continues into those fields after the
+ * standard options field is exhausted, each with its own bounds, so an
+ * OFFER whose server identifier is overloaded must still be accepted. */
+START_TEST(test_dhcp_parse_offer_option_overload)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *field_opt;
+    uint8_t *opt;
+    uint32_t opt_len;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+
+    /* --- Scenario 1: overload = sname (value 2) ---
+     * Options field: OFFER, mask, overload; no END — the stream
+     * continues into the sname field, which holds the server id. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = DHCP_OPTION_SUBNET_MASK; opt[1] = 4;
+    opt[2] = 0xFF; opt[3] = 0xFF; opt[4] = 0xFF; opt[5] = 0x00;
+    opt += 6;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 2;
+    opt += 3;
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    field_opt = (struct dhcp_option *)msg.sname;
+    field_opt->code = DHCP_OPTION_SERVER_ID;
+    field_opt->len = 4;
+    field_opt->data[0] = 0x0A; field_opt->data[1] = 0x00;
+    field_opt->data[2] = 0x00; field_opt->data[3] = 0x64;
+    field_opt = (struct dhcp_option *)((uint8_t *)field_opt + 6);
+    field_opt->code = DHCP_OPTION_END;
+    field_opt->len = 0;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+    ck_assert_uint_eq(s.dhcp_ip, 0x0A00000AU);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(s.ipconf[TEST_PRIMARY_IF].mask, 0xFFFFFF00U);
+
+    /* --- Scenario 2: overload = file (value 1) --- */
+    memset(&s, 0, sizeof(s));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 1;
+    opt += 3;
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    field_opt = (struct dhcp_option *)msg.file;
+    field_opt->code = DHCP_OPTION_SERVER_ID;
+    field_opt->len = 4;
+    field_opt->data[0] = 0x0A; field_opt->data[1] = 0x00;
+    field_opt->data[2] = 0x00; field_opt->data[3] = 0x64;
+    field_opt = (struct dhcp_option *)((uint8_t *)field_opt + 6);
+    field_opt->code = DHCP_OPTION_END;
+    field_opt->len = 0;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+
+    /* --- Scenario 3: overload = both (value 3): the stream runs
+     * options -> sname -> file; the mask is in sname, the server id in
+     * file. */
+    memset(&s, 0, sizeof(s));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 3;
+    opt += 3;
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    field_opt = (struct dhcp_option *)msg.sname;
+    field_opt->code = DHCP_OPTION_SUBNET_MASK;
+    field_opt->len = 4;
+    field_opt->data[0] = 0xFF; field_opt->data[1] = 0xFF;
+    field_opt->data[2] = 0xFF; field_opt->data[3] = 0x00;
+    field_opt = (struct dhcp_option *)((uint8_t *)field_opt + 6);
+    field_opt->code = 0; /* pad until the file field */
+    field_opt->len = 0;
+    field_opt = (struct dhcp_option *)msg.file;
+    field_opt->code = DHCP_OPTION_SERVER_ID;
+    field_opt->len = 4;
+    field_opt->data[0] = 0x0A; field_opt->data[1] = 0x00;
+    field_opt->data[2] = 0x00; field_opt->data[3] = 0x64;
+    field_opt = (struct dhcp_option *)((uint8_t *)field_opt + 6);
+    field_opt->code = DHCP_OPTION_END;
+    field_opt->len = 0;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+    ck_assert_uint_eq(s.ipconf[TEST_PRIMARY_IF].mask, 0xFFFFFF00U);
+}
+END_TEST
+
+/* An option split across a region boundary is a continuation of the
+ * option stream (RFC 2132 §9.3), not the start of a new option list:
+ * the server id must be parsed across the split in each boundary
+ * shape. */
+START_TEST(test_dhcp_parse_offer_option_split_across_region_boundary)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    uint8_t *opt;
+    uint8_t *sn;
+    uint8_t *fl;
+    uint32_t opt_len;
+    int ret;
+
+    /* --- Scenario 1: the server id's code byte is the last byte of
+     * the options field; its length, data and END continue in sname. --- */
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 2;
+    opt += 3;
+    *opt++ = DHCP_OPTION_SERVER_ID;  /* last byte of the options field */
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    sn = (uint8_t *)msg.sname;
+    sn[0] = 4; /* length continues in sname */
+    sn[1] = 0x0A; sn[2] = 0x00; sn[3] = 0x00; sn[4] = 0x64;
+    sn[5] = DHCP_OPTION_END;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+    ck_assert_uint_eq(s.dhcp_ip, 0x0A00000AU);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+
+    /* --- Scenario 2: code + length are the last two bytes of the
+     * options field; the four data bytes split 2 + 2 into sname. --- */
+    memset(&s, 0, sizeof(s));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 2;
+    opt += 3;
+    *opt++ = DHCP_OPTION_SERVER_ID;
+    *opt++ = 4; /* last two bytes of the options field */
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    sn = (uint8_t *)msg.sname;
+    sn[0] = 0x0A; sn[1] = 0x00; /* first half of the data */
+    sn[2] = 0x00; sn[3] = 0x64; /* second half */
+    sn[4] = DHCP_OPTION_END;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
+
+    /* --- Scenario 3: overload = both; the server id starts at the
+     * end of sname (pads precede it) and its data runs into file. --- */
+    memset(&s, 0, sizeof(s));
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 0x1234;
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0x0A00000AU);
+    opt = (uint8_t *)msg.options;
+    opt[0] = DHCP_OPTION_MSG_TYPE; opt[1] = 1; opt[2] = DHCP_OFFER;
+    opt += 3;
+    opt[0] = 52 /* DHCP_OPTION_OVERLOAD */; opt[1] = 1; opt[2] = 3;
+    opt += 3;
+    opt_len = (uint32_t)(opt - (uint8_t *)msg.options);
+    sn = (uint8_t *)msg.sname;
+    fl = (uint8_t *)msg.file;
+    sn[60] = DHCP_OPTION_SERVER_ID; sn[61] = 4;
+    sn[62] = 0x0A; sn[63] = 0x00; /* data starts in sname */
+    fl[0] = 0x00; fl[1] = 0x64;   /* ...and ends in file */
+    fl[2] = DHCP_OPTION_END;
+
+    ret = dhcp_parse_offer(&s, &msg, DHCP_HEADER_LEN + opt_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0x0A000064U);
 }
 END_TEST
 START_TEST(test_fifo_push_and_pop) {
@@ -3192,7 +3570,8 @@ START_TEST(test_sock_accept_ack_with_payload_completes_handshake)
     seg->dst_port = ee16(local_port);
     base_seq = new_ts->sock.tcp.ack;
     seg->seq = ee32(base_seq);
-    seg->ack = ee32(new_ts->sock.tcp.seq);
+    /* The client's ACK is at the server's snd.nxt: ISN+1. */
+    seg->ack = ee32(tcp_seq_inc(new_ts->sock.tcp.snd_una, 1));
     seg->hlen = TCP_HEADER_LEN << 2;
     seg->flags = TCP_FLAG_ACK;
     memcpy(seg->data, payload, sizeof(payload));
@@ -3252,7 +3631,8 @@ START_TEST(test_sock_accept_ack_at_snd_nxt_completes_handshake)
     ackseg.src_port = ee16(remote_port);
     ackseg.dst_port = ee16(local_port);
     ackseg.seq = ee32(new_ts->sock.tcp.ack);
-    ackseg.ack = ee32(new_ts->sock.tcp.seq);
+    /* The client's final ACK is at the server's snd.nxt: ISN+1. */
+    ackseg.ack = ee32(tcp_seq_inc(new_ts->sock.tcp.snd_una, 1));
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = TCP_FLAG_ACK;
     fix_tcp_checksums(&ackseg);
@@ -3313,7 +3693,8 @@ START_TEST(test_sock_accept_ack_psh_with_payload_completes_handshake)
     seg->dst_port = ee16(local_port);
     base_seq = new_ts->sock.tcp.ack;
     seg->seq = ee32(base_seq);
-    seg->ack = ee32(new_ts->sock.tcp.seq);
+    /* The client's ACK is at the server's snd.nxt: ISN+1. */
+    seg->ack = ee32(tcp_seq_inc(new_ts->sock.tcp.snd_una, 1));
     seg->hlen = TCP_HEADER_LEN << 2;
     seg->flags = (TCP_FLAG_ACK | TCP_FLAG_PSH);
     memcpy(seg->data, payload, sizeof(payload));
@@ -3680,6 +4061,59 @@ START_TEST(test_tcp_rto_cb_syn_sent_requeues_syn_and_arms_timer)
     ck_assert_uint_eq(seg->flags, TCP_FLAG_SYN);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 1);
     ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+/* RFC 9293 §3.5: the R2 retransmission timeout for SYN segments defaults
+ * to 3 minutes, so an unanswered active-open SYN must not be abandoned
+ * before 180 s have elapsed. */
+START_TEST(test_tcp_syn_retransmit_duration_meets_rfc9293_r2)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint64_t expiry = 0;
+    int found = 0;
+    int iterations = 0;
+    int i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.rto = TCP_RTO_MIN_MS;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* The first SYN went out at t=0 with the control RTO armed. */
+    s.last_tick = 0;
+    tcp_ctrl_rto_start(ts, 0);
+
+    /* No answer ever arrives: drive the retransmission timer until the
+     * stack gives up. */
+    while (ts->sock.tcp.state == TCP_SYN_SENT && iterations < 64) {
+        expiry = 0;
+        found = 0;
+        for (i = 0; i < (int)s.timers.size; i++) {
+            if (s.timers.timers[i].id == ts->sock.tcp.tmr_rto) {
+                expiry = s.timers.timers[i].expires;
+                found = 1;
+                break;
+            }
+        }
+        ck_assert_int_eq(found, 1);
+        s.last_tick = expiry;
+        tcp_rto_cb(ts);
+        iterations++;
+    }
+
+    ck_assert_int_ne(ts->sock.tcp.state, TCP_SYN_SENT);
+    ck_assert_uint_ge(s.last_tick, 180000);
 }
 END_TEST
 

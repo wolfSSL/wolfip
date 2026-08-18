@@ -148,7 +148,12 @@ struct wolfIP_icmp_packet;
 /* Compatibility alias for legacy fixed-size uses. */
 #define TCP_MSS TCP_MSS_MAX
 #define TCP_DEFAULT_MSS 536U
-#define TCP_CTRL_RTO_MAXRTX 6U
+/* Control-segment (SYN/SYN-ACK/FIN) retry budget. RFC 9293 §3.5 gives the
+ * R2 retransmission timeout for SYN and FIN segments a 3-minute default,
+ * so the retry schedule must accumulate at least 180 s: with the 1 s base
+ * RTO and the 64 s backoff cap the arms are 1,2,4,8,16,32,64,64,64 = 255 s
+ * before the 8th timeout gives up. */
+#define TCP_CTRL_RTO_MAXRTX 8U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
 #ifdef IP_MULTICAST
@@ -160,6 +165,8 @@ struct wolfIP_icmp_packet;
 #define TCP_RTO_MIN_MS 1000U
 #define TCP_RTO_MAX_MS 60000U
 #define TCP_RTO_G_MS 1U
+/* RFC 6298 §5.5: maximum timer value G; caps the backed-off RTO. */
+#define TCP_RTO_BACKOFF_MAX_MS 64000U
 #define TCP_PERSIST_MIN_MS 1000U
 #define TCP_PERSIST_MAX_MS 60000U
 #ifndef TCP_FIN_WAIT_2_TIMEOUT_MS
@@ -831,9 +838,16 @@ static uint32_t wolfip_filter_mask_tcp;
 static uint32_t wolfip_filter_mask_udp;
 static uint32_t wolfip_filter_mask_icmp;
 static int wolfip_filter_lock;
+/* Set by the first explicit mask configuration (any value, including 0)
+ * after the last uninstall; reset by uninstalling the callback. While
+ * unset, dispatch consults the callback for every reason so a freshly
+ * installed filter cannot fail open. */
+static int wolfip_filter_mask_touched;
 
 void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg)
 {
+    if (cb == NULL)
+        wolfip_filter_mask_touched = 0;
     wolfip_filter_cb = cb;
     wolfip_filter_arg = arg;
 }
@@ -841,31 +855,37 @@ void wolfIP_filter_set_callback(wolfIP_filter_cb cb, void *arg)
 void wolfIP_filter_set_mask(uint32_t mask)
 {
     wolfip_filter_mask = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_eth_mask(uint32_t mask)
 {
     wolfip_filter_mask_eth = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_ip_mask(uint32_t mask)
 {
     wolfip_filter_mask_ip = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_tcp_mask(uint32_t mask)
 {
     wolfip_filter_mask_tcp = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_udp_mask(uint32_t mask)
 {
     wolfip_filter_mask_udp = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 void wolfIP_filter_set_icmp_mask(uint32_t mask)
 {
     wolfip_filter_mask_icmp = mask;
+    wolfip_filter_mask_touched = 1;
 }
 
 uint32_t wolfIP_filter_get_mask(void)
@@ -911,6 +931,8 @@ static int wolfIP_filter_dispatch(enum wolfIP_filter_reason reason,
         mask = wolfip_filter_mask;
     else
         mask = wolfIP_filter_mask_for_proto(meta->ip_proto);
+    if (!wolfip_filter_mask_touched)
+        mask = ~0U;
     if ((mask & (1U << reason)) == 0)
         return 0;
     if (wolfip_filter_lock)
@@ -1055,6 +1077,7 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
 #define DHCP_OPTION_MSG_TYPE 53
+#define DHCP_OPTION_OVERLOAD 52
 #define DHCP_OPTION_SUBNET_MASK 1
 #define DHCP_OPTION_ROUTER 3
 #define DHCP_OPTION_DNS 6
@@ -1065,7 +1088,10 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 #define DHCP_OPTION_REBIND_TIME 59
 #define DHCP_OPTION_OFFER_IP 50
 #define DHCP_OPTION_END 0xFF
-#define DHCP_DISCOVER_TIMEOUT 2000
+/* RFC 2131 §4.1 (10 Mb/s Ethernet example): the first DHCPDISCOVER
+ * retransmission is due 4 s after the initial send. */
+#define DHCP_DISCOVER_TIMEOUT 4000
+#define DHCP_DISCOVER_JITTER_MS 1000U /* uniform ±1 s */
 #ifndef DHCP_DISCOVER_RETRIES
 #define DHCP_DISCOVER_RETRIES 3
 #endif
@@ -1147,6 +1173,9 @@ struct tcpsocket {
     ip4 local_ip, remote_ip;
     uint32_t peer_rwnd;
     uint16_t peer_mss;
+    /* Raw receive window advertised by the previously processed ACK; dup
+     * ACK detection compares against it (RFC 5681 condition e). */
+    uint16_t last_peer_win;
     uint8_t snd_wscale, rcv_wscale, ws_enabled, ws_offer;
     uint8_t ts_enabled, ts_offer;
     uint8_t sack_offer, sack_permitted;
@@ -3059,13 +3088,11 @@ static void tcp_parse_options(const struct wolfIP_tcp_seg *tcp, uint32_t frame_l
             memcpy(&mss, opt + 2, sizeof(mss));
             mss = ee16(mss);
             if (mss > 0) {
-                /* RFC 9293 §3.7.1: IPv4 default MSS is 536. Floor the
-                 * advertised value so a peer cannot drag peer_mss below it
-                 * and coerce us into tiny segments (small-MSS DoS
-                 * amplification). Symmetric with the ICMP PTB floor in
-                 * icmp_try_deliver_tcp_error(). */
-                if (mss < TCP_DEFAULT_MSS)
-                    mss = TCP_DEFAULT_MSS;
+                /* Keep the advertised value as-is: it is the peer's
+                 * commitment about what it will receive (RFC 9293 §3.7.1),
+                 * and the effective send MSS must not exceed it. The 536
+                 * default is applied by the caller only when no MSS option
+                 * is present. */
                 po->mss = mss;
                 po->mss_found = 1;
             }
@@ -3405,6 +3432,10 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     tcp->win = ee16(tcp_adv_win(t, 1));
     ip_output_add_header(t, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
             (uint16_t)(frame_len - ETH_HEADER_LEN));
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if))
+        eth_output_add_header(t->S, tx_if, t->nexthop_mac, &tcp->ip.eth, ETH_TYPE_IP);
+#endif
 
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, tcp, frame_len) != 0)
         return -1;
@@ -3699,6 +3730,16 @@ static void tcp_ctrl_rto_stop(struct tsocket *t)
     t->sock.tcp.ctrl_rto_retries = 0;
 }
 
+/* RFC 6298 §5.5: the RTO is doubled per retransmission timeout but MUST be
+ * capped at the maximum timer value G (64 s). */
+static uint32_t tcp_backoff_rto_ms(uint32_t rto_ms, uint32_t retries)
+{
+    uint64_t rto = (uint64_t)rto_ms << retries;
+    if (rto > TCP_RTO_BACKOFF_MAX_MS)
+        rto = TCP_RTO_BACKOFF_MAX_MS;
+    return (uint32_t)rto;
+}
+
 /* Arm/re-arm control-RTO timer using exponential backoff over the current base RTO.
  * This path is dedicated to SYN/SYN-ACK/FIN reliability (not data-loss recovery). */
 static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
@@ -3712,7 +3753,7 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
         timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
         t->sock.tcp.tmr_rto = NO_TIMER;
     }
-    shift_rto = (uint64_t)t->sock.tcp.rto << t->sock.tcp.ctrl_rto_retries;
+    shift_rto = tcp_backoff_rto_ms(t->sock.tcp.rto, t->sock.tcp.ctrl_rto_retries);
     tmr.expires = now + shift_rto;
     tmr.arg = t;
     tmr.cb = tcp_rto_cb;
@@ -3924,6 +3965,10 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
 #endif
     ip_output_add_header(t, (struct wolfIP_ip_packet *)probe, WI_IPPROTO_TCP,
             (uint16_t)(IP_HEADER_LEN + TCP_HEADER_LEN + opt_len + 1));
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(t->S, tx_if))
+        eth_output_add_header(t->S, tx_if, t->nexthop_mac, &probe->ip.eth, ETH_TYPE_IP);
+#endif
 
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, probe, frame_len) != 0)
         return -1;
@@ -4441,7 +4486,6 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
                                 uint8_t proto, uint16_t len)
 {
     union transport_pseudo_header ph;
-    unsigned int if_idx;
     memset(&ph, 0, sizeof(ph));
     memset(ip, 0, sizeof(struct wolfIP_ip_packet));
     ip->src = ee32(t->local_ip);
@@ -4483,15 +4527,10 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
         icmp->csum = 0;
         icmp->csum = ee16(icmp_checksum(icmp, ee16(ph.ph.len)));
     }
-#ifdef ETHERNET
-    if_idx = wolfIP_socket_if_idx(t);
-    if (!wolfIP_ll_is_non_ethernet(t->S, if_idx)) {
-        eth_output_add_header(t->S, if_idx, t->nexthop_mac, (struct wolfIP_eth_frame *)ip,
-                              ETH_TYPE_IP);
-    }
-#else
-    (void)if_idx;
-#endif
+    /* The link-layer header is added by the caller once the egress interface
+     * and next-hop MAC are known. Datagram callers fill this in at enqueue
+     * time so a queued frame keeps the destination it was sent to; TCP fills
+     * it in per segment. */
     return 0;
 }
 
@@ -4770,6 +4809,12 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     int recovery_exit_ack = 0;
     uint32_t inflight_pre = t->sock.tcp.bytes_in_flight;
 
+    /* Every caller presents an ACK-flagged segment, so each one is the new
+     * "previously received ACK" for dup detection. */
+    uint16_t adv_win = ee16(tcp->win);
+    int win_changed = (adv_win != t->sock.tcp.last_peer_win);
+    t->sock.tcp.last_peer_win = adv_win;
+
     if (t->sock.tcp.state == TCP_LAST_ACK && tcp_seq_leq(fin_acked, ack)) {
         tcp_ctrl_rto_stop(t);
         t->sock.tcp.state = TCP_CLOSED;
@@ -4936,10 +4981,20 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                 t->events |= CB_EVENT_WRITABLE;
         }
     } else {
-        /* Duplicate ack (no advance in snd_una). */
+        /* Duplicate ack (no advance in snd_una). RFC 5681: only a segment
+         * that carries no data and repeats the previously advertised
+         * receive window counts as a duplicate ACK, so data-bearing
+         * segments and window updates must not inflate the count or
+         * trigger fast retransmit. */
+        uint32_t ip_len = ee16(tcp->ip.len);
+        uint32_t hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
         if (ack != t->sock.tcp.snd_una)
             return;
         if (inflight_pre == 0)
+            return;
+        if (ip_len > hdr_len)
+            return;
+        if (win_changed)
             return;
         if (t->sock.tcp.dup_acks < 255)
             t->sock.tcp.dup_acks++;
@@ -5324,18 +5379,20 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 tcp_send_ack(t);
                 continue;
             } else if (t->sock.tcp.state == TCP_LAST_ACK) {
-                /* RFC 9293 s3.10.7.2: segment acceptability applies
-                 * to all synchronized states including LAST_ACK. */
-                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
-                    tcp_send_ack(t);
-                    continue;
-                }
+                /* RFC 7323 §5.3: PAWS takes precedence over the regular
+                 * acceptability test on synchronized connections. */
                 {
                     int paws = tcp_paws_check(t, tcp, frame_len);
                     if (paws == TCP_PAWS_ACK_DROP)
                         tcp_send_ack(t);
                     if (paws != TCP_PAWS_OK)
                         continue;
+                }
+                /* RFC 9293 s3.10.7.2: segment acceptability applies
+                 * to all synchronized states including LAST_ACK. */
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
                 }
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
                  * synchronized connection, send a challenge ACK and
@@ -5357,17 +5414,19 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     (t->sock.tcp.state == TCP_FIN_WAIT_1) ||
                     (t->sock.tcp.state == TCP_FIN_WAIT_2) ||
                     (t->sock.tcp.state == TCP_CLOSING)) {
-                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
-                    tcp_send_ack(t);
-                    continue;
-                }
-
+                /* RFC 7323 §5.3: PAWS takes precedence over the regular
+                 * acceptability test on synchronized connections. */
                 {
                     int paws = tcp_paws_check(t, tcp, frame_len);
                     if (paws == TCP_PAWS_ACK_DROP)
                         tcp_send_ack(t);
                     if (paws != TCP_PAWS_OK)
                         continue;
+                }
+
+                if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                    tcp_send_ack(t);
+                    continue;
                 }
 
                 /* RFC 9293 §3.10.7.4: if the SYN bit is set on a
@@ -5626,7 +5685,8 @@ static void tcp_rto_cb(void *arg)
         ts->sock.tcp.recovery_point = ts->sock.tcp.snd_una;
 
         ptmr = &tmr;
-        ptmr->expires = ts->S->last_tick + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+        ptmr->expires = ts->S->last_tick +
+                tcp_backoff_rto_ms(ts->sock.tcp.rto, ts->sock.tcp.rto_backoff);
         ptmr->arg = ts;
         ptmr->cb = tcp_rto_cb;
         ts->sock.tcp.tmr_rto = timers_binheap_insert(&ts->S->timers, *ptmr);
@@ -5670,7 +5730,8 @@ static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t n
     if (has_sent_payload && ts->sock.tcp.tmr_rto == NO_TIMER) {
         struct wolfIP_timer new_tmr = {};
         new_tmr.cb = tcp_rto_cb;
-        new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                ts->sock.tcp.rto_backoff);
         new_tmr.arg = ts;
         ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
     } else if (!has_sent_payload && ts->sock.tcp.tmr_rto != NO_TIMER) {
@@ -6004,6 +6065,14 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         uint8_t new_if_idx;
         ip4 new_local_ip;
 
+        /* A TCP connection is a single peer: broadcast destinations get
+         * answers from every host on the segment and multicast groups have
+         * no single peer, so an active OPEN to either is invalid. Reject
+         * before mutating the socket, mirroring the inbound SYN filter. */
+        if (wolfIP_ip_is_broadcast(s, new_remote_ip) ||
+                wolfIP_ip_is_multicast(new_remote_ip))
+            return -WOLFIP_EINVAL;
+
         /* Resolve and validate the local binding into locals before mutating
          * the socket. A failed validation here must not leave the socket in
          * TCP_SYN_SENT (no SYN queued, no RTO timer), which would make every
@@ -6125,7 +6194,10 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 return -WOLFIP_EAGAIN;
             }
             ts->events &= ~CB_EVENT_READABLE;
-            newts->sock.tcp.seq++;
+            /* Keep seq at the ISN while in SYN_RCVD: control RTO
+             * retransmits rebuild the SYN-ACK from seq, and a retransmitted
+             * SYN-ACK must repeat the original ISN. The final ACK handler
+             * advances seq to ISN+1 when the connection is established. */
             newts->sock.tcp.ctrl_rto_retries = 0;
             tcp_ctrl_rto_start(newts, s->last_tick);
             if (sin) {
@@ -6314,6 +6386,11 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         udp->len = ee16(len + UDP_HEADER_LEN);
         udp->csum = 0;
         memcpy(udp->data, buf, len);
+        /* Pin the IP header to this datagram's destination/source while the
+         * socket's routing state still matches it; the flush only adds the
+         * link-layer header. */
+        ip_output_add_header(ts, &udp->ip, WI_IPPROTO_UDP,
+                (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, udp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
         return len;
@@ -6374,8 +6451,11 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         memcpy(frame + sizeof(struct wolfIP_ip_packet), buf, payload_len);
         if (icmp->type == ICMP_ECHO_REQUEST)
             icmp_set_echo_id(icmp, ts->src_port);
-        icmp->csum = 0;
-        icmp->csum = ee16(icmp_checksum(icmp, (uint16_t)payload_len));
+        /* Pin the IP header and ICMP checksum to this datagram's
+         * destination/source at enqueue time; the flush only adds the
+         * link-layer header. */
+        ip_output_add_header(ts, &icmp->ip, WI_IPPROTO_ICMP,
+                (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, icmp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
         return (int)payload_len;
@@ -6430,8 +6510,14 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             total_len = (uint32_t)len + ETH_HEADER_LEN;
             if (dst_ip == 0)
                 dst_ip = ee32(rip->dst);
-            else
+            else {
+                /* The override changes a field covered by the IPv4 header
+                 * checksum, and the flush path trusts the caller's header
+                 * as-is, so recompute it for the transmitted destination. */
                 rip->dst = ee32(dst_ip);
+                rip->csum = 0;
+                iphdr_set_checksum(rip);
+            }
             if (rs->remote_ip == 0 && dst_ip != 0)
                 rs->remote_ip = dst_ip;
             rs->local_ip = ee32(rip->src);
@@ -7832,9 +7918,10 @@ static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
 }
 
 /* Exponential-backoff retransmission delay: double the base timeout for each
- * prior attempt (dhcp_timeout_count), saturating at DHCP_BACKOFF_MAX_MS, plus
- * the existing small jitter. The shift is clamped first because renew/rebind do
- * not cap dhcp_timeout_count, so it can grow past the point of UB. */
+ * prior attempt (dhcp_timeout_count), saturating at DHCP_BACKOFF_MAX_MS.
+ * Callers add their own jitter. The shift is clamped first because
+ * renew/rebind do not cap dhcp_timeout_count, so it can grow past the point
+ * of UB. */
 static uint64_t dhcp_backoff_delay(const struct wolfIP *s, uint32_t base_ms)
 {
     uint32_t count = s ? s->dhcp_timeout_count : 0;
@@ -7845,7 +7932,22 @@ static uint64_t dhcp_backoff_delay(const struct wolfIP *s, uint32_t base_ms)
     delay = (uint64_t)base_ms << count;
     if (delay > DHCP_BACKOFF_MAX_MS)
         delay = DHCP_BACKOFF_MAX_MS;
-    return delay + (wolfIP_getrandom() % 200U);
+    return delay;
+}
+
+/* DHCPDISCOVER retry delay: the backoff base with the RFC's uniform
+ * ±1 s jitter centered on it. When the configured base is smaller than
+ * the jitter half-window the window is anchored at zero instead, so a
+ * small base cannot underflow into a far-future retry. */
+static uint64_t dhcp_discover_retry_delay(const struct wolfIP *s,
+                                          uint32_t base_ms)
+{
+    uint64_t base = dhcp_backoff_delay(s, base_ms);
+    uint64_t jitter = wolfIP_getrandom() % (2U * DHCP_DISCOVER_JITTER_MS + 1U);
+
+    base = (base > DHCP_DISCOVER_JITTER_MS) ?
+            base - DHCP_DISCOVER_JITTER_MS : 0U;
+    return base + jitter;
 }
 
 static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
@@ -7854,7 +7956,8 @@ static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
 
     if (!s)
         return;
-    next = s->last_tick + dhcp_backoff_delay(s, DHCP_REQUEST_TIMEOUT);
+    next = s->last_tick + dhcp_backoff_delay(s, DHCP_REQUEST_TIMEOUT) +
+            (wolfIP_getrandom() % 200U);
     if (deadline != 0 && next > deadline)
         next = deadline;
     dhcp_schedule_timer_at(s, next);
@@ -8053,10 +8156,185 @@ static void dhcp_deconfigure_lease(struct wolfIP *s)
  */
 #define DHCP_DEFAULT_24BIT_NETMASK (0xFFFFFF00u)
 
+/* Iterator over a DHCP reply's option stream.
+ *
+ * RFC 2132 §9.3: option 52 (Overload) tells the client that the reply's
+ * sname (value bit 2) and/or file (value bit 1) fields carry additional
+ * options, interpreted after the standard options field is exhausted.
+ * The stream is therefore scanned options -> sname -> file (wire order),
+ * each region with its own bounds, and ends at option 255 or when the
+ * last active region runs out. Non-overloaded sname/file fields hold
+ * plain strings (TFTP server, bootfile) and are never scanned. */
+struct dhcp_opt_stream {
+    uint8_t *ptr;
+    uint8_t *end;
+    uint8_t *region_sname;
+    uint8_t *region_sname_end;
+    uint8_t *region_file;
+    uint8_t *region_file_end;
+    uint8_t region;  /* 0 options, 1 sname, 2 file */
+    uint8_t overload;
+    int strict;      /* -1 on malformed, or treat as end of stream */
+    /* Option in progress across a region boundary, materialized here as
+     * it is read: the sname and file fields live in separate parts of
+     * the message, so an option whose bytes span a boundary cannot be
+     * handed out as a contiguous [code, len, data...] block in place.
+     * fill is NULL when no option is in progress; the buffer holds one
+     * full option at most (1 + 1 + 255 bytes). */
+    uint8_t *fill;
+    uint8_t part_in_region0;
+    uint8_t part_buf[257];
+};
+
+static void dhcp_opt_stream_init(struct dhcp_opt_stream *st,
+                                 struct dhcp_msg *msg, uint32_t msg_len,
+                                 int strict)
+{
+    uint32_t opt_space = msg_len - DHCP_HEADER_LEN;
+    if (opt_space > sizeof(msg->options))
+        opt_space = sizeof(msg->options);
+    st->ptr = (uint8_t *)msg->options;
+    st->end = st->ptr + opt_space;
+    st->region_sname = (uint8_t *)msg->sname;
+    st->region_sname_end = st->region_sname + sizeof(msg->sname);
+    st->region_file = (uint8_t *)msg->file;
+    st->region_file_end = st->region_file + sizeof(msg->file);
+    st->region = 0;
+    st->overload = 0;
+    st->strict = strict;
+    st->fill = NULL;
+    st->part_in_region0 = 0;
+}
+
+/* Advance the stream to the next region selected by option 52. Return 1
+ * when a region was entered, 0 when no further region exists. */
+static int dhcp_opt_stream_next_region(struct dhcp_opt_stream *st)
+{
+    if (st->region == 0) {
+        if (st->overload & 2) {
+            st->region = 1;
+            st->ptr = st->region_sname;
+            st->end = st->region_sname_end;
+            return 1;
+        }
+        if (st->overload & 1) {
+            st->region = 2;
+            st->ptr = st->region_file;
+            st->end = st->region_file_end;
+            return 1;
+        }
+    }
+    else if (st->region == 1) {
+        if (st->overload & 1) {
+            st->region = 2;
+            st->ptr = st->region_file;
+            st->end = st->region_file_end;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Return 1 with the out-params set to the next option (option 255 is
+ * delivered as code 255, len 0), 0 at end of stream (option 255 consumed
+ * or every active region exhausted without END), or -1 on malformed
+ * options in strict mode (non-strict callers get 0 instead). */
+static int dhcp_opt_stream_next(struct dhcp_opt_stream *st, uint8_t *code,
+                                uint8_t *len, uint8_t **data)
+{
+    while (1) {
+        uint8_t c;
+        uint8_t l;
+        if (st->fill != NULL) {
+            /* Option in progress across region boundaries: pull bytes
+             * from the current region into part_buf until the option is
+             * complete. Its total size (2 + part_buf[1]) is known once
+             * the header bytes have been collected. */
+            while (st->ptr < st->end &&
+                   (st->fill < st->part_buf + 2 ||
+                    st->fill < st->part_buf + 2 + st->part_buf[1]))
+                *st->fill++ = *st->ptr++;
+            if (st->fill >= st->part_buf + 2 &&
+                st->fill >= st->part_buf + 2 + st->part_buf[1]) {
+                if (st->part_in_region0 &&
+                    st->part_buf[0] == DHCP_OPTION_OVERLOAD) {
+                    if (st->part_buf[1] != 1 || st->part_buf[2] < 1 ||
+                        st->part_buf[2] > 3) {
+                        st->fill = NULL;
+                        if (st->strict)
+                            return -1;
+                        return 0;
+                    }
+                    st->overload = st->part_buf[2];
+                }
+                *code = st->part_buf[0];
+                *len = st->part_buf[1];
+                *data = st->part_buf;
+                st->fill = NULL;
+                return 1;
+            }
+            /* Region exhausted mid-option: continue into the next
+             * overloaded region, or end the stream. */
+            if (!dhcp_opt_stream_next_region(st)) {
+                st->fill = NULL;
+                if (st->strict)
+                    return -1;
+                return 0;
+            }
+            continue;
+        }
+        if (st->ptr + 1 > st->end)
+            goto region_end;
+        c = st->ptr[0];
+        if (c == DHCP_OPTION_END) {
+            *code = c;
+            *len = 0;
+            *data = st->ptr;
+            st->ptr = st->end; /* stream ends here */
+            return 1;
+        }
+        if (c == 0) { /* Pad */
+            st->ptr++;
+            continue;
+        }
+        if (st->ptr + 2 > st->end ||
+            st->ptr + 2 + st->ptr[1] > st->end) {
+            /* Option header or data runs past the region end. RFC 2132
+             * §9.3 makes the sname/file fields a continuation of the
+             * option stream, so materialize the option across the
+             * boundary instead of dropping it. */
+            st->fill = st->part_buf;
+            st->part_in_region0 = (st->region == 0);
+            continue;
+        }
+        l = st->ptr[1];
+        if (st->region == 0 && c == DHCP_OPTION_OVERLOAD) {
+            /* RFC 2132 §9.3: length 1, values 1 (file), 2 (sname), 3. */
+            if (l != 1 || st->ptr[2] < 1 || st->ptr[2] > 3)
+                goto region_end;
+            st->overload = st->ptr[2];
+        }
+        *code = c;
+        *len = l;
+        /* Points at the option's code byte, so callers may cast it to
+         * struct dhcp_option * (whose data[] member starts 2 bytes in). */
+        *data = st->ptr;
+        st->ptr += 2 + l;
+        return 1;
+region_end:
+        /* Region exhausted without END: continue into the overloaded
+         * fields (sname, then file) if option 52 selected them. */
+        if (!dhcp_opt_stream_next_region(st)) {
+            if (st->strict)
+                return -1;
+            return 0;
+        }
+    }
+}
+
 static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
-    uint8_t *opt = (uint8_t *)msg->options;
-    uint8_t *opt_end;
+    struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
     uint32_t ip;
@@ -8070,66 +8348,48 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
         return -1;
     if (ee32(msg->xid) != s->dhcp_xid)
         return -1;
-    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
-        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
-    else
-        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
-    while (opt < opt_end) {
+    dhcp_opt_stream_init(&st, msg, msg_len, 1);
+    while (1) {
         uint8_t code;
         uint8_t len;
-        if (opt + 1 > opt_end)
+        uint8_t *data;
+        int r = dhcp_opt_stream_next(&st, &code, &len, &data);
+        if (r < 0)
+            return -1;
+        if (r == 0)
             break;
-        code = opt[0];
         if (code == DHCP_OPTION_END) {
             saw_end = 1;
             break;
         }
-        if (code == 0) { /* Pad */
-            opt++;
-            continue;
-        }
-        if (opt + 2 > opt_end)
-            return -1;
-        len = opt[1];
-        if (opt + 2 + len > opt_end)
-            return -1;
         if (code == DHCP_OPTION_MSG_TYPE) {
             if (len != 1)
                 return -1;
-            if (opt[2] == DHCP_OFFER) {
-                opt += 2 + len;
-                saw_end = 0;
-                while (opt < opt_end) {
-                    struct dhcp_option *inner;
-                    if (opt + 1 > opt_end)
+            if (data[2] == DHCP_OFFER) {
+                while (1) {
+                    uint8_t *idata;
+                    r = dhcp_opt_stream_next(&st, &code, &len, &idata);
+                    if (r < 0)
+                        return -1;
+                    if (r == 0)
                         break;
-                    code = opt[0];
                     if (code == DHCP_OPTION_END) {
                         saw_end = 1;
                         break;
                     }
-                    if (code == 0) {
-                        opt++;
-                        continue;
-                    }
-                    if (opt + 2 > opt_end)
-                        return -1;
-                    len = opt[1];
-                    if (opt + 2 + len > opt_end)
-                        return -1;
-                    inner = (struct dhcp_option *)opt;
                     if (code == DHCP_OPTION_SERVER_ID) {
                         if (len < 4)
                             return -1;
-                        s->dhcp_server_ip = DHCP_OPT_data_to_u32(inner);
+                        s->dhcp_server_ip =
+                            DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                         saw_server_id = 1;
                     }
                     if (code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
-                        netmask = DHCP_OPT_data_to_u32(inner);
+                        netmask =
+                            DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     }
-                    opt += 2 + len;
                 }
                 if (!saw_end || !saw_server_id)
                     return -1;
@@ -8144,7 +8404,6 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                 return 0;
             }
         }
-        opt += 2 + len;
     }
     if (!saw_end)
         return -1;
@@ -8159,8 +8418,10 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
 /* Return the DHCP message type from a validated message, or -1 on error. */
 static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
-    uint8_t *opt = (uint8_t *)msg->options;
-    uint8_t *opt_end;
+    struct dhcp_opt_stream st;
+    uint8_t code;
+    uint8_t len;
+    uint8_t *data;
     int msg_type = -1;
     int saw_server_id = 0;
     uint32_t server_id = 0;
@@ -8172,31 +8433,18 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
         return -1;
     if (msg->op != BOOT_REPLY)
         return -1;
-    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
-        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
-    else
-        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
-    while (opt < opt_end) {
-        uint8_t code = opt[0];
-        uint8_t len;
+    /* Non-strict: a truncated option stream ends the scan instead of
+     * failing the message. */
+    dhcp_opt_stream_init(&st, msg, msg_len, 0);
+    while (dhcp_opt_stream_next(&st, &code, &len, &data) == 1) {
         if (code == DHCP_OPTION_END)
             break;
-        if (code == 0) {
-            opt++;
-            continue;
-        }
-        if (opt + 2 > opt_end)
-            break;
-        len = opt[1];
-        if (opt + 2 + len > opt_end)
-            break;
         if (code == DHCP_OPTION_MSG_TYPE && len == 1) {
-            msg_type = opt[2];
+            msg_type = data[2];
         } else if (code == DHCP_OPTION_SERVER_ID && len >= 4) {
-            server_id = DHCP_OPT_data_to_u32((struct dhcp_option *)opt);
+            server_id = DHCP_OPT_data_to_u32((struct dhcp_option *)data);
             saw_server_id = 1;
         }
-        opt += 2 + len;
     }
     /* Reject a reply that does not carry the server identifier of the
      * server we committed to during the OFFER phase. */
@@ -8208,8 +8456,7 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
 
 static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
-    uint8_t *opt = (uint8_t *)msg->options;
-    uint8_t *opt_end;
+    struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
@@ -8224,99 +8471,79 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         return -1;
     if (ee32(msg->xid) != s->dhcp_xid)
         return -1;
-    if (msg_len - DHCP_HEADER_LEN > sizeof(msg->options))
-        opt_end = (uint8_t *)msg->options + sizeof(msg->options);
-    else
-        opt_end = (uint8_t *)msg->options + (msg_len - DHCP_HEADER_LEN);
-    while (opt < opt_end) {
+    dhcp_opt_stream_init(&st, msg, msg_len, 1);
+    while (1) {
         uint8_t code;
         uint8_t len;
-        if (opt + 1 > opt_end)
+        uint8_t *data;
+        int r = dhcp_opt_stream_next(&st, &code, &len, &data);
+        if (r < 0)
+            return -1;
+        if (r == 0)
             break;
-        code = opt[0];
         if (code == DHCP_OPTION_END) {
             saw_end = 1;
             break;
         }
-        if (code == 0) { /* Pad */
-            opt++;
-            continue;
-        }
-        if (opt + 2 > opt_end)
-            return -1;
-        len = opt[1];
-        if (opt + 2 + len > opt_end)
-            return -1;
         if (code == DHCP_OPTION_MSG_TYPE) {
             if (len != 1)
                 return -1;
-            if (opt[2] == DHCP_ACK) {
-                opt += 2 + len;
-                saw_end = 0;
-                while (opt < opt_end) {
-                    struct dhcp_option *inner;
-                    uint32_t data;
-                    if (opt + 1 > opt_end)
+            if (data[2] == DHCP_ACK) {
+                while (1) {
+                    uint8_t *idata;
+                    uint32_t val;
+                    r = dhcp_opt_stream_next(&st, &code, &len, &idata);
+                    if (r < 0)
+                        return -1;
+                    if (r == 0)
                         break;
-                    code = opt[0];
                     if (code == DHCP_OPTION_END) {
                         saw_end = 1;
                         break;
                     }
-                    if (code == 0) {
-                        opt++;
-                        continue;
-                    }
-                    if (opt + 2 > opt_end)
-                        return -1;
-                    len = opt[1];
-                    if (opt + 2 + len > opt_end)
-                        return -1;
-                    inner = (struct dhcp_option *)opt;
                     if (code == DHCP_OPTION_SERVER_ID) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                         /* Reject ACK from a server other than the one
                          * we committed to during the OFFER phase. */
-                        if (s->dhcp_server_ip != 0 && data != s->dhcp_server_ip)
+                        if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip)
                             return -1;
-                        s->dhcp_server_ip = data;
+                        s->dhcp_server_ip = val;
                         saw_server_id = 1;
                     } else if (primary && code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        primary->ip = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        primary->ip = val;
                     } else if (primary && code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        primary->mask = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        primary->mask = val;
                     } else if (primary && code == DHCP_OPTION_ROUTER) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        primary->gw = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        primary->gw = val;
                     } else if ((code == DHCP_OPTION_DNS) && (s->dns_server == 0)) {
                         if (len < 4)
                             return -1;
-                        data = DHCP_OPT_data_to_u32(inner);
-                        s->dns_server = data;
+                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        s->dns_server = val;
                     } else if (code == DHCP_OPTION_LEASE_TIME) {
                         if (len < 4)
                             return -1;
-                        lease_s = DHCP_OPT_data_to_u32(inner);
+                        lease_s = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     } else if (code == DHCP_OPTION_RENEWAL_TIME) {
                         if (len < 4)
                             return -1;
-                        renew_s = DHCP_OPT_data_to_u32(inner);
+                        renew_s = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     } else if (code == DHCP_OPTION_REBIND_TIME) {
                         if (len < 4)
                             return -1;
-                        rebind_s = DHCP_OPT_data_to_u32(inner);
+                        rebind_s = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     }
-                    opt += 2 + len;
                 }
                 if (!saw_end)
                     return -1;
@@ -8356,9 +8583,8 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                     return 0;
                 }
             }
-            break;
+            break; /* the message type was seen; nothing else to scan */
         }
-        opt += 2 + len;
     }
     return -1;
 }
@@ -8572,7 +8798,11 @@ static int dhcp_send_discover(struct wolfIP *s)
         dhcp_schedule_timer_at(s, retry_at);
         return ret;
     }
-    dhcp_schedule_timer_at(s, s->last_tick + dhcp_backoff_delay(s, DHCP_DISCOVER_TIMEOUT));
+    /* RFC 2131 §4.1 (10 Mb/s Ethernet example): the first retransmission
+     * is 4 s, randomized uniformly by plus or minus 1 s; the base doubles
+     * per attempt. */
+    dhcp_schedule_timer_at(s, s->last_tick +
+            dhcp_discover_retry_delay(s, DHCP_DISCOVER_TIMEOUT));
     s->dhcp_state = DHCP_DISCOVER_SENT;
     return 0;
 }
@@ -9379,6 +9609,11 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         return;
     if (ee16(ip->len) < ip_hlen)
         return;
+    /* The declared total length cannot exceed the bytes actually received,
+     * or the datagram would be relayed or delivered with a header claiming
+     * more payload than exists on the wire. */
+    if (ee16(ip->len) > len - ETH_HEADER_LEN)
+        return;
     /* validate IP header checksum per RFC 1122 */
     if (iphdr_verify_checksum(ip) != 0)
         return;
@@ -9524,6 +9759,39 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 
             if (!l2_group) {
             int out_if = wolfIP_forward_interface(s, if_idx, dest);
+            ip4 next_hop = dest;
+            /* Forward the datagram at its declared length so trailing
+             * link-layer padding is not relayed as IP payload. */
+            uint32_t fwd_len = ETH_HEADER_LEN + ee16(ip->len);
+            if (out_if < 0) {
+                /* No connected egress: resolve the destination in the
+                 * static route table (longest prefix, then order, then
+                 * interface) and forward to the route's gateway. */
+                unsigned int ri;
+                uint8_t best_plen = 0;
+                uint32_t best_order = UINT32_MAX;
+                for (ri = 0; ri < WOLFIP_MAX_ROUTES; ri++) {
+                    const struct wolfIP_route_entry *route = &s->routes[ri];
+                    if (!route->used)
+                        continue;
+                    if (!wolfIP_route_match_prefix(dest, route->prefix,
+                            route->prefix_len))
+                        continue;
+                    if (out_if < 0 || route->prefix_len > best_plen ||
+                            (route->prefix_len == best_plen &&
+                             (route->order < best_order ||
+                              (route->order == best_order &&
+                               route->if_idx < (unsigned int)out_if)))) {
+                        out_if = (int)route->if_idx;
+                        best_plen = route->prefix_len;
+                        best_order = route->order;
+                        next_hop = route->gateway != IPADDR_ANY ?
+                                   route->gateway : dest;
+                    }
+                }
+                if (out_if >= 0 && (unsigned int)out_if == if_idx)
+                    out_if = -1;
+            }
             if (out_if >= 0) {
                 uint8_t mac[6];
                 int broadcast = 0;
@@ -9539,14 +9807,16 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
-                if (!wolfIP_forward_prepare(s, out_if, dest, mac, &broadcast)) {
-                    arp_queue_packet(s, out_if, dest, ip, len);
+                if (!wolfIP_forward_prepare(s, out_if, next_hop, mac,
+                        &broadcast)) {
+                    arp_queue_packet(s, out_if, next_hop, ip, fwd_len);
                     return;
                 }
                 ip->ttl--;
                 ip->csum = 0;
                 iphdr_set_checksum(ip);
-                wolfIP_forward_packet(s, out_if, ip, len, broadcast ? NULL : mac, broadcast);
+                wolfIP_forward_packet(s, out_if, ip, fwd_len, broadcast ? NULL : mac,
+                        broadcast);
                 return;
             }
             }
@@ -10186,7 +10456,7 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 if (s->dns_query_type == DNS_QUERY_TYPE_A &&
                         ee16(rr->type) == DNS_A &&
                         ee16(rr->class) == DNS_CLASS_IN &&
-                        rdlen >= DNS_IPV4_RDATA_LEN) {
+                        rdlen == DNS_IPV4_RDATA_LEN) {
                     uint32_t ip;
                     ip = get_be32((const uint8_t *)buf + pos);
                     if (s->dns_lookup_cb)
@@ -10251,8 +10521,29 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
             tok_end++;
         }
         label_len = (uint32_t)(tok_end - tok_start);
-        if (label_len > MAX_DNS_LABEL_LEN) return -22;
-        if (tok_len + label_len + 1 > MAX_DNS_NAME_LEN) return -22;
+        if (label_len == 0) {
+            /* A zero-length label is the wire-format root terminator
+             * (RFC 1035 §3.1), only legal at the end of the name. The
+             * trailing-dot presentation form ends the loop before an
+             * empty token is encoded, so any zero-length label here is
+             * a leading or interior dot: invalid. */
+            dns_abort_query(s);
+            *id = DNS_ID_NONE;
+            return -22;
+        }
+        if (label_len > MAX_DNS_LABEL_LEN) {
+            /* Unencodable name: roll back the armed query state, or every
+             * later lookup would fail the busy guard with no timer to
+             * clear it. */
+            dns_abort_query(s);
+            *id = DNS_ID_NONE;
+            return -22;
+        }
+        if (tok_len + label_len + 1 > MAX_DNS_NAME_LEN) {
+            dns_abort_query(s);
+            *id = DNS_ID_NONE;
+            return -22;
+        }
         *q_name = (char)label_len;
         q_name++;
         memcpy(q_name, tok_start, label_len);
@@ -10531,6 +10822,10 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     tcp->ack = ee32(ts->sock.tcp.ack);
                     tcp->win = ee16(tcp_adv_win(ts, 1));
                     ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP, size);
+#ifdef ETHERNET
+                    if (!wolfIP_ll_is_non_ethernet(ts->S, tx_if))
+                        eth_output_add_header(ts->S, tx_if, ts->nexthop_mac, &tcp->ip.eth, ETH_TYPE_IP);
+#endif
                     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
                         break;
                     }
@@ -10582,7 +10877,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                             ts->sock.tcp.tmr_rto = NO_TIMER;
                         }
                         new_tmr.cb = tcp_rto_cb;
-                        new_tmr.expires = now + (ts->sock.tcp.rto << ts->sock.tcp.rto_backoff);
+                        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                                ts->sock.tcp.rto_backoff);
                         new_tmr.arg = ts;
                         ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
                         if (!is_retrans) {
@@ -10624,22 +10920,36 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
         struct tsocket *t = &socks[i];
         struct pkt_desc *desc = fifo_peek(&t->sock.udp.txbuf);
         int tx_drained = 0;
-        int len;
         while (desc) {
             struct wolfIP_ip_packet *ip =
                 (struct wolfIP_ip_packet *)(t->txmem + desc->pos + sizeof(*desc));
             unsigned int tx_if = wolfIP_socket_if_idx(t);
             int send_ret = 0;
+            /* The IP header was filled at enqueue time and carries this
+             * descriptor's destination; route and resolve for that address,
+             * not the socket's current one. */
+            ip4 desc_dst = ee32(ip->dst);
 #ifdef ETHERNET
-            ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, t->remote_ip);
+            ip4 nexthop;
+#ifdef IP_MULTICAST
+            if (is_udp && wolfIP_ip_is_multicast(desc_dst) &&
+                    t->sock.udp.mcast_if_set) {
+                /* IP_MULTICAST_IF pins this socket's multicast egress; the
+                 * route lookup's no-route fallback would move the frame to
+                 * another interface. */
+                tx_if = t->sock.udp.mcast_if_idx;
+                nexthop = desc_dst;
+            } else
+#endif
+                nexthop = wolfIP_select_nexthop_ex(s, &tx_if, desc_dst);
             if (wolfIP_is_loopback_if(tx_if)) {
                 struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, tx_if);
                 if (loop)
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
 #ifdef IP_MULTICAST
-                if (is_udp && wolfIP_ip_is_multicast(t->remote_ip)) {
-                    mcast_ip_to_eth(t->remote_ip, t->nexthop_mac);
+                if (is_udp && wolfIP_ip_is_multicast(desc_dst)) {
+                    mcast_ip_to_eth(desc_dst, t->nexthop_mac);
                 } else
 #endif
                     if (!wolfIP_ip_is_broadcast(s, nexthop) &&
@@ -10652,8 +10962,10 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
                     memset(t->nexthop_mac, 0xFF, 6);
             }
 #endif
-            len = desc->len - ETH_HEADER_LEN;
-            ip_output_add_header(t, ip, proto, len);
+#ifdef ETHERNET
+            if (!wolfIP_ll_is_non_ethernet(s, tx_if))
+                eth_output_add_header(s, tx_if, t->nexthop_mac, &ip->eth, ETH_TYPE_IP);
+#endif
 
             if (is_udp) {
                 if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, tx_if,
@@ -10679,7 +10991,7 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
                 /* IPsec not configured on this interface.
                  * Send plaintext instead.
                  * */
-                if (esp_send(ll, ip, len) == 1)
+                if (esp_send(ll, ip, (uint16_t)(desc->len - ETH_HEADER_LEN)) == 1)
                     send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
             } else {
                 send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
@@ -10695,7 +11007,7 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
              * when a SENDING filter blocked the frame or the driver returned
              * -EAGAIN: the descriptor stays in the txbuf and every subsequent
              * wolfIP_poll() re-enters the loop and re-loops the datagram. */
-            if (is_udp && wolfIP_ip_is_multicast(t->remote_ip) && t->sock.udp.mcast_loop)
+            if (is_udp && wolfIP_ip_is_multicast(desc_dst) && t->sock.udp.mcast_loop)
                 udp_try_recv(s, tx_if, (struct wolfIP_udp_datagram *)ip, desc->len);
 #endif
             fifo_pop(&t->sock.udp.txbuf);
