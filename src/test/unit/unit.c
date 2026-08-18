@@ -1436,6 +1436,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_regression_unsolicited_reply_gateway_not_poisoned);
     tcase_add_test(tc_core, test_regression_owner_correction_requires_our_request);
     tcase_add_test(tc_core, test_regression_unsolicited_reply_overwrite_still_blocked);
+    tcase_add_test(tc_core, test_regression_syn_source_does_not_install_neighbor);
+    tcase_add_test(tc_core, test_regression_syn_source_does_not_poison_gateway);
+    tcase_add_test(tc_core, test_regression_syn_source_not_resolved_for_tx);
+    tcase_add_test(tc_core, test_regression_syn_learned_only_via_arp_exchange);
     tcase_add_test(tc_core, test_arp_recv_request_replies_but_reply_caches_neighbor);
     tcase_add_test(tc_core, test_arp_recv_forged_request_cannot_poison_pending);
     tcase_add_test(tc_core, test_arp_recv_runt_packet_dropped);

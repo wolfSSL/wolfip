@@ -5239,13 +5239,6 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
                     t->dst_port = ee16(tcp->src_port);
                     t->remote_ip = ee32(tcp->ip.src);
-                    {
-                        unsigned int nh_if = if_idx;
-                        ip4 nh = wolfIP_select_nexthop_ex(S, &nh_if, t->remote_ip);
-                        if (!wolfIP_ll_is_non_ethernet(S, nh_if) &&
-                                arp_neighbor_index(S, nh_if, nh) < 0)
-                            arp_store_neighbor(S, nh_if, nh, tcp->ip.eth.src);
-                    }
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
                     tcp_process_ts(t, tcp, frame_len);
                     tcp_send_syn(t, TCP_FLAG_SYN | TCP_FLAG_ACK);
