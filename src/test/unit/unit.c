@@ -762,7 +762,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_arp_queue_packet_same_dest_different_if);
     tcase_add_test(tc_proto, test_arp_queue_packet_uses_empty_slot);
     tcase_add_test(tc_proto, test_arp_queue_packet_drops_oversize_len);
-    tcase_add_test(tc_proto, test_arp_queue_packet_slot_fallback_zero);
+    tcase_add_test(tc_proto, test_arp_queue_packet_full_drops_new_dest);
     tcase_add_test(tc_proto, test_arp_flush_pending_no_neighbor);
     tcase_add_test(tc_proto, test_arp_flush_pending_len_zero_clears);
     tcase_add_test(tc_proto, test_arp_flush_pending_null_stack);

@@ -1781,7 +1781,7 @@ START_TEST(test_arp_queue_packet_drops_oversize_len)
 }
 END_TEST
 
-START_TEST(test_arp_queue_packet_slot_fallback_zero)
+START_TEST(test_arp_queue_packet_full_drops_new_dest)
 {
     struct wolfIP s;
     struct wolfIP_ip_packet ip;
@@ -1797,8 +1797,14 @@ START_TEST(test_arp_queue_packet_slot_fallback_zero)
         s.arp_pending[i].len = 1;
     }
 
+    /* Queue full with distinct destinations: a new destination is dropped,
+     * not queued into slot 0 (clobbering it would silently lose the oldest
+     * pending frame for an unrelated destination, F-4057). Upstream
+     * retransmits the dropped frame. */
     arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A0000C1U, &ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN));
-    ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A0000C1U);
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++)
+        ck_assert_uint_ne(s.arp_pending[i].dest, 0x0A0000C1U);
+    ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A000100U);
 }
 END_TEST
 

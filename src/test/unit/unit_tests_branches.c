@@ -1253,10 +1253,13 @@ START_TEST(test_arp_pending_record_replaces_oldest_slot)
     arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A000010U, &ip, len);
     ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A000010U);
 
-    /* A new destination with no free slot falls back to slot 0. */
+    /* A new destination with no free slot is dropped (F-4057); slot 0
+     * keeps its own frame for 0x0A000010. */
     ip.dst = ee32(0x0A0000A0U);
     arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A0000A0U, &ip, len);
-    ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A0000A0U);
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++)
+        ck_assert_uint_ne(s.arp_pending[i].dest, 0x0A0000A0U);
+    ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A000010U);
 }
 END_TEST
 

@@ -8594,7 +8594,7 @@ static void arp_queue_packet(struct wolfIP *s, unsigned int if_idx, ip4 dest,
             slot = i;
     }
     if (slot < 0)
-        slot = 0;
+        return; /* queue full: drop, upstream retransmits (F-4057) */
 
     memcpy(s->arp_pending[slot].frame, ip, len);
     s->arp_pending[slot].len = len;
