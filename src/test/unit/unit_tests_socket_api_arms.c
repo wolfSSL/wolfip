@@ -930,6 +930,66 @@ START_TEST(test_sock_sendto_raw_hdrincl_dst_from_buf)
 }
 END_TEST
 
+/* IP_HDRINCL: when the sendto() socket address overrides the destination
+ * of the caller-supplied header, the IPv4 header checksum must be
+ * recomputed; flush_raw_tx trusts the caller's header as-is. */
+START_TEST(test_raw_hdrincl_dst_override_recomputes_ip_checksum)
+{
+    struct wolfIP s;
+    int sd;
+    int one = 1;
+    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN + 4];
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_ip_packet *sent;
+    uint8_t nh_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    s.arp.neighbors[0].ip = 0x0A000003U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, nh_mac, 6);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+                WOLFIP_IP_HDRINCL, &one, sizeof(one)), 0);
+
+    /* Header checksummed for destination A. */
+    memset(ip_buf, 0, sizeof(ip_buf));
+    ip = (struct wolfIP_ip_packet *)ip_buf;
+    ip->ver_ihl = 0x45;
+    ip->ttl = 64;
+    ip->proto = WI_IPPROTO_UDP;
+    ip->len = ee16(IP_HEADER_LEN + 4);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(0x0A000002U);
+    iphdr_set_checksum(ip);
+
+    /* sendto addresses the packet at B: the override must reach the wire
+     * with a checksum valid for B. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000003U);
+    last_frame_sent_size = 0;
+    ret = wolfIP_sock_sendto(&s, sd,
+                              (uint8_t *)ip + ETH_HEADER_LEN,
+                              IP_HEADER_LEN + 4,
+                              0, (const struct wolfIP_sockaddr *)&sin,
+                              sizeof(sin));
+    ck_assert_int_eq(ret, IP_HEADER_LEN + 4);
+    wolfIP_poll(&s, 10);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    sent = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_uint_eq(ee32(sent->dst), 0x0A000003U);
+    ck_assert_int_eq(iphdr_verify_checksum(sent), 0);
+}
+END_TEST
+
 START_TEST(test_sock_sendto_raw_invalid_fd)
 {
     struct wolfIP s;

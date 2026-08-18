@@ -1005,6 +1005,31 @@ START_TEST(test_tcp_parse_options_parses_mss_sack_permitted_timestamp_and_two_sa
 }
 END_TEST
 
+/* An explicitly advertised MSS is the peer's commitment about what it will
+ * receive; the 536 default applies only when no MSS option is present. */
+START_TEST(test_tcp_parse_options_keeps_sub_default_advertised_mss)
+{
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_parsed_opts po;
+    uint32_t frame_len;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + 4) << 2);
+    seg->data[0] = TCP_OPTION_MSS;
+    seg->data[1] = TCP_OPTION_MSS_LEN;
+    seg->data[2] = 0x01;
+    seg->data[3] = 0x2C; /* 300 */
+    frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4;
+
+    memset(&po, 0, sizeof(po));
+    tcp_parse_options(seg, frame_len, &po);
+
+    ck_assert_int_eq(po.mss_found, 1);
+    ck_assert_uint_eq(po.mss, 300U);
+}
+END_TEST
+
 START_TEST(test_tcp_parse_options_ignores_unknown_option_kinds)
 {
     uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 8];
@@ -2501,6 +2526,134 @@ START_TEST(test_tcp_ack_cwnd_grows_when_payload_acked_is_mss_minus_options)
 }
 END_TEST
 
+/* RFC 5681: a duplicate ACK carries no data and repeats the previously
+ * advertised receive window. Peer data segments that do not advance our
+ * snd_una (normal in bidirectional transfer) must not inflate the dup
+ * count into a spurious fast retransmit. */
+START_TEST(test_tcp_ack_data_segments_not_counted_as_dup_acks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct pkt_desc *desc;
+    uint8_t pbuf[sizeof(struct wolfIP_tcp_seg) + 8];
+    struct wolfIP_tcp_seg *pseg = (struct wolfIP_tcp_seg *)pbuf;
+    uint32_t seq = 1000;
+    int i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* One in-flight segment so the dup-ACK branch is reachable. */
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* Three peer data segments, none acknowledging the in-flight one. */
+    memset(pbuf, 0, sizeof(pbuf));
+    pseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 8);
+    pseg->hlen = TCP_HEADER_LEN << 2;
+    pseg->flags = TCP_FLAG_ACK;
+    pseg->win = ee16(65535);
+    pseg->ack = ee32(seq);
+    memset(pseg->data, 0x5A, 8);
+    for (i = 0; i < 3; i++) {
+        pseg->seq = ee32(500 + i * 8);
+        tcp_ack(ts, pseg);
+    }
+
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+    ck_assert_int_eq(ts->sock.tcp.fast_recovery, 0);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, seq);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, TCP_MSS);
+}
+END_TEST
+
+/* RFC 6298 §5.5: on a retransmission timeout the new RTO is min(2*RTO, G)
+ * with G the maximum timer value, 64 s. With a 2 s base RTO and six
+ * backoff doublings the uncapped interval would be 128 s; the re-armed
+ * timer must land at 64 s. */
+START_TEST(test_tcp_rto_backoff_capped_at_64s)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct pkt_desc *desc;
+    uint64_t now = 100000;
+    uint32_t seq = 1000;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.rto = 2000;
+    ts->sock.tcp.rto_backoff = 6;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* In-flight segment covering snd_una so the timeout retransmits and
+     * re-arms the RTO timer. */
+    memset(&segbuf, 0, sizeof(segbuf));
+    segbuf.seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS);
+    segbuf.seg.hlen = TCP_HEADER_LEN << 2;
+    segbuf.seg.seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    s.last_tick = now;
+    tcp_rto_cb(ts);
+
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    {
+        uint32_t armed_expires = 0;
+        int found = 0;
+        int i;
+        for (i = 0; i < (int)s.timers.size; i++) {
+            if (s.timers.timers[i].id == ts->sock.tcp.tmr_rto) {
+                armed_expires = s.timers.timers[i].expires;
+                found = 1;
+                break;
+            }
+        }
+        ck_assert_int_eq(found, 1);
+        ck_assert_uint_eq(armed_expires, now + TCP_RTO_BACKOFF_MAX_MS);
+    }
+}
+END_TEST
+
 START_TEST(test_tcp_ack_inflight_deflate_sets_writable_without_acked_desc)
 {
     struct wolfIP s;
@@ -2670,6 +2823,51 @@ START_TEST(test_tcp_connect_syn_advertises_interface_mss)
     expected_mss = (uint16_t)(640U - ETH_HEADER_LEN - IP_HEADER_LEN - TCP_HEADER_LEN);
     ck_assert_int_eq(po.mss_found, 1);
     ck_assert_uint_eq(po.mss, expected_mss);
+}
+END_TEST
+
+/* A TCP active OPEN has no defined destination semantics for broadcast or
+ * multicast addresses (multiple hosts would answer one SYN; there is no
+ * single peer for a group). connect() must reject them before mutating the
+ * socket, the same way the inbound SYN path rejects such sources. */
+START_TEST(test_tcp_connect_rejects_broadcast_multicast_dest)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5004);
+
+    /* Limited broadcast. */
+    sin.sin_addr.s_addr = ee32(0xFFFFFFFFU);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(ts->remote_ip, 0U);
+
+    /* All-hosts multicast group. */
+    sin.sin_addr.s_addr = ee32(0xE0000001U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(ts->remote_ip, 0U);
+
+    /* The socket is reusable: a unicast destination still proceeds. */
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
 }
 END_TEST
 

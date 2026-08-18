@@ -233,6 +233,62 @@ START_TEST(test_filter_dispatch_mask_not_set)
 }
 END_TEST
 
+/* A freshly installed callback must not fail open: with no explicit mask
+ * configuration since the last uninstall, dispatch consults the callback
+ * for every reason; any explicit mask configuration (even a zero mask,
+ * even one made before installing the callback) switches to the
+ * configured reasons only. */
+START_TEST(test_filter_fresh_callback_consulted_before_mask_configured)
+{
+    struct wolfIP s;
+    struct wolfIP_filter_metadata meta;
+
+    memset(&s, 0, sizeof(s));
+    /* Clear stale masks from other tests, then return to the initial
+     * state: uninstall resets the all-reasons default. */
+    wolfIP_filter_set_mask(0);
+    wolfIP_filter_set_eth_mask(0);
+    wolfIP_filter_set_ip_mask(0);
+    wolfIP_filter_set_tcp_mask(0);
+    wolfIP_filter_set_udp_mask(0);
+    wolfIP_filter_set_icmp_mask(0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    wolfIP_filter_init_metadata(&meta);
+    meta.ip_proto = WOLFIP_FILTER_PROTO_TCP;
+
+    /* Fresh install, no mask configuration: consulted for all reasons. */
+    filter_cb_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
+    ck_assert_int_eq(filter_cb_calls, 1);
+
+    /* The first explicit mask configuration selects the reasons. */
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_CONNECTING));
+    filter_cb_calls = 0;
+    wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
+    ck_assert_int_eq(filter_cb_calls, 0);
+
+    /* An explicit empty mask silences the filter. */
+    wolfIP_filter_set_mask(0);
+    filter_cb_calls = 0;
+    wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
+    ck_assert_int_eq(filter_cb_calls, 0);
+
+    /* Explicit zero configured *before* installing the callback must be
+     * honored, not overridden by the all-reasons default. */
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+    filter_cb_calls = 0;
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_dispatch(WOLFIP_FILT_RECEIVING, &s, 0, NULL, 0, &meta);
+    ck_assert_int_eq(filter_cb_calls, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+}
+END_TEST
+
 START_TEST(test_filter_dispatch_lock_blocks)
 {
     struct wolfIP s;
@@ -2425,7 +2481,9 @@ START_TEST(test_sock_accept_initializes_snd_una)
     ck_assert_int_gt(client_sd, 0);
 
     accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
-    ck_assert_uint_eq(accepted->sock.tcp.seq, (uint32_t)(0x80000000U + 1U));
+    /* While in SYN_RCVD the socket's seq stays at the ISN; the final ACK
+     * handler advances it to ISN+1 on establishment. */
+    ck_assert_uint_eq(accepted->sock.tcp.seq, 0x80000000U);
     ck_assert_uint_eq(accepted->sock.tcp.snd_una, 0x80000000U);
     ck_assert_int_eq(tcp_seq_leq(accepted->sock.tcp.snd_una, accepted->sock.tcp.seq), 1);
 }
@@ -2739,7 +2797,8 @@ START_TEST(test_sock_accept_ack_transitions_to_established)
     ack.src_port = ee16(40000);      /* Remote port from inject_tcp_syn */
     ack.dst_port = ee16(1234);
     ack.seq = ee32(accepted->sock.tcp.ack);
-    ack.ack = ee32(accepted->sock.tcp.seq);
+    /* The client's final ACK is at the server's snd.nxt: ISN+1. */
+    ack.ack = ee32(tcp_seq_inc(accepted->sock.tcp.snd_una, 1));
     ack.hlen = TCP_HEADER_LEN << 2;
     ack.flags = TCP_FLAG_ACK;
     ack.win = ee16(65535);
