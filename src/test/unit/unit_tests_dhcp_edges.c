@@ -1642,3 +1642,56 @@ START_TEST(test_dhcp_dad_reply_for_other_ip_ignored)
     ck_assert_uint_eq(s.dhcp_dad_probes, 1U);
 }
 END_TEST
+
+/* Real ll drivers (stm32, lpc, fman, gem, tap) return the frame length on
+ * send success, not 0. The DAD probe counter must treat any non-negative
+ * return as "sent"; otherwise the first probe is miscounted, a fourth probe
+ * goes out, BOUND is delayed a full extra interval, and the m33mu CI app
+ * hits its DHCP safety timeout and falls back to the static IP. */
+static uint32_t dad_len_send_count = 0;
+
+static int dad_len_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
+{
+    (void)dev;
+    (void)frame;
+    if (len == sizeof(struct arp_packet))
+        dad_len_send_count++;
+    return (int)len;
+}
+
+START_TEST(test_dhcp_dad_probe_count_len_returning_driver)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct wolfIP_ll_dev *ll;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA06U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    wolfIP_primary_ipconf(&s)->ip = client_ip;
+
+    /* Simulate the real drivers: success returns len, not 0. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    dad_len_send_count = 0;
+    ll->send = dad_len_send;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    /* Probe 1 was counted despite the len return. */
+    ck_assert_uint_eq(s.dhcp_dad_probes, 1U);
+    ck_assert_uint_eq(dad_len_send_count, 1U);
+
+    dhcp_test_complete_dad(&s);
+
+    /* RFC 4331: exactly 3 probes, then BOUND. */
+    ck_assert_uint_eq(dad_len_send_count, DHCP_DAD_PROBES);
+}
+END_TEST

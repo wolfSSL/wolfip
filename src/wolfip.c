@@ -8572,7 +8572,10 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                     dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
                     timer_binheap_cancel(&s->timers, s->dhcp_timer);
                     s->dhcp_timer = NO_TIMER;
-                    if (dhcp_send_dad_probe(s) == 0)
+                    /* ll drivers return the frame length (>= 0) on
+                     * success, not 0; only count the probe when it
+                     * actually went out. */
+                    if (dhcp_send_dad_probe(s) >= 0)
                         s->dhcp_dad_probes = 1;
                     dhcp_schedule_timer_at(s,
                             s->last_tick + DHCP_DAD_INTERVAL_MS);
