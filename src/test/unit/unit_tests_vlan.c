@@ -184,6 +184,48 @@ static uint32_t inject_tagged_icmp_echo(struct wolfIP *s, unsigned int parent_id
     return last_frame_sent_size;
 }
 
+/* Inject a tagged UDP frame (UDP header only, no payload) from
+ * vlan_remote_mac/src_ip to dst_ip on VLAN 'vid' of the parent. */
+static uint32_t inject_tagged_udp(struct wolfIP *s, unsigned int parent_idx,
+                                  const uint8_t *parent_mac,
+                                  ip4 src_ip, ip4 dst_ip, uint8_t ttl,
+                                  uint16_t dst_port, uint16_t vid)
+{
+    uint8_t plain[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    uint8_t tagged[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)plain;
+    uint16_t *udp;
+    uint32_t plain_len;
+    uint32_t tagged_len;
+
+    memset(plain, 0, sizeof(plain));
+    memcpy(plain, parent_mac, 6);
+    memcpy(plain + 6, vlan_remote_mac, 6);
+    plain[12] = 0x08; plain[13] = 0x00;
+    ip->ver_ihl = 0x45;
+    ip->len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->ttl = ttl;
+    ip->proto = WI_IPPROTO_UDP;
+    ip->src = ee32(src_ip);
+    ip->dst = ee32(dst_ip);
+    fix_ip_checksum(ip);
+    udp = (uint16_t *)(plain + ETH_HEADER_LEN + IP_HEADER_LEN);
+    udp[0] = ee16(47911);
+    udp[1] = ee16(dst_port);
+    udp[2] = ee16(UDP_HEADER_LEN);
+    udp[3] = 0;
+
+    plain_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    tagged_len = insert_vlan_tag(tagged, sizeof(tagged), plain, plain_len,
+                                 vid, 0, 0);
+    if (!tagged_len)
+        return 0;
+
+    last_frame_sent_size = 0;
+    wolfIP_recv_on(s, parent_idx, tagged, tagged_len);
+    return last_frame_sent_size;
+}
+
 /* Build an untagged Ethernet/IPv4 ARP frame sent by vlan_remote_mac.
  * opcode is ARP_REQUEST or ARP_REPLY; buf must hold sizeof(struct arp_packet). */
 static void build_arp_frame(uint8_t *buf, const uint8_t *eth_dst_mac,
@@ -992,6 +1034,84 @@ START_TEST(test_vlan_rx_tagged_mismatch_dropped)
 
     /* No reply must be produced */
     ck_assert_uint_eq((uint32_t)last_frame_sent_size, 0u);
+}
+END_TEST
+
+/* =========================================================================
+ * ICMP error generation from a VLAN sub-interface
+ * =========================================================================
+ * A live VLAN sub-interface has a NULL send callback and delegates to its
+ * parent; the ICMP error senders must not treat that as "no interface".
+ */
+START_TEST(test_vlan_udp_closed_port_sends_port_unreachable)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint32_t sent;
+    int ret;
+    ip4 remote_nbo;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    wolfIP_ipconfig_set_ex(&s, sub_idx, VLAN_SUB100_IP, 0xFFFFFF00U, 0);
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+    phys->send = mock_send;
+    wolfIP_filter_set_callback(NULL, NULL);
+    remote_nbo = ee32(VLAN_REMOTE_IP);
+
+    /* UDP to a closed port on the sub-interface. */
+    sent = inject_tagged_udp(&s, TEST_PRIMARY_IF, phys->mac,
+                             VLAN_REMOTE_IP, VLAN_SUB100_IP, 64, 53, 100);
+
+    /* Port unreachable must go out tagged on the parent. */
+    ck_assert_uint_eq(sent, (uint32_t)(ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            IP_HEADER_LEN + 8 + IP_HEADER_LEN + 8));
+    ck_assert_uint_eq(last_frame_sent[12], 0x81u);
+    ck_assert_uint_eq(last_frame_sent[13], 0x00u);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            IP_HEADER_LEN], ICMP_DEST_UNREACH);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            IP_HEADER_LEN + 1], ICMP_PORT_UNREACH);
+    ck_assert_mem_eq(last_frame_sent + ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            16, (const void *)&remote_nbo, 4);
+}
+END_TEST
+
+START_TEST(test_vlan_ttl1_transit_sends_ttl_exceeded)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *phys;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint32_t sent;
+    int ret;
+    ip4 remote_nbo;
+
+    setup_vlan_stack(&s);
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+    wolfIP_ipconfig_set_ex(&s, sub_idx, VLAN_SUB100_IP, 0xFFFFFF00U, 0);
+    phys = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(phys);
+    phys->send = mock_send;
+    wolfIP_filter_set_callback(NULL, NULL);
+    remote_nbo = ee32(VLAN_REMOTE_IP);
+
+    /* TTL=1 datagram on the sub-interface destined for the physical's
+     * subnet: transit with the Time Exceeded originated on the sub-interface. */
+    sent = inject_tagged_udp(&s, TEST_PRIMARY_IF, phys->mac,
+                             VLAN_REMOTE_IP, 0x0A0A0A99U, 1, 53, 100);
+
+    ck_assert_uint_eq(sent, (uint32_t)(ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            IP_HEADER_LEN + 8 + IP_HEADER_LEN + 8));
+    ck_assert_uint_eq(last_frame_sent[12], 0x81u);
+    ck_assert_uint_eq(last_frame_sent[13], 0x00u);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            IP_HEADER_LEN], ICMP_TTL_EXCEEDED);
+    ck_assert_mem_eq(last_frame_sent + ETH_HEADER_LEN + WOLFIP_VLAN_TAG_LEN +
+            16, (const void *)&remote_nbo, 4);
 }
 END_TEST
 

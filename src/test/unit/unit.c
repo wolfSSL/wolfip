@@ -1630,6 +1630,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_tx_oversize_rejected);
     tcase_add_test(tc_proto, test_vlan_tx_runt_rejected);
     tcase_add_test(tc_proto, test_vlan_rx_tagged_match_delivered);
+    tcase_add_test(tc_proto, test_vlan_udp_closed_port_sends_port_unreachable);
+    tcase_add_test(tc_proto, test_vlan_ttl1_transit_sends_ttl_exceeded);
     tcase_add_test(tc_proto, test_vlan_rx_tagged_mismatch_dropped);
     tcase_add_test(tc_proto, test_vlan_rx_untagged_on_physical_ok);
     tcase_add_test(tc_proto, test_vlan_rx_runt_tagged_dropped);

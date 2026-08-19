@@ -2233,8 +2233,21 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
 #if !CONFIG_IPFILTER
     (void)icmp_pkt;
 #endif
-    if (!ll || !ll->send)
+    if (!ll)
         return;
+#if WOLFIP_VLAN
+    /* Same interface-validity rule as wolfIP_ll_send_frame: an active VLAN
+     * sub-iface has a NULL send and delegates to its parent. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return;
+    } else if (!ll->send) {
+        return;
+    }
+#else
+    if (!ll->send)
+        return;
+#endif
     if (orig_ihl < IP_HEADER_LEN)
         orig_ihl = IP_HEADER_LEN;
     /* RFC 1812 4.3.2.7 / RFC 1122 3.2.2: an ICMP error message MUST NOT be
@@ -2328,8 +2341,21 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
 #if !CONFIG_IPFILTER
     (void)icmp_pkt;
 #endif
-    if (!ll || !ll->send)
+    if (!ll)
         return;
+#if WOLFIP_VLAN
+    /* Same interface-validity rule as wolfIP_ll_send_frame: an active VLAN
+     * sub-iface has a NULL send and delegates to its parent. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return;
+    } else if (!ll->send) {
+        return;
+    }
+#else
+    if (!ll->send)
+        return;
+#endif
     if (orig_ihl < IP_HEADER_LEN)
         orig_ihl = IP_HEADER_LEN;
     orig_copy = orig_ihl + 8;
