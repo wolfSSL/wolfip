@@ -1043,7 +1043,12 @@ int main(void)
         uint32_t dhcp_timeout;
         int dhcp_ret;
 
-        dhcp_timeout = 5000;  /* safety-net tick timeout */
+        /* Safety-net tick timeout. Must cover the worst case: server
+         * OFFER delivery delay (host ARP chicken-and-egg, up to ~3s) +
+         * RFC 4331 DAD (3 probes, ~3s after the ACK). 5000 was too
+         * tight once DAD landed and the device fell back to the static
+         * IP while the test still pinged the leased one. */
+        dhcp_timeout = 10000;
 
         uart_puts("Starting DHCP client...\n");
         dhcp_ret = dhcp_client_init(IPStack);

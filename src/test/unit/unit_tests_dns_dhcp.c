@@ -129,6 +129,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     uint32_t lease_s = 120U;
 
     wolfIP_init(&s);
+    mock_link_init(&s);
     primary = wolfIP_primary_ipconf(&s);
     ck_assert_ptr_nonnull(primary);
 
@@ -219,7 +220,8 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     opt->len = 0;
 
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
     ck_assert_uint_eq(primary->ip, offer_ip);
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(primary->gw, router_ip);
@@ -5522,7 +5524,8 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
     ck_assert_int_eq(ret, 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
 }
 END_TEST
 
@@ -5559,9 +5562,10 @@ START_TEST(test_dhcp_poll_renewing_ack_binds_client)
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
 
-    /* The poll dispatcher should route renewing traffic through ACK parsing to BOUND. */
+    /* The poll dispatcher should route renewing traffic through ACK parsing
+     * to DAD (RFC 4331); complete the probes to reach BOUND. */
     ck_assert_int_eq(ret, 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    dhcp_test_complete_dad(&s);
     ck_assert_uint_eq(primary->ip, client_ip);
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(primary->gw, router_ip);
@@ -5602,9 +5606,10 @@ START_TEST(test_dhcp_poll_rebinding_ack_binds_client)
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
 
-    /* Rebinding ACKs should also drive the client back to BOUND with refreshed config. */
+    /* Rebinding ACKs should also drive the client through DAD (RFC 4331)
+     * back to BOUND with refreshed config. */
     ck_assert_int_eq(ret, 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    dhcp_test_complete_dad(&s);
     ck_assert_uint_eq(primary->ip, client_ip);
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(primary->gw, router_ip);

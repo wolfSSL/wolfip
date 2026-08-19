@@ -1670,6 +1670,9 @@ START_TEST(test_arp_flush_pending_ttl_expired)
     arp_queue_packet(&s, TEST_SECOND_IF, dest_ip, &ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN));
     ck_assert_uint_eq(s.arp_pending[0].dest, dest_ip);
 
+    /* The store (and thus the flush) now requires a pending request we sent. */
+    arp_pending_record(&s, TEST_SECOND_IF, dest_ip);
+
     memset(&arp_reply, 0, sizeof(arp_reply));
     arp_reply.htype = ee16(1);
     arp_reply.ptype = ee16(0x0800);
@@ -1677,7 +1680,7 @@ START_TEST(test_arp_flush_pending_ttl_expired)
     arp_reply.plen = 4;
     arp_reply.opcode = ee16(ARP_REPLY);
     arp_reply.sip = ee32(dest_ip);
-    memcpy(arp_reply.sma, "\x01\x02\x03\x04\x05\x06", 6);
+    memcpy(arp_reply.sma, "\x66\x55\x44\x33\x22\x11", 6); /* unicast sender */
     arp_recv(&s, TEST_SECOND_IF, &arp_reply, sizeof(arp_reply));
     ck_assert_uint_eq(last_frame_sent_size, 0);
     ck_assert_uint_eq(s.arp_pending[0].dest, IPADDR_ANY);
@@ -1778,7 +1781,7 @@ START_TEST(test_arp_queue_packet_drops_oversize_len)
 }
 END_TEST
 
-START_TEST(test_arp_queue_packet_slot_fallback_zero)
+START_TEST(test_arp_queue_packet_full_drops_new_dest)
 {
     struct wolfIP s;
     struct wolfIP_ip_packet ip;
@@ -1794,8 +1797,14 @@ START_TEST(test_arp_queue_packet_slot_fallback_zero)
         s.arp_pending[i].len = 1;
     }
 
+    /* Queue full with distinct destinations: a new destination is dropped,
+     * not queued into slot 0 (clobbering it would silently lose the oldest
+     * pending frame for an unrelated destination, F-4057). Upstream
+     * retransmits the dropped frame. */
     arp_queue_packet(&s, TEST_PRIMARY_IF, 0x0A0000C1U, &ip, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN));
-    ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A0000C1U);
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++)
+        ck_assert_uint_ne(s.arp_pending[i].dest, 0x0A0000C1U);
+    ck_assert_uint_eq(s.arp_pending[0].dest, 0x0A000100U);
 }
 END_TEST
 
@@ -2166,20 +2175,148 @@ END_TEST
 START_TEST(test_arp_store_neighbor_no_space)
 {
     struct wolfIP s;
-    uint8_t mac[6] = {1, 2, 3, 4, 5, 6};
+    uint8_t mac[6] = {0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C};
     int i;
 
     wolfIP_init(&s);
     mock_link_init(&s);
 
+    /* Fill the table with distinct ages; slot 0 is the least recently used. */
     for (i = 0; i < MAX_NEIGHBORS; i++) {
         s.arp.neighbors[i].ip = (ip4)(0x0A000100U + (uint32_t)i);
         s.arp.neighbors[i].if_idx = TEST_PRIMARY_IF;
         memcpy(s.arp.neighbors[i].mac, "\x00\x00\x00\x00\x00\x00", 6);
+        s.arp.neighbors[i].ts = 1000U + (uint64_t)i * 1000U;
     }
+    s.last_tick = 50000U;
 
     arp_store_neighbor(&s, TEST_PRIMARY_IF, 0x0A0000A1U, mac);
-    ck_assert_uint_ne(s.arp.neighbors[0].ip, IPADDR_ANY);
+
+    /* A full table evicts the least recently used entry and installs the
+     * new neighbor in its place — MAX_NEIGHBORS is a working-set size, not
+     * a ceiling (F-6212). */
+    ck_assert_uint_eq(s.arp.neighbors[0].ip, 0x0A0000A1U);
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, mac, 6);
+    ck_assert_uint_eq(s.arp.neighbors[0].ts, s.last_tick);
+    /* The rest of the working set survives. */
+    for (i = 1; i < MAX_NEIGHBORS; i++)
+        ck_assert_uint_eq(s.arp.neighbors[i].ip, (ip4)(0x0A000100U + (uint32_t)i));
+}
+END_TEST
+
+/* Full table + a solicited reply: the reply still installs, evicting the
+ * least recently used entry (the F-6212 flood lockout, end to end). */
+START_TEST(test_arp_full_table_solicited_reply_installs_via_eviction)
+{
+    struct wolfIP s;
+    struct arp_packet arp_reply;
+    struct wolfIP_ll_dev *ll;
+    ip4 legit_ip = 0x0A0000FEU;
+    uint8_t legit_mac[6] = {0x02, 0xCA, 0xFE, 0xBA, 0xBE, 0x01};
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+
+    for (i = 0; i < MAX_NEIGHBORS; i++) {
+        s.arp.neighbors[i].ip = (ip4)(0x0A000100U + (uint32_t)i);
+        s.arp.neighbors[i].if_idx = TEST_PRIMARY_IF;
+        memcpy(s.arp.neighbors[i].mac, "\x00\x00\x00\x00\x00\x00", 6);
+        s.arp.neighbors[i].ts = 1000U + (uint64_t)i * 1000U;
+    }
+    s.last_tick = 50000U;
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, legit_ip), 0);
+
+    /* We asked for legit_ip and the owner answers. */
+    arp_pending_record(&s, TEST_PRIMARY_IF, legit_ip);
+
+    memset(&arp_reply, 0, sizeof(arp_reply));
+    memcpy(arp_reply.eth.dst, ll->mac, 6);
+    memcpy(arp_reply.eth.src, legit_mac, 6);
+    arp_reply.eth.type = ee16(ETH_TYPE_ARP);
+    arp_reply.htype    = ee16(1);
+    arp_reply.ptype    = ee16(0x0800);
+    arp_reply.hlen     = 6;
+    arp_reply.plen     = 4;
+    arp_reply.opcode   = ee16(ARP_REPLY);
+    memcpy(arp_reply.sma, legit_mac, 6);
+    arp_reply.sip      = ee32(legit_ip);
+    arp_reply.tip      = ee32(0x0A000001U);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp_reply, sizeof(arp_reply));
+
+    /* Installed with the owner's MAC, evicting slot 0 (oldest). */
+    ck_assert_int_gt(arp_neighbor_index(&s, TEST_PRIMARY_IF, legit_ip), -1);
+    ck_assert_uint_eq(s.arp.neighbors[0].ip, legit_ip);
+    ck_assert_mem_eq(s.arp.neighbors[0].mac, legit_mac, 6);
+    for (i = 1; i < MAX_NEIGHBORS; i++)
+        ck_assert_uint_eq(s.arp.neighbors[i].ip, (ip4)(0x0A000100U + (uint32_t)i));
+}
+END_TEST
+
+/* Use-based aging: a successful lookup refreshes the entry's timestamp, so
+ * a live conversation never ages out even past ARP_AGING_TIMEOUT_MS since
+ * the original install. */
+START_TEST(test_arp_lookup_refreshes_ts_use_based_aging)
+{
+    struct wolfIP s;
+    uint8_t mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0x01};
+    ip4 ip = 0x0A000020U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.arp.neighbors[0].ip = ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, mac, 6);
+    s.arp.neighbors[0].ts = 0;
+
+    /* Lookup just inside the aging window: alive, ts refreshed. */
+    s.last_tick = ARP_AGING_TIMEOUT_MS - 1;
+    ck_assert_int_gt(arp_neighbor_index(&s, TEST_PRIMARY_IF, ip), -1);
+    ck_assert_uint_eq(s.arp.neighbors[0].ts, s.last_tick);
+
+    /* Far past the original install's timeout, but within the window of
+     * the refresh: still alive. Without the refresh it would be gone. */
+    s.last_tick = (ARP_AGING_TIMEOUT_MS - 1) + (ARP_AGING_TIMEOUT_MS - 1);
+    ck_assert_int_gt(arp_neighbor_index(&s, TEST_PRIMARY_IF, ip), -1);
+}
+END_TEST
+
+/* Exact aging boundary (F-2320): age == ARP_AGING_TIMEOUT_MS is still
+ * live; age == ARP_AGING_TIMEOUT_MS + 1 evicts. Two entries so the
+ * boundary lookup on the first does not refresh the second. */
+START_TEST(test_arp_aging_exact_boundary)
+{
+    struct wolfIP s;
+    uint8_t mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0x02};
+    ip4 ip_live  = 0x0A000030U;
+    ip4 ip_dead  = 0x0A000031U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    s.arp.neighbors[0].ip = ip_live;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, mac, 6);
+    s.arp.neighbors[0].ts = 0;
+    s.arp.neighbors[1].ip = ip_dead;
+    s.arp.neighbors[1].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[1].mac, mac, 6);
+    s.arp.neighbors[1].ts = 0;
+
+    /* age == ARP_AGING_TIMEOUT_MS: not greater, still live. */
+    s.last_tick = ARP_AGING_TIMEOUT_MS;
+    ck_assert_int_gt(arp_neighbor_index(&s, TEST_PRIMARY_IF, ip_live), -1);
+
+    /* age == ARP_AGING_TIMEOUT_MS + 1: evicted and cleared. */
+    s.last_tick = ARP_AGING_TIMEOUT_MS + 1;
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, ip_dead), 0);
+    ck_assert_uint_eq(s.arp.neighbors[1].ip, IPADDR_ANY);
+    ck_assert_uint_eq(s.arp.neighbors[1].ts, 0);
 }
 END_TEST
 
@@ -2314,7 +2451,7 @@ START_TEST(test_arp_recv_request_sends_reply)
     arp_req.plen = 4;
     arp_req.opcode = ee16(ARP_REQUEST);
     arp_req.sip = ee32(0x0A000002U);
-    memcpy(arp_req.sma, "\x01\x02\x03\x04\x05\x06", 6);
+    memcpy(arp_req.sma, "\x66\x55\x44\x33\x22\x11", 6); /* unicast sender */
     arp_req.tip = ee32(0x0A000001U);
 
     arp_recv(&s, TEST_PRIMARY_IF, &arp_req, sizeof(arp_req));

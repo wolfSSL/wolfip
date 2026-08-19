@@ -899,6 +899,7 @@ START_TEST(test_dhcp_parse_ack_with_renewal_and_rebind_times)
     uint32_t client_ip = 0x0A000064U;
 
     wolfIP_init(&s);
+    mock_link_init(&s);
     s.dhcp_xid = 0xEE55U;
     s.last_tick = 0U;
     primary = wolfIP_primary_ipconf(&s);
@@ -916,7 +917,8 @@ START_TEST(test_dhcp_parse_ack_with_renewal_and_rebind_times)
     append_end(&p);
 
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
     ck_assert_uint_eq(s.dhcp_renew_at, 1800000U);
     ck_assert_uint_eq(s.dhcp_rebind_at, 3150000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 3600000U);
@@ -967,6 +969,7 @@ START_TEST(test_dhcp_parse_ack_inner_pad_bytes_skipped)
     uint32_t client_ip = 0x0A000064U;
 
     wolfIP_init(&s);
+    mock_link_init(&s);
     s.dhcp_xid = 0x1122U;
     primary = wolfIP_primary_ipconf(&s);
     ck_assert_ptr_nonnull(primary);
@@ -983,7 +986,8 @@ START_TEST(test_dhcp_parse_ack_inner_pad_bytes_skipped)
     append_end(&p);
 
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
 }
 END_TEST
 
@@ -1200,6 +1204,7 @@ START_TEST(test_dhcp_parse_ack_without_lease_time_rejected)
     uint8_t *p;
 
     wolfIP_init(&s);
+    mock_link_init(&s);
     s.dhcp_xid = 0x5482U;
     s.dhcp_server_ip = 0x0A000001U;
     s.dhcp_state = DHCP_REQUEST_SENT;
@@ -1228,13 +1233,13 @@ START_TEST(test_dhcp_parse_ack_without_lease_time_rejected)
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
     ck_assert_int_ne(s.dhcp_state, DHCP_BOUND);
 
-    /* (3) The same ACK with a valid nonzero lease time binds and schedules a
-     * lease timer. */
+    /* (3) The same ACK with a valid nonzero lease time goes through DAD
+     * (RFC 4331) to BOUND and schedules a lease timer. */
     build_full_ack(&s, &msg, 0x0A000001U, 0x0A000064U, 0xFFFFFF00U,
                    0x0A000001U, 0x08080808U, 120U);
     s.dhcp_timer = NO_TIMER;
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    dhcp_test_complete_dad(&s);
     ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
 }
 END_TEST
@@ -1269,7 +1274,8 @@ START_TEST(test_dhcp_lease_expiry_relearns_dns_server)
     build_full_ack(&s, &msg, first_srv, client_ip, mask, first_srv,
                    first_dns, 120U);
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
     ck_assert_uint_eq(s.dns_server, first_dns);
     ck_assert_uint_ne(s.dhcp_lease_expires, 0U);
 
@@ -1289,7 +1295,8 @@ START_TEST(test_dhcp_lease_expiry_relearns_dns_server)
     build_full_ack(&s, &msg, second_srv, client_ip, mask, second_srv,
                    second_dns, 120U);
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
-    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
     ck_assert_uint_eq(s.dhcp_server_ip, second_srv);
     ck_assert_uint_eq(s.dns_server, second_dns);
 }
@@ -1368,6 +1375,8 @@ START_TEST(test_dhcp_lease_expiry_keeps_pinned_dns_server)
                    offered_dns, 120U);
     ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
     ck_assert_uint_eq(s.dns_server, pinned_dns);
+    /* ACK -> DAD (RFC 4331); complete the probes to reach BOUND. */
+    dhcp_test_complete_dad(&s);
 
     s.last_tick = s.dhcp_lease_expires;
     dhcp_timer_cb(&s);
@@ -1391,5 +1400,348 @@ START_TEST(test_dhcp_public_apis_null_stack_safe)
     ck_assert_int_eq(dhcp_bound(NULL), 0);
     ck_assert_int_eq(dhcp_client_is_running(NULL), 0);
     ck_assert_int_eq(dhcp_client_init(NULL), -WOLFIP_EINVAL);
+}
+END_TEST
+
+/* =========================================================================
+ * RFC 4331 DAD after DHCPACK
+ * ========================================================================= */
+
+/* A DHCPACK does not bind immediately: the client enters DAD and sends the
+ * first probe right away — an ARP request with sip = 0.0.0.0 and tip = the
+ * offered address. The lease timers are already armed for when the probes
+ * complete. */
+START_TEST(test_dhcp_dad_probe_wire_format)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct wolfIP_ll_dev *ll;
+    struct arp_packet *arp;
+    struct ipconf *primary;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA01U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    last_frame_sent_size = 0;
+
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    /* In DAD, first probe sent, lease timers armed. */
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    ck_assert_uint_eq(s.dhcp_dad_probes, 1U);
+    ck_assert_uint_ne(s.dhcp_renew_at, 0U);
+    ck_assert_uint_ne(s.dhcp_lease_expires, 0U);
+
+    /* Probe wire format: REQUEST, sip = 0.0.0.0, tip = offered IP,
+     * our MAC as sender. */
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    arp = (struct arp_packet *)last_frame_sent;
+    ck_assert_int_eq(arp->opcode, ee16(ARP_REQUEST));
+    ck_assert_int_eq(arp->sip, ee32(IPADDR_ANY));
+    ck_assert_int_eq(arp->tip, ee32(client_ip));
+    ck_assert_mem_eq(arp->sma, ll->mac, 6);
+    ck_assert_mem_eq(arp->tma, "\x00\x00\x00\x00\x00\x00", 6);
+}
+END_TEST
+
+/* A DAD probe answered by a host other than us is a conflict: the address
+ * is released, a DECLINE is sent (when a DHCP socket exists), and the
+ * client restarts at DISCOVER. */
+START_TEST(test_dhcp_dad_conflict_releases_and_rediscover)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct arp_packet reply;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *primary;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+    uint8_t other_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0x02};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA02U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+
+    /* A host that owns the address answers our probe. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(&reply, 0, sizeof(reply));
+    memcpy(reply.eth.dst, ll->mac, 6);
+    memcpy(reply.eth.src, other_mac, 6);
+    reply.eth.type = ee16(ETH_TYPE_ARP);
+    reply.htype = ee16(1);
+    reply.ptype = ee16(0x0800);
+    reply.hlen = 6;
+    reply.plen = 4;
+    reply.opcode = ee16(ARP_REPLY);
+    memcpy(reply.sma, other_mac, 6);
+    reply.sip = ee32(client_ip);
+    reply.tip = ee32(0x0A000001U);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
+
+    /* Address released, DAD aborted, back to discovery. */
+    ck_assert_uint_eq(s.dhcp_dad_probes, 0U);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+}
+END_TEST
+
+/* A reply with our own MAC is our own probe looping back: ignored, DAD
+ * continues. */
+START_TEST(test_dhcp_dad_own_mac_reply_ignored)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct arp_packet reply;
+    struct wolfIP_ll_dev *ll;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA03U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    wolfIP_primary_ipconf(&s)->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+
+    /* Our own probe comes back (e.g. switched loopback): same MAC. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(&reply, 0, sizeof(reply));
+    memcpy(reply.eth.dst, ll->mac, 6);
+    memcpy(reply.eth.src, ll->mac, 6);
+    reply.eth.type = ee16(ETH_TYPE_ARP);
+    reply.htype = ee16(1);
+    reply.ptype = ee16(0x0800);
+    reply.hlen = 6;
+    reply.plen = 4;
+    reply.opcode = ee16(ARP_REPLY);
+    memcpy(reply.sma, ll->mac, 6);
+    reply.sip = ee32(client_ip);
+    reply.tip = ee32(0x0A000001U);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    ck_assert_uint_eq(s.dhcp_dad_probes, 1U);
+}
+END_TEST
+
+/* The ACK must leave exactly one DHCP timer in the heap (the DAD timer),
+ * and DAD completion must leave exactly one (the renew timer): the lease
+ * timer is swapped out, not stacked, or handle_timers would fire the
+ * renewal twice. */
+START_TEST(test_dhcp_dad_single_dhcp_timer_in_heap)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    uint32_t i, count;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA05U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    wolfIP_primary_ipconf(&s)->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    count = 0;
+    for (i = 0; i < s.timers.size; i++)
+        if (s.timers.timers[i].expires != 0 &&
+            s.timers.timers[i].cb == dhcp_timer_cb)
+            count++;
+    ck_assert_uint_eq(count, 1U);
+
+    dhcp_test_complete_dad(&s);
+
+    count = 0;
+    for (i = 0; i < s.timers.size; i++)
+        if (s.timers.timers[i].expires != 0 &&
+            s.timers.timers[i].cb == dhcp_timer_cb)
+            count++;
+    ck_assert_uint_eq(count, 1U);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
+}
+END_TEST
+
+/* During DAD, a reply for a different IP is not a conflict: the hook only
+ * acts on replies claiming the address being probed. */
+START_TEST(test_dhcp_dad_reply_for_other_ip_ignored)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct arp_packet reply;
+    struct wolfIP_ll_dev *ll;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA04U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    wolfIP_primary_ipconf(&s)->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+
+    /* An ordinary reply for someone else's address: not our problem. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(&reply, 0, sizeof(reply));
+    memcpy(reply.eth.dst, ll->mac, 6);
+    reply.eth.type = ee16(ETH_TYPE_ARP);
+    reply.htype = ee16(1);
+    reply.ptype = ee16(0x0800);
+    reply.hlen = 6;
+    reply.plen = 4;
+    reply.opcode = ee16(ARP_REPLY);
+    reply.sma[0] = 0x02; reply.sma[5] = 0x77;
+    reply.sip = ee32(0x0A000099U);
+    reply.tip = ee32(client_ip);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    ck_assert_uint_eq(s.dhcp_dad_probes, 1U);
+}
+END_TEST
+
+/* Real ll drivers (stm32, lpc, fman, gem, tap) return the frame length on
+ * send success, not 0. The DAD probe counter must treat any non-negative
+ * return as "sent"; otherwise the first probe is miscounted, a fourth probe
+ * goes out, BOUND is delayed a full extra interval, and the m33mu CI app
+ * hits its DHCP safety timeout and falls back to the static IP. */
+static uint32_t dad_len_send_count = 0;
+
+static int dad_len_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
+{
+    (void)dev;
+    (void)frame;
+    if (len == sizeof(struct arp_packet))
+        dad_len_send_count++;
+    return (int)len;
+}
+
+START_TEST(test_dhcp_dad_probe_count_len_returning_driver)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct wolfIP_ll_dev *ll;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA06U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    wolfIP_primary_ipconf(&s)->ip = client_ip;
+
+    /* Simulate the real drivers: success returns len, not 0. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    dad_len_send_count = 0;
+    ll->send = dad_len_send;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    /* Probe 1 was counted despite the len return. */
+    ck_assert_uint_eq(s.dhcp_dad_probes, 1U);
+    ck_assert_uint_eq(dad_len_send_count, 1U);
+
+    dhcp_test_complete_dad(&s);
+
+    /* RFC 4331: exactly 3 probes, then BOUND. */
+    ck_assert_uint_eq(dad_len_send_count, DHCP_DAD_PROBES);
+}
+END_TEST
+
+/* DECLINE wire format (RFC 2131 §4.4): the client never bound the address,
+ * so ciaddr stays 0.0.0.0; the declined address is carried in option 50
+ * (Requested IP), alongside the server ID. */
+START_TEST(test_dhcp_decline_wire_format)
+{
+    struct wolfIP s;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *dec;
+    struct dhcp_option *opt;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    ck_assert_int_eq(dhcp_client_init(&s), 0);
+
+    /* The ACK offered client_ip; DAD detected a conflict. */
+    s.dhcp_ip = client_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_state = DHCP_DAD;
+
+    last_frame_sent_size = 0;
+    ck_assert_int_ge(dhcp_send_decline(&s), 0);
+    (void)wolfIP_poll(&s, s.last_tick);
+
+    /* L2 frame: the udp datagram struct carries its own eth + IP + UDP
+     * headers; the sent DHCP payload is DHCP_HEADER_LEN + the options
+     * actually used, not the whole struct. */
+    ck_assert_uint_gt(last_frame_sent_size,
+                      (uint32_t)sizeof(struct wolfIP_udp_datagram) +
+                      DHCP_HEADER_LEN);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    dec = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(dec->op, BOOT_REQUEST);
+    ck_assert_uint_eq(dec->ciaddr, 0U); /* never bound */
+
+    opt = (struct dhcp_option *)dec->options;
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_MSG_TYPE);
+    ck_assert_uint_eq(opt->data[0], DHCP_DECLINE);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_SERVER_ID);
+    ck_assert_uint_eq(DHCP_OPT_data_to_u32(opt), server_ip);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_OFFER_IP); /* option 50 */
+    ck_assert_uint_eq(opt->len, 4);
+    ck_assert_uint_eq(DHCP_OPT_data_to_u32(opt), client_ip);
 }
 END_TEST

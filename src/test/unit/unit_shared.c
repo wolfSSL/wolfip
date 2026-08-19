@@ -423,6 +423,24 @@ void mock_link_init(struct wolfIP *s)
     mock_link_init_idx(s, idx, NULL);
 }
 
+/* Drive the RFC 4331 DAD state machine to completion (probes unanswered
+ * -> DHCP_BOUND) after a DHCPACK. Requires a working mock link so the
+ * probes can be sent. Bounded so a regression cannot hang the suite. */
+#ifdef ETHERNET
+static void dhcp_test_complete_dad(struct wolfIP *s)
+{
+    int iter = 0;
+    while (s->dhcp_state == DHCP_DAD && iter < 16) {
+        /* Drive the real dispatch: handle_timers pops each fired timer,
+         * so the heap stays clean exactly as in production. */
+        s->last_tick += DHCP_DAD_INTERVAL_MS;
+        handle_timers(s, s->last_tick);
+        iter++;
+    }
+    ck_assert_int_eq(s->dhcp_state, DHCP_BOUND);
+}
+#endif
+
 static struct timers_binheap heap;
 static void reset_heap(void) {
     heap.size = 0;

@@ -1515,6 +1515,145 @@ START_TEST(test_arp_recv_reply_sender_zero_ip_rejected)
 END_TEST
 
 /* =========================================================================
+ * arp_recv: broadcast/multicast sender MAC — dropped (F-10274)
+ * =========================================================================
+ * A frame whose sender MAC has the Ethernet group bit set (broadcast or
+ * multicast) cannot identify a unicast host, so the entry it would create
+ * could only blackhole or misdirect traffic. Drop such frames before any
+ * opcode processing, for both REQUEST and REPLY.
+ */
+START_TEST(test_arp_recv_reply_broadcast_sma_dropped)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    ip4 sender_ip = 0x0A000020U;
+    static const uint8_t bcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, bcast_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype    = ee16(1);
+    arp.ptype    = ee16(0x0800);
+    arp.hlen     = 6;
+    arp.plen     = 4;
+    arp.opcode   = ee16(ARP_REPLY);
+    memcpy(arp.sma, bcast_mac, 6);
+    arp.sip      = ee32(sender_ip);
+    memset(arp.tma, 0, 6);
+    arp.tip      = ee32(0x0A000001U);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    /* A group sender MAC must never install a neighbor entry */
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender_ip), 0);
+}
+END_TEST
+
+START_TEST(test_arp_recv_reply_multicast_sma_dropped)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    ip4 sender_ip = 0x0A000021U;
+    static const uint8_t mcast_mac[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0x02};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+
+    memset(&arp, 0, sizeof(arp));
+    memcpy(arp.eth.dst, ll->mac, 6);
+    memcpy(arp.eth.src, mcast_mac, 6);
+    arp.eth.type = ee16(ETH_TYPE_ARP);
+    arp.htype    = ee16(1);
+    arp.ptype    = ee16(0x0800);
+    arp.hlen     = 6;
+    arp.plen     = 4;
+    arp.opcode   = ee16(ARP_REPLY);
+    memcpy(arp.sma, mcast_mac, 6);
+    arp.sip      = ee32(sender_ip);
+    memset(arp.tma, 0, 6);
+    arp.tip      = ee32(0x0A000001U);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender_ip), 0);
+}
+END_TEST
+
+START_TEST(test_arp_recv_request_broadcast_sma_dropped)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    ip4 sender_ip = 0x0A000022U;
+    static const uint8_t bcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.last_tick = 5000;
+
+    ll   = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    build_valid_arp_request(&arp, ll, conf->ip, sender_ip);
+    memcpy(arp.sma, bcast_mac, 6);
+    memcpy(arp.eth.src, bcast_mac, 6);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    /* No reply may be sent in answer to a group-MAC request, and nothing
+     * may be learned from it */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender_ip), 0);
+}
+END_TEST
+
+START_TEST(test_arp_recv_request_multicast_sma_dropped)
+{
+    struct wolfIP s;
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *conf;
+    ip4 sender_ip = 0x0A000023U;
+    static const uint8_t mcast_mac[6] = {0x01, 0x00, 0x5E, 0x00, 0x00, 0x03};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.last_tick = 5000;
+
+    ll   = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    conf = wolfIP_ipconf_at(&s, TEST_PRIMARY_IF);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    build_valid_arp_request(&arp, ll, conf->ip, sender_ip);
+    memcpy(arp.sma, mcast_mac, 6);
+    memcpy(arp.eth.src, mcast_mac, 6);
+
+    arp_recv(&s, TEST_PRIMARY_IF, &arp, sizeof(arp));
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_int_lt(arp_neighbor_index(&s, TEST_PRIMARY_IF, sender_ip), 0);
+}
+END_TEST
+
+/* =========================================================================
  * arp_recv: a valid ARP request is answered but does NOT install a neighbor;
  *           only a following REPLY populates the cache
  * =========================================================================

@@ -85,6 +85,20 @@ jobs:
             tail -n 200 /tmp/m33mu.log || true
             exit 1
           fi
+          # The host grants the lease at the DHCP ACK, but the device may
+          # still be running RFC 4331 DAD (3 probes) before it binds and
+          # starts serving. Under the emulated tick rate that window is
+          # several seconds, longer than the nc retry burst below. Wait for
+          # the app's own ready line (bounded; apps without the marker keep
+          # the old behavior).
+          if grep -q "Starting DHCP client" /tmp/m33mu.log 2>/dev/null; then
+            for _ in $(seq 1 60); do
+              if grep -q "DHCP configuration received" /tmp/m33mu.log 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+          fi
           echo "Leased IP: ${ip}"
 
           ok=0
@@ -207,6 +221,17 @@ jobs:
             echo "No DHCP lease acquired."
             tail -n 200 /tmp/m33mu.log || true
             exit 1
+          fi
+          # The host grants the lease at the DHCP ACK, but the device may
+          # still be running RFC 4331 DAD (3 probes) before it binds and
+          # starts serving. Wait for the app's own ready line (bounded).
+          if grep -q "Starting DHCP client" /tmp/m33mu.log 2>/dev/null; then
+            for _ in $(seq 1 60); do
+              if grep -q "DHCP configuration received" /tmp/m33mu.log 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
           fi
           echo "Leased IP: ${ip}"
 
@@ -422,6 +447,17 @@ jobs:
             echo "m33mu log:"
             tail -n 200 /tmp/m33mu.log || true
             exit 1
+          fi
+          # The host grants the lease at the DHCP ACK, but the device may
+          # still be running RFC 4331 DAD (3 probes) before it binds and
+          # starts serving. Wait for the app's own ready line (bounded).
+          if grep -q "Starting DHCP client" /tmp/m33mu.log 2>/dev/null; then
+            for _ in $(seq 1 60); do
+              if grep -q "DHCP configuration received" /tmp/m33mu.log 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
           fi
           echo "Leased IP: ${ip}"
 
