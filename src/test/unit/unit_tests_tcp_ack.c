@@ -2816,9 +2816,11 @@ END_TEST
 START_TEST(test_wolfip_forward_ttl_exceeded_truncated_header_no_send)
 {
     struct wolfIP s;
-    /* Frame shorter than the full IP header: dropped in validation, no
-     * Time Exceeded can be originated without the quoted header. */
-    uint8_t ip_buf[ETH_HEADER_LEN + 10];
+    /* The on-wire frame is shorter than the full IP header: dropped in
+     * validation, no Time Exceeded can be originated without the quoted
+     * header. Build the header in a full-sized buffer (the field writes
+     * need the whole header), then pass only the truncated length. */
+    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
@@ -2839,7 +2841,7 @@ START_TEST(test_wolfip_forward_ttl_exceeded_truncated_header_no_send)
     ip->dst = ee32(0xC0A80199U);
     fix_ip_checksum(ip);
 
-    wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
+    wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)(ETH_HEADER_LEN + 10));
     ck_assert_uint_eq(last_frame_sent_size, 0U);
 }
 END_TEST
