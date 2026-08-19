@@ -1406,6 +1406,7 @@ struct wolfIP {
     uint8_t dhcp_dad_probes; /* DAD probes sent (0 = DAD inactive) */
     ip4 dhcp_server_ip; /* DHCP server IP */
     ip4 dhcp_ip; /* IP address assigned by DHCP */
+    uint32_t dhcp_offered_mask; /* netmask from the accepted OFFER */
     uint64_t dhcp_renew_at; /* Renewal time (T1) */
     uint64_t dhcp_rebind_at; /* Rebind time (T2) */
     uint64_t dhcp_lease_expires; /* Lease expiration time */
@@ -8427,6 +8428,20 @@ region_end:
     }
 }
 
+/* A lease address must be a usable unicast host address: not 0.0.0.0,
+ * not the limited broadcast, not multicast, and not the broadcast of
+ * its own subnet. */
+static int dhcp_lease_ip_sane(uint32_t ip, uint32_t mask)
+{
+    if (ip == 0U || ip == 0xFFFFFFFFU)
+        return 0;
+    if (wolfIP_ip_is_multicast(ip))
+        return 0;
+    if (mask != 0U && ((ip | mask) == 0xFFFFFFFFU))
+        return 0;
+    return 1;
+}
+
 static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
     struct dhcp_opt_stream st;
@@ -8434,7 +8449,6 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
     int saw_server_id = 0;
     uint32_t ip;
     uint32_t netmask = DHCP_DEFAULT_24BIT_NETMASK;
-    struct ipconf *primary = wolfIP_primary_ipconf(s);
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
     if (msg->op != BOOT_REPLY)
@@ -8489,11 +8503,12 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                 if (!saw_end || !saw_server_id)
                     return -1;
                 ip = ee32(msg->yiaddr);
-                if (primary) {
-                    primary->ip = ip;
-                    primary->mask = netmask;
-                }
+                if (!dhcp_lease_ip_sane(ip, netmask))
+                    return -1;
+                /* Stash the offer; the interface is not reconfigured
+                 * until the server's ACK confirms the lease. */
                 s->dhcp_ip = ip;
+                s->dhcp_offered_mask = netmask;
                 dhcp_cancel_timer(s);
                 s->dhcp_state = DHCP_REQUEST_SENT;
                 return 0;
@@ -8554,7 +8569,9 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
+    int saw_offer_ip = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
+    uint32_t lease_ip = 0;
     uint32_t lease_s = 0;
     uint32_t renew_s = 0;
     uint32_t rebind_s = 0;
@@ -8606,11 +8623,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                             return -1;
                         s->dhcp_server_ip = val;
                         saw_server_id = 1;
-                    } else if (primary && code == DHCP_OPTION_OFFER_IP) {
+                    } else if (code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
                         val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
-                        primary->ip = val;
+                        lease_ip = val;
+                        saw_offer_ip = 1;
                     } else if (primary && code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
@@ -8642,13 +8660,24 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 }
                 if (!saw_end)
                     return -1;
+                /* The lease address is option 50 (the requested IP) when the
+                 * server echoes it, otherwise the yiaddr it committed; either
+                 * way it must be a usable unicast address before it is applied
+                 * to the interface. The offered netmask applies when the ACK
+                 * carries none. */
+                if (!saw_offer_ip)
+                    lease_ip = ee32(msg->yiaddr);
+                if (primary && primary->mask == 0)
+                    primary->mask = s->dhcp_offered_mask;
                 /* RFC 2131: the IP-address-lease-time option (51) is mandatory
                  * in a DHCPACK. lease_s is only ever set by that option (and a
                  * short option already returns -1 above), so lease_s != 0 means
                  * it was present with a valid nonzero duration. Without it the
                  * lease would be bound with no expiry/renewal timer. */
                 if (primary && saw_server_id && lease_s != 0 &&
-                    (primary->ip != 0) && (primary->mask != 0)) {
+                    (primary->mask != 0) &&
+                    dhcp_lease_ip_sane(lease_ip, primary->mask)) {
+                    primary->ip = lease_ip;
                     dhcp_cancel_timer(s);
                     s->dhcp_ip = primary->ip;
 #ifdef ETHERNET
@@ -8698,6 +8727,15 @@ static int dhcp_poll(struct wolfIP *s)
                                (struct wolfIP_sockaddr *)&sin, &sl);
     if (len < 0)
         return -1;
+    /* A reply must be addressed to this client's hardware address. The
+     * client's MAC never changes mid-transaction, so a reply carrying any
+     * other chaddr is not addressed to this client and is dropped. */
+    {
+        struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
+        if (!ll || msg.hlen != 6U ||
+            memcmp(msg.chaddr, ll->mac, 6) != 0)
+            return -1;
+    }
     if ((s->dhcp_state == DHCP_DISCOVER_SENT) && (dhcp_parse_offer(s, &msg, (uint32_t)len) == 0))
         dhcp_send_request(s);
     else if (s->dhcp_state == DHCP_REQUEST_SENT ||

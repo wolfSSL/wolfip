@@ -7037,8 +7037,10 @@ START_TEST(test_regression_dhcp_nak_restarts_configuration)
     /* Build a minimal DHCPNAK message (type 6) */
     memset(&msg, 0, sizeof(msg));
     msg.op = 2; /* BOOT_REPLY */
+    msg.hlen = 6;
     msg.magic = ee32(DHCP_MAGIC);
     msg.xid = ee32(0x12345678U);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
     opt->len = 1;

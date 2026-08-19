@@ -926,6 +926,7 @@ START_TEST(test_dhcp_parse_ack_with_renewal_and_rebind_times)
     primary->ip = client_ip;
 
     build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    msg.yiaddr = ee32(client_ip);
     p = (uint8_t *)msg.options + 3;
     append_opt4(&p, DHCP_OPTION_SERVER_ID, server_ip);
     append_opt4(&p, DHCP_OPTION_SUBNET_MASK, 0xFFFFFF00U);
@@ -963,6 +964,7 @@ START_TEST(test_dhcp_parse_ack_dns_already_set_skipped)
     primary->ip = client_ip;
 
     build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    msg.yiaddr = ee32(client_ip);
     p = (uint8_t *)msg.options + 3;
     append_opt4(&p, DHCP_OPTION_SERVER_ID, server_ip);
     append_opt4(&p, DHCP_OPTION_SUBNET_MASK, 0xFFFFFF00U);
@@ -995,6 +997,7 @@ START_TEST(test_dhcp_parse_ack_inner_pad_bytes_skipped)
     primary->ip = client_ip;
 
     build_dhcp_msg_base(&s, &msg, DHCP_ACK);
+    msg.yiaddr = ee32(client_ip);
     p = (uint8_t *)msg.options + 3;
     /* pad byte */
     p[0] = 0; p += 1;
@@ -1762,5 +1765,248 @@ START_TEST(test_dhcp_decline_wire_format)
     ck_assert_uint_eq(opt->code, DHCP_OPTION_OFFER_IP); /* option 50 */
     ck_assert_uint_eq(opt->len, 4);
     ck_assert_uint_eq(DHCP_OPT_data_to_u32(opt), client_ip);
+}
+END_TEST
+
+/* -------------------------------------------------------------------------
+ * Rogue-server hardening: chaddr validation, yiaddr sanity, and deferring
+ * the interface reconfiguration from the OFFER to the confirming ACK.
+ * ------------------------------------------------------------------------- */
+
+static struct tsocket *
+dhcp_edges_rx_socket(struct wolfIP *s)
+{
+    s->dhcp_udp_sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                        WI_IPPROTO_UDP);
+    if (s->dhcp_udp_sd <= 0)
+        return NULL;
+    return &s->udpsockets[SOCKET_UNMARK(s->dhcp_udp_sd)];
+}
+
+/* A forged reply that is not addressed to this client's hardware address
+ * must be dropped: no state change, no configuration. */
+START_TEST(test_dhcp_poll_reply_wrong_chaddr_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    uint32_t xid = 0x12345678U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ts = dhcp_edges_rx_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    s.dhcp_xid = xid;
+
+    /* Forged OFFER: matching xid, but chaddr is all zeros. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(xid);
+    msg.yiaddr = ee32(0x0A000064U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+    ck_assert_int_eq(ret, -1);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0U);
+    ck_assert_uint_eq(wolfIP_primary_ipconf(&s)->ip, 0U);
+}
+END_TEST
+
+/* An OFFER with yiaddr 0.0.0.0 must be rejected: no broken configuration
+ * may be committed to the interface. */
+START_TEST(test_dhcp_poll_offer_zero_yiaddr_rejected)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    uint32_t xid = 0x12345678U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ts = dhcp_edges_rx_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    s.dhcp_xid = xid;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(xid);
+    /* yiaddr intentionally left 0.0.0.0 */
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    opt->data[0] = 0xFF;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x00;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+    ck_assert_int_eq(ret, 0);
+    /* Offer refused: no state advance, no configuration anywhere. */
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(s.dhcp_ip, 0U);
+    ck_assert_uint_eq(wolfIP_primary_ipconf(&s)->ip, 0U);
+}
+END_TEST
+
+/* A valid OFFER stashes the lease without touching the interface; the
+ * confirming ACK commits ip, mask, gateway, and DNS. */
+START_TEST(test_dhcp_poll_offer_defers_commit_until_ack)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    uint32_t xid = 0x12345678U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ts = dhcp_edges_rx_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_xid = xid;
+
+    /* --- Valid OFFER: accepted, but nothing applied yet. --- */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(xid);
+    msg.yiaddr = ee32(0x0A000064U);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    opt->data[0] = 0xFF;
+    opt->data[1] = 0xFF;
+    opt->data[2] = 0xFF;
+    opt->data[3] = 0x00;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(s.dhcp_ip, 0x0A000064U);
+    /* The interface is untouched until the ACK. */
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(primary->mask, 0U);
+
+    /* --- Confirming ACK: commits the full configuration. --- */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(xid);
+    msg.yiaddr = ee32(0x0A000064U);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    opt->data[0] = 0xFF;
+    opt->data[1] = 0xFF;
+    opt->data[2] = 0xFF;
+    opt->data[3] = 0x00;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_ROUTER;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_DNS;
+    opt->len = 4;
+    opt->data[0] = 0x08;
+    opt->data[1] = 0x08;
+    opt->data[2] = 0x08;
+    opt->data[3] = 0x08;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_LEASE_TIME;
+    opt->len = 4;
+    opt->data[0] = 0x00;
+    opt->data[1] = 0x00;
+    opt->data[2] = 0x00;
+    opt->data[3] = 0x78; /* 120 s */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+    ck_assert_int_eq(ret, 0);
+    /* The confirming ACK commits the config and enters RFC 4331 DAD;
+     * complete the probes to reach BOUND. */
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    dhcp_test_complete_dad(&s);
+    ck_assert_uint_eq(primary->ip, 0x0A000064U);
+    ck_assert_uint_eq(primary->mask, 0xFFFFFF00U);
+    ck_assert_uint_eq(primary->gw, 0x0A000001U);
+    ck_assert_uint_eq(s.dns_server, 0x08080808U);
 }
 END_TEST
