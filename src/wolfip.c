@@ -2265,10 +2265,10 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
     /* RFC 1812 4.3.2.7 / RFC 1122 3.2.2: an ICMP error message MUST NOT be
      * originated in response to another ICMP error. If the packet whose TTL
      * expired is itself an ICMP error (type 3, 4, 5, 11, 12), drop silently.
-     * The caller guarantees the frame holds the full IP header, so reading
-     * the embedded ICMP type at offset ETH_HEADER_LEN + orig_ihl is in
-     * bounds. */
-    if (orig->proto == WI_IPPROTO_ICMP) {
+     * The ICMP type byte only exists when the datagram carries an ICMP
+     * payload (declared length beyond the IP header); a zero-payload ICMP
+     * cannot be an error, so it is never suppressed. */
+    if (orig->proto == WI_IPPROTO_ICMP && ee16(orig->len) > orig_ihl) {
         uint8_t orig_type = *(((uint8_t *)orig) + ETH_HEADER_LEN + orig_ihl);
         if (orig_type == ICMP_DEST_UNREACH || orig_type == ICMP_FRAG_NEEDED ||
             orig_type == 5 /* Redirect */ || orig_type == ICMP_TTL_EXCEEDED ||
@@ -3872,17 +3872,31 @@ static void tcp_preaccept_timeout_stop(struct tsocket *t)
 /* Revert a listening socket stuck in a half-open or established connection
  * state back to TCP_LISTEN, clearing the half-open 4-tuple so the port
  * accepts new connections again. Used by the control-RTO expiry, the
- * pre-accept fast-fail timeout, and the accept() recovery path. */
+ * pre-accept fast-fail timeout, and the accept() recovery path. The socket
+ * is reset to the same baseline as a freshly allocated TCP socket:
+ * payload descriptors, queued RX data, out-of-order segments and CC state
+ * of the dead connection must not leak into the next one (retransmitting
+ * stale descriptors would carry dead seqs into the new ACK window). */
 static void tcp_listener_revert_to_listen(struct tsocket *t)
 {
     if (!t || t->proto != WI_IPPROTO_TCP)
         return;
+    tcp_persist_stop(t);
     tcp_preaccept_timeout_stop(t);
+    memset(&t->sock.tcp, 0, sizeof(t->sock.tcp));
+    /* A zeroed fifo/queue is not an empty one (size 0, NULL data): re-init
+     * the buffer bookkeeping against the socket's storage. */
+    fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
+    queue_init(&t->sock.tcp.rxbuf, t->rxmem, RXBUF_SIZE, 0);
     t->sock.tcp.state = TCP_LISTEN;
+    t->sock.tcp.is_listener = 1;
     t->sock.tcp.seq = wolfIP_getrandom();
-    t->sock.tcp.ack = 0;
-    t->sock.tcp.snd_una = 0;
-    t->sock.tcp.ctrl_rto_retries = 0;
+    t->sock.tcp.rto = TCP_RTO_MIN_MS;
+    t->sock.tcp.peer_rwnd = 0xFFFF;
+    t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
+    t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
+    t->sock.tcp.peer_mss = TCP_DEFAULT_MSS;
+    t->sock.tcp.sack_offer = 1;
     t->remote_ip = 0;
     t->dst_port = 0;
     t->events = 0;
@@ -5456,12 +5470,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         ee32(tcp->seq) == t->sock.tcp.ack - 1) {
                     /* Re-SYN from the holding 4-tuple: the peer retransmitted
                      * its original SYN (our SYN-ACK was lost or it is retrying).
-                     * Retransmit the SYN-ACK and re-arm the control RTO from
-                     * the base value instead of silently dropping the
-                     * retransmission, so the half-open handshake can complete. */
+                     * Retransmit the SYN-ACK instead of silently dropping the
+                     * retransmission, so the half-open handshake can complete.
+                     * The control RTO backoff keeps its own schedule: a re-SYN
+                     * must not re-arm the retry budget, or an attacker could
+                     * hold the listener in SYN_RCVD past the retry cap. */
                     (void)tcp_send_syn(t, TCP_FLAG_SYN | TCP_FLAG_ACK);
-                    t->sock.tcp.ctrl_rto_retries = 0;
-                    tcp_ctrl_rto_start(t, t->S->last_tick);
                     continue;
                 }
                 if (tcp->flags & TCP_FLAG_ACK)  {

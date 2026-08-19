@@ -2207,6 +2207,58 @@ state_test_wire_seq(const struct wolfIP_ip_packet *ip)
     return ee32(seq);
 }
 
+/* A read callback that fails (non-zero) must leave the SA fresh, even
+ * when it scribbled the out parameters before failing (corrupt NVM or
+ * version-mismatch path). */
+static uint8_t state_fail_spi[ESP_SPI_LEN] = {0x99, 0x88, 0x77, 0x66};
+
+static int state_fail_read_cb(const uint8_t *spi, uint32_t *oseq,
+                              uint32_t *hi_seq, uint32_t *bitmap)
+{
+    if (memcmp(spi, state_fail_spi, ESP_SPI_LEN) == 0) {
+        *oseq   = 0xDEADBEEFU;
+        *hi_seq = 0;
+        *bitmap = 0xFFFFFFFFU;
+        return -1;
+    }
+    return 0;
+}
+
+START_TEST(test_esp_state_restore_failed_read_keeps_fresh_state)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint16_t ip_len;
+    uint32_t frame_len;
+    int ret;
+
+    esp_setup();
+    ret = wolfIP_esp_state_set_cbs(NULL, state_fail_read_cb);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, state_fail_spi,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    /* The failed read must not have taken effect: outbound starts from
+     * the fresh oseq 0, so the first wire seq is 1. */
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                (const uint8_t *)"abcd", 4);
+    ip_len = (uint16_t)(frame_len - ETH_HEADER_LEN);
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(state_test_wire_seq(ip), 1U);
+
+    wolfIP_esp_sa_del_all();
+    ret = wolfIP_esp_state_set_cbs(NULL, NULL);
+    ck_assert_int_eq(ret, 0);
+}
+END_TEST
+
 START_TEST(test_esp_state_persistence_callbacks)
 {
     static uint8_t buf[LINK_MTU + 256];
@@ -2382,6 +2434,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_sa_del_frees_slot);
     tcase_add_test(tc, test_sa_del_all);
     tcase_add_test(tc, test_esp_state_persistence_callbacks);
+    tcase_add_test(tc, test_esp_state_restore_failed_read_keeps_fresh_state);
     suite_add_tcase(s, tc);
 
     /* Replay window */

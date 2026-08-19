@@ -4901,9 +4901,10 @@ static void llk_complete_handshake(struct wolfIP *s, struct tsocket *lsn,
 }
 
 /* One SYN puts the listener in SYN_RCVD; other clients are RST'd; a
- * re-SYN from the holding 4-tuple retransmits the SYN-ACK and re-arms
- * the control RTO from the base value instead of being dropped. */
-START_TEST(test_tcp_listener_syn_lock_others_rst_resyn_retransmits_rearms)
+ * re-SYN from the holding 4-tuple retransmits the SYN-ACK instead of
+ * being dropped, without touching the control-RTO retry budget (a
+ * re-SYN must not extend the lock past the retry cap). */
+START_TEST(test_tcp_listener_syn_lock_others_rst_resyn_retransmits_synack)
 {
     struct wolfIP s;
     int fd;
@@ -4969,7 +4970,8 @@ START_TEST(test_tcp_listener_syn_lock_others_rst_resyn_retransmits_rearms)
     ck_assert_uint_eq(ee16(out->dst_port), 42000);
 
     /* Attacker A retransmits the original SYN: the stack retransmits
-     * the SYN-ACK and re-arms the control RTO from the base value. */
+     * the SYN-ACK, but the control RTO keeps its own schedule (no
+     * re-arm), so the retry cap still bounds the lock. */
     armed_expires = llk_timer_expires(&s, lsn->sock.tcp.tmr_rto);
     frames_before = last_frame_sent_count;
     inject_tcp_segment(&s, TEST_PRIMARY_IF, LLK_ATT_IP, LLK_LOCAL_IP,
@@ -4983,7 +4985,7 @@ START_TEST(test_tcp_listener_syn_lock_others_rst_resyn_retransmits_rearms)
     ck_assert_ptr_nonnull(out);
     ck_assert(out->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK));
     ck_assert_uint_eq(ee16(out->dst_port), 41000);
-    ck_assert_uint_ne(llk_timer_expires(&s, lsn->sock.tcp.tmr_rto),
+    ck_assert_uint_eq(llk_timer_expires(&s, lsn->sock.tcp.tmr_rto),
                       armed_expires);
 }
 END_TEST
@@ -5259,5 +5261,74 @@ START_TEST(test_tcp_listener_preaccept_timeout_reverts_port)
     ck_assert_ptr_nonnull(out);
     ck_assert(out->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK));
     ck_assert_uint_eq(ee16(out->dst_port), 42000);
+}
+END_TEST
+
+/* The accept() recovery path must also drain the dead connection's
+ * transport state: segments parked on the listener socket during the
+ * pre-accept window must not leak into the next connection (stale
+ * descriptors would carry dead seqs into the new ACK window). */
+START_TEST(test_tcp_listener_preaccept_revert_drains_connection_state)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    struct wolfIP_sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+    int i;
+    const struct wolfIP_tcp_seg *out;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+
+    /* Under the pending-only ARP policy the listener's SYN-ACK is parked
+     * in the tx fifo (the neighbor never resolved): live state a revert
+     * must drop, or the next connection inherits a stale segment. */
+    ck_assert_int_eq(fifo_is_empty(&lsn->sock.tcp.txbuf), 0);
+
+    /* accept() fails (ESTABLISHED) and reverts the port to LISTEN. */
+    memset(&peer, 0, sizeof(peer));
+    ck_assert_int_eq(wolfIP_sock_accept(&s, fd,
+            (struct wolfIP_sockaddr *)&peer, &peer_len), -1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_LISTEN);
+
+    /* The dead connection's transport state is gone. */
+    ck_assert_uint_eq(lsn->sock.tcp.bytes_in_flight, 0);
+    ck_assert_ptr_null(fifo_peek(&lsn->sock.tcp.txbuf));
+    /* An empty ring queue always holds back one slot. */
+    ck_assert_uint_eq(queue_space((struct queue *)&lsn->sock.tcp.rxbuf),
+                      RXBUF_SIZE - 1);
+    for (i = 0; i < TCP_OOO_MAX_SEGS; i++)
+        ck_assert_int_eq(lsn->sock.tcp.ooo[i].used, 0);
+    ck_assert_uint_eq(lsn->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(lsn->sock.tcp.preaccept_timeout_active, 0);
+
+    /* A new client gets a clean connection and completes the handshake
+     * (the victim is a known neighbor so its SYN-ACK reaches the wire;
+     * the attacker's stays unresolved, keeping the parked-SYN-ACK premise
+     * above intact). */
+    llk_keep_arp_fresh(&s, LLK_VICTIM_IP);
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, LLK_VICTIM_IP, LLK_LOCAL_IP,
+                       42000, (uint16_t)LLK_LISTEN_PORT, 5, 0, TCP_FLAG_SYN);
+    (void)wolfIP_poll(&s, 3);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_SYN_RCVD);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert(out->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    ck_assert_uint_eq(ee16(out->dst_port), 42000);
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, LLK_VICTIM_IP, LLK_LOCAL_IP,
+                       42000, (uint16_t)LLK_LISTEN_PORT, 6,
+                       lsn->sock.tcp.seq + 1, TCP_FLAG_ACK);
+    (void)wolfIP_poll(&s, 4);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_int_eq(lsn->sock.tcp.preaccept_timeout_active, 1);
 }
 END_TEST

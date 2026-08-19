@@ -53,13 +53,25 @@ esp_state_save(const wolfIP_esp_sa *sa)
 }
 
 /* Restore persisted state for a fresh SA (if the application provides
- * any).  A non-zero callback return keeps the fresh state. */
+ * any).  A non-zero callback return keeps the fresh state, even if the
+ * callback wrote into the out parameters before failing (corrupt NVM,
+ * version mismatch). */
 static void
 esp_state_restore(wolfIP_esp_sa *sa)
 {
+    uint32_t oseq;
+    uint32_t hi_seq;
+    uint32_t bitmap;
+
     if (esp_state_read_cb) {
-        (void)esp_state_read_cb(sa->spi, &sa->replay.oseq,
-                                &sa->replay.hi_seq, &sa->replay.bitmap);
+        oseq   = sa->replay.oseq;
+        hi_seq = sa->replay.hi_seq;
+        bitmap = sa->replay.bitmap;
+        if (esp_state_read_cb(sa->spi, &oseq, &hi_seq, &bitmap) == 0) {
+            sa->replay.oseq   = oseq;
+            sa->replay.hi_seq = hi_seq;
+            sa->replay.bitmap = bitmap;
+        }
     }
 }
 
