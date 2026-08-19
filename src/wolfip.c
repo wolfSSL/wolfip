@@ -8070,6 +8070,15 @@ static void dhcp_timer_cb(void *arg)
                 dhcp_send_discover(s);
                 break;
             }
+            if (s->dhcp_renew_at != 0 && s->last_tick < s->dhcp_renew_at) {
+                /* A stale timer from an earlier lease cycle fired early
+                 * (e.g. a renewal timer left pending across a lease drop
+                 * and re-DORA). The current lease's renew time is still
+                 * ahead, so its timer is the one that should drive the
+                 * renewal; stay BOUND instead of starting a spurious
+                 * RENEWING transaction. */
+                break;
+            }
             s->dhcp_state = DHCP_RENEWING;
             s->dhcp_start_tick = s->last_tick;
             s->dhcp_timeout_count = 0;
