@@ -102,7 +102,9 @@ static int test_credit(void)
 static int test_iovar_build(void)
 {
     uint8_t out[128];
-    uint8_t val[4] = { 1, 2, 3, 4 };
+    /* Sized for the largest vlen exercised below (13); the first four octets
+     * carry the checked pattern. */
+    uint8_t val[16] = { 1, 2, 3, 4 };
     uint32_t outlen = 0;
     int fails = 0;
     printf("Test 4: iovar build + overflow guard\n");
