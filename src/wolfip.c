@@ -1219,6 +1219,7 @@ struct tsocket {
     uint8_t nexthop_mac[6];
 #endif
     uint8_t if_idx;
+    uint8_t tos; /* outgoing IPv4 TOS/DS field (setsockopt WOLFIP_IP_TOS) */
     uint8_t recv_ttl;
     uint8_t last_pkt_ttl;
     uint8_t close_notify_pending; /* slot reserved for a final CB_EVENT_CLOSED */
@@ -4533,7 +4534,7 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
     ip->src = ee32(t->local_ip);
     ip->dst = ee32(t->remote_ip);
     ip->ver_ihl = 0x45;
-    ip->tos = 0;
+    ip->tos = t->tos;
     ip->len = ee16(len);
     ip->flags_fo = (proto == WI_IPPROTO_TCP) ? ee16(0x4000U) : 0;
     ip->ttl = 64;
@@ -7090,6 +7091,17 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         ts->recv_ttl = enable ? 1 : 0;
         return 0;
     }
+    if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_TOS) {
+        int tos;
+        if (!optval || optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+        memcpy(&tos, optval, sizeof(int));
+        if (tos < 0 || tos > 255) {
+            return -WOLFIP_EINVAL;
+        }
+        ts->tos = (uint8_t)tos;
+        return 0;
+    }
 #ifdef IP_MULTICAST
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
         if (optname == WOLFIP_IP_ADD_MEMBERSHIP ||
@@ -7260,6 +7272,22 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
             return 0;
         }
         return 0;
+    }
+    if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_TOS) {
+        int value;
+        if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+#if WOLFIP_PACKET_SOCKETS
+        if (ps)
+            return -WOLFIP_EINVAL;
+#endif
+        if (ts) {
+            value = ts->tos;
+            memcpy(optval, &value, sizeof(int));
+            *optlen = sizeof(int);
+            return 0;
+        }
+        return -WOLFIP_EINVAL;
     }
 #ifdef IP_MULTICAST
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {

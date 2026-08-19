@@ -575,6 +575,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_invalid_ack_rejected);
     tcase_add_test(tc_utils, test_tcp_input_syn_listen_does_not_scale_syn_window);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_does_not_scale_synack_window);
+    tcase_add_test(tc_utils, test_tcp_setsockopt_ip_tos_applied_to_outbound_syn);
     tcase_add_test(tc_utils, test_tcp_parse_sack_wraparound_block_accepted);
     tcase_add_test(tc_utils, test_tcp_parse_options_stops_on_truncated_or_invalid_option_length);
     tcase_add_test(tc_utils, test_tcp_parse_options_returns_when_frame_has_no_option_bytes);

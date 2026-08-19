@@ -4748,3 +4748,60 @@ START_TEST(test_tcp_input_established_fin_out_of_order_no_transition)
     ck_assert_uint_eq(ts->events & CB_EVENT_CLOSED, 0);
 }
 END_TEST
+
+/* An application-selected Diffserv value must be carried in the IPv4 TOS
+ * field of every outgoing segment; validated via setsockopt. */
+START_TEST(test_tcp_setsockopt_ip_tos_applied_to_outbound_syn)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct wolfIP_tcp_seg *syn;
+    struct wolfIP_sockaddr_in sin;
+    int tos = 0xA0;
+    int bad = 256;
+    int neg = -1;
+    socklen_t len;
+    static const uint8_t tos_peer_mac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+
+    /* Range and argument validation. */
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, tcp_sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_TOS, &bad, sizeof(bad)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, tcp_sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_TOS, &neg, sizeof(neg)), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, tcp_sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_TOS, NULL, sizeof(tos)), -WOLFIP_EINVAL);
+
+    /* A valid value is accepted and readable via getsockopt. */
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, tcp_sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_TOS, &tos, sizeof(tos)), 0);
+    len = sizeof(tos);
+    ck_assert_int_eq(wolfIP_sock_getsockopt(&s, tcp_sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_TOS, &tos, &len), 0);
+    ck_assert_int_eq(tos, 0xA0);
+
+    /* The connect SYN must carry the selected TOS in its IPv4 header.
+     * Seed the ARP entry so the SYN is transmitted, not queued. */
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, 0x0A000002U, (uint8_t *)tos_peer_mac);
+    last_frame_sent_size = 0;
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5002);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+
+    /* The SYN is queued in the tx fifo; the poll loop transmits it. */
+    wolfIP_poll(&s, 1000);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    syn = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(syn->flags, TCP_FLAG_SYN);
+    ck_assert_uint_eq(syn->ip.tos, (uint8_t)0xA0);
+}
+END_TEST

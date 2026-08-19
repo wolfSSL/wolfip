@@ -64,6 +64,14 @@ typedef unsigned long size_t;
 #endif
 #endif
 
+#ifndef WOLFIP_IP_TOS
+#ifdef IP_TOS
+#define WOLFIP_IP_TOS IP_TOS
+#else
+#define WOLFIP_IP_TOS 1
+#endif
+#endif
+
 #ifndef WOLFIP_SO_DONTROUTE
 #ifdef SO_DONTROUTE
 #define WOLFIP_SO_DONTROUTE SO_DONTROUTE
