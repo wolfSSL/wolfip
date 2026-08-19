@@ -3865,8 +3865,10 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
 
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, ETH_HEADER_LEN + IP_HEADER_LEN + 8);
 
+    /* The quote is the declared total length (20), below the 28-byte
+     * default. */
     ck_assert_uint_eq(last_frame_sent_size,
-            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + ee16(frame->len)));
     icmp = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
     ck_assert_uint_eq(icmp->type, ICMP_TTL_EXCEEDED);
     ck_assert_uint_eq(icmp->code, 0);
@@ -3875,7 +3877,7 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     ck_assert_mem_eq(icmp->ip.eth.src, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     ck_assert_uint_eq(icmp->ip.ttl, 64);
     ck_assert_uint_eq(ee16(icmp->ip.len),
-            (uint16_t)(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
+            (uint16_t)(IP_HEADER_LEN + 8 + ee16(frame->len)));
     ck_assert_uint_eq(ee32(icmp->ip.src), s.ipconf[TEST_PRIMARY_IF].ip);
     ck_assert_uint_eq(ee32(icmp->ip.dst), ee32(frame->src));
     ck_assert_mem_eq(icmp->orig_packet,

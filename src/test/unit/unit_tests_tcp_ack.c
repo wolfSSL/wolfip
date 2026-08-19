@@ -2772,12 +2772,14 @@ START_TEST(test_send_ttl_exceeded_non_ethernet_skips_eth_filter)
 
     memset(ip_buf, 0, sizeof(ip_buf));
     memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->ver_ihl = 0x45;
+    ip->len = ee16(IP_HEADER_LEN); /* header-only datagram */
     ip->src = ee32(0x0A000002U);
     ip->dst = ee32(0x0A000001U);
 
     wolfIP_send_ttl_exceeded(&s, TEST_PRIMARY_IF, ip);
     ck_assert_uint_eq(last_frame_sent_size,
-            (uint32_t)(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
+            (uint32_t)(IP_HEADER_LEN + 8 + IP_HEADER_LEN));
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_eth_mask(0);
@@ -2811,10 +2813,12 @@ START_TEST(test_send_ttl_exceeded_sets_df)
 END_TEST
 
 #if WOLFIP_ENABLE_FORWARDING
-START_TEST(test_wolfip_forward_ttl_exceeded_short_len_does_not_send)
+START_TEST(test_wolfip_forward_ttl_exceeded_truncated_header_no_send)
 {
     struct wolfIP s;
-    uint8_t ip_buf[ETH_HEADER_LEN + IP_HEADER_LEN];
+    /* Frame shorter than the full IP header: dropped in validation, no
+     * Time Exceeded can be originated without the quoted header. */
+    uint8_t ip_buf[ETH_HEADER_LEN + 10];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)ip_buf;
     ip4 primary_ip = 0x0A000001U;
     ip4 secondary_ip = 0xC0A80101U;
@@ -2840,7 +2844,7 @@ START_TEST(test_wolfip_forward_ttl_exceeded_short_len_does_not_send)
 }
 END_TEST
 
-START_TEST(test_regression_forward_ttl_exceeded_short_len_with_options_no_send)
+START_TEST(test_regression_forward_ttl_exceeded_options_header_only_quotes_full_header)
 {
     struct wolfIP s;
     /* IHL=10 (40-byte IP header), no transport bytes after it. */
@@ -2868,10 +2872,14 @@ START_TEST(test_regression_forward_ttl_exceeded_short_len_with_options_no_send)
     memset(((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN, 0x01, 20);
     fix_ip_checksum_with_hlen(ip, 40);
 
-    /* sizeof(ip_buf) == ETH_HEADER_LEN + ip_hlen, exactly 8 bytes short of
-     * what wolfIP_send_ttl_exceeded would read. */
+    /* Header-only datagram: Time Exceeded quotes the full 40-byte header. */
     wolfIP_recv_on(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(ip_buf));
-    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 40));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+            ICMP_TTL_EXCEEDED);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 8],
+            0x4A); /* quoted version/IHL */
 }
 END_TEST
 #endif

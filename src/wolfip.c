@@ -2240,8 +2240,9 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
     /* RFC 1812 4.3.2.7 / RFC 1122 3.2.2: an ICMP error message MUST NOT be
      * originated in response to another ICMP error. If the packet whose TTL
      * expired is itself an ICMP error (type 3, 4, 5, 11, 12), drop silently.
-     * The caller guarantees orig_ihl + 8 bytes are present, so reading the
-     * embedded ICMP type at offset ETH_HEADER_LEN + orig_ihl is in bounds. */
+     * The caller guarantees the frame holds the full IP header, so reading
+     * the embedded ICMP type at offset ETH_HEADER_LEN + orig_ihl is in
+     * bounds. */
     if (orig->proto == WI_IPPROTO_ICMP) {
         uint8_t orig_type = *(((uint8_t *)orig) + ETH_HEADER_LEN + orig_ihl);
         if (orig_type == ICMP_DEST_UNREACH || orig_type == ICMP_FRAG_NEEDED ||
@@ -2249,7 +2250,16 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
             orig_type == 12 /* Parameter Problem */)
             return;
     }
-    orig_copy = orig_ihl + 8;
+    /* Quote the original header plus up to 8 payload bytes, or as much of
+     * the datagram as exists. */
+    {
+        uint32_t orig_total = ee16(orig->len);
+        if (orig_total < orig_ihl)
+            orig_total = orig_ihl;
+        orig_copy = orig_ihl + 8;
+        if (orig_copy > orig_total)
+            orig_copy = orig_total;
+    }
     if (orig_copy > TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX)
         orig_copy = TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX;
     icmp_data_len = 8 + orig_copy; /* ICMP header (type+code+csum+unused) + quoted packet */
@@ -9838,13 +9848,6 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 int broadcast = 0;
 
                 if (ip->ttl <= 1) {
-                    /* wolfIP_send_ttl_exceeded copies orig_ihl + 8 bytes from
-                     * offset ETH_HEADER_LEN, so the frame must hold the full
-                     * IP header plus 8 transport bytes; the ip_hlen >= 20
-                     * floor at line 8313 keeps this >= the historical
-                     * ETH_HEADER_LEN + 28 minimum for IHL=5 frames. */
-                    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + 8))
-                        return;
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }

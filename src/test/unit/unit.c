@@ -760,8 +760,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_send_ttl_exceeded_non_ethernet_skips_eth_filter);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_sets_df);
 #if WOLFIP_ENABLE_FORWARDING
-    tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_short_len_does_not_send);
-    tcase_add_test(tc_proto, test_regression_forward_ttl_exceeded_short_len_with_options_no_send);
+    tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_truncated_header_no_send);
+    tcase_add_test(tc_proto, test_regression_forward_ttl_exceeded_options_header_only_quotes_full_header);
 #endif
     tcase_add_test(tc_proto, test_arp_request_filter_drop);
     tcase_add_test(tc_proto, test_arp_request_invalid_interface);
@@ -1450,7 +1450,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_ip_recv_loopback_dst_on_non_loopback_dropped);
     tcase_add_test(tc_core, test_ip_recv_loopback_src_on_non_loopback_dropped);
     tcase_add_test(tc_core, test_ip_recv_forward_ttl_normal_decremented);
-    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_short_frame_dropped);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_short_frame_sends_ttl_exceeded);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_partial_payload_quoted);
     tcase_add_test(tc_core, test_ip_recv_dest_matches_secondary_iface_ip_is_local);
     tcase_add_test(tc_core, test_ip_recv_multicast_dst_not_forwarded);
     tcase_add_test(tc_core, test_arp_recv_htype_not_ethernet_dropped);
