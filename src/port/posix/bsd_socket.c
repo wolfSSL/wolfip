@@ -1271,7 +1271,9 @@ int ioctl(int fd, unsigned long request, ...)
     uintptr_t arg;
     void *argp;
     struct ifreq *ifr;
+    struct wolfip_fd_entry *entry;
     int i;
+    int ret = -1;
 
     va_start(ap, request);
     arg = va_arg(ap, uintptr_t);
@@ -1283,20 +1285,27 @@ int ioctl(int fd, unsigned long request, ...)
                 WOLFIP_HOST_CALL(ioctl)(fd, request, arg) : -1;
     }
 
-    if (request == SIOCGIFINDEX || request == SIOCGIFHWADDR || request == SIOCGIFADDR) {
-        struct wolfip_fd_entry *entry = wolfip_entry_from_public(fd);
+    if (request == SIOCGIFINDEX || request == SIOCGIFHWADDR ||
+            request == SIOCGIFADDR || request == SIOCGARP) {
+        pthread_mutex_lock(&wolfIP_mutex);
+        entry = wolfip_entry_from_public(fd);
         if (!entry) {
+            pthread_mutex_unlock(&wolfIP_mutex);
             return WOLFIP_HOST_CALL(ioctl) ?
                     WOLFIP_HOST_CALL(ioctl)(fd, request, arg) : -1;
         }
+    }
+
+    if (request == SIOCGIFINDEX || request == SIOCGIFHWADDR ||
+            request == SIOCGIFADDR) {
         ifr = (struct ifreq *)argp;
         if (!ifr) {
             errno = EINVAL;
-            return -1;
+            goto wolfip_ioctl_exit;
         }
         if (ifr->ifr_name[0] == '\0') {
             errno = ENODEV;
-            return -1;
+            goto wolfip_ioctl_exit;
         }
         for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
             struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(IPSTACK, (unsigned int)i);
@@ -1306,11 +1315,13 @@ int ioctl(int fd, unsigned long request, ...)
                 continue;
             if (request == SIOCGIFINDEX) {
                 ifr->ifr_ifindex = wolfip_ifindex_stack_to_user(i);
-                return 0;
+                ret = 0;
+                goto wolfip_ioctl_exit;
             } else if (request == SIOCGIFHWADDR) {
                 ifr->ifr_hwaddr.sa_family = ARPHRD_ETHER;
                 memcpy(ifr->ifr_hwaddr.sa_data, ll->mac, 6);
-                return 0;
+                ret = 0;
+                goto wolfip_ioctl_exit;
             } else if (request == SIOCGIFADDR) {
                 struct sockaddr_in *sin = (struct sockaddr_in *)&ifr->ifr_addr;
                 ip4 ip = 0, mask = 0, gw = 0;
@@ -1318,11 +1329,12 @@ int ioctl(int fd, unsigned long request, ...)
                 wolfIP_ipconfig_get_ex(IPSTACK, (unsigned int)i, &ip, &mask, &gw);
                 sin->sin_family = AF_INET;
                 sin->sin_addr.s_addr = ee32(ip);
-                return 0;
+                ret = 0;
+                goto wolfip_ioctl_exit;
             }
         }
         errno = ENODEV;
-        return -1;
+        goto wolfip_ioctl_exit;
     }
 
     if (request == SIOCGARP) {
@@ -1330,15 +1342,14 @@ int ioctl(int fd, unsigned long request, ...)
         struct sockaddr_in *pa;
         uint8_t mac[6];
         unsigned int if_idx;
-        int ret;
 
         if (!ar) {
             errno = EINVAL;
-            return -1;
+            goto wolfip_ioctl_exit;
         }
         if (ar->arp_pa.sa_family != AF_INET) {
             errno = EAFNOSUPPORT;
-            return -1;
+            goto wolfip_ioctl_exit;
         }
         pa = (struct sockaddr_in *)&ar->arp_pa;
         if_idx = 0;
@@ -1352,22 +1363,28 @@ int ioctl(int fd, unsigned long request, ...)
             }
             if (if_idx >= WOLFIP_MAX_INTERFACES) {
                 errno = ENODEV;
-                return -1;
+                goto wolfip_ioctl_exit;
             }
         }
         ret = wolfIP_arp_lookup_ex(IPSTACK, if_idx, ee32(pa->sin_addr.s_addr), mac);
         if (ret < 0) {
             errno = ENXIO;
-            return -1;
+            ret = -1;
+            goto wolfip_ioctl_exit;
         }
         ar->arp_ha.sa_family = ARPHRD_ETHER;
         memcpy(ar->arp_ha.sa_data, mac, 6);
         ar->arp_flags = ATF_COM;
-        return 0;
+        ret = 0;
+        goto wolfip_ioctl_exit;
     }
 
     return WOLFIP_HOST_CALL(ioctl) ?
             WOLFIP_HOST_CALL(ioctl)(fd, request, arg) : -1;
+
+wolfip_ioctl_exit:
+    pthread_mutex_unlock(&wolfIP_mutex);
+    return ret;
 }
 
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) {

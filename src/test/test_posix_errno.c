@@ -48,6 +48,7 @@ enum {
 
 static int race_ready;
 static int race_start;
+static int host_call_done;
 static int host_call_observed;
 static int fd_race_fd;
 static int fd_race_failed;
@@ -82,6 +83,7 @@ static void *host_call_publisher(void *arg)
         __atomic_store_n(&host_getpeername, NULL, __ATOMIC_RELEASE);
         swap_socketcall(getpeername, "getpeername");
     }
+    __atomic_store_n(&host_call_done, 1, __ATOMIC_RELEASE);
     return NULL;
 }
 
@@ -95,6 +97,10 @@ static void *host_call_reader(void *arg)
         if (WOLFIP_HOST_CALL(getpeername) != NULL)
             __atomic_add_fetch(&host_call_observed, 1, __ATOMIC_RELAXED);
     }
+    while (!__atomic_load_n(&host_call_done, __ATOMIC_ACQUIRE))
+        sched_yield();
+    if (WOLFIP_HOST_CALL(getpeername) != NULL)
+        __atomic_add_fetch(&host_call_observed, 1, __ATOMIC_RELAXED);
     return NULL;
 }
 
@@ -105,6 +111,7 @@ static void test_host_call_publication(void)
     int i;
 
     race_reset();
+    __atomic_store_n(&host_call_done, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&host_call_observed, 0, __ATOMIC_RELEASE);
     assert(pthread_create(&publisher, NULL, host_call_publisher, NULL) == 0);
     for (i = 0; i < HOST_CALL_READERS; i++)
@@ -119,6 +126,7 @@ static void test_host_call_publication(void)
 
 static void *fd_race_caller(void *arg)
 {
+    struct ifreq ifr;
     struct sockaddr_in peer;
     socklen_t peerlen;
     int fd;
@@ -131,6 +139,9 @@ static void *fd_race_caller(void *arg)
         fd = __atomic_load_n(&fd_race_fd, __ATOMIC_ACQUIRE);
         peerlen = sizeof(peer);
         getpeername(fd, (struct sockaddr *)&peer, &peerlen);
+        memset(&ifr, 0, sizeof(ifr));
+        memcpy(ifr.ifr_name, "wtcp0", sizeof("wtcp0"));
+        ioctl(fd, SIOCGIFINDEX, &ifr);
     }
     return NULL;
 }
