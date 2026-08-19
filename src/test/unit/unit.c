@@ -579,6 +579,12 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_listen_does_not_scale_syn_window);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_does_not_scale_synack_window);
     tcase_add_test(tc_utils, test_tcp_setsockopt_ip_tos_applied_to_outbound_syn);
+    tcase_add_test(tc_utils, test_tcp_listener_syn_lock_others_rst_resyn_retransmits_rearms);
+    tcase_add_test(tc_utils, test_tcp_listener_lock_reclaimed_at_255s_via_ctrl_rto);
+    tcase_add_test(tc_utils, test_tcp_listener_sustained_lock_one_syn_per_window);
+    tcase_add_test(tc_utils, test_tcp_listener_rst_from_holding_4tuple_releases_lock);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_accept_reverts_port);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_timeout_reverts_port);
     tcase_add_test(tc_utils, test_tcp_parse_sack_wraparound_block_accepted);
     tcase_add_test(tc_utils, test_tcp_parse_options_stops_on_truncated_or_invalid_option_length);
     tcase_add_test(tc_utils, test_tcp_parse_options_returns_when_frame_has_no_option_bytes);

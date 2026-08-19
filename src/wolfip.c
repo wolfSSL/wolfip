@@ -172,6 +172,12 @@ struct wolfIP_icmp_packet;
 #ifndef TCP_FIN_WAIT_2_TIMEOUT_MS
 #define TCP_FIN_WAIT_2_TIMEOUT_MS 60000U
 #endif
+/* A listener that completes the handshake without being accepted would be
+ * pinned in ESTABLISHED forever (accept() only handles SYN_RCVD/LISTEN and
+ * no other timer is armed): reclaim the port after this grace period. */
+#ifndef TCP_PREACCEPT_TIMEOUT_MS
+#define TCP_PREACCEPT_TIMEOUT_MS 5000U
+#endif
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
 #define WOLFIP_POLL_BUDGET 128
 
@@ -1168,6 +1174,7 @@ struct tcpsocket {
     uint8_t ctrl_rto_retries;
     uint8_t ctrl_rto_active;
     uint8_t fin_wait_2_timeout_active;
+    uint8_t preaccept_timeout_active;
     uint8_t is_listener;
     uint8_t ack_retry_pending;
     ip4 local_ip, remote_ip;
@@ -1295,6 +1302,9 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
 static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now);
 static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
+static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now);
+static void tcp_preaccept_timeout_stop(struct tsocket *t);
+static void tcp_listener_revert_to_listen(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int if_idx);
@@ -3831,6 +3841,60 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t)
     t->sock.tcp.fin_wait_2_timeout_active = 0;
 }
 
+static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now)
+{
+    struct wolfIP_timer tmr = {0};
+
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
+        t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    tmr.expires = now + TCP_PREACCEPT_TIMEOUT_MS;
+    tmr.arg = t;
+    tmr.cb = tcp_rto_cb;
+    t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, tmr);
+    t->sock.tcp.preaccept_timeout_active = 1;
+}
+
+static void tcp_preaccept_timeout_stop(struct tsocket *t)
+{
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
+        t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    t->sock.tcp.preaccept_timeout_active = 0;
+}
+
+/* Revert a listening socket stuck in a half-open or established connection
+ * state back to TCP_LISTEN, clearing the half-open 4-tuple so the port
+ * accepts new connections again. Used by the control-RTO expiry, the
+ * pre-accept fast-fail timeout, and the accept() recovery path. */
+static void tcp_listener_revert_to_listen(struct tsocket *t)
+{
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    tcp_preaccept_timeout_stop(t);
+    t->sock.tcp.state = TCP_LISTEN;
+    t->sock.tcp.seq = wolfIP_getrandom();
+    t->sock.tcp.ack = 0;
+    t->sock.tcp.snd_una = 0;
+    t->sock.tcp.ctrl_rto_retries = 0;
+    t->remote_ip = 0;
+    t->dst_port = 0;
+    t->events = 0;
+    if (t->bound_local_ip != IPADDR_ANY) {
+        int bound_match = 0;
+        unsigned int bound_if = wolfIP_if_for_local_ip(
+                t->S, t->bound_local_ip, &bound_match);
+        t->if_idx = bound_match ? (uint8_t)bound_if : t->if_idx;
+        t->local_ip = t->bound_local_ip;
+    }
+}
+
 static uint32_t tcp_tx_desc_ip_len(const struct tsocket *t,
         const struct pkt_desc *desc, const struct wolfIP_tcp_seg *seg)
 {
@@ -4931,12 +4995,16 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
          * stop the current RTO timer. If bytes remain in-flight and no new
          * send happens immediately, we must re-arm RTO here to avoid stalls. */
         t->sock.tcp.rto_backoff = 0;
+        /* fin_wait_2 and the pre-accept fast-fail ride on tmr_rto with their
+         * own semantics; a forward ACK must not cancel or re-arm their timer. */
         if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                !t->sock.tcp.preaccept_timeout_active &&
                 t->sock.tcp.tmr_rto != NO_TIMER) {
             timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
             t->sock.tcp.tmr_rto = NO_TIMER;
         }
         if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                !t->sock.tcp.preaccept_timeout_active &&
                 t->sock.tcp.bytes_in_flight > 0) {
             struct wolfIP_timer new_tmr = { 0 };
             new_tmr.cb = tcp_rto_cb;
@@ -5384,6 +5452,18 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
             /* Check if final ACK to SYN-ACK (may include payload) */
             if (t->sock.tcp.state == TCP_SYN_RCVD) {
+                if ((tcp->flags & TCP_FLAG_SYN) && !(tcp->flags & TCP_FLAG_ACK) &&
+                        ee32(tcp->seq) == t->sock.tcp.ack - 1) {
+                    /* Re-SYN from the holding 4-tuple: the peer retransmitted
+                     * its original SYN (our SYN-ACK was lost or it is retrying).
+                     * Retransmit the SYN-ACK and re-arm the control RTO from
+                     * the base value instead of silently dropping the
+                     * retransmission, so the half-open handshake can complete. */
+                    (void)tcp_send_syn(t, TCP_FLAG_SYN | TCP_FLAG_ACK);
+                    t->sock.tcp.ctrl_rto_retries = 0;
+                    tcp_ctrl_rto_start(t, t->S->last_tick);
+                    continue;
+                }
                 if (tcp->flags & TCP_FLAG_ACK)  {
                     uint32_t expected_ack = tcp_seq_inc(t->sock.tcp.snd_una, 1);
                     uint32_t expected_seq = t->sock.tcp.ack;
@@ -5395,6 +5475,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
+                    if (t->sock.tcp.is_listener)
+                        tcp_preaccept_timeout_start(t, t->S->last_tick);
                     t->sock.tcp.ack = ee32(tcp->seq);
                     t->sock.tcp.seq = ee32(tcp->ack);
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
@@ -5577,6 +5659,21 @@ static void tcp_rto_cb(void *arg)
         close_socket(ts);
         return;
     }
+    if (ts->sock.tcp.preaccept_timeout_active) {
+        if (ts->sock.tcp.state != TCP_ESTABLISHED ||
+                !ts->sock.tcp.is_listener) {
+            /* The socket left the pinned condition (accepted away, reset,
+             * or closed): disarm quietly. */
+            tcp_preaccept_timeout_stop(ts);
+            return;
+        }
+        /* The handshake completed but the application never accepted: an
+         * un-accepted established listener has no accept() path and no
+         * other timer, so the port would stay pinned forever. Revert to
+         * LISTEN; the peer's next segment gets the normal LISTEN RST. */
+        tcp_listener_revert_to_listen(ts);
+        return;
+    }
     if (tcp_ctrl_state_needs_rto(ts) || ts->sock.tcp.ctrl_rto_active) {
         if (!tcp_ctrl_state_needs_rto(ts)) {
             tcp_ctrl_rto_stop(ts);
@@ -5587,27 +5684,10 @@ static void tcp_rto_cb(void *arg)
             if (ts->sock.tcp.is_listener &&
                     ts->sock.tcp.state == TCP_SYN_RCVD) {
                 /* Revert listen socket back to LISTEN instead of
-                 * destroying it, mirrors the accept() recovery path. */
-                ts->sock.tcp.state = TCP_LISTEN;
-                ts->sock.tcp.seq = wolfIP_getrandom();
-                ts->sock.tcp.ack = 0;
-                ts->sock.tcp.snd_una = 0;
-                ts->sock.tcp.ctrl_rto_retries = 0;
-                ts->remote_ip = 0;
-                ts->dst_port = 0;
-                ts->events = 0;
-                /* The timed-out SYN-ACK is gone with the connection; drop it
-                 * so the next connection starts with an empty TX FIFO (see
-                 * the accept() revert for why). */
-                fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
-                if (ts->bound_local_ip != IPADDR_ANY) {
-                    int bound_match = 0;
-                    unsigned int bound_if = wolfIP_if_for_local_ip(
-                            ts->S, ts->bound_local_ip, &bound_match);
-                    ts->if_idx = bound_match ? (uint8_t)bound_if
-                                             : ts->if_idx;
-                    ts->local_ip = ts->bound_local_ip;
-                }
+                 * destroying it, mirrors the accept() recovery path.
+                 * The helper drains the parked SYN-ACK from the TX FIFO
+                 * (see the accept() revert for why). */
+                tcp_listener_revert_to_listen(ts);
             } else {
                 ts->sock.tcp.state = TCP_CLOSED;
                 close_socket(ts);
@@ -5779,16 +5859,21 @@ static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t n
         scan = next;
     }
     ts->sock.tcp.bytes_in_flight = calc_in_flight;
-    if (has_sent_payload && ts->sock.tcp.tmr_rto == NO_TIMER) {
-        struct wolfIP_timer new_tmr = {};
-        new_tmr.cb = tcp_rto_cb;
-        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
-                ts->sock.tcp.rto_backoff);
-        new_tmr.arg = ts;
-        ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
-    } else if (!has_sent_payload && ts->sock.tcp.tmr_rto != NO_TIMER) {
-        timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
-        ts->sock.tcp.tmr_rto = NO_TIMER;
+    /* The pre-accept fast-fail rides on tmr_rto with its own semantics and
+     * must survive a payload-less txbuf (an accepted handshake has nothing
+     * in flight), so resync must not cancel or re-arm it. */
+    if (!ts->sock.tcp.preaccept_timeout_active) {
+        if (has_sent_payload && ts->sock.tcp.tmr_rto == NO_TIMER) {
+            struct wolfIP_timer new_tmr = {};
+            new_tmr.cb = tcp_rto_cb;
+            new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                    ts->sock.tcp.rto_backoff);
+            new_tmr.arg = ts;
+            ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
+        } else if (!has_sent_payload && ts->sock.tcp.tmr_rto != NO_TIMER) {
+            timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
+            ts->sock.tcp.tmr_rto = NO_TIMER;
+        }
     }
 }
 
@@ -6200,6 +6285,15 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        if (ts->sock.tcp.state == TCP_ESTABLISHED &&
+                ts->sock.tcp.is_listener) {
+            /* The handshake completed before accept(): the connection can
+             * no longer be cloned (accept() only handles SYN_RCVD), and
+             * without this recovery the port would be pinned in
+             * ESTABLISHED forever. Revert the port to LISTEN. */
+            tcp_listener_revert_to_listen(ts);
+            return -1;
+        }
         if ((ts->sock.tcp.state != TCP_SYN_RCVD) && (ts->sock.tcp.state != TCP_LISTEN))
             return -1;
 
