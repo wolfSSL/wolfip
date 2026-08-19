@@ -2063,6 +2063,126 @@ START_TEST(test_forward_packet_esp_wrapped)
 }
 END_TEST
 
+/* Same contract as the echo-reply path: a forwarded datagram is
+ * encapsulated at its declared IP length; trailing L2 bytes beyond the
+ * datagram must not become ESP payload. */
+START_TEST(test_forward_packet_esp_wraps_ip_length_not_frame_length)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet *sent_ip;
+    uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t payload[] = { 'f', 'w', 'd', '!' };
+    uint8_t buf[LINK_MTU + 64];
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    esp_setup();
+    esp_add_cbc_test_sas();
+
+    wolfIP_ipconfig_set(&s, atoip4("192.168.0.1"), 0xFFFFFF00U, 0);
+    ll = wolfIP_ll_at(&s, 1);
+    ck_assert_ptr_nonnull(ll);
+    memcpy(ll->mac, (uint8_t[]){0x00,0x11,0x22,0x33,0x44,0x66}, 6);
+    ll->send = esp_test_mock_send;
+    ll->poll = NULL;
+    wolfIP_ipconfig_set_ex(&s, 1, atoip4(T_SRC), 0xFFFFFF00U, 0);
+
+    /* UDP packet: declared IP total = 20 + 8 + 4 = 32. Append 10
+     * trailing L2 bytes and forward with the padded frame length. */
+    frame_len = build_udp_ip_packet(buf, sizeof(buf),
+                                    atoip4(T_SRC), atoip4(T_DST),
+                                    1234, 5678, payload, sizeof(payload));
+    memset(buf + frame_len, 0x5A, 10);
+    frame_len += 10;
+
+    esp_test_last_frame_size = 0;
+    memset(esp_test_last_frame, 0, sizeof(esp_test_last_frame));
+    wolfIP_forward_packet(&s, 1, (struct wolfIP_ip_packet *)buf, frame_len,
+                          peer_mac, 0);
+
+    ck_assert_uint_gt(esp_test_last_frame_size, 0);
+    sent_ip = (struct wolfIP_ip_packet *)esp_test_last_frame;
+    ck_assert_uint_eq(sent_ip->proto, 0x32);
+    /* Outer IP total = 32 (declared) + 4 (SPI) + 4 (SEQ) + 16 (IV) +
+     * 2 (padding) + 1 (pad len) + 1 (next header) + 16 (ICV). */
+    ck_assert_uint_eq(ee16(sent_ip->len), 76);
+}
+END_TEST
+
+#if defined(WOLFSSL_AESGCM_STREAM)
+/* The echo reply must be encapsulated at its declared IP length, not the
+ * received frame length: trailing L2 bytes are not part of the datagram. */
+START_TEST(test_icmp_echo_reply_esp_wraps_ip_length_not_frame_length)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ip_packet *sent_ip;
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_icmp_packet *icmp;
+    uint8_t buf[LINK_MTU];
+    uint32_t frame_len;
+    int ret;
+
+    wolfIP_init(&s);
+    esp_setup();
+
+    ret = wolfIP_esp_sa_new_gcm(0, (uint8_t *)spi_rt,
+                                atoip4(T_SRC), atoip4(T_DST),
+                                ESP_ENC_GCM_RFC4106,
+                                (uint8_t *)k_aes256_gcm,
+                                sizeof(k_aes256_gcm));
+    ck_assert_int_eq(ret, 0);
+    ret = wolfIP_esp_sa_new_gcm(1, (uint8_t *)spi_rt,
+                                atoip4(T_SRC), atoip4(T_DST),
+                                ESP_ENC_GCM_RFC4106,
+                                (uint8_t *)k_aes256_gcm,
+                                sizeof(k_aes256_gcm));
+    ck_assert_int_eq(ret, 0);
+
+    /* Interface 0 is local (T_SRC) and captures the reply. */
+    ll = wolfIP_ll_at(&s, 0);
+    ck_assert_ptr_nonnull(ll);
+    memcpy(ll->mac, (uint8_t[]){0x00,0x11,0x22,0x33,0x44,0x55}, 6);
+    ll->send = esp_test_mock_send;
+    wolfIP_ipconfig_set(&s, atoip4(T_SRC), 0xFFFFFF00U, 0);
+
+    /* Echo request T_DST -> T_SRC: declared IP length is header + ICMP
+     * header only (28); the frame carries 16 trailing bytes beyond the
+     * datagram. */
+    memset(buf, 0, sizeof(buf));
+    ip = (struct wolfIP_ip_packet *)buf;
+    memcpy(ip->eth.dst, ll->mac, 6);
+    ip->eth.type = ee16(0x0800U);
+    ip->ver_ihl  = 0x45U;
+    ip->len      = ee16(IP_HEADER_LEN + 8);
+    ip->ttl      = 64U;
+    ip->proto    = WI_IPPROTO_ICMP;
+    ip->src      = ee32(atoip4(T_DST));
+    ip->dst      = ee32(atoip4(T_SRC));
+    iphdr_set_checksum(ip);
+    icmp = (struct wolfIP_icmp_packet *)buf;
+    icmp->type = ICMP_ECHO_REQUEST;
+    icmp->code = 0;
+    icmp->csum = ee16(icmp_checksum(icmp, 8));
+    memset(buf + ETH_HEADER_LEN + IP_HEADER_LEN + 8, 0xA5, 16);
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 16);
+
+    esp_test_last_frame_size = 0;
+    memset(esp_test_last_frame, 0, sizeof(esp_test_last_frame));
+    wolfIP_recv_ex(&s, 0, buf, frame_len);
+
+    ck_assert_uint_gt(esp_test_last_frame_size, 0);
+    sent_ip = (struct wolfIP_ip_packet *)esp_test_last_frame;
+    ck_assert_uint_eq(sent_ip->proto, 0x32);
+    /* Outer IP total = 20 (header) + 4 (SPI) + 4 (SEQ) + 8 (IV) + 8
+     * (payload) + 2 (alignment) + 1 (pad len) + 1 (next header) + 16
+     * (ICV). The 16 trailing frame bytes must not be counted. */
+    ck_assert_uint_eq(ee16(sent_ip->len), 64);
+}
+END_TEST
+#endif /* WOLFSSL_AESGCM_STREAM */
+
 static Suite *esp_suite(void)
 {
     Suite *s;
@@ -2158,6 +2278,10 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_tcp_zero_wnd_probe_esp_wrapped);
     tcase_add_test(tc, test_tcp_reset_reply_esp_wrapped);
     tcase_add_test(tc, test_forward_packet_esp_wrapped);
+    tcase_add_test(tc, test_forward_packet_esp_wraps_ip_length_not_frame_length);
+#if defined(WOLFSSL_AESGCM_STREAM)
+    tcase_add_test(tc, test_icmp_echo_reply_esp_wraps_ip_length_not_frame_length);
+#endif
     suite_add_tcase(s, tc);
 
     return s;

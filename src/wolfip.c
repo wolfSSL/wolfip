@@ -4500,7 +4500,9 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, out_if)) {
             struct wolfIP_ll_dev *ll_esp = wolfIP_ll_at(s, out_if);
-            int esp_err = esp_send(ll_esp, ip, (uint16_t)(len - ETH_HEADER_LEN));
+            /* Encapsulate the datagram at its declared length; bytes past
+             * the IP total length are L2 padding, not payload. */
+            int esp_err = esp_send(ll_esp, ip, (uint16_t)ee16(ip->len));
             if (esp_err == 1) {
                 wolfIP_ll_send_frame(s, out_if, ip, len);
             }
@@ -7933,7 +7935,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-            if (esp_send(ll, ip, len - ETH_HEADER_LEN) == 1) {
+            /* Encapsulate the datagram at its declared length; bytes past
+             * the IP total length are L2 padding, not payload. */
+            if (esp_send(ll, ip, (uint16_t)ee16(ip->len)) == 1) {
                 /* ipsec not configured on this interface.
                  * send plaintext. */
                 wolfIP_ll_send_frame(s, if_idx, ip, len);
