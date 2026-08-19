@@ -1452,6 +1452,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_ip_recv_forward_ttl_normal_decremented);
     tcase_add_test(tc_core, test_ip_recv_forward_ttl1_short_frame_sends_ttl_exceeded);
     tcase_add_test(tc_core, test_ip_recv_forward_ttl1_partial_payload_quoted);
+    tcase_add_test(tc_core, test_forward_ttl_exceeded_copies_orig_tos);
     tcase_add_test(tc_core, test_ip_recv_dest_matches_secondary_iface_ip_is_local);
     tcase_add_test(tc_core, test_ip_recv_multicast_dst_not_forwarded);
     tcase_add_test(tc_core, test_arp_recv_htype_not_ethernet_dropped);
@@ -1592,6 +1593,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_push_no_hwrap_wraps_to_front_succeeds);
     tcase_add_test(tc_core, test_fifo_push_exact_end_sets_hwrap);
     tcase_add_test(tc_core, test_wolfip_send_port_unreachable_large_ihl);
+    tcase_add_test(tc_core, test_wolfip_send_port_unreachable_copies_orig_tos);
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_wolfip_rawsocket_from_fd_negative_fd);
 #endif /* WOLFIP_RAWSOCKETS */

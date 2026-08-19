@@ -2264,6 +2264,8 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
         orig_copy = TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX;
     icmp_data_len = 8 + orig_copy; /* ICMP header (type+code+csum+unused) + quoted packet */
     icmp.type = ICMP_TTL_EXCEEDED;
+    /* RFC 1812 4.3.2.5: the error carries the triggering packet's TOS. */
+    icmp.ip.tos = orig->tos;
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN, orig_copy);
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 icmp_data_len));
@@ -2336,6 +2338,8 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
     icmp_data_len = 8 + orig_copy;
     icmp.type = ICMP_DEST_UNREACH;
     icmp.code = ICMP_PORT_UNREACH;
+    /* RFC 1812 4.3.2.5: the error carries the triggering packet's TOS. */
+    icmp.ip.tos = orig->tos;
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN, orig_copy);
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 icmp_data_len));

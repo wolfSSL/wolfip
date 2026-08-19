@@ -1201,6 +1201,31 @@ START_TEST(test_wolfip_send_port_unreachable_large_ihl)
     ck_assert(1);
 }
 END_TEST
+
+START_TEST(test_wolfip_send_port_unreachable_copies_orig_tos)
+{
+    struct wolfIP s;
+    uint8_t framebuf[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *orig = (struct wolfIP_ip_packet *)framebuf;
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0a000001U, 0xffffff00U, 0);
+    last_frame_sent_size = 0;
+    memset(framebuf, 0, sizeof(framebuf));
+    /* RFC 1812 4.3.2.5: the error carries the triggering packet's TOS. */
+    orig->ver_ihl = 0x45;
+    orig->tos = 0xB8;
+    orig->proto = WI_IPPROTO_UDP;
+    orig->len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    orig->src = ee32(0x0a0000a1U);
+    orig->dst = ee32(0x0a000001U);
+    orig->ttl = 64;
+    wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, orig);
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + IP_HEADER_LEN + 8));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 1], 0xB8);
+}
+END_TEST
 #endif
 
 /* =====================================================================
