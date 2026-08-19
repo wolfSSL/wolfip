@@ -249,6 +249,34 @@ When forwarding is enabled, the optional static-route API is also compiled in
 route lookup performs longest-prefix matching across connected subnets and static
 routes together.
 
+### Deviations from RFC 791/1122: no IPv4 fragmentation
+
+wolfIP is an endpoint stack first; the forwarding path deliberately omits IPv4
+fragmentation and reassembly. These are documented, intended deviations, not
+bugs:
+
+- **No egress fragmentation.** A forwarded datagram is handed to the egress
+  interface at its declared IP total length, with no comparison against the
+  egress IP MTU and no fragment generation. If the frame exceeds the link MTU,
+  `wolfIP_ll_send_frame()` rejects it and the datagram is **dropped silently** —
+  no ICMP Destination Unreachable (Fragmentation Needed, type 3 code 4) is
+  sent, regardless of the DF bit. Datagrams that fit the egress MTU are
+  forwarded normally.
+- **No reassembly.** The IP input path drops every fragment (MF set or non-zero
+  fragment offset); the stack never reassembles fragmented datagrams.
+- **Locally generated UDP.** `wolfIP_sock_sendto()` fails with `-1` when the
+  datagram does not fit the socket's IP MTU (headers excluded) — a clean error
+  to the caller instead of a silent drop.
+- **TCP.** The advertised and accepted MSS is clamped to the MTU, so TCP
+  segments never require fragmentation.
+
+The practical consequence for a router build: keep every link's MTU at or
+above the largest datagram that traverses it (the usual 1500-byte Ethernet
+baseline). A higher-MTU upstream (jumbo frames, 1280-byte tunnels aside) that
+injects datagrams larger than a downstream link's IP MTU will see them dropped
+at the egress with no diagnostic ICMP. If your topology cannot guarantee that,
+IPv4 fragmentation is out of scope for wolfIP and a different stack is needed.
+
 ### Wiring a router
 
 `src/test/test_wolfssl_forwarding.c` builds a two-interface router: interface 0
