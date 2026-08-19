@@ -8080,20 +8080,19 @@ static void dhcp_schedule_lease_timer(struct wolfIP *s,
     if (!s || lease_s == 0)
         return;
 
-    if (renew_s == 0 || renew_s > lease_s) {
-        renew_s = lease_s / 2U;
-        if (renew_s == 0)
-            renew_s = 1U;
-    }
-    if (rebind_s == 0 || rebind_s > lease_s) {
+    /* RFC 2131 3.2: the client's timers must satisfy T1 < T2 < lease.
+     * Server-supplied timer options that violate the strict ordering are
+     * replaced with the client defaults (T1 = 50% of the lease, T2 = 87.5%
+     * of the lease) instead of being coerced into T1 == T2 or T2 == lease. */
+    if (renew_s == 0U || rebind_s == 0U ||
+        renew_s >= lease_s || rebind_s >= lease_s || rebind_s <= renew_s) {
+        renew_s  = lease_s / 2U;
         rebind_s = (uint32_t)(((uint64_t)lease_s * 7U) / 8U);
-        if (rebind_s == 0)
-            rebind_s = 1U;
     }
-    if (rebind_s < renew_s)
-        rebind_s = renew_s;
-    if (renew_s > lease_s)
-        renew_s = lease_s;
+    if (renew_s == 0U)
+        renew_s = 1U;
+    if (rebind_s <= renew_s)
+        rebind_s = renew_s + 1U;
     if (rebind_s > lease_s)
         rebind_s = lease_s;
 

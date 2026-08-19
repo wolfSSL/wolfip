@@ -272,10 +272,10 @@ bugs:
 
 The practical consequence for a router build: keep every link's MTU at or
 above the largest datagram that traverses it (the usual 1500-byte Ethernet
-baseline). A higher-MTU upstream (jumbo frames, 1280-byte tunnels aside) that
-injects datagrams larger than a downstream link's IP MTU will see them dropped
-at the egress with no diagnostic ICMP. If your topology cannot guarantee that,
-IPv4 fragmentation is out of scope for wolfIP and a different stack is needed.
+baseline). A higher-MTU upstream (e.g. jumbo frames) that injects datagrams
+larger than a downstream link's IP MTU will see them dropped at the egress
+with no diagnostic ICMP. If your topology cannot guarantee that, IPv4
+fragmentation is out of scope for wolfIP and a different stack is needed.
 
 ### Wiring a router
 

@@ -123,12 +123,31 @@ START_TEST(test_dhcp_schedule_lease_timer_rebind_lt_renew_fixed)
     wolfIP_init(&s);
     s.last_tick = 0U;
 
-    /* rebind_s < renew_s → set rebind = renew */
+    /* rebind_s < renew_s violates the strict T1 < T2 < lease ordering:
+     * both are replaced by the client defaults, not coerced to equality. */
     dhcp_schedule_lease_timer(&s, 100U, 80U, 20U);
 
-    /* rebind_s (20) < renew_s (80), so rebind becomes 80 */
-    ck_assert_uint_eq(s.dhcp_renew_at,  80000U);
-    ck_assert_uint_eq(s.dhcp_rebind_at, 80000U);
+    /* T1 = 100/2 = 50, T2 = 100*7/8 = 87 */
+    ck_assert_uint_eq(s.dhcp_renew_at,  50000U);
+    ck_assert_uint_eq(s.dhcp_rebind_at, 87000U);
+    ck_assert_uint_eq(s.dhcp_lease_expires, 100000U);
+}
+END_TEST
+
+START_TEST(test_dhcp_schedule_lease_timer_t1_t2_equal_lease_resets_defaults)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.last_tick = 0U;
+
+    /* T1 == lease and T2 == lease violate the strict ordering; the client
+     * defaults must replace them (T1 = 50%, T2 = 87.5%). */
+    dhcp_schedule_lease_timer(&s, 3600U, 3600U, 3600U);
+
+    ck_assert_uint_eq(s.dhcp_renew_at,  1800U * 1000U);
+    ck_assert_uint_eq(s.dhcp_rebind_at, 3150U * 1000U);
+    ck_assert_uint_eq(s.dhcp_lease_expires, 3600U * 1000U);
 }
 END_TEST
 
