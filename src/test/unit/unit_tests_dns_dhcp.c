@@ -971,6 +971,12 @@ START_TEST(test_sock_connect_tcp_filter_drop)
 }
 END_TEST
 
+START_TEST(test_dhcp_send_request_rejects_null_stack)
+{
+    ck_assert_int_eq(dhcp_send_request(NULL), -1);
+}
+END_TEST
+
 START_TEST(test_dhcp_send_request_renewing_sets_ciaddr_and_rebind_deadline)
 {
     struct wolfIP s;
