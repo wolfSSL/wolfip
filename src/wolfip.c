@@ -9149,7 +9149,7 @@ static int dhcp_send_request(struct wolfIP *s)
     struct dhcp_msg req;
     struct dhcp_option *opt = (struct dhcp_option *)(req.options);
     struct wolfIP_sockaddr_in sin;
-    struct ipconf *primary = wolfIP_primary_ipconf(s);
+    struct ipconf *primary;
     uint64_t retry_at = 0;
     int renewing = 0;
     int rebinding = 0;
@@ -9159,7 +9159,8 @@ static int dhcp_send_request(struct wolfIP *s)
     if (!s)
         return -1;
 
-    retry_at = s ? (s->last_tick + 1U) : 0;
+    primary = wolfIP_primary_ipconf(s);
+    retry_at = s->last_tick + 1U;
     renewing = (s->dhcp_state == DHCP_RENEWING);
     rebinding = (s->dhcp_state == DHCP_REBINDING);
 

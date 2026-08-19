@@ -23,6 +23,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <net/ethernet.h>
 #ifndef ETH_P_IP
 #define ETH_P_IP ETHERTYPE_IP
@@ -115,17 +116,40 @@ static uint16_t ones_csum(const void *buf, size_t len)
 uint32_t wolfIP_getrandom(void)
 {
     uint32_t ret;
+    size_t offset = 0;
+    ssize_t n;
+    int fd;
+
 #ifdef __linux__
-    {
-        ssize_t n;
-        do {
-            n = getrandom(&ret, sizeof(ret), 0);
-        } while (n < 0 && errno == EINTR);
-        if (n == (ssize_t)sizeof(ret))
-            return ret;
-    }
+    do {
+        n = getrandom(&ret, sizeof(ret), 0);
+    } while (n < 0 && errno == EINTR);
+    if (n == (ssize_t)sizeof(ret))
+        return ret;
 #endif
-    ret = (uint32_t)rand();
+
+    fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        perror("open /dev/urandom");
+        abort();
+    }
+    while (offset < sizeof(ret)) {
+        n = read(fd, (uint8_t *)&ret + offset, sizeof(ret) - offset);
+        if (n > 0) {
+            offset += (size_t)n;
+        }
+        else if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        else {
+            break;
+        }
+    }
+    close(fd);
+    if (offset != sizeof(ret)) {
+        fprintf(stderr, "Failed to read /dev/urandom\n");
+        abort();
+    }
     return ret;
 }
 
