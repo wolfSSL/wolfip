@@ -132,7 +132,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_pop_timer);
     tcase_add_test(tc_utils, test_is_timer_expired);
     tcase_add_test(tc_utils, test_cancel_timer);
-    tcase_add_test(tc_utils, test_timer_pop_skips_zero_expires);
+    tcase_add_test(tc_utils, test_timer_pop_removes_zero_head_first);
     tcase_add_test(tc_utils, test_timer_pop_reorders_heap);
     tcase_add_test(tc_utils, test_timer_pop_right_child_swap);
     tcase_add_test(tc_utils, test_timer_pop_break_when_root_small);
@@ -1047,6 +1047,8 @@ Suite *wolf_suite(void)
 #endif
     tcase_add_test(tc_core, test_poll_dispatches_socket_callback);
     tcase_add_test(tc_core, test_poll_fires_expired_timer);
+    tcase_add_test(tc_core, test_timer_binheap_drain_keeps_live_timer);
+    tcase_add_test(tc_core, test_poll_keeps_timer_armed_after_earlier_cancel);
     tcase_add_test(tc_core, test_poll_arp_pending_when_nexthop_unresolved);
     tcase_add_test(tc_core, test_poll_filter_block_holds_tx);
     tcase_add_test(tc_core, test_poll_drains_icmp_tx);

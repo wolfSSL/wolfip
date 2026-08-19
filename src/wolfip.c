@@ -2422,30 +2422,30 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
 }
 
 /* Timers */
+/* Removes exactly one root entry. Drain sites pop in a loop that only
+ * continues while the root is a tombstone (expires == 0), so a live
+ * timer is never removed by a drain. */
 static struct wolfIP_timer timers_binheap_pop(struct timers_binheap *heap)
 {
     uint32_t i = 0;
     struct wolfIP_timer tmr = {0};
-    do {
-        i = 0;
-        tmr = heap->timers[0];
-        heap->size--;
-        heap->timers[0] = heap->timers[heap->size];
-        while (2*i+1 < heap->size) {
-            struct wolfIP_timer tmp;
-            uint32_t j = 2*i+1;
-            if (j+1 < heap->size && heap->timers[j+1].expires < heap->timers[j].expires) {
-                j++;
-            }
-            if (heap->timers[i].expires <= heap->timers[j].expires) {
-                break;
-            }
-            tmp = heap->timers[i];
-            heap->timers[i] = heap->timers[j];
-            heap->timers[j] = tmp;
-            i = j;
+    tmr = heap->timers[0];
+    heap->size--;
+    heap->timers[0] = heap->timers[heap->size];
+    while (2*i+1 < heap->size) {
+        struct wolfIP_timer tmp;
+        uint32_t j = 2*i+1;
+        if (j+1 < heap->size && heap->timers[j+1].expires < heap->timers[j].expires) {
+            j++;
         }
-    } while ((tmr.expires == 0) && (heap->size > 0));
+        if (heap->timers[i].expires <= heap->timers[j].expires) {
+            break;
+        }
+        tmp = heap->timers[i];
+        heap->timers[i] = heap->timers[j];
+        heap->timers[j] = tmp;
+        i = j;
+    }
     return tmr;
 }
 

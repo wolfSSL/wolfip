@@ -2425,12 +2425,14 @@ START_TEST(test_cancel_timer) {
     ck_assert_int_eq(heap.timers[0].expires, 0);  // tmr1 canceled
 
     popped = timers_binheap_pop(&heap);
-    ck_assert_int_eq(popped.expires, 200);  // Only tmr2 should remain
+    ck_assert_uint_eq(popped.expires, 0);  /* the tombstone itself */
+    popped = timers_binheap_pop(&heap);
+    ck_assert_uint_eq(popped.expires, 200);  /* tmr2 survived the drain */
     ck_assert_int_eq(heap.size, 0);
 }
 END_TEST
 
-START_TEST(test_timer_pop_skips_zero_expires)
+START_TEST(test_timer_pop_removes_zero_head_first)
 {
     struct timers_binheap h;
     struct wolfIP_timer tmr1 = { .expires = 50 };
@@ -2442,8 +2444,11 @@ START_TEST(test_timer_pop_skips_zero_expires)
     tmr2.id = timers_binheap_insert(&h, tmr2);
     timer_binheap_cancel(&h, tmr2.id);
 
+    /* One root per pop: the tombstone first, then the live timer. */
     popped = timers_binheap_pop(&h);
-    ck_assert_uint_ne(popped.expires, 0);
+    ck_assert_uint_eq(popped.expires, 0);
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 50);
 }
 END_TEST
 
@@ -2512,16 +2517,18 @@ START_TEST(test_is_timer_expired_skips_zero_head)
     h.timers[0].expires = 0;
     h.timers[1].expires = 50;
 
+    /* The tombstone head is drained; the live timer survives. */
     ck_assert_int_eq(is_timer_expired(&h, 10), 0);
-    ck_assert_uint_eq(h.size, 0);
+    ck_assert_uint_eq(h.size, 1);
+    ck_assert_uint_eq(h.timers[0].expires, 50);
 }
 END_TEST
 
-/* Regression: when timers_binheap_pop skips multiple cancelled timers
- * (expires==0) in its do-while loop, the sift-down cursor must reset to 0
- * on each iteration.  Without the fix the cursor stays at a leaf position
- * from the previous sift-down, so the replacement element at index 0 is
- * never sifted down, breaking the min-heap invariant. */
+/* Regression: when consecutive pops drain a run of cancelled timers
+ * (expires==0), the sift-down cursor must start at the root each time.
+ * Without the reset the cursor stays at a leaf position from the previous
+ * sift-down, so the replacement element at index 0 is never sifted down,
+ * breaking the min-heap invariant.  Each pop removes exactly one root. */
 START_TEST(test_timer_pop_siftdown_resets_after_cancelled)
 {
     struct timers_binheap h;
@@ -2541,13 +2548,19 @@ START_TEST(test_timer_pop_siftdown_resets_after_cancelled)
     timer_binheap_cancel(&h, id1);
     timer_binheap_cancel(&h, id2);
 
-    /* Pop must skip both cancelled timers and return 50 */
+    /* Pops remove one root each: both tombstones, then the live timers
+     * in order -- verifies the heap invariant held through the run. */
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 0);
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 0);
     popped = timers_binheap_pop(&h);
     ck_assert_uint_eq(popped.expires, 50);
-
-    /* Next pop must return 100 -- verifies the heap invariant held */
     popped = timers_binheap_pop(&h);
     ck_assert_uint_eq(popped.expires, 100);
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 200);
+    ck_assert_uint_eq(h.size, 0);
 }
 END_TEST
 
