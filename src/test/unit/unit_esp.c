@@ -956,6 +956,63 @@ END_TEST
  *   3. wildcard dst ip in both in/out SAs, with misc dst address.
  *   4. wildcard src ip in both in/out SAs, with misc src address.
  * */
+/* Unwrap must scope the ESP payload to the declared IP total length, not
+ * the frame length: trailing L2 bytes after the datagram must not shift
+ * the ICV window. */
+START_TEST(test_unwrap_trailing_frame_bytes_ignored)
+{
+    static uint8_t buf[LINK_MTU + 256];
+    uint8_t ref[64];
+    uint32_t frame_len;
+    uint16_t ip_len;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    uint32_t wrapped_len;
+    uint32_t padded_len;
+    int ret;
+    uint32_t i;
+
+    for (i = 0U; i < sizeof(ref); i++) {
+        ref[i] = (uint8_t)(i & 0xFFU);
+    }
+
+    esp_setup();
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_SHA256_RFC4868,
+                                     (uint8_t *)k_auth16, sizeof(k_auth16),
+                                     ESP_ICVLEN_HMAC_128);
+    ck_assert_int_eq(ret, 0);
+
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                ref, sizeof(ref));
+    ip_len = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    wrapped_len = (uint32_t)ip_len + ETH_HEADER_LEN;
+
+    /* Append trailing L2 bytes after the datagram and pass the padded
+     * length, as a driver with FCS/DMA slack would. */
+    memset(buf + wrapped_len, 0x5A, 12);
+    padded_len = wrapped_len + 12;
+
+    ret = esp_transport_unwrap(ip, &padded_len);
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(ip->proto, WI_IPPROTO_UDP);
+    ck_assert_mem_eq(ip->data, ref, sizeof(ref));
+    /* The dispatched length must exclude the trailing bytes. */
+    ck_assert_uint_eq(padded_len, (uint32_t)(ETH_HEADER_LEN + ee16(ip->len)));
+}
+END_TEST
+
 START_TEST(test_unwrap_ip_filtering)
 {
     static uint8_t buf[LINK_MTU + 256];
@@ -2230,6 +2287,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_unwrap_below_min_len);
     tcase_add_test(tc, test_unwrap_pad_too_big);
     tcase_add_test(tc, test_unwrap_invalid_pad_pattern);
+    tcase_add_test(tc, test_unwrap_trailing_frame_bytes_ignored);
     tcase_add_test(tc, test_unwrap_ip_filtering);
     suite_add_tcase(s, tc);
 

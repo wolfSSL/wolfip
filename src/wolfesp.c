@@ -1352,12 +1352,17 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 
     memset(spi, 0, sizeof(spi));
 
-    if (*frame_len <= (ETH_HEADER_LEN + IP_HEADER_LEN)) {
-        ESP_LOG("error: esp: malformed frame: %d\n", *frame_len);
-        return -1;
+    /* Scope the ESP payload to the declared IP total length; bytes past
+     * the datagram (L2 slack) are not part of the ESP extent. */
+    {
+        uint32_t ip_total = ee16(ip->len);
+        if (ip_total < IP_HEADER_LEN ||
+            *frame_len < (uint32_t)(ETH_HEADER_LEN + ip_total)) {
+            ESP_LOG("error: esp: malformed frame: %d\n", *frame_len);
+            return -1;
+        }
+        esp_len = ip_total - IP_HEADER_LEN;
     }
-
-    esp_len = *frame_len - ETH_HEADER_LEN - IP_HEADER_LEN;
 
     /* If not at least SPI and sequence, something wrong. */
     if (esp_len < (ESP_SPI_LEN + ESP_SEQ_LEN)) {
@@ -1552,9 +1557,11 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     memmove(ip->data, ip->data + ESP_SPI_LEN + ESP_SEQ_LEN + iv_len,
             esp_len - (ESP_SPI_LEN + ESP_SEQ_LEN + iv_len));
 
-    /* subtract ESP header from frame_len and ip.len. */
-    *frame_len = *frame_len - (iv_len + ESP_SPI_LEN + ESP_SEQ_LEN);
+    /* subtract the ESP header from the IP total length (ip->len is in
+     * host order here); normalize the frame length to the datagram so
+     * trailing L2 bytes are excluded from dispatch. */
     ip->len = ee16(ip->len) - (iv_len + ESP_SPI_LEN + ESP_SEQ_LEN);
+    *frame_len = (uint32_t)(ETH_HEADER_LEN + ip->len);
 
     /* subtract ESP trailer from frame_len and ip.len. */
     *frame_len = *frame_len - (pad_len + ESP_PADDING_LEN +
