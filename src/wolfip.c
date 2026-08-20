@@ -8060,6 +8060,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
         if (!dst_match)
             return;
         icmp->type = ICMP_ECHO_REPLY;
+        /* RFC 792: echo reply code is 0 (do not propagate the request's
+         * code field) */
+        icmp->code = 0;
         /* Recompute full ICMP checksum for portability */
         icmp->csum = 0;
         icmp->csum = ee16(icmp_checksum(icmp, ee16(ip->len) - IP_HEADER_LEN));

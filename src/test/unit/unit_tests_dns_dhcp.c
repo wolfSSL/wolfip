@@ -2041,6 +2041,42 @@ START_TEST(test_icmp_input_echo_reply_sets_df)
 }
 END_TEST
 
+START_TEST(test_icmp_echo_reply_code_zeroed)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    struct wolfIP_icmp_packet *reply;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    /* a non-zero code on the request is malformed per RFC 792, but the
+     * reply must not propagate it - echo reply code is always 0 */
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);
+    icmp.ip.ttl = 64;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.code = 5;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    reply = (struct wolfIP_icmp_packet *)last_frame_sent;
+    ck_assert_uint_eq(reply->type, ICMP_ECHO_REPLY);
+    ck_assert_uint_eq(reply->code, 0U);
+    /* reply checksum must cover the corrected type/code pair */
+    ck_assert_uint_eq(icmp_checksum(reply, ICMP_HEADER_LEN), 0U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_bad_checksum_dropped)
 {
     struct wolfIP s;

@@ -908,6 +908,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_wrong_dst_dropped);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_reply_sent);
     tcase_add_test(tc_proto, test_icmp_input_echo_reply_sets_df);
+    tcase_add_test(tc_proto, test_icmp_echo_reply_code_zeroed);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_bad_checksum_dropped);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_odd_len_reply_checksum);
     tcase_add_test(tc_proto, test_icmp_input_echo_request_dhcp_running_no_reply);
