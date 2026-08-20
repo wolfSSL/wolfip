@@ -6608,7 +6608,8 @@ START_TEST(test_regression_paws_rejects_stale_timestamp)
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.peer_rwnd = TCP_MSS;
     ts->sock.tcp.ts_enabled = 1;
-    ts->sock.tcp.last_ts = ee32(5000);  /* TS.Recent = 5000 */
+    ts->sock.tcp.last_ts = ee32(5000);
+    ts->sock.tcp.ts_recent_valid = 1;  /* TS.Recent = 5000 */
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
@@ -6698,7 +6699,8 @@ START_TEST(test_regression_paws_accepts_wrapped_newer_timestamp)
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.peer_rwnd = TCP_MSS;
     ts->sock.tcp.ts_enabled = 1;
-    ts->sock.tcp.last_ts = ee32(0xFFFFFFF0U);  /* TS.Recent just before wrap */
+    ts->sock.tcp.last_ts = ee32(0xFFFFFFF0U);
+    ts->sock.tcp.ts_recent_valid = 1;  /* TS.Recent just before wrap */
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
@@ -6782,7 +6784,8 @@ START_TEST(test_regression_paws_drops_segment_without_timestamp_option)
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.peer_rwnd = TCP_MSS;
     ts->sock.tcp.ts_enabled = 1;
-    ts->sock.tcp.last_ts = ee32(5000);  /* TS.Recent = 5000 */
+    ts->sock.tcp.last_ts = ee32(5000);
+    ts->sock.tcp.ts_recent_valid = 1;  /* TS.Recent = 5000 */
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
@@ -6861,6 +6864,7 @@ START_TEST(test_regression_paws_preempts_acceptability_for_replayed_segment)
     ts->sock.tcp.peer_rwnd = TCP_MSS;
     ts->sock.tcp.ts_enabled = 1;
     ts->sock.tcp.last_ts = ee32(5000);
+    ts->sock.tcp.ts_recent_valid = 1;
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
@@ -6934,7 +6938,8 @@ START_TEST(test_regression_paws_drops_last_ack_segment_without_timestamp_option)
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.peer_rwnd = TCP_MSS;
     ts->sock.tcp.ts_enabled = 1;
-    ts->sock.tcp.last_ts = ee32(5000);  /* TS.Recent = 5000 */
+    ts->sock.tcp.last_ts = ee32(5000);
+    ts->sock.tcp.ts_recent_valid = 1;  /* TS.Recent = 5000 */
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;
@@ -7005,7 +7010,8 @@ START_TEST(test_regression_paws_drops_time_wait_segment_without_timestamp_option
     ts->sock.tcp.cwnd = TCP_MSS;
     ts->sock.tcp.peer_rwnd = TCP_MSS;
     ts->sock.tcp.ts_enabled = 1;
-    ts->sock.tcp.last_ts = ee32(5000);  /* TS.Recent = 5000 */
+    ts->sock.tcp.last_ts = ee32(5000);
+    ts->sock.tcp.ts_recent_valid = 1;  /* TS.Recent = 5000 */
     ts->src_port = 1234;
     ts->dst_port = 4321;
     ts->local_ip = 0x0A000001U;

@@ -1212,6 +1212,9 @@ struct tcpsocket {
     uint16_t last_peer_win;
     uint8_t snd_wscale, rcv_wscale, ws_enabled, ws_offer;
     uint8_t ts_enabled, ts_offer;
+    /* Set once the first peer timestamp has seeded TS.Recent; until then
+     * last_ts is an uninitialized sentinel, not a timestamp. */
+    uint8_t ts_recent_valid;
     uint8_t sack_offer, sack_permitted;
     uint8_t rx_sack_count, peer_sack_count;
     struct tcp_sack_block rx_sack[TCP_SACK_MAX_BLOCKS];
@@ -3090,6 +3093,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
             t->sock.tcp.snd_wscale = 0;
             t->sock.tcp.ws_enabled = 0;
             t->sock.tcp.ts_enabled = 0;
+            t->sock.tcp.ts_recent_valid = 0;
             t->sock.tcp.sack_offer = 1;
             t->sock.tcp.sack_permitted = 0;
             t->sock.tcp.rx_sack_count = 0;
@@ -4836,10 +4840,18 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
      * An out-of-order segment (SEQ above the left edge) must not advance
      * TS.Recent: it would corrupt the TSecr echoed per rule (3) and make
      * tcp_paws_check drop the in-order segment that later fills the hole,
-     * whose TSval is necessarily lower than the OOO segment's. */
-    if (!tcp_seq_lt(ee32(po.ts_val), t->sock.tcp.last_ts) &&
-            tcp_seq_leq(ee32(tcp->seq), t->sock.tcp.ack))
+     * whose TSval is necessarily lower than the OOO segment's.
+     * The first timestamp after negotiation seeds TS.Recent unconditionally:
+     * until then there is no reference to compare against. A zeroed last_ts
+     * is not a timestamp - treating it as one makes every segment whose
+     * TSval sits in the upper half of the 32-bit space look "older" and
+     * tcp_paws_check drops the whole data flow after the handshake. */
+    if (!t->sock.tcp.ts_recent_valid ||
+            (!tcp_seq_lt(ee32(po.ts_val), t->sock.tcp.last_ts) &&
+             tcp_seq_leq(ee32(tcp->seq), t->sock.tcp.ack))) {
         t->sock.tcp.last_ts = ee32(po.ts_val);
+        t->sock.tcp.ts_recent_valid = 1;
+    }
     if (po.ts_ecr == 0)
         return -1; /* No echoed timestamp; fall back to coarse RTT. */
     if (po.ts_ecr > t->S->last_tick)
@@ -4868,7 +4880,10 @@ static int tcp_paws_check(const struct tsocket *t,
      * dropped silently. */
     if (!po.ts_found)
         return TCP_PAWS_DROP;
-    if (tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts)))
+    /* Without a stored reference (no peer timestamp seen yet) there is
+     * nothing to compare against: accept. */
+    if (t->sock.tcp.ts_recent_valid &&
+            tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts)))
         return TCP_PAWS_ACK_DROP;
     return TCP_PAWS_OK;
 }
@@ -6543,6 +6558,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->sock.tcp.ws_offer = ts->sock.tcp.ws_offer;
             newts->sock.tcp.ts_enabled = ts->sock.tcp.ts_enabled;
             newts->sock.tcp.ts_offer = ts->sock.tcp.ts_offer;
+            newts->sock.tcp.ts_recent_valid = ts->sock.tcp.ts_recent_valid;
             newts->sock.tcp.sack_offer = ts->sock.tcp.sack_offer;
             newts->sock.tcp.sack_permitted = ts->sock.tcp.sack_permitted;
             newts->sock.tcp.state = TCP_SYN_RCVD;

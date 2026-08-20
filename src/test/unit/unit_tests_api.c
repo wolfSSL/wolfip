@@ -2599,6 +2599,7 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     uint32_t pre_accept_seq;
     uint32_t pre_accept_ack;
     uint32_t pre_accept_last_ts;
+    uint8_t pre_accept_ts_recent_valid;
     uint32_t pre_accept_local_ip;
     uint32_t pre_accept_remote_ip;
     uint32_t pre_accept_peer_rwnd;
@@ -2637,6 +2638,7 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
 
     /* Seed half-open negotiation state so accept() must clone it into the child socket. */
     listener->sock.tcp.last_ts = 0x11223344U;
+    listener->sock.tcp.ts_recent_valid = 1;
     listener->sock.tcp.peer_rwnd = 4096;
     listener->sock.tcp.peer_mss = 1200;
     listener->sock.tcp.snd_wscale = 4;
@@ -2651,6 +2653,7 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     pre_accept_seq = listener->sock.tcp.seq;
     pre_accept_ack = listener->sock.tcp.ack;
     pre_accept_last_ts = listener->sock.tcp.last_ts;
+    pre_accept_ts_recent_valid = listener->sock.tcp.ts_recent_valid;
     pre_accept_local_ip = listener->local_ip;
     pre_accept_remote_ip = listener->remote_ip;
     pre_accept_peer_rwnd = listener->sock.tcp.peer_rwnd;
@@ -2684,6 +2687,8 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     ck_assert_uint_eq(accepted->sock.tcp.ack, pre_accept_ack);
     ck_assert_uint_eq(accepted->sock.tcp.snd_una, pre_accept_seq);
     ck_assert_uint_eq(accepted->sock.tcp.last_ts, pre_accept_last_ts);
+    ck_assert_uint_eq(accepted->sock.tcp.ts_recent_valid,
+                      pre_accept_ts_recent_valid);
     ck_assert_uint_eq(accepted->sock.tcp.peer_rwnd, pre_accept_peer_rwnd);
     ck_assert_uint_eq(accepted->sock.tcp.peer_mss, pre_accept_peer_mss);
     ck_assert_uint_eq(accepted->sock.tcp.snd_wscale, pre_accept_snd_wscale);

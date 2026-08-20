@@ -3450,6 +3450,130 @@ START_TEST(test_tcp_input_syn_rcvd_out_of_window_ack_drop)
 }
 END_TEST
 
+/* Regression (F-6473 follow-up): the first peer timestamp must seed
+ * TS.Recent unconditionally. last_ts starts zeroed, which is not a
+ * timestamp: the RFC 7323 4.3 update gate compares the SYN's TSval
+ * against it, and a TSval in the upper half of the 32-bit space (the
+ * common case for real kernel clocks) compares as "older" than zero,
+ * so TS.Recent never got seeded. Every later segment then failed
+ * tcp_paws_check as an old duplicate and was dropped with a bare ACK -
+ * the handshake completed but no data ever flowed (dup-ACK loop).
+ * Values mirror a captured failure: SYN TSval 0xE0600D2C. */
+START_TEST(test_tcp_input_paws_upper_half_tsval_flows)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 10];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)seg->data;
+    uint32_t rcv_nxt;
+    uint8_t out[32];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    /* SYN with a Timestamps option in the upper half of the 32-bit
+     * space - compares as "older" than the zeroed last_ts. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN);
+    seg->ip.src = ee32(0x0A000002U);
+    seg->ip.dst = ee32(0x0A000001U);
+    seg->src_port = ee16(52798);
+    seg->dst_port = ee16(1234);
+    seg->seq = ee32(0);
+    seg->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    seg->flags = TCP_FLAG_SYN;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(0xE0600D2CU);
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                       TCP_HEADER_LEN + TCP_OPTIONS_LEN));
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    /* The SYN must have seeded TS.Recent despite the upper-half value. */
+    ck_assert_uint_eq(ts->sock.tcp.ts_recent_valid, 1);
+    ck_assert_uint_eq(ts->sock.tcp.last_ts, ee32(0xE0600D2CU));
+    rcv_nxt = ts->sock.tcp.ack;
+
+    /* Final ACK, same clock (still upper half). */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN);
+    seg->ip.src = ee32(0x0A000002U);
+    seg->ip.dst = ee32(0x0A000001U);
+    seg->src_port = ee16(52798);
+    seg->dst_port = ee16(1234);
+    seg->seq = ee32(rcv_nxt);
+    seg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    seg->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    seg->flags = TCP_FLAG_ACK;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(0xE0600D2EU);
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                       TCP_HEADER_LEN + TCP_OPTIONS_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+
+    /* First data segment: pre-fix this was dropped by tcp_paws_check as
+     * "older than TS.Recent" (zeroed) and the connection stalled in a
+     * dup-ACK loop. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN + 10);
+    seg->ip.src = ee32(0x0A000002U);
+    seg->ip.dst = ee32(0x0A000001U);
+    seg->src_port = ee16(52798);
+    seg->dst_port = ee16(1234);
+    seg->seq = ee32(rcv_nxt);
+    seg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    seg->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    seg->flags = TCP_FLAG_ACK;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(0xE0600D32U);
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    memcpy(seg->data + TCP_OPTIONS_LEN, "0123456789", 10);
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                       TCP_HEADER_LEN + TCP_OPTIONS_LEN + 10));
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt + 10);
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), 10);
+    ck_assert_mem_eq(out, "0123456789", 10);
+}
+END_TEST
+
 /* Regression: an ACK+FIN segment in SYN_RCVD must not be silently discarded.
  * The ACK should complete the handshake (to ESTABLISHED) and the FIN should
  * be processed in the same pass (to CLOSE_WAIT).  Per RFC 9293 section 3.10.7.4

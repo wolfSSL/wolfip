@@ -4377,7 +4377,8 @@ START_TEST(test_tcp_process_ts_ooo_segment_keeps_recent)
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
     ts->sock.tcp.ack = 1000;     /* RCV.NXT == Last.ACK.sent (host order) */
-    ts->sock.tcp.last_ts = ee32(100); /* TS.Recent (stored network order) */
+    ts->sock.tcp.last_ts = ee32(100);
+    ts->sock.tcp.ts_recent_valid = 1; /* TS.Recent (stored network order) */
 
     memset(buf, 0, sizeof(buf));
     tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
@@ -4431,6 +4432,7 @@ START_TEST(test_tcp_input_paws_ooo_does_not_poison_hole_fill)
     ts->sock.tcp.ts_enabled = 1;
     ts->sock.tcp.sack_permitted = 1;
     ts->sock.tcp.last_ts = ee32(100);
+    ts->sock.tcp.ts_recent_valid = 1;
     ts->local_ip = 0x0A000001U;
     ts->remote_ip = 0x0A000002U;
     ts->src_port = 1234;
