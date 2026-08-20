@@ -59,7 +59,7 @@
  *
  *     // Initialize wolfIP (same code on ALL STM32 boards)
  *     wolfIP_init_static(&ipstack);
- *     stm32_hal_eth_init(wolfIP_getdev(ipstack));  // Auto-configures RMII/MII!
+ *     stm32_hal_eth_init(wolfIP_getdev(ipstack));  // Auto-configures RMII!
  *     wolfIP_ipconfig_set(ipstack,
  *         atoip4("192.168.1.100"),
  *         atoip4("255.255.255.0"),
@@ -88,11 +88,12 @@
  *
  * The driver automatically:
  * 1. Detects your STM32 family at compile time
- * 2. Configures RMII/MII interface (SBS/SYSCFG)
+ * 2. Configures the RMII interface (SBS/SYSCFG) - MII boards must be
+ *    configured manually in HAL_ETH_MspInit(); there is no mode option
  * 3. Reinitializes ETH with correct settings
  * 4. Starts the MAC in interrupt mode
  *
- * No manual MspInit changes required for supported families!
+ * No manual MspInit changes required for supported RMII families!
  *
  * ## Implementation Notes
  *
