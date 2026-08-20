@@ -330,9 +330,16 @@ struct wolfip_supplicant *wolfip_supplicant_new(
 
 void wolfip_supplicant_free(struct wolfip_supplicant *s);
 
-/* Signal that the radio reports "associated" - supplicant moves from
- * IDLE to 4WAY_M1_WAIT. (On real hardware, called by the driver after
- * the FullMAC chip completes auth+assoc.) `now_ms` is the current
+/* Start the handshake from IDLE. The transition depends on the auth
+ * mode:
+ *   PSK (or SAE with a pre-installed FullMAC PMK): IDLE -> 4WAY_M1_WAIT.
+ *   EAP (TLS / PEAP): sends EAPOL-Start, IDLE -> EAP_IDENTITY_WAIT.
+ *   Software SAE: sends the SAE Commit, IDLE -> SAE_COMMIT_SENT. SAE
+ *   authentication runs BEFORE radio association, so software-SAE
+ *   callers must kick the supplicant before the driver associates -
+ *   waiting for the association inverts the required sequencing.
+ * (On FullMAC hardware where the chip did auth itself, the driver calls
+ * this after the chip completes auth+assoc.) `now_ms` is the current
  * monotonic timestamp; the supplicant uses it as the handshake start.
  */
 int wolfip_supplicant_kick(struct wolfip_supplicant *s, uint64_t now_ms);
