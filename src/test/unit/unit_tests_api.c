@@ -4655,6 +4655,49 @@ START_TEST(test_syn_sent_bad_ack_synack_sends_rst)
 }
 END_TEST
 
+/* Regression: per RFC 9293 §3.10.7.3, a bare ACK (no SYN) with an
+ * unacceptable ACK number in SYN_SENT must trigger a RST
+ * (<SEQ=SEG.ACK><CTL=RST>). The code only matched the SYN|ACK flag
+ * combination, so a stray bare ACK was silently dropped instead of
+ * eliciting the required reset. */
+START_TEST(test_syn_sent_bad_ack_bare_ack_sends_rst)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* Inject a bare ACK (no SYN) with an unacceptable ACK number. */
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       1000, 99,
+                       TCP_FLAG_ACK);
+
+    /* A RST must be sent */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    /* Socket must remain in SYN_SENT */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
 /* Regression: per RFC 9293 §3.10.7.4, an ACK with invalid ack value in
  * SYN_RCVD must trigger a RST.  The code silently dropped it. */
 START_TEST(test_syn_rcvd_bad_ack_sends_rst)

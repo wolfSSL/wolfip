@@ -5412,6 +5412,23 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 continue;
             }
 
+            /* RFC 9293 3.10.7.3: in SYN_SENT the ACK bit is examined
+             * first, for every segment (SYN or not). An ACK number outside
+             * (SND.UNA, SND.NXT] is unacceptable - in SYN_SENT that is any
+             * value other than ISS+1 (no data rides on the SYN). A segment
+             * carrying the ACK bit with such a number - a stray bare ACK,
+             * or a SYN-ACK with a bad ACK - gets <SEQ=SEG.ACK><CTL=RST>
+             * and is dropped. RST-bearing segments never reach here: the
+             * RST handler above consumes them first, per the RFC's "unless
+             * the RST bit is set" caveat. */
+            if (t->sock.tcp.state == TCP_SYN_SENT &&
+                    (tcp->flags & TCP_FLAG_ACK) &&
+                    (!tcp_seq_lt(t->sock.tcp.snd_una, ee32(tcp->ack)) ||
+                     tcp_seq_lt(tcp_seq_inc(t->sock.tcp.seq, 1),
+                                ee32(tcp->ack)))) {
+                tcp_send_reset_reply(S, if_idx, tcp);
+                continue;
+            }
             /* Check if SYN */
             if (tcp->flags & TCP_FLAG_SYN) {
                 if (t->sock.tcp.state == TCP_LISTEN) {
@@ -5465,13 +5482,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     tcp_ctrl_rto_start(t, S->last_tick);
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
+                    /* Only reached for a SYN-ACK whose ACK number was
+                     * acceptable (the check above RSTs the bad ones). */
                     if (tcp->flags == (TCP_FLAG_SYN | TCP_FLAG_ACK)) {
-                        if (ee32(tcp->ack) != tcp_seq_inc(t->sock.tcp.seq, 1)) {
-                            /* RFC 9293: invalid ACK in SYN_SENT - send RST
-                             * to help peer clean up stale half-open state. */
-                            tcp_send_reset_reply(S, if_idx, tcp);
-                            continue;
-                        }
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
