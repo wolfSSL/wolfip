@@ -5652,7 +5652,7 @@ START_TEST(test_sock_close_tcp_cancels_rto_timer)
     int sd;
     uint32_t rto_id;
     uint32_t i;
-    int found_canceled = 0;
+    int found = 0;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -5672,14 +5672,13 @@ START_TEST(test_sock_close_tcp_cancels_rto_timer)
 
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->proto, 0);
+    /* Eager cancel removes the RTO timer physically; it must no longer be
+     * present in the heap. */
     for (i = 0; i < s.timers.size; i++) {
-        if (s.timers.timers[i].id == rto_id) {
-            found_canceled = 1;
-            ck_assert_uint_eq(s.timers.timers[i].expires, 0);
-            break;
-        }
+        if (s.timers.timers[i].id == rto_id)
+            found = 1;
     }
-    ck_assert_int_eq(found_canceled, 1);
+    ck_assert_int_eq(found, 0);
 }
 END_TEST
 

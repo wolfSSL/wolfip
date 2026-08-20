@@ -132,7 +132,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_pop_timer);
     tcase_add_test(tc_utils, test_is_timer_expired);
     tcase_add_test(tc_utils, test_cancel_timer);
-    tcase_add_test(tc_utils, test_timer_pop_removes_zero_head_first);
+    tcase_add_test(tc_utils, test_timer_heap_no_dead_slot_accumulation);
+    tcase_add_test(tc_utils, test_timer_pop_skips_zero_expires);
     tcase_add_test(tc_utils, test_timer_pop_reorders_heap);
     tcase_add_test(tc_utils, test_timer_pop_right_child_swap);
     tcase_add_test(tc_utils, test_timer_pop_break_when_root_small);

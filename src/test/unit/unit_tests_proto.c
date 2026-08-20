@@ -2371,9 +2371,12 @@ START_TEST(test_timer_cancel_existing_and_missing)
     ck_assert_uint_eq(local.timers[0].expires, 5);
 
     timer_binheap_cancel(&local, id);
-    ck_assert_uint_eq(local.timers[0].expires, 0);
+    /* Eager cancel removes the slot physically; the heap is empty. */
+    ck_assert_uint_eq(local.size, 0);
 
     timer_binheap_cancel(&local, id + 1);
+    /* Cancelling a missing id is a no-op. */
+    ck_assert_uint_eq(local.size, 0);
 }
 END_TEST
 
@@ -2422,17 +2425,51 @@ START_TEST(test_cancel_timer) {
     (void)id2;
 
     timer_binheap_cancel(&heap, id1);
-    ck_assert_int_eq(heap.timers[0].expires, 0);  // tmr1 canceled
+    /* Eager cancel removes tmr1 physically; only tmr2 remains. */
+    ck_assert_int_eq(heap.size, 1);
+    ck_assert_int_eq(heap.timers[0].expires, 200);
 
     popped = timers_binheap_pop(&heap);
-    ck_assert_uint_eq(popped.expires, 0);  /* the tombstone itself */
-    popped = timers_binheap_pop(&heap);
-    ck_assert_uint_eq(popped.expires, 200);  /* tmr2 survived the drain */
+    ck_assert_int_eq(popped.expires, 200);  // Only tmr2 should remain
     ck_assert_int_eq(heap.size, 0);
 }
 END_TEST
 
-START_TEST(test_timer_pop_removes_zero_head_first)
+/* F-9808: the timer heap must not clog with lazy-cancelled dead slots. The
+ * TCP TX path re-arms the data RTO on every segment of a multi-segment send
+ * (cancel the old RTO, insert a new one). Pre-fix, each cancel left a dead
+ * slot (expires==0) that still counted toward size and broke the min-heap
+ * invariant, so enough re-arms filled the heap and made
+ * timers_binheap_insert return NO_TIMER, silently dropping control-state RTO
+ * arms. Eager cancel removes the slot physically, so the size tracks live
+ * timers and the heap stays usable. */
+START_TEST(test_timer_heap_no_dead_slot_accumulation)
+{
+    struct timers_binheap local = {0};
+    struct wolfIP_timer tmr = {0};
+    int id;
+    int i;
+
+    tmr.expires = 100;
+    tmr.cb = test_timer_cb;
+
+    /* Many RTO re-arms: insert then cancel, over and over - the exact
+     * pattern a multi-segment send drives through the shared heap. */
+    for (i = 0; i < (MAX_TIMERS * 2); i++) {
+        id = timers_binheap_insert(&local, tmr);
+        ck_assert_int_ne(id, NO_TIMER);
+        timer_binheap_cancel(&local, id);
+    }
+
+    /* The heap must not be clogged with dead slots: it is empty, and a
+     * fresh insert still succeeds (pre-fix it returned NO_TIMER). */
+    ck_assert_uint_eq(local.size, 0);
+    id = timers_binheap_insert(&local, tmr);
+    ck_assert_int_ne(id, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_timer_pop_skips_zero_expires)
 {
     struct timers_binheap h;
     struct wolfIP_timer tmr1 = { .expires = 50 };
@@ -2444,10 +2481,10 @@ START_TEST(test_timer_pop_removes_zero_head_first)
     tmr2.id = timers_binheap_insert(&h, tmr2);
     timer_binheap_cancel(&h, tmr2.id);
 
-    /* One root per pop: the tombstone first, then the live timer. */
+    /* Eager cancel removed tmr2 physically: the pop returns the live
+     * timer, never a zero slot. */
     popped = timers_binheap_pop(&h);
-    ck_assert_uint_eq(popped.expires, 0);
-    popped = timers_binheap_pop(&h);
+    ck_assert_uint_ne(popped.expires, 0);
     ck_assert_uint_eq(popped.expires, 50);
 }
 END_TEST
@@ -2544,16 +2581,12 @@ START_TEST(test_timer_pop_siftdown_resets_after_cancelled)
     timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 100 });
     timers_binheap_insert(&h, (struct wolfIP_timer){ .expires = 200 });
 
-    /* Cancel the two smallest */
+    /* Cancel the two smallest (eager: slots removed physically) */
     timer_binheap_cancel(&h, id1);
     timer_binheap_cancel(&h, id2);
 
-    /* Pops remove one root each: both tombstones, then the live timers
-     * in order -- verifies the heap invariant held through the run. */
-    popped = timers_binheap_pop(&h);
-    ck_assert_uint_eq(popped.expires, 0);
-    popped = timers_binheap_pop(&h);
-    ck_assert_uint_eq(popped.expires, 0);
+    /* Pops return the live timers in order -- verifies the heap
+     * invariant held through the eager removals. */
     popped = timers_binheap_pop(&h);
     ck_assert_uint_eq(popped.expires, 50);
     popped = timers_binheap_pop(&h);

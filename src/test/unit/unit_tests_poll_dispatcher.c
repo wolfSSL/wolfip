@@ -264,13 +264,13 @@ START_TEST(test_poll_timer_cancelled_tombstone_drained_before_live_timer)
     mock_link_init(&s);
     timer_cb_calls = 0;
 
-    /* Insert one timer and cancel it immediately — tombstone only */
+    /* Insert one timer and cancel it immediately (eager: gone physically) */
     memset(&tmr, 0, sizeof(tmr));
     tmr.cb = test_timer_cb;
     tmr.expires = 50;
     handle = timers_binheap_insert(&s.timers, tmr);
 
-    /* Cancel to create a tombstone */
+    /* Cancel removes the slot */
     timer_binheap_cancel(&s.timers, handle);
 
     /* Insert a second live timer after the cancelled one */
@@ -279,11 +279,10 @@ START_TEST(test_poll_timer_cancelled_tombstone_drained_before_live_timer)
     tmr.expires = 60;
     timers_binheap_insert(&s.timers, tmr);
 
-    /* Poll at t=100: the tombstone is at the heap head; is_timer_expired
-     * drains it via timers_binheap_pop which also consumes the next timer.
-     * Verify poll does not crash and heap is empty after draining. */
+    /* Poll at t=100: the live timer is due and is consumed.
+     * Verify poll does not crash and the heap is empty afterwards. */
     (void)wolfIP_poll(&s, 100);
-    /* Heap must be empty after tombstone draining */
+    /* Heap must be empty after the timer fired */
     ck_assert_uint_eq(s.timers.size, 0U);
 }
 END_TEST

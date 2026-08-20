@@ -2565,12 +2565,61 @@ static int is_timer_expired(struct timers_binheap *heap, uint64_t now)
     return (heap->timers[0].expires <= now)?1:0;
 }
 
+/* Restore the min-heap property after the element at index i was replaced
+ * (by the former last slot during a cancel). Sifts the element down toward
+ * its children, then up toward its parent; whichever direction is needed is
+ * taken and the other becomes a no-op. */
+static void timers_heapify(struct timers_binheap *heap, uint32_t i)
+{
+    uint32_t n = heap->size;
+
+    if (i >= n)
+        return; /* the last slot was removed; nothing left to order */
+    /* Sift down. */
+    while (2 * i + 1 < n) {
+        uint32_t j = 2 * i + 1;
+        struct wolfIP_timer tmp;
+        if (j + 1 < n && heap->timers[j + 1].expires < heap->timers[j].expires)
+            j++;
+        if (heap->timers[i].expires <= heap->timers[j].expires)
+            break;
+        tmp = heap->timers[i];
+        heap->timers[i] = heap->timers[j];
+        heap->timers[j] = tmp;
+        i = j;
+    }
+    /* Sift up. */
+    while (i > 0) {
+        uint32_t p = (i - 1) / 2;
+        struct wolfIP_timer tmp;
+        if (heap->timers[i].expires >= heap->timers[p].expires)
+            break;
+        tmp = heap->timers[i];
+        heap->timers[i] = heap->timers[p];
+        heap->timers[p] = tmp;
+        i = p;
+    }
+}
+
 static void timer_binheap_cancel(struct timers_binheap *heap, uint32_t id)
 {
     uint32_t i;
     for (i = 0; i < heap->size; i++) {
         if (heap->timers[i].id == id) {
-            heap->timers[i].expires = 0;
+            /* Remove the slot physically so heap->size tracks live timers.
+             * The old lazy in-place expires==0 mark left a dead slot that
+             * still counted toward size and broke the min-heap invariant
+             * (a zeroed slot sorts below its parent). Only dead slots that
+             * happened to sit at the root were ever popped, so the victim's
+             * own multi-segment TX re-arms (which cancel and re-insert the
+             * data RTO on every segment) accumulated dead slots until the
+             * heap filled and timers_binheap_insert returned NO_TIMER,
+             * silently dropping control-state RTO arms and sticking sockets
+             * in SYN_RCVD/FIN_WAIT_2 until the socket table exhausted
+             * (F-9808). */
+            heap->timers[i] = heap->timers[heap->size - 1];
+            heap->size--;
+            timers_heapify(heap, i);
             break;
         }
     }

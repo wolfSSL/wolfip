@@ -3932,7 +3932,7 @@ START_TEST(test_tcp_last_ack_closes_socket)
     uint16_t remote_port = 7777;
     uint32_t ctrl_rto_id;
     uint32_t i;
-    int found_canceled = 0;
+    int found = 0;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -3961,14 +3961,13 @@ START_TEST(test_tcp_last_ack_closes_socket)
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
             10, 10, TCP_FLAG_ACK);
     ck_assert_int_eq(ts->proto, 0);
+    /* Eager cancel removes the control RTO timer physically; it must no
+     * longer be present in the heap. */
     for (i = 0; i < s.timers.size; i++) {
-        if (s.timers.timers[i].id == ctrl_rto_id) {
-            found_canceled = 1;
-            ck_assert_uint_eq(s.timers.timers[i].expires, 0);
-            break;
-        }
+        if (s.timers.timers[i].id == ctrl_rto_id)
+            found = 1;
     }
-    ck_assert_int_eq(found_canceled, 1);
+    ck_assert_int_eq(found, 0);
 }
 END_TEST
 
