@@ -5021,6 +5021,108 @@ START_TEST(test_dhcp_request_retransmit_backoff)
 }
 END_TEST
 
+/* RFC 2131: in RENEWING/REBINDING a DHCPREQUEST with no response is
+ * retransmitted after one-half the remaining time (to T2 / to lease expiry),
+ * floored at 60 s. The pure delay function is pinned here, including the
+ * floor and the cap at the remaining time (a retry must never land past the
+ * deadline, where the state transition fires). */
+START_TEST(test_dhcp_renew_rebind_delay_ms)
+{
+    /* one-half remaining, above the 60 s floor */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(200000), 100000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(120000), 60000); /* exactly the floor */
+    /* half below the floor -> floored to 60 s */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(100000), 60000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(90000), 60000);
+    /* remaining at/below the floor -> capped at remaining */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(60000), 60000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(30000), 30000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(1000), 1000);
+    /* zero remaining -> 1 ms, never an indefinite/past-now schedule */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(0), 1);
+}
+END_TEST
+
+/* The RENEWING/REBINDING scheduler must place the retry at
+ * last_tick + max(60 s, remaining/2), capped at the deadline. */
+START_TEST(test_dhcp_schedule_renew_rebind_retry)
+{
+    struct wolfIP s;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* remaining 200 s -> half = 100 s (above the floor) */
+    s.last_tick = now;
+    dhcp_schedule_renew_rebind_retry(&s, now + 200000);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 100000);
+
+    /* remaining 100 s -> half = 50 s, floored to 60 s */
+    s.last_tick = now;
+    dhcp_schedule_renew_rebind_retry(&s, now + 100000);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 60000);
+
+    /* remaining 30 s -> floored to 60 s, capped to 30 s (the deadline) */
+    s.last_tick = now;
+    dhcp_schedule_renew_rebind_retry(&s, now + 30000);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 30000);
+}
+END_TEST
+
+/* End-to-end: a RENEWING DHCPREQUEST with no response must be retransmitted
+ * at one-half the remaining time to T2 (RFC 2131), not on the generic 2 s
+ * exponential backoff. With T2 200 s out the retry lands at +100 s. Pre-fix
+ * this scheduled ~2 s (the backoff), so this assertion fails without the fix. */
+START_TEST(test_dhcp_renewing_retry_half_remaining_to_t2)
+{
+    struct wolfIP s;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1;
+    s.dhcp_server_ip = 0x0A000064U; /* on-link, so the renewal unicast routes */
+
+    s.dhcp_state = DHCP_RENEWING;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 0;
+    s.dhcp_rebind_at = now + 200000; /* T2 is 200 s ahead */
+    dhcp_timer_cb(&s);
+
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 100000);
+}
+END_TEST
+
+/* End-to-end: a REBINDING DHCPREQUEST with no response must be retransmitted
+ * at one-half the remaining lease time (RFC 2131). With the lease 200 s from
+ * expiry the retry lands at +100 s. Pre-fix this scheduled ~2 s backoff. */
+START_TEST(test_dhcp_rebinding_retry_half_remaining_to_lease)
+{
+    struct wolfIP s;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1;
+    s.dhcp_server_ip = 0x0A000064U;
+
+    s.dhcp_state = DHCP_REBINDING;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 0;
+    s.dhcp_lease_expires = now + 200000; /* lease expires in 200 s */
+    dhcp_timer_cb(&s);
+
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 100000);
+}
+END_TEST
+
 START_TEST(test_regression_dhcp_lease_expiry_deconfigures_address)
 {
     struct wolfIP s;

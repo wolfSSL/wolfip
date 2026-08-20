@@ -420,6 +420,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_timer_cb_paths);
     tcase_add_test(tc_utils, test_dhcp_discover_retransmit_backoff);
     tcase_add_test(tc_utils, test_dhcp_request_retransmit_backoff);
+    tcase_add_test(tc_utils, test_dhcp_renew_rebind_delay_ms);
+    tcase_add_test(tc_utils, test_dhcp_schedule_renew_rebind_retry);
+    tcase_add_test(tc_utils, test_dhcp_renewing_retry_half_remaining_to_t2);
+    tcase_add_test(tc_utils, test_dhcp_rebinding_retry_half_remaining_to_lease);
     tcase_add_test(tc_utils, test_regression_dhcp_lease_expiry_deconfigures_address);
     tcase_add_test(tc_utils, test_dhcp_request_retry_exhaustion_deconfigures_lease);
     tcase_add_test(tc_utils, test_dhcp_timer_cb_send_failure_does_not_consume_retry_budget);

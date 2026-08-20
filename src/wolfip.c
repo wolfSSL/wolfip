@@ -8270,6 +8270,33 @@ static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
     dhcp_schedule_timer_at(s, next);
 }
 
+/* RFC 2131 retransmission delay for RENEWING (to T2) and REBINDING (to
+ * lease expiry): one-half the remaining time, floored at 60 s. Capped at
+ * the remaining time so the retry never lands past the deadline - the
+ * T2 / lease-expiry state transition (handled in the timer callback) must
+ * still fire on time. */
+static uint64_t dhcp_renew_rebind_delay_ms(uint64_t remaining_ms)
+{
+    uint64_t delay = remaining_ms / 2U;
+
+    if (delay < 60000U)
+        delay = 60000U;
+    if (delay > remaining_ms)
+        delay = remaining_ms;
+    return (delay == 0) ? 1U : delay;
+}
+
+static void dhcp_schedule_renew_rebind_retry(struct wolfIP *s, uint64_t deadline)
+{
+    uint64_t remaining;
+
+    if (!s || deadline == 0)
+        return;
+    remaining = (deadline > s->last_tick) ? (deadline - s->last_tick) : 0;
+    dhcp_schedule_timer_at(s,
+            s->last_tick + dhcp_renew_rebind_delay_ms(remaining));
+}
+
 static uint16_t dhcp_elapsed_secs(const struct wolfIP *s)
 {
     uint64_t elapsed_ms;
@@ -9075,9 +9102,9 @@ static int dhcp_send_request(struct wolfIP *s)
     if (!renewing && !rebinding) {
         dhcp_schedule_retry_timer(s, 0);
     } else if (renewing) {
-        dhcp_schedule_retry_timer(s, s->dhcp_rebind_at);
+        dhcp_schedule_renew_rebind_retry(s, s->dhcp_rebind_at);
     } else {
-        dhcp_schedule_retry_timer(s, s->dhcp_lease_expires);
+        dhcp_schedule_renew_rebind_retry(s, s->dhcp_lease_expires);
     }
     return 0;
 }
