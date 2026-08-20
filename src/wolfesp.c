@@ -196,7 +196,7 @@ esp_spi_valid(const uint8_t * spi, int log_it)
 }
 
 /* Configure a new Security Association based on either
- * enc = ESP_ENC_GCM_RFC4106 (gcm), or enc = ESP_AUTH_GCM_RFC4543 (gmac).
+ * enc = ESP_ENC_GCM_RFC4106 (gcm), or enc = ESP_ENC_GCM_RFC4543 (gmac).
  * */
 int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
                           esp_enc_t enc, uint8_t * enc_key,
