@@ -124,8 +124,11 @@ void cyw43_set_rx_callbacks(cyw43_eapol_cb_t eapol_cb,
 
 int  cyw43_poll(void);
 
-/* Read the radio's permanent MAC address (set during firmware load
- * from OTP). out is 6 bytes. Returns 0 on success. */
+/* Read the radio's STA MAC address. The 6-byte cache is populated from
+ * the cur_etheraddr iovar read inside cyw43_wifi_up(), so the value is
+ * only valid after that call; before it the cache is zero-filled. out
+ * is 6 bytes. Returns 0 once firmware is up (cyw43_init done), -1
+ * before that. */
 int  cyw43_get_mac(uint8_t out[6]);
 
 /* Read the associated AP's BSSID (learned during assoc). out is 6
