@@ -652,6 +652,7 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
     int       err = 0;
     int       type = 0;
     uint32_t  auth_len = esp_len;
+    uint8_t   inited = 0;
 
     switch (esp_sa->auth) {
     case ESP_AUTH_MD5_RFC2403:
@@ -674,9 +675,10 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
 
     err = wc_HmacInit(&hmac, NULL, INVALID_DEVID);
     if (err) {
-        ESP_LOG("error: wc_HmacSetKey: %d\n", err);
-        goto calc_icv_hmac_end;
+        ESP_LOG("error: wc_HmacInit: %d\n", err);
+        return err;
     }
+    inited = 1;
 
     err = wc_HmacSetKey(&hmac, type, esp_sa->auth_key, esp_sa->auth_key_len);
     if (err) {
@@ -699,7 +701,11 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
     }
 
 calc_icv_hmac_end:
-    wc_HmacFree(&hmac);
+    /* Free only after a successful init: freeing an Hmac whose
+     * wc_HmacInit() failed would release state that was never set up. */
+    if (inited) {
+        wc_HmacFree(&hmac);
+    }
 
     return err;
 }
