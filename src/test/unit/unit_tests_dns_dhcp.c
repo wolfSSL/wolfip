@@ -2552,6 +2552,69 @@ START_TEST(test_icmp_input_dest_unreach_frag_needed_below_floor_preserves_peer_m
 }
 END_TEST
 
+/* Regression: the PMTU peer_mss guard is monotonic-decrease (never
+ * increase). A spoofed FRAG_NEEDED advertising a LARGER next-hop MTU must
+ * not re-inflate peer_mss back up after a legitimate prior PMTU reduction.
+ * This pins the `new_mss < peer_mss` direction: deleting/inverting that
+ * clause lets a forged message restore peer_mss to the local MSS, cancelling
+ * the reduction and re-creating a Path-MTU black hole (DF is set). */
+START_TEST(test_icmp_input_dest_unreach_frag_needed_larger_mtu_does_not_raise_peer_mss)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+    uint16_t next_hop_mtu;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    /* Simulate a prior legitimate PMTU reduction. */
+    ts->sock.tcp.peer_mss = 536U;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_FRAG_NEEDED;
+    /* Large next-hop MTU: derived MSS (1460) is ABOVE the current 536. */
+    next_hop_mtu = ee16(1500U);
+    memcpy(&icmp.unused[2], &next_hop_mtu, sizeof(next_hop_mtu));
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16(ts->dst_port);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    /* peer_mss must be unchanged: the guard never raises it. */
+    ck_assert_uint_eq(ts->sock.tcp.peer_mss, 536U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_dest_unreach_port_unreachable_closes_syn_sent_tcp_socket)
 {
     struct wolfIP s;
