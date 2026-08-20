@@ -538,6 +538,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils,
                    test_dhcp_parse_offer_option_split_across_region_boundary);
     tcase_add_test(tc_utils, test_dhcp_discover_first_retry_delay_rfc2131);
+    tcase_add_test(tc_utils, test_dhcp_discover_sets_broadcast_flag);
+    tcase_add_test(tc_utils, test_dhcp_request_broadcast_flag_by_state);
     tcase_add_test(tc_utils, test_dhcp_discover_retry_delay_small_base_no_underflow);
     tcase_add_test(tc_utils, test_dns_wrapper_apis);
     tcase_add_test(tc_utils, test_wolfip_static_instance_apis);

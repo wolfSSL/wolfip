@@ -9034,8 +9034,14 @@ static int dhcp_send_request(struct wolfIP *s)
     /* Prepare DHCP request */
     memset(&req, 0, sizeof(struct dhcp_msg));
     req.op = BOOT_REQUEST;
-    if (!renewing && !rebinding)
+    if (!renewing && !rebinding) {
         s->dhcp_state = DHCP_REQUEST_SENT;
+        /* RFC 2131 4.4.1: with no bound IP the client cannot receive a
+         * unicast reply, so set the BROADCAST bit and ask the server to
+         * broadcast the DHCPACK. RENEWING/REBINDING hold a bound IP and
+         * leave the bit clear for a unicast reply. */
+        req.flags = ee16(0x8000);
+    }
     req.htype = 1; /* Ethernet */
     req.hlen = 6; /* MAC */
     req.xid = ee32(s->dhcp_xid);
@@ -9138,6 +9144,10 @@ static int dhcp_send_discover(struct wolfIP *s)
     /* Prepare DHCP discover */
     memset(&disc, 0, sizeof(struct dhcp_msg));
     disc.op = BOOT_REQUEST;
+    /* RFC 2131 4.4.1: a discovering client has no IP address and cannot
+     * receive a unicast reply, so set the BROADCAST bit and ask the server
+     * to broadcast the DHCPOFFER. */
+    disc.flags = ee16(0x8000);
     disc.htype = 1; /* Ethernet */
     disc.hlen = 6; /* MAC */
     disc.xid = ee32(s->dhcp_xid);

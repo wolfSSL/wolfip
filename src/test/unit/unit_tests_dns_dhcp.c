@@ -1187,6 +1187,90 @@ START_TEST(test_dhcp_discover_retry_delay_small_base_no_underflow)
 }
 END_TEST
 
+/* RFC 2131 4.4.1: a discovering client has no IP address and cannot
+ * receive a unicast reply, so DHCPDISCOVER must carry the BROADCAST bit
+ * (bit 15 of the flags field) so the server broadcasts the DHCPOFFER. */
+START_TEST(test_dhcp_discover_sets_broadcast_flag)
+{
+    struct wolfIP s;
+    struct dhcp_msg *msg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_discover(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, ee16(0x8000));
+}
+END_TEST
+
+/* RFC 2131 4.4.1: the BROADCAST bit is set only while the client has no
+ * bound IP (the initial DHCPREQUEST). In RENEWING and REBINDING the client
+ * holds a bound IP and expects a unicast reply, so the bit stays clear. */
+START_TEST(test_dhcp_request_broadcast_flag_by_state)
+{
+    struct wolfIP s;
+    struct dhcp_msg *msg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_server_ip = 0x0A000064U;
+    s.dhcp_ip = 0x0A000065U;
+
+    /* Pre-seed ARP for the renewal server so the RENEWING unicast flushes
+     * (otherwise the frame waits on ARP and the capture stays stale). */
+    s.arp.neighbors[0].ip = 0x0A000064U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memset(s.arp.neighbors[0].mac, 0x02, 6);
+
+    /* Initial REQUEST (no bound IP): BROADCAST bit set. */
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, ee16(0x8000));
+
+    /* RENEWING (bound IP): BROADCAST bit clear. */
+    s.dhcp_state = DHCP_RENEWING;
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, 0);
+
+    /* REBINDING (bound IP): BROADCAST bit clear. */
+    s.dhcp_state = DHCP_REBINDING;
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, 0);
+}
+END_TEST
+
 
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
