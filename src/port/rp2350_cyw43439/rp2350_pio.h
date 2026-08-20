@@ -30,7 +30,9 @@ void rp2350_pio_init(void);
  * (MSB-first, already byte-permuted for the bus mode) are clocked out
  * (out_bits total), then in_bits are clocked in and returned in `rx`
  * (one 32-bit word, MSB-first). CS is asserted/deasserted by the
- * caller. out_bits and in_bits are each 1..32 for register access. */
+ * caller. out_bits and in_bits must both be exactly 32: the PIO OSR
+ * is drained per full word, so sub-word counts desynchronize the state
+ * machine (see rp2350_pio_xfer). */
 uint32_t rp2350_pio_xfer32(uint32_t cmd_word, uint32_t out_bits,
                            uint32_t in_bits);
 
