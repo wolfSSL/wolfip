@@ -78,8 +78,9 @@
  *    - Mode: RMII (or MII depending on your board's PHY)
  *
  * 2. **NVIC Settings** (System Core -> NVIC) - CRITICAL
- *    - ETH global interrupt: **ENABLED**
- *    - Without this, received frames will not be detected
+ *    - ETH global interrupt: **ENABLED** for prompt frame notification
+ *    - Without it, frames are still detected by the periodic RX poll
+ *      (every 100th poll) but with added latency
  *
  * 3. **GPIO Configuration**
  *    - CubeMX auto-configures correct pins for NUCLEO boards
