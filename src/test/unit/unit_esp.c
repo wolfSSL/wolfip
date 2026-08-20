@@ -715,6 +715,66 @@ START_TEST(test_replay_aead_verify)
 }
 END_TEST
 
+/* RFC 4303 s3.4.3: anti-replay must not be enabled for SAs without
+ * integrity. For a cipher-only SA (icv_len == 0) unwrap must neither
+ * consult nor update the replay window: even a window state that would
+ * reject the incoming seq must not drop the packet. */
+START_TEST(test_unwrap_cipher_only_sa_skips_replay_window)
+{
+    static uint8_t  buf[LINK_MTU + 256];
+    uint8_t         ref[64];
+    uint32_t        frame_len;
+    uint16_t        ip_len;
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
+    wolfIP_esp_sa * esp_sa = NULL;
+    int             ret;
+    uint32_t        i;
+
+    for (i = 0U; i < sizeof(ref); i++) {
+        ref[i] = (uint8_t)(i & 0xFFU);
+    }
+
+    esp_setup();
+
+    /* Cipher-only SAs: no integrity, icv_len == 0. */
+    ret = wolfIP_esp_sa_new_cbc_hmac(0, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_NONE, NULL, 0, 0);
+    ck_assert_int_eq(ret, 0);
+    ret = wolfIP_esp_sa_new_cbc_hmac(1, (uint8_t *)spi_rt,
+                                     atoip4(T_SRC), atoip4(T_DST),
+                                     (uint8_t *)k_aes128, sizeof(k_aes128),
+                                     ESP_AUTH_NONE, NULL, 0, 0);
+    ck_assert_int_eq(ret, 0);
+
+    esp_sa = esp_sa_get(1, (uint8_t *)spi_rt);
+    ck_assert_ptr_nonnull(esp_sa);
+
+    /* Poison the inbound window: with hi_seq = 1000 the seq about to
+     * arrive (1) is below the window floor, so a replay check would
+     * reject it. */
+    esp_sa->replay.hi_seq = 1000U;
+
+    frame_len = build_ip_packet(buf, sizeof(buf), WI_IPPROTO_UDP,
+                                ref, sizeof(ref));
+    ip_len    = (uint16_t)(frame_len - ETH_HEADER_LEN);
+
+    ret = esp_transport_wrap(ip, &ip_len);
+    ck_assert_int_eq(ret, 0);
+    frame_len = (uint32_t)ip_len + ETH_HEADER_LEN;
+
+    /* Unwrap must succeed despite the poisoned window: no integrity
+     * means no anti-replay (RFC 4303 s3.4.3). */
+    ret = esp_transport_unwrap(ip, &frame_len);
+    ck_assert_int_eq(ret, 0);
+
+    /* The window must be left untouched (no commit for ICV-less SAs). */
+    ck_assert_uint_eq(esp_sa->replay.hi_seq, 1000U);
+    ck_assert_uint_eq(esp_sa->replay.bitmap, 0U);
+}
+END_TEST
+
 /*
  * esp_transport_unwrap error paths
  */
@@ -2452,6 +2512,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_replay_overflow);
     tcase_add_test(tc, test_replay_aead_verify);
     tcase_add_test(tc, test_regression_replay_window_not_updated_before_icv);
+    tcase_add_test(tc, test_unwrap_cipher_only_sa_skips_replay_window);
     suite_add_tcase(s, tc);
 
     /* Unwrap error paths */

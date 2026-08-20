@@ -1488,9 +1488,17 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         return -1;
     }
 
-    err = esp_replay_check(&esp_sa->replay, seq);
-    if (err) {
-        return -1;
+    /* RFC 4303 s3.4.3: anti-replay MUST NOT be enabled unless the SA also
+     * provides integrity. A cipher-only SA (icv_len == 0) leaves the
+     * Sequence Number field unprotected, so the window must neither be
+     * consulted nor advanced for it: it would protect nothing, and an
+     * attacker able to rewrite the sequence could advance the window and
+     * drop legitimate packets. */
+    if (esp_sa->icv_len) {
+        err = esp_replay_check(&esp_sa->replay, seq);
+        if (err) {
+            return -1;
+        }
     }
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
@@ -1575,9 +1583,12 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     }
 
     /* icv verified for hmacs and aeads at this point. now safe to commit the
-     * sequence to the replay window (RFC 4303 s3.4.3). */
-    esp_replay_commit(&esp_sa->replay, seq);
-    esp_state_save(esp_sa);
+     * sequence to the replay window (RFC 4303 s3.4.3). Cipher-only SAs
+     * (icv_len == 0) keep the window untouched, matching the check above. */
+    if (esp_sa->icv_len) {
+        esp_replay_commit(&esp_sa->replay, seq);
+        esp_state_save(esp_sa);
+    }
 
     /* Payload is now verified and decrypted. We can now parse
      * the ESP trailer for next header and pad_len. */
