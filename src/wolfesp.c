@@ -1322,7 +1322,8 @@ esp_replay_check(const struct replay_t * replay, uint32_t seq)
     }
 
     if (seq < seq_low) {
-        ESP_LOG("error: seq (%d) below window (%d)\n", seq, seq_low);
+        ESP_LOG("error: seq (%lu) below window (%lu)\n",
+                (unsigned long)seq, (unsigned long)seq_low);
         return -1;
     }
 
@@ -1335,7 +1336,7 @@ esp_replay_check(const struct replay_t * replay, uint32_t seq)
         bitn = 1ULL << (replay->hi_seq - seq);
 
         if ((replay->bitmap & bitn) != 0ULL) {
-            ESP_LOG("error: seq replayed: %d\n", seq);
+            ESP_LOG("error: seq replayed: %lu\n", (unsigned long)seq);
             return -1;
         }
     }
