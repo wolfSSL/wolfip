@@ -383,10 +383,16 @@ const uint8_t *wolfip_supplicant_kck(const struct wolfip_supplicant *s);
 const uint8_t *wolfip_supplicant_tk (const struct wolfip_supplicant *s);
 const uint8_t *wolfip_supplicant_snonce(const struct wolfip_supplicant *s);
 
-/* Export the current PMK (32 bytes). Returns 0 on success, -1 if no
- * PMK is available (state == IDLE / FAILED, or auth_mode never derived
- * a PSK-grade PMK). Caller can persist the PMK and pass it back via
- * cfg.psk_pmk on the next wolfip_supplicant_init() to skip PBKDF2. */
+/* Export the current PMK (32 bytes). Reports PMK-material availability,
+ * NOT authentication success: PSK mode holds a PMK right after init, and
+ * a context with a PTK or an installed (pmk_installed) SAE PMK exports
+ * it from every state, FAILED included - in FAILED state a PMK that was
+ * never derived is exported as all zeros with rc 0. Returns -1 only
+ * while IDLE with no derived/installed PMK (EAP / software SAE before
+ * the handshake). Callers that need "did authentication complete" must
+ * check wolfip_supplicant_state() separately. Caller can persist the PMK
+ * and pass it back via cfg.psk_pmk on the next wolfip_supplicant_init()
+ * to skip PBKDF2. */
 int wolfip_supplicant_get_pmk(const struct wolfip_supplicant *s,
                               uint8_t out_pmk[WPA_PMK_LEN]);
 
