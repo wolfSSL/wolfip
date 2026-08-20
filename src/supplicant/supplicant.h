@@ -193,10 +193,11 @@ struct wolfip_supplicant_cfg {
      * M3 to detect downgrade attacks (IEEE 802.11-2020 12.7.6.4).
      *
      * If ap_rsn_ie is NULL, the supplicant falls back to using its own
-     * default WPA2-PSK RSN IE for the comparison. This is acceptable
-     * for a closed PSK deployment where supplicant and AP agree on
-     * cipher choices by configuration, but real hardware ports should
-     * pass the IE from the chip's scan results.
+     * generated RSN IE for the comparison - the AKM suite patched to
+     * the configured mode (PSK, SAE or 802.1X), not always WPA2-PSK.
+     * This is acceptable for a closed deployment where supplicant and
+     * AP agree on cipher choices by configuration, but real hardware
+     * ports should pass the IE from the chip's scan results.
      */
     const uint8_t *ap_rsn_ie;
     size_t         ap_rsn_ie_len;
