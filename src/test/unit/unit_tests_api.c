@@ -4698,6 +4698,86 @@ START_TEST(test_syn_sent_bad_ack_bare_ack_sends_rst)
 }
 END_TEST
 
+/* Regression: per RFC 7323, a generated RST must carry a Timestamps
+ * option (TSecr = incoming TSval, TSval = 0) whenever the segment that
+ * triggered it carried one, so PAWS-aware peers can apply stricter RST
+ * acceptance checks. tcp_send_reset_reply built a bare 20-byte header
+ * and dropped the option. */
+START_TEST(test_rst_reply_carries_timestamp_when_incoming_had_one)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct wolfIP_tcp_seg *rst;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)seg->data;
+    struct tcp_opt_ts *rts;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* Build a bare ACK with an unacceptable ACK number AND a Timestamps
+     * option (TSval = 43981). In SYN_SENT this elicits a RST. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.eth.type = ee16(ETH_TYPE_IP);
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN);
+    seg->ip.src = ee32(0x0A000002U);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->src_port = ee16(80);
+    seg->dst_port = ee16(ts->src_port);
+    seg->seq = ee32(1000);
+    seg->ack = ee32(99); /* unacceptable in SYN_SENT */
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2);
+    seg->flags = TCP_FLAG_ACK;
+    seg->win = ee16(65535);
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(43981); /* incoming TSval */
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    fix_tcp_checksums(seg);
+
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+            TCP_HEADER_LEN + TCP_OPTIONS_LEN);
+    last_frame_sent_size = 0;
+    tcp_input(&s, TEST_PRIMARY_IF, seg, frame_len);
+
+    /* A RST must be sent and the socket must stay in SYN_SENT. */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* The RST must carry the Timestamps option: TSval = 0, TSecr = the
+     * incoming TSval (43981). */
+    rst = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(rst->flags & (TCP_FLAG_RST | TCP_FLAG_ACK), TCP_FLAG_RST);
+    rts = (struct tcp_opt_ts *)rst->data;
+    ck_assert_uint_eq(rts->opt, TCP_OPTION_TS);
+    ck_assert_uint_eq(rts->len, TCP_OPTION_TS_LEN);
+    ck_assert_uint_eq(ee32(rts->val), 0);
+    ck_assert_uint_eq(ee32(rts->ecr), 43981);
+}
+END_TEST
+
 /* Regression: per RFC 9293 §3.10.7.4, an ACK with invalid ack value in
  * SYN_RCVD must trigger a RST.  The code silently dropped it. */
 START_TEST(test_syn_rcvd_bad_ack_sends_rst)

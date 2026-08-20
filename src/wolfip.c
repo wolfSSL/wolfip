@@ -3568,11 +3568,16 @@ static void tcp_send_ack(struct tsocket *t)
 static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
                                  const struct wolfIP_tcp_seg *in)
 {
-    struct wolfIP_tcp_seg out;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + sizeof(struct tcp_opt_ts)];
+    struct wolfIP_tcp_seg *out = (struct wolfIP_tcp_seg *)buffer;
     union transport_pseudo_header ph;
     uint16_t ip_len;
     uint32_t tcp_hlen;
     uint32_t seg_ack;
+    uint32_t opt_len;
+    uint32_t out_len;
+    uint8_t have_ts = 0;
+    uint32_t in_tsval = 0;
 
     if (in->flags & TCP_FLAG_RST)
         return;
@@ -3584,14 +3589,48 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
     if (ip_len < (uint16_t)(IP_HEADER_LEN + tcp_hlen))
         return;
 
-    memset(&out, 0, sizeof(out));
-    out.src_port = in->dst_port;
-    out.dst_port = in->src_port;
-    out.hlen = TCP_HEADER_LEN << 2;
+    /* RFC 7323: when the segment that caused this RST carried a Timestamps
+     * option, the RST SHOULD carry one too, with TSecr set to the incoming
+     * TSval and TSval set to zero, so PAWS-aware peers can apply stricter
+     * RST acceptance checks. (A RST we receive is never fed into PAWS state:
+     * the RST handler consumes it before any timestamp processing.) */
+    if (tcp_hlen > TCP_HEADER_LEN) {
+        const uint8_t *opt = in->data;
+        const uint8_t *opt_end = opt + (tcp_hlen - TCP_HEADER_LEN);
+        while (opt < opt_end) {
+            uint8_t kind = *opt;
+            uint8_t olen;
+            if (kind == TCP_OPTION_EOO)
+                break;
+            if (kind == TCP_OPTION_NOP) {
+                opt++;
+                continue;
+            }
+            if (opt + 2 > opt_end)
+                break;
+            olen = opt[1];
+            if (olen < 2 || opt + olen > opt_end)
+                break;
+            if (kind == TCP_OPTION_TS && olen == TCP_OPTION_TS_LEN) {
+                memcpy(&in_tsval, opt + 2, sizeof(in_tsval));
+                in_tsval = ee32(in_tsval);
+                have_ts = 1;
+            }
+            opt += olen;
+        }
+    }
+
+    opt_len = have_ts ? (uint32_t)sizeof(struct tcp_opt_ts) : 0;
+    out_len = sizeof(struct wolfIP_tcp_seg) + opt_len;
+
+    memset(buffer, 0, sizeof(buffer));
+    out->src_port = in->dst_port;
+    out->dst_port = in->src_port;
+    out->hlen = (uint8_t)((TCP_HEADER_LEN + opt_len) << 2);
 
     if (in->flags & TCP_FLAG_ACK) {
-        out.seq = in->ack;
-        out.flags = TCP_FLAG_RST;
+        out->seq = in->ack;
+        out->flags = TCP_FLAG_RST;
     } else {
         seg_ack = ee32(in->seq);
         seg_ack = tcp_seq_inc(seg_ack, ip_len - (uint16_t)(IP_HEADER_LEN + tcp_hlen));
@@ -3599,40 +3638,50 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
             seg_ack = tcp_seq_inc(seg_ack, 1);
         if (in->flags & TCP_FLAG_FIN)
             seg_ack = tcp_seq_inc(seg_ack, 1);
-        out.ack = ee32(seg_ack);
-        out.flags = TCP_FLAG_RST | TCP_FLAG_ACK;
+        out->ack = ee32(seg_ack);
+        out->flags = TCP_FLAG_RST | TCP_FLAG_ACK;
     }
 
-    out.ip.src = in->ip.dst;
-    out.ip.dst = in->ip.src;
-    out.ip.ver_ihl = 0x45;
-    out.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
-    out.ip.flags_fo = ee16(0x4000U);
-    out.ip.ttl = 64;
-    out.ip.proto = WI_IPPROTO_TCP;
-    out.ip.id = ipcounter_next(s);
-    iphdr_set_checksum(&out.ip);
+    if (have_ts) {
+        struct tcp_opt_ts *ts = (struct tcp_opt_ts *)out->data;
+        ts->opt = TCP_OPTION_TS;
+        ts->len = TCP_OPTION_TS_LEN;
+        ts->val = 0; /* TSval = 0 */
+        ts->ecr = ee32(in_tsval); /* TSecr = incoming TSval */
+        ts->pad = TCP_OPTION_NOP;
+        ts->eoo = TCP_OPTION_EOO;
+    }
+
+    out->ip.src = in->ip.dst;
+    out->ip.dst = in->ip.src;
+    out->ip.ver_ihl = 0x45;
+    out->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + opt_len);
+    out->ip.flags_fo = ee16(0x4000U);
+    out->ip.ttl = 64;
+    out->ip.proto = WI_IPPROTO_TCP;
+    out->ip.id = ipcounter_next(s);
+    iphdr_set_checksum(&out->ip);
 
     memset(&ph, 0, sizeof(ph));
-    ph.ph.src = out.ip.src;
-    ph.ph.dst = out.ip.dst;
+    ph.ph.src = out->ip.src;
+    ph.ph.dst = out->ip.dst;
     ph.ph.proto = WI_IPPROTO_TCP;
-    ph.ph.len = ee16(TCP_HEADER_LEN);
-    out.csum = ee16(transport_checksum(&ph, &out.src_port));
+    ph.ph.len = ee16(TCP_HEADER_LEN + opt_len);
+    out->csum = ee16(transport_checksum(&ph, &out->src_port));
 
 #ifdef ETHERNET
     if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
-        if (eth_output_add_header(s, if_idx, in->ip.eth.src, &out.ip.eth, ETH_TYPE_IP) != 0)
+        if (eth_output_add_header(s, if_idx, in->ip.eth.src, &out->ip.eth, ETH_TYPE_IP) != 0)
             return;
     }
 #endif
-    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, if_idx, &out, sizeof(out)) != 0)
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, if_idx, out, out_len) != 0)
         return;
-    if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &out.ip, sizeof(out)) != 0)
+    if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &out->ip, out_len) != 0)
         return;
 #ifdef ETHERNET
     if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
-        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &out.ip.eth, sizeof(out)) != 0)
+        if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &out->ip.eth, out_len) != 0)
             return;
     }
 #endif
@@ -3640,16 +3689,16 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             struct wolfIP_ll_dev *ll_esp = wolfIP_ll_at(s, if_idx);
-            int esp_err = esp_send(ll_esp, &out.ip,
-                    (uint16_t)(sizeof(out) - ETH_HEADER_LEN));
+            int esp_err = esp_send(ll_esp, &out->ip,
+                    (uint16_t)(out_len - ETH_HEADER_LEN));
             if (esp_err == 1) {
-                wolfIP_ll_send_frame(s, if_idx, &out.ip, sizeof(out));
+                wolfIP_ll_send_frame(s, if_idx, &out->ip, out_len);
             }
         } else {
-            wolfIP_ll_send_frame(s, if_idx, &out.ip, sizeof(out));
+            wolfIP_ll_send_frame(s, if_idx, &out->ip, out_len);
         }
 #else
-        wolfIP_ll_send_frame(s, if_idx, &out.ip, sizeof(out));
+        wolfIP_ll_send_frame(s, if_idx, &out->ip, out_len);
 #endif
     }
 }

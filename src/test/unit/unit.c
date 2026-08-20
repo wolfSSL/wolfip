@@ -297,6 +297,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_arp_recv_rejects_wrong_htype);
     tcase_add_test(tc_utils, test_syn_sent_bad_ack_synack_sends_rst);
     tcase_add_test(tc_utils, test_syn_sent_bad_ack_bare_ack_sends_rst);
+    tcase_add_test(tc_utils, test_rst_reply_carries_timestamp_when_incoming_had_one);
     tcase_add_test(tc_utils, test_syn_rcvd_bad_ack_sends_rst);
     tcase_add_test(tc_utils, test_established_fin_without_ack_dropped);
     tcase_add_test(tc_utils, test_ip_recv_drops_source_routed_packet);
