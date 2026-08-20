@@ -3381,6 +3381,119 @@ START_TEST(test_tcp_input_syn_rcvd_high_seq_data_held_ooo)
 }
 END_TEST
 
+/* A data+FIN segment that reorders ahead of the final ACK completes the
+ * handshake but must NOT enter CLOSE_WAIT: the FIN sits above the receive
+ * hole, so it is deferred (ACK only). When the hole fills, RCV.NXT reaches
+ * the FIN's sequence number and the cumulative ACK makes the peer
+ * retransmit the segment; the retransmit is then accepted and the socket
+ * moves to CLOSE_WAIT. */
+START_TEST(test_tcp_input_syn_rcvd_fin_above_hole_deferred)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 10];
+    struct wolfIP_tcp_seg *dataseg = (struct wolfIP_tcp_seg *)seg_buf;
+    uint32_t rcv_nxt;
+    uint8_t out[32];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    rcv_nxt = ts->sock.tcp.ack;
+
+    /* data+FIN (8 bytes) reorders ahead of the final ACK: seq = RCV.NXT + 10,
+     * valid acknowledgment number. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    dataseg->ip.ver_ihl = 0x45;
+    dataseg->ip.proto = WI_IPPROTO_TCP;
+    dataseg->ip.ttl = 64;
+    dataseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 8);
+    dataseg->ip.src = ee32(ts->remote_ip);
+    dataseg->ip.dst = ee32(ts->local_ip);
+    dataseg->dst_port = ee16(ts->src_port);
+    dataseg->src_port = ee16(ts->dst_port);
+    dataseg->seq = ee32(rcv_nxt + 10);
+    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->hlen = TCP_HEADER_LEN << 2;
+    dataseg->flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
+    memcpy(dataseg->data, "ABCDEFGH", 8);
+    fix_tcp_checksums(dataseg);
+    tcp_input(&s, TEST_PRIMARY_IF, dataseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 8));
+    /* Handshake completes on the valid ACK; the data is OOO-cached and the
+     * FIN above the hole must be deferred: ESTABLISHED, not CLOSE_WAIT. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 1);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].left, rcv_nxt + 10);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].right, rcv_nxt + 18);
+
+    /* The missing 10 bytes arrive in order and pull in the cached tail.
+     * RCV.NXT reaches the FIN's sequence number, but the FIN bit was not
+     * recorded: the socket must stay ESTABLISHED. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    dataseg->ip.ver_ihl = 0x45;
+    dataseg->ip.proto = WI_IPPROTO_TCP;
+    dataseg->ip.ttl = 64;
+    dataseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 10);
+    dataseg->ip.src = ee32(ts->remote_ip);
+    dataseg->ip.dst = ee32(ts->local_ip);
+    dataseg->dst_port = ee16(ts->src_port);
+    dataseg->src_port = ee16(ts->dst_port);
+    dataseg->seq = ee32(rcv_nxt);
+    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->hlen = TCP_HEADER_LEN << 2;
+    dataseg->flags = TCP_FLAG_ACK;
+    memcpy(dataseg->data, "0123456789", 10);
+    fix_tcp_checksums(dataseg);
+    tcp_input(&s, TEST_PRIMARY_IF, dataseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 10));
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt + 18);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 0);
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), 18);
+    ck_assert_mem_eq(out, "0123456789ABCDEFGH", 18);
+
+    /* The peer retransmits the data+FIN (its cumulative ACK shows the FIN
+     * unacknowledged). The payload is a pure duplicate; the FIN now sits
+     * exactly at RCV.NXT and completes the close. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    dataseg->ip.ver_ihl = 0x45;
+    dataseg->ip.proto = WI_IPPROTO_TCP;
+    dataseg->ip.ttl = 64;
+    dataseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 8);
+    dataseg->ip.src = ee32(ts->remote_ip);
+    dataseg->ip.dst = ee32(ts->local_ip);
+    dataseg->dst_port = ee16(ts->src_port);
+    dataseg->src_port = ee16(ts->dst_port);
+    dataseg->seq = ee32(rcv_nxt + 10);
+    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->hlen = TCP_HEADER_LEN << 2;
+    dataseg->flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
+    memcpy(dataseg->data, "ABCDEFGH", 8);
+    fix_tcp_checksums(dataseg);
+    tcp_input(&s, TEST_PRIMARY_IF, dataseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 8));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSE_WAIT);
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt + 19);
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_rcvd_out_of_window_ack_drop)
 {
     struct wolfIP s;

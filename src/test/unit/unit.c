@@ -618,6 +618,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_invalid_ack_rejected);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_high_seq_valid_ack_establishes);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_high_seq_data_held_ooo);
+    tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_fin_above_hole_deferred);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_out_of_window_ack_drop);
     tcase_add_test(tc_utils, test_tcp_input_paws_upper_half_tsval_flows);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_fin_transitions_to_close_wait);
