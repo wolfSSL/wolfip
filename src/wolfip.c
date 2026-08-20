@@ -5497,10 +5497,20 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 }
                 if (tcp->flags & TCP_FLAG_ACK)  {
                     uint32_t expected_ack = tcp_seq_inc(t->sock.tcp.snd_una, 1);
-                    uint32_t expected_seq = t->sock.tcp.ack;
-                    if (ee32(tcp->ack) != expected_ack || ee32(tcp->seq) != expected_seq) {
-                        /* RFC 9293 section 3.10.7.4: unacceptable ACK in
-                         * SYN_RCVD - send RST to peer. */
+                    /* RFC 9293 section 3.10.7.4: the sequence acceptability
+                     * test (Table 6) applies before the final-ACK transition.
+                     * A segment that begins above RCV.NXT but inside the
+                     * receive window (e.g. the peer's first data segment
+                     * reordering ahead of its final ACK) is acceptable -
+                     * ACK it and hold it for later processing (SHLD-31)
+                     * instead of resetting the connection. */
+                    if (!tcp_segment_acceptable(t, tcp, tcplen)) {
+                        tcp_send_ack(t);
+                        continue;
+                    }
+                    if (ee32(tcp->ack) != expected_ack) {
+                        /* RFC 9293 section 3.10.7.4: acceptable sequence but
+                         * unacceptable ACK in SYN_RCVD - send RST to peer. */
                         tcp_send_reset_reply(S, if_idx, tcp);
                         continue;
                     }
@@ -5508,7 +5518,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     tcp_ctrl_rto_stop(t);
                     if (t->sock.tcp.is_listener)
                         tcp_preaccept_timeout_start(t, t->S->last_tick);
-                    t->sock.tcp.ack = ee32(tcp->seq);
+                    /* t->sock.tcp.ack (RCV.NXT) is left as-is: when the
+                     * accepted segment begins above RCV.NXT, tcp_recv caches
+                     * it as OOO and advances RCV.NXT only once the hole is
+                     * filled. */
                     t->sock.tcp.seq = ee32(tcp->ack);
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
                     t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
@@ -5520,10 +5533,19 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* RFC 9293 section 3.10.7.4: process FIN if present in the
                      * same segment that completed the handshake. */
                     if (tcp->flags & TCP_FLAG_FIN) {
-                        t->sock.tcp.ack = tcp_seq_inc(t->sock.tcp.ack, 1);
-                        t->sock.tcp.state = TCP_CLOSE_WAIT;
-                        t->events |= CB_EVENT_READABLE;
-                        tcp_send_ack(t);
+                        uint32_t fin_seq_end =
+                            tcp_seq_inc(ee32(tcp->seq), tcplen);
+                        if (t->sock.tcp.ack == fin_seq_end) {
+                            t->sock.tcp.ack = tcp_seq_inc(fin_seq_end, 1);
+                            t->sock.tcp.state = TCP_CLOSE_WAIT;
+                            t->events |= CB_EVENT_READABLE;
+                            tcp_send_ack(t);
+                        } else {
+                            /* FIN sits above a receive hole: the data was
+                             * OOO-cached by tcp_recv; process the FIN once
+                             * the hole fills. */
+                            tcp_send_ack(t);
+                        }
                     }
                 }
             } else if (t->sock.tcp.state == TCP_TIME_WAIT) {

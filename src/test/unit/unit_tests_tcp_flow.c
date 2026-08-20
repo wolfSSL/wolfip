@@ -3248,13 +3248,14 @@ START_TEST(test_tcp_input_syn_rcvd_ack_invalid_ack_rejected)
 }
 END_TEST
 
-START_TEST(test_tcp_input_syn_rcvd_ack_invalid_seq_rejected)
+START_TEST(test_tcp_input_syn_rcvd_high_seq_valid_ack_establishes)
 {
     struct wolfIP s;
     int listen_sd;
     struct tsocket *ts;
     struct wolfIP_sockaddr_in sin;
     struct wolfIP_tcp_seg ackseg;
+    uint32_t rcv_nxt;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -3272,7 +3273,12 @@ START_TEST(test_tcp_input_syn_rcvd_ack_invalid_seq_rejected)
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
     ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    rcv_nxt = ts->sock.tcp.ack;
 
+    /* ACK with a valid acknowledgment number and a sequence one above
+     * RCV.NXT (inside the receive window): per RFC 9293 this completes
+     * the handshake and the segment is held for later processing - the
+     * old exact-match check reset the connection here. */
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ip.ver_ihl = 0x45;
     ackseg.ip.proto = WI_IPPROTO_TCP;
@@ -3282,14 +3288,165 @@ START_TEST(test_tcp_input_syn_rcvd_ack_invalid_seq_rejected)
     ackseg.ip.dst = ee32(ts->local_ip);
     ackseg.dst_port = ee16(ts->src_port);
     ackseg.src_port = ee16(ts->dst_port);
-    ackseg.seq = ee32(ts->sock.tcp.ack + 1);
+    ackseg.seq = ee32(rcv_nxt + 1);
     ackseg.ack = ee32(ts->sock.tcp.seq + 1);
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = TCP_FLAG_ACK;
     fix_tcp_checksums(&ackseg);
     tcp_input(&s, TEST_PRIMARY_IF, &ackseg,
             (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    /* Nothing contiguous arrived: RCV.NXT must not skip the hole. */
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt);
+}
+END_TEST
+
+START_TEST(test_tcp_input_syn_rcvd_high_seq_data_held_ooo)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 10];
+    struct wolfIP_tcp_seg *dataseg = (struct wolfIP_tcp_seg *)seg_buf;
+    uint32_t rcv_nxt;
+    uint8_t out[32];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    rcv_nxt = ts->sock.tcp.ack;
+
+    /* The peer's first data segment (8 bytes) reorders ahead of the final
+     * ACK: seq = RCV.NXT + 10, valid acknowledgment number. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    dataseg->ip.ver_ihl = 0x45;
+    dataseg->ip.proto = WI_IPPROTO_TCP;
+    dataseg->ip.ttl = 64;
+    dataseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 8);
+    dataseg->ip.src = ee32(ts->remote_ip);
+    dataseg->ip.dst = ee32(ts->local_ip);
+    dataseg->dst_port = ee16(ts->src_port);
+    dataseg->src_port = ee16(ts->dst_port);
+    dataseg->seq = ee32(rcv_nxt + 10);
+    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->hlen = TCP_HEADER_LEN << 2;
+    dataseg->flags = TCP_FLAG_ACK;
+    memcpy(dataseg->data, "ABCDEFGH", 8);
+    fix_tcp_checksums(dataseg);
+    tcp_input(&s, TEST_PRIMARY_IF, dataseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 8));
+    /* Handshake completes on the valid ACK; the data is OOO-cached and
+     * RCV.NXT must not skip the 10-byte hole. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack_count, 1);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].left, rcv_nxt + 10);
+    ck_assert_uint_eq(ts->sock.tcp.rx_sack[0].right, rcv_nxt + 18);
+
+    /* The missing 10 bytes arrive in order and pull in the cached tail. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    dataseg->ip.ver_ihl = 0x45;
+    dataseg->ip.proto = WI_IPPROTO_TCP;
+    dataseg->ip.ttl = 64;
+    dataseg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 10);
+    dataseg->ip.src = ee32(ts->remote_ip);
+    dataseg->ip.dst = ee32(ts->local_ip);
+    dataseg->dst_port = ee16(ts->src_port);
+    dataseg->src_port = ee16(ts->dst_port);
+    dataseg->seq = ee32(rcv_nxt);
+    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->hlen = TCP_HEADER_LEN << 2;
+    dataseg->flags = TCP_FLAG_ACK;
+    memcpy(dataseg->data, "0123456789", 10);
+    fix_tcp_checksums(dataseg);
+    tcp_input(&s, TEST_PRIMARY_IF, dataseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 10));
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt + 18);
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), 18);
+    ck_assert_mem_eq(out, "0123456789ABCDEFGH", 18);
+}
+END_TEST
+
+START_TEST(test_tcp_input_syn_rcvd_out_of_window_ack_drop)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg ackseg;
+    uint32_t rcv_nxt;
+    uint32_t rcv_wnd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    rcv_nxt = ts->sock.tcp.ack;
+    rcv_wnd = queue_space((struct queue *)&ts->sock.tcp.rxbuf);
+
+    /* ACK-only segment whose sequence is beyond the receive window:
+     * RFC 9293 says acknowledge and drop, do not reset. */
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ip.ver_ihl = 0x45;
+    ackseg.ip.proto = WI_IPPROTO_TCP;
+    ackseg.ip.ttl = 64;
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ackseg.ip.src = ee32(ts->remote_ip);
+    ackseg.ip.dst = ee32(ts->local_ip);
+    ackseg.dst_port = ee16(ts->src_port);
+    ackseg.src_port = ee16(ts->dst_port);
+    ackseg.seq = ee32(rcv_nxt + rcv_wnd + 100);
+    ackseg.ack = ee32(ts->sock.tcp.seq + 1);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&ackseg);
+    last_frame_sent_size = 0;
+    tcp_input(&s, TEST_PRIMARY_IF, &ackseg,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    /* Out of window: ACK and drop, no state change. RSTs are sent
+     * immediately (they bypass the TX queue), so a clean wire right after
+     * tcp_input proves no reset was generated. */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(ts->sock.tcp.ack, rcv_nxt);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    /* The acknowledgment is queued for the TX flush, behind the parked
+     * SYN-ACK: verify the second entry is an ACK, not a RST. */
+    {
+        struct pkt_desc *pd = fifo_peek(&ts->sock.tcp.txbuf);
+        struct pkt_desc *pd2 = fifo_next(&ts->sock.tcp.txbuf, pd);
+        const struct wolfIP_tcp_seg *f;
+        ck_assert_ptr_nonnull(pd);
+        ck_assert_ptr_nonnull(pd2);
+        f = (const struct wolfIP_tcp_seg *)(pd2 + 1);
+        ck_assert_uint_eq(f->flags & (TCP_FLAG_ACK | TCP_FLAG_RST),
+                          TCP_FLAG_ACK);
+    }
 }
 END_TEST
 

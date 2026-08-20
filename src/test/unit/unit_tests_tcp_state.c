@@ -964,6 +964,7 @@ START_TEST(test_tcp_input_syn_rcvd_ack_with_fin_enters_close_wait)
     ts->if_idx    = TEST_PRIMARY_IF;
     ts->sock.tcp.peer_rwnd = 32768;
     ts->sock.tcp.tmr_rto = NO_TIMER;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 2);
     fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
 
     /* ACK + FIN completing the handshake: expected_ack = snd_una+1 = 2 */
