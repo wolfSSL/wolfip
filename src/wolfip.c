@@ -10129,9 +10129,15 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
      * so tapping ahead of the LSRR/SSRR drop cannot make the stack act on one. */
     raw_try_recv(s, if_idx, ip, len);
 #endif
-    /* RFC 7126 section 3.8: drop source-routed (LSRR/SSRR) packets before either
-     * forwarding or local-delivery dispatch.
-     * */
+    /* Drop source-routed (LSRR/SSRR) packets before either forwarding or
+     * local-delivery dispatch. RFC 7126 (IP Security Considerations) 4.3.5
+     * (LSRR) and 4.4.5 (SSRR) recommend an option-specific configuration
+     * knob whose DEFAULT setting SHOULD be "drop"; RFC 6274 notes the
+     * security implications (firewall bypass, stealthy connections, network
+     * topology disclosure, bandwidth-exhaustion attacks) outweigh any
+     * legitimate use. wolfIP implements that secure default unconditionally:
+     * source-routed packets are always dropped. This is deliberate
+     * hardening for a minimal embedded stack, not a parsing limitation. */
     if (ip_hlen > IP_HEADER_LEN) {
         uint8_t *opt = ((uint8_t *)ip) + ETH_HEADER_LEN + IP_HEADER_LEN;
         uint8_t *opt_end = opt + (ip_hlen - IP_HEADER_LEN);
