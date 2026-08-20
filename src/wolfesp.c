@@ -1055,17 +1055,13 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
     inited = 1;
 
-    /* subtract 4 byte salt from enc_key_len */
+    /* subtract 4 byte salt from enc_key_len. wc_AesGcmInit installs the
+     * key itself (it calls wc_AesGcmSetKey internally), so no second
+     * key set is needed before the one-shot decrypt. */
     err = wc_AesGcmInit(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
     if (err != 0) {
         ESP_LOG("error: wc_AesGcmInit: %d\n", err);
-        goto rfc4106_dec_out;
-    }
-
-    err = wc_AesGcmSetKey(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4);
-    if (err != 0) {
-        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_dec_out;
     }
 
@@ -1128,17 +1124,13 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
     inited = 1;
 
-    /* subtract 4 byte salt from enc_key_len */
+    /* subtract 4 byte salt from enc_key_len. wc_AesGcmInit installs the
+     * key itself (it calls wc_AesGcmSetKey internally), so no second
+     * key set is needed before the one-shot encrypt. */
     err = wc_AesGcmInit(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
     if (err != 0) {
         ESP_LOG("error: wc_AesGcmInit: %d\n", err);
-        goto rfc4106_enc_out;
-    }
-
-    err = wc_AesGcmSetKey(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4);
-    if (err != 0) {
-        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_enc_out;
     }
 
