@@ -683,6 +683,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_process_ts_nop_then_ts);
     tcase_add_test(tc_utils, test_tcp_process_ts_skips_unknown_option);
     tcase_add_test(tc_utils, test_tcp_process_ts_no_ecr);
+    tcase_add_test(tc_utils, test_tcp_process_ts_ooo_segment_keeps_recent);
+    tcase_add_test(tc_utils, test_tcp_input_paws_ooo_does_not_poison_hole_fill);
     tcase_add_test(tc_utils, test_tcp_process_ts_updates_rtt_when_set);
     tcase_add_test(tc_utils, test_tcp_send_syn_advertises_sack_permitted);
     tcase_add_test(tc_utils, test_tcp_build_ack_options_does_not_write_past_returned_len);

@@ -4687,7 +4687,17 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
         return -1;
     if (!t->S)
         return -1; /* Socket was closed; ignore. */
-    t->sock.tcp.last_ts = ee32(po.ts_val);
+    /* RFC 7323 section 4.3 rule (2): TS.Recent is replaced only when the
+     * segment's TSval is not older than the stored one and the segment's
+     * sequence is at or below the ACK field of the last segment we sent
+     * (RCV.NXT here - this stack ACKs immediately, so no delayed-ACK skew).
+     * An out-of-order segment (SEQ above the left edge) must not advance
+     * TS.Recent: it would corrupt the TSecr echoed per rule (3) and make
+     * tcp_paws_check drop the in-order segment that later fills the hole,
+     * whose TSval is necessarily lower than the OOO segment's. */
+    if (!tcp_seq_lt(ee32(po.ts_val), t->sock.tcp.last_ts) &&
+            tcp_seq_leq(ee32(tcp->seq), t->sock.tcp.ack))
+        t->sock.tcp.last_ts = ee32(po.ts_val);
     if (po.ts_ecr == 0)
         return -1; /* No echoed timestamp; fall back to coarse RTT. */
     if (po.ts_ecr > t->S->last_tick)
