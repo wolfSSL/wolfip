@@ -172,6 +172,12 @@ struct wolfIP_icmp_packet;
 #ifndef TCP_FIN_WAIT_2_TIMEOUT_MS
 #define TCP_FIN_WAIT_2_TIMEOUT_MS 60000U
 #endif
+/* A listener that completes the handshake without being accepted would be
+ * pinned in ESTABLISHED forever (accept() only handles SYN_RCVD/LISTEN and
+ * no other timer is armed): reclaim the port after this grace period. */
+#ifndef TCP_PREACCEPT_TIMEOUT_MS
+#define TCP_PREACCEPT_TIMEOUT_MS 5000U
+#endif
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
 #define WOLFIP_POLL_BUDGET 128
 
@@ -1168,6 +1174,7 @@ struct tcpsocket {
     uint8_t ctrl_rto_retries;
     uint8_t ctrl_rto_active;
     uint8_t fin_wait_2_timeout_active;
+    uint8_t preaccept_timeout_active;
     uint8_t is_listener;
     uint8_t ack_retry_pending;
     ip4 local_ip, remote_ip;
@@ -1219,6 +1226,7 @@ struct tsocket {
     uint8_t nexthop_mac[6];
 #endif
     uint8_t if_idx;
+    uint8_t tos; /* outgoing IPv4 TOS/DS field (setsockopt WOLFIP_IP_TOS) */
     uint8_t recv_ttl;
     uint8_t last_pkt_ttl;
     uint8_t close_notify_pending; /* slot reserved for a final CB_EVENT_CLOSED */
@@ -1294,6 +1302,9 @@ static void tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
 static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now);
 static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
+static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now);
+static void tcp_preaccept_timeout_stop(struct tsocket *t);
+static void tcp_listener_revert_to_listen(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int if_idx);
@@ -1405,6 +1416,7 @@ struct wolfIP {
     uint8_t dhcp_dad_probes; /* DAD probes sent (0 = DAD inactive) */
     ip4 dhcp_server_ip; /* DHCP server IP */
     ip4 dhcp_ip; /* IP address assigned by DHCP */
+    uint32_t dhcp_offered_mask; /* netmask from the accepted OFFER */
     uint64_t dhcp_renew_at; /* Renewal time (T1) */
     uint64_t dhcp_rebind_at; /* Rebind time (T2) */
     uint64_t dhcp_lease_expires; /* Lease expiration time */
@@ -2233,27 +2245,52 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
 #if !CONFIG_IPFILTER
     (void)icmp_pkt;
 #endif
-    if (!ll || !ll->send)
+    if (!ll)
         return;
+#if WOLFIP_VLAN
+    /* Same interface-validity rule as wolfIP_ll_send_frame: an active VLAN
+     * sub-iface has a NULL send and delegates to its parent. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return;
+    } else if (!ll->send) {
+        return;
+    }
+#else
+    if (!ll->send)
+        return;
+#endif
     if (orig_ihl < IP_HEADER_LEN)
         orig_ihl = IP_HEADER_LEN;
     /* RFC 1812 4.3.2.7 / RFC 1122 3.2.2: an ICMP error message MUST NOT be
      * originated in response to another ICMP error. If the packet whose TTL
      * expired is itself an ICMP error (type 3, 4, 5, 11, 12), drop silently.
-     * The caller guarantees orig_ihl + 8 bytes are present, so reading the
-     * embedded ICMP type at offset ETH_HEADER_LEN + orig_ihl is in bounds. */
-    if (orig->proto == WI_IPPROTO_ICMP) {
+     * The ICMP type byte only exists when the datagram carries an ICMP
+     * payload (declared length beyond the IP header); a zero-payload ICMP
+     * cannot be an error, so it is never suppressed. */
+    if (orig->proto == WI_IPPROTO_ICMP && ee16(orig->len) > orig_ihl) {
         uint8_t orig_type = *(((uint8_t *)orig) + ETH_HEADER_LEN + orig_ihl);
         if (orig_type == ICMP_DEST_UNREACH || orig_type == ICMP_FRAG_NEEDED ||
             orig_type == 5 /* Redirect */ || orig_type == ICMP_TTL_EXCEEDED ||
             orig_type == 12 /* Parameter Problem */)
             return;
     }
-    orig_copy = orig_ihl + 8;
+    /* Quote the original header plus up to 8 payload bytes, or as much of
+     * the datagram as exists. */
+    {
+        uint32_t orig_total = ee16(orig->len);
+        if (orig_total < orig_ihl)
+            orig_total = orig_ihl;
+        orig_copy = orig_ihl + 8;
+        if (orig_copy > orig_total)
+            orig_copy = orig_total;
+    }
     if (orig_copy > TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX)
         orig_copy = TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX;
     icmp_data_len = 8 + orig_copy; /* ICMP header (type+code+csum+unused) + quoted packet */
     icmp.type = ICMP_TTL_EXCEEDED;
+    /* RFC 1812 4.3.2.5: the error carries the triggering packet's TOS. */
+    icmp.ip.tos = orig->tos;
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN, orig_copy);
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 icmp_data_len));
@@ -2316,8 +2353,21 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
 #if !CONFIG_IPFILTER
     (void)icmp_pkt;
 #endif
-    if (!ll || !ll->send)
+    if (!ll)
         return;
+#if WOLFIP_VLAN
+    /* Same interface-validity rule as wolfIP_ll_send_frame: an active VLAN
+     * sub-iface has a NULL send and delegates to its parent. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return;
+    } else if (!ll->send) {
+        return;
+    }
+#else
+    if (!ll->send)
+        return;
+#endif
     if (orig_ihl < IP_HEADER_LEN)
         orig_ihl = IP_HEADER_LEN;
     orig_copy = orig_ihl + 8;
@@ -2326,6 +2376,8 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
     icmp_data_len = 8 + orig_copy;
     icmp.type = ICMP_DEST_UNREACH;
     icmp.code = ICMP_PORT_UNREACH;
+    /* RFC 1812 4.3.2.5: the error carries the triggering packet's TOS. */
+    icmp.ip.tos = orig->tos;
     memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN, orig_copy);
     icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
                 icmp_data_len));
@@ -2422,30 +2474,30 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
 }
 
 /* Timers */
+/* Removes exactly one root entry. Drain sites pop in a loop that only
+ * continues while the root is a tombstone (expires == 0), so a live
+ * timer is never removed by a drain. */
 static struct wolfIP_timer timers_binheap_pop(struct timers_binheap *heap)
 {
     uint32_t i = 0;
     struct wolfIP_timer tmr = {0};
-    do {
-        i = 0;
-        tmr = heap->timers[0];
-        heap->size--;
-        heap->timers[0] = heap->timers[heap->size];
-        while (2*i+1 < heap->size) {
-            struct wolfIP_timer tmp;
-            uint32_t j = 2*i+1;
-            if (j+1 < heap->size && heap->timers[j+1].expires < heap->timers[j].expires) {
-                j++;
-            }
-            if (heap->timers[i].expires <= heap->timers[j].expires) {
-                break;
-            }
-            tmp = heap->timers[i];
-            heap->timers[i] = heap->timers[j];
-            heap->timers[j] = tmp;
-            i = j;
+    tmr = heap->timers[0];
+    heap->size--;
+    heap->timers[0] = heap->timers[heap->size];
+    while (2*i+1 < heap->size) {
+        struct wolfIP_timer tmp;
+        uint32_t j = 2*i+1;
+        if (j+1 < heap->size && heap->timers[j+1].expires < heap->timers[j].expires) {
+            j++;
         }
-    } while ((tmr.expires == 0) && (heap->size > 0));
+        if (heap->timers[i].expires <= heap->timers[j].expires) {
+            break;
+        }
+        tmp = heap->timers[i];
+        heap->timers[i] = heap->timers[j];
+        heap->timers[j] = tmp;
+        i = j;
+    }
     return tmr;
 }
 
@@ -3789,6 +3841,91 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t)
     t->sock.tcp.fin_wait_2_timeout_active = 0;
 }
 
+static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now)
+{
+    struct wolfIP_timer tmr = {0};
+
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
+        t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    tmr.expires = now + TCP_PREACCEPT_TIMEOUT_MS;
+    tmr.arg = t;
+    tmr.cb = tcp_rto_cb;
+    t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, tmr);
+    t->sock.tcp.preaccept_timeout_active = 1;
+}
+
+static void tcp_preaccept_timeout_stop(struct tsocket *t)
+{
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    if (t->sock.tcp.tmr_rto != NO_TIMER) {
+        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
+        t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    t->sock.tcp.preaccept_timeout_active = 0;
+}
+
+/* Revert a listening socket stuck in a half-open or established connection
+ * state back to TCP_LISTEN, clearing the half-open 4-tuple so the port
+ * accepts new connections again. Used by the control-RTO expiry, the
+ * pre-accept fast-fail timeout, and the accept() recovery path. The socket
+ * is reset to the same baseline as a freshly allocated TCP socket:
+ * payload descriptors, queued RX data, out-of-order segments and CC state
+ * of the dead connection must not leak into the next one (retransmitting
+ * stale descriptors would carry dead seqs into the new ACK window). */
+static void tcp_listener_revert_to_listen(struct tsocket *t)
+{
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    tcp_persist_stop(t);
+    tcp_preaccept_timeout_stop(t);
+    memset(&t->sock.tcp, 0, sizeof(t->sock.tcp));
+    /* A zeroed fifo/queue is not an empty one (size 0, NULL data): re-init
+     * the buffer bookkeeping against the socket's storage. */
+    fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
+    queue_init(&t->sock.tcp.rxbuf, t->rxmem, RXBUF_SIZE, 0);
+    t->sock.tcp.state = TCP_LISTEN;
+    t->sock.tcp.is_listener = 1;
+    t->sock.tcp.seq = wolfIP_getrandom();
+    t->sock.tcp.rto = TCP_RTO_MIN_MS;
+    t->sock.tcp.peer_rwnd = 0xFFFF;
+    t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
+    t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
+    t->sock.tcp.peer_mss = TCP_DEFAULT_MSS;
+    t->sock.tcp.sack_offer = 1;
+    /* The receive-window scale we advertise is a property of the socket
+     * (RXBUF_SIZE), not of the dead connection: restore it with the offer
+     * flags so the baseline matches a freshly allocated socket
+     * (tcp_new_socket). Without this the next connection on the port
+     * advertises WS shift 0 and caps the receive window at 64KB when
+     * RXBUF_SIZE > 0xFFFF. */
+#if RXBUF_SIZE > 0xFFFF
+    {
+        uint32_t space = RXBUF_SIZE;
+        uint8_t shift = 0;
+        while (shift < 14 && (space >> shift) > 0xFFFF)
+            shift++;
+        t->sock.tcp.rcv_wscale = shift;
+    }
+#endif
+    t->sock.tcp.ws_offer = 1;
+    t->sock.tcp.ts_offer = 1;
+    t->remote_ip = 0;
+    t->dst_port = 0;
+    t->events = 0;
+    if (t->bound_local_ip != IPADDR_ANY) {
+        int bound_match = 0;
+        unsigned int bound_if = wolfIP_if_for_local_ip(
+                t->S, t->bound_local_ip, &bound_match);
+        t->if_idx = bound_match ? (uint8_t)bound_if : t->if_idx;
+        t->local_ip = t->bound_local_ip;
+    }
+}
+
 static uint32_t tcp_tx_desc_ip_len(const struct tsocket *t,
         const struct pkt_desc *desc, const struct wolfIP_tcp_seg *seg)
 {
@@ -4460,7 +4597,9 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, out_if)) {
             struct wolfIP_ll_dev *ll_esp = wolfIP_ll_at(s, out_if);
-            int esp_err = esp_send(ll_esp, ip, (uint16_t)(len - ETH_HEADER_LEN));
+            /* Encapsulate the datagram at its declared length; bytes past
+             * the IP total length are L2 padding, not payload. */
+            int esp_err = esp_send(ll_esp, ip, (uint16_t)ee16(ip->len));
             if (esp_err == 1) {
                 wolfIP_ll_send_frame(s, out_if, ip, len);
             }
@@ -4491,7 +4630,7 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
     ip->src = ee32(t->local_ip);
     ip->dst = ee32(t->remote_ip);
     ip->ver_ihl = 0x45;
-    ip->tos = 0;
+    ip->tos = t->tos;
     ip->len = ee16(len);
     ip->flags_fo = (proto == WI_IPPROTO_TCP) ? ee16(0x4000U) : 0;
     ip->ttl = 64;
@@ -4887,12 +5026,16 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
          * stop the current RTO timer. If bytes remain in-flight and no new
          * send happens immediately, we must re-arm RTO here to avoid stalls. */
         t->sock.tcp.rto_backoff = 0;
+        /* fin_wait_2 and the pre-accept fast-fail ride on tmr_rto with their
+         * own semantics; a forward ACK must not cancel or re-arm their timer. */
         if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                !t->sock.tcp.preaccept_timeout_active &&
                 t->sock.tcp.tmr_rto != NO_TIMER) {
             timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
             t->sock.tcp.tmr_rto = NO_TIMER;
         }
         if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                !t->sock.tcp.preaccept_timeout_active &&
                 t->sock.tcp.bytes_in_flight > 0) {
             struct wolfIP_timer new_tmr = { 0 };
             new_tmr.cb = tcp_rto_cb;
@@ -5340,6 +5483,18 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             }
             /* Check if final ACK to SYN-ACK (may include payload) */
             if (t->sock.tcp.state == TCP_SYN_RCVD) {
+                if ((tcp->flags & TCP_FLAG_SYN) && !(tcp->flags & TCP_FLAG_ACK) &&
+                        ee32(tcp->seq) == t->sock.tcp.ack - 1) {
+                    /* Re-SYN from the holding 4-tuple: the peer retransmitted
+                     * its original SYN (our SYN-ACK was lost or it is retrying).
+                     * Retransmit the SYN-ACK instead of silently dropping the
+                     * retransmission, so the half-open handshake can complete.
+                     * The control RTO backoff keeps its own schedule: a re-SYN
+                     * must not re-arm the retry budget, or an attacker could
+                     * hold the listener in SYN_RCVD past the retry cap. */
+                    (void)tcp_send_syn(t, TCP_FLAG_SYN | TCP_FLAG_ACK);
+                    continue;
+                }
                 if (tcp->flags & TCP_FLAG_ACK)  {
                     uint32_t expected_ack = tcp_seq_inc(t->sock.tcp.snd_una, 1);
                     uint32_t expected_seq = t->sock.tcp.ack;
@@ -5351,6 +5506,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
+                    if (t->sock.tcp.is_listener)
+                        tcp_preaccept_timeout_start(t, t->S->last_tick);
                     t->sock.tcp.ack = ee32(tcp->seq);
                     t->sock.tcp.seq = ee32(tcp->ack);
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
@@ -5533,6 +5690,21 @@ static void tcp_rto_cb(void *arg)
         close_socket(ts);
         return;
     }
+    if (ts->sock.tcp.preaccept_timeout_active) {
+        if (ts->sock.tcp.state != TCP_ESTABLISHED ||
+                !ts->sock.tcp.is_listener) {
+            /* The socket left the pinned condition (accepted away, reset,
+             * or closed): disarm quietly. */
+            tcp_preaccept_timeout_stop(ts);
+            return;
+        }
+        /* The handshake completed but the application never accepted: an
+         * un-accepted established listener has no accept() path and no
+         * other timer, so the port would stay pinned forever. Revert to
+         * LISTEN; the peer's next segment gets the normal LISTEN RST. */
+        tcp_listener_revert_to_listen(ts);
+        return;
+    }
     if (tcp_ctrl_state_needs_rto(ts) || ts->sock.tcp.ctrl_rto_active) {
         if (!tcp_ctrl_state_needs_rto(ts)) {
             tcp_ctrl_rto_stop(ts);
@@ -5543,27 +5715,10 @@ static void tcp_rto_cb(void *arg)
             if (ts->sock.tcp.is_listener &&
                     ts->sock.tcp.state == TCP_SYN_RCVD) {
                 /* Revert listen socket back to LISTEN instead of
-                 * destroying it, mirrors the accept() recovery path. */
-                ts->sock.tcp.state = TCP_LISTEN;
-                ts->sock.tcp.seq = wolfIP_getrandom();
-                ts->sock.tcp.ack = 0;
-                ts->sock.tcp.snd_una = 0;
-                ts->sock.tcp.ctrl_rto_retries = 0;
-                ts->remote_ip = 0;
-                ts->dst_port = 0;
-                ts->events = 0;
-                /* The timed-out SYN-ACK is gone with the connection; drop it
-                 * so the next connection starts with an empty TX FIFO (see
-                 * the accept() revert for why). */
-                fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
-                if (ts->bound_local_ip != IPADDR_ANY) {
-                    int bound_match = 0;
-                    unsigned int bound_if = wolfIP_if_for_local_ip(
-                            ts->S, ts->bound_local_ip, &bound_match);
-                    ts->if_idx = bound_match ? (uint8_t)bound_if
-                                             : ts->if_idx;
-                    ts->local_ip = ts->bound_local_ip;
-                }
+                 * destroying it, mirrors the accept() recovery path.
+                 * The helper drains the parked SYN-ACK from the TX FIFO
+                 * (see the accept() revert for why). */
+                tcp_listener_revert_to_listen(ts);
             } else {
                 ts->sock.tcp.state = TCP_CLOSED;
                 close_socket(ts);
@@ -5735,16 +5890,21 @@ static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t n
         scan = next;
     }
     ts->sock.tcp.bytes_in_flight = calc_in_flight;
-    if (has_sent_payload && ts->sock.tcp.tmr_rto == NO_TIMER) {
-        struct wolfIP_timer new_tmr = {};
-        new_tmr.cb = tcp_rto_cb;
-        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
-                ts->sock.tcp.rto_backoff);
-        new_tmr.arg = ts;
-        ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
-    } else if (!has_sent_payload && ts->sock.tcp.tmr_rto != NO_TIMER) {
-        timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
-        ts->sock.tcp.tmr_rto = NO_TIMER;
+    /* The pre-accept fast-fail rides on tmr_rto with its own semantics and
+     * must survive a payload-less txbuf (an accepted handshake has nothing
+     * in flight), so resync must not cancel or re-arm it. */
+    if (!ts->sock.tcp.preaccept_timeout_active) {
+        if (has_sent_payload && ts->sock.tcp.tmr_rto == NO_TIMER) {
+            struct wolfIP_timer new_tmr = {};
+            new_tmr.cb = tcp_rto_cb;
+            new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                    ts->sock.tcp.rto_backoff);
+            new_tmr.arg = ts;
+            ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
+        } else if (!has_sent_payload && ts->sock.tcp.tmr_rto != NO_TIMER) {
+            timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
+            ts->sock.tcp.tmr_rto = NO_TIMER;
+        }
     }
 }
 
@@ -6156,6 +6316,15 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        if (ts->sock.tcp.state == TCP_ESTABLISHED &&
+                ts->sock.tcp.is_listener) {
+            /* The handshake completed before accept(): the connection can
+             * no longer be cloned (accept() only handles SYN_RCVD), and
+             * without this recovery the port would be pinned in
+             * ESTABLISHED forever. Revert the port to LISTEN. */
+            tcp_listener_revert_to_listen(ts);
+            return -1;
+        }
         if ((ts->sock.tcp.state != TCP_SYN_RCVD) && (ts->sock.tcp.state != TCP_LISTEN))
             return -1;
 
@@ -7048,6 +7217,17 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         ts->recv_ttl = enable ? 1 : 0;
         return 0;
     }
+    if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_TOS) {
+        int tos;
+        if (!optval || optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+        memcpy(&tos, optval, sizeof(int));
+        if (tos < 0 || tos > 255) {
+            return -WOLFIP_EINVAL;
+        }
+        ts->tos = (uint8_t)tos;
+        return 0;
+    }
 #ifdef IP_MULTICAST
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
         if (optname == WOLFIP_IP_ADD_MEMBERSHIP ||
@@ -7218,6 +7398,22 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
             return 0;
         }
         return 0;
+    }
+    if (level == WOLFIP_SOL_IP && optname == WOLFIP_IP_TOS) {
+        int value;
+        if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+#if WOLFIP_PACKET_SOCKETS
+        if (ps)
+            return -WOLFIP_EINVAL;
+#endif
+        if (ts) {
+            value = ts->tos;
+            memcpy(optval, &value, sizeof(int));
+            *optlen = sizeof(int);
+            return 0;
+        }
+        return -WOLFIP_EINVAL;
     }
 #ifdef IP_MULTICAST
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
@@ -7893,7 +8089,9 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-            if (esp_send(ll, ip, len - ETH_HEADER_LEN) == 1) {
+            /* Encapsulate the datagram at its declared length; bytes past
+             * the IP total length are L2 padding, not payload. */
+            if (esp_send(ll, ip, (uint16_t)ee16(ip->len)) == 1) {
                 /* ipsec not configured on this interface.
                  * send plaintext. */
                 wolfIP_ll_send_frame(s, if_idx, ip, len);
@@ -8008,20 +8206,19 @@ static void dhcp_schedule_lease_timer(struct wolfIP *s,
     if (!s || lease_s == 0)
         return;
 
-    if (renew_s == 0 || renew_s > lease_s) {
-        renew_s = lease_s / 2U;
-        if (renew_s == 0)
-            renew_s = 1U;
-    }
-    if (rebind_s == 0 || rebind_s > lease_s) {
+    /* RFC 2131 3.2: the client's timers must satisfy T1 < T2 < lease.
+     * Server-supplied timer options that violate the strict ordering are
+     * replaced with the client defaults (T1 = 50% of the lease, T2 = 87.5%
+     * of the lease) instead of being coerced into T1 == T2 or T2 == lease. */
+    if (renew_s == 0U || rebind_s == 0U ||
+        renew_s >= lease_s || rebind_s >= lease_s || rebind_s <= renew_s) {
+        renew_s  = lease_s / 2U;
         rebind_s = (uint32_t)(((uint64_t)lease_s * 7U) / 8U);
-        if (rebind_s == 0)
-            rebind_s = 1U;
     }
-    if (rebind_s < renew_s)
-        rebind_s = renew_s;
-    if (renew_s > lease_s)
-        renew_s = lease_s;
+    if (renew_s == 0U)
+        renew_s = 1U;
+    if (rebind_s <= renew_s)
+        rebind_s = renew_s + 1U;
     if (rebind_s > lease_s)
         rebind_s = lease_s;
 
@@ -8068,6 +8265,15 @@ static void dhcp_timer_cb(void *arg)
                 dhcp_deconfigure_lease(s);
                 s->dhcp_state = DHCP_OFF;
                 dhcp_send_discover(s);
+                break;
+            }
+            if (s->dhcp_renew_at != 0 && s->last_tick < s->dhcp_renew_at) {
+                /* A stale timer from an earlier lease cycle fired early
+                 * (e.g. a renewal timer left pending across a lease drop
+                 * and re-DORA). The current lease's renew time is still
+                 * ahead, so its timer is the one that should drive the
+                 * renewal; stay BOUND instead of starting a spurious
+                 * RENEWING transaction. */
                 break;
             }
             s->dhcp_state = DHCP_RENEWING;
@@ -8347,6 +8553,20 @@ region_end:
     }
 }
 
+/* A lease address must be a usable unicast host address: not 0.0.0.0,
+ * not the limited broadcast, not multicast, and not the broadcast of
+ * its own subnet. */
+static int dhcp_lease_ip_sane(uint32_t ip, uint32_t mask)
+{
+    if (ip == 0U || ip == 0xFFFFFFFFU)
+        return 0;
+    if (wolfIP_ip_is_multicast(ip))
+        return 0;
+    if (mask != 0U && ((ip | mask) == 0xFFFFFFFFU))
+        return 0;
+    return 1;
+}
+
 static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_len)
 {
     struct dhcp_opt_stream st;
@@ -8354,7 +8574,6 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
     int saw_server_id = 0;
     uint32_t ip;
     uint32_t netmask = DHCP_DEFAULT_24BIT_NETMASK;
-    struct ipconf *primary = wolfIP_primary_ipconf(s);
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
     if (msg->op != BOOT_REPLY)
@@ -8409,11 +8628,12 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
                 if (!saw_end || !saw_server_id)
                     return -1;
                 ip = ee32(msg->yiaddr);
-                if (primary) {
-                    primary->ip = ip;
-                    primary->mask = netmask;
-                }
+                if (!dhcp_lease_ip_sane(ip, netmask))
+                    return -1;
+                /* Stash the offer; the interface is not reconfigured
+                 * until the server's ACK confirms the lease. */
                 s->dhcp_ip = ip;
+                s->dhcp_offered_mask = netmask;
                 dhcp_cancel_timer(s);
                 s->dhcp_state = DHCP_REQUEST_SENT;
                 return 0;
@@ -8474,7 +8694,9 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
+    int saw_offer_ip = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
+    uint32_t lease_ip = 0;
     uint32_t lease_s = 0;
     uint32_t renew_s = 0;
     uint32_t rebind_s = 0;
@@ -8526,11 +8748,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                             return -1;
                         s->dhcp_server_ip = val;
                         saw_server_id = 1;
-                    } else if (primary && code == DHCP_OPTION_OFFER_IP) {
+                    } else if (code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
                         val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
-                        primary->ip = val;
+                        lease_ip = val;
+                        saw_offer_ip = 1;
                     } else if (primary && code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
@@ -8562,13 +8785,24 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 }
                 if (!saw_end)
                     return -1;
+                /* The lease address is option 50 (the requested IP) when the
+                 * server echoes it, otherwise the yiaddr it committed; either
+                 * way it must be a usable unicast address before it is applied
+                 * to the interface. The offered netmask applies when the ACK
+                 * carries none. */
+                if (!saw_offer_ip)
+                    lease_ip = ee32(msg->yiaddr);
+                if (primary && primary->mask == 0)
+                    primary->mask = s->dhcp_offered_mask;
                 /* RFC 2131: the IP-address-lease-time option (51) is mandatory
                  * in a DHCPACK. lease_s is only ever set by that option (and a
                  * short option already returns -1 above), so lease_s != 0 means
                  * it was present with a valid nonzero duration. Without it the
                  * lease would be bound with no expiry/renewal timer. */
                 if (primary && saw_server_id && lease_s != 0 &&
-                    (primary->ip != 0) && (primary->mask != 0)) {
+                    (primary->mask != 0) &&
+                    dhcp_lease_ip_sane(lease_ip, primary->mask)) {
+                    primary->ip = lease_ip;
                     dhcp_cancel_timer(s);
                     s->dhcp_ip = primary->ip;
 #ifdef ETHERNET
@@ -8618,6 +8852,15 @@ static int dhcp_poll(struct wolfIP *s)
                                (struct wolfIP_sockaddr *)&sin, &sl);
     if (len < 0)
         return -1;
+    /* A reply must be addressed to this client's hardware address. The
+     * client's MAC never changes mid-transaction, so a reply carrying any
+     * other chaddr is not addressed to this client and is dropped. */
+    {
+        struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
+        if (!ll || msg.hlen != 6U ||
+            memcmp(msg.chaddr, ll->mac, 6) != 0)
+            return -1;
+    }
     if ((s->dhcp_state == DHCP_DISCOVER_SENT) && (dhcp_parse_offer(s, &msg, (uint32_t)len) == 0))
         dhcp_send_request(s);
     else if (s->dhcp_state == DHCP_REQUEST_SENT ||
@@ -9829,13 +10072,6 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 int broadcast = 0;
 
                 if (ip->ttl <= 1) {
-                    /* wolfIP_send_ttl_exceeded copies orig_ihl + 8 bytes from
-                     * offset ETH_HEADER_LEN, so the frame must hold the full
-                     * IP header plus 8 transport bytes; the ip_hlen >= 20
-                     * floor at line 8313 keeps this >= the historical
-                     * ETH_HEADER_LEN + 28 minimum for IHL=5 frames. */
-                    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + 8))
-                        return;
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }

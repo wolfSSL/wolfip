@@ -132,7 +132,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_pop_timer);
     tcase_add_test(tc_utils, test_is_timer_expired);
     tcase_add_test(tc_utils, test_cancel_timer);
-    tcase_add_test(tc_utils, test_timer_pop_skips_zero_expires);
+    tcase_add_test(tc_utils, test_timer_pop_removes_zero_head_first);
     tcase_add_test(tc_utils, test_timer_pop_reorders_heap);
     tcase_add_test(tc_utils, test_timer_pop_right_child_swap);
     tcase_add_test(tc_utils, test_timer_pop_break_when_root_small);
@@ -431,6 +431,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
     tcase_add_test(tc_utils, test_dhcp_poll_renewing_ack_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
+    tcase_add_test(tc_utils, test_dhcp_poll_reply_wrong_chaddr_rejected);
+    tcase_add_test(tc_utils, test_dhcp_poll_offer_zero_yiaddr_rejected);
+    tcase_add_test(tc_utils, test_dhcp_poll_offer_defers_commit_until_ack);
     tcase_add_test(tc_utils, test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind);
     tcase_add_test(tc_utils, test_dns_callback_ptr_response);
     tcase_add_test(tc_utils, test_udp_try_recv_short_frame);
@@ -575,6 +578,15 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_synack_invalid_ack_rejected);
     tcase_add_test(tc_utils, test_tcp_input_syn_listen_does_not_scale_syn_window);
     tcase_add_test(tc_utils, test_tcp_input_syn_sent_does_not_scale_synack_window);
+    tcase_add_test(tc_utils, test_tcp_setsockopt_ip_tos_applied_to_outbound_syn);
+    tcase_add_test(tc_utils, test_tcp_listener_syn_lock_others_rst_resyn_retransmits_synack);
+    tcase_add_test(tc_utils, test_tcp_listener_lock_reclaimed_at_255s_via_ctrl_rto);
+    tcase_add_test(tc_utils, test_tcp_listener_sustained_lock_one_syn_per_window);
+    tcase_add_test(tc_utils, test_tcp_listener_rst_from_holding_4tuple_releases_lock);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_accept_reverts_port);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_timeout_reverts_port);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_revert_drains_connection_state);
+    tcase_add_test(tc_utils, test_tcp_listener_revert_restores_option_baseline);
     tcase_add_test(tc_utils, test_tcp_parse_sack_wraparound_block_accepted);
     tcase_add_test(tc_utils, test_tcp_parse_options_stops_on_truncated_or_invalid_option_length);
     tcase_add_test(tc_utils, test_tcp_parse_options_returns_when_frame_has_no_option_bytes);
@@ -760,8 +772,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_send_ttl_exceeded_non_ethernet_skips_eth_filter);
     tcase_add_test(tc_proto, test_send_ttl_exceeded_sets_df);
 #if WOLFIP_ENABLE_FORWARDING
-    tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_short_len_does_not_send);
-    tcase_add_test(tc_proto, test_regression_forward_ttl_exceeded_short_len_with_options_no_send);
+    tcase_add_test(tc_proto, test_wolfip_forward_ttl_exceeded_truncated_header_no_send);
+    tcase_add_test(tc_proto, test_regression_forward_ttl_exceeded_options_header_only_quotes_full_header);
 #endif
     tcase_add_test(tc_proto, test_arp_request_filter_drop);
     tcase_add_test(tc_proto, test_arp_request_invalid_interface);
@@ -1047,6 +1059,8 @@ Suite *wolf_suite(void)
 #endif
     tcase_add_test(tc_core, test_poll_dispatches_socket_callback);
     tcase_add_test(tc_core, test_poll_fires_expired_timer);
+    tcase_add_test(tc_core, test_timer_binheap_drain_keeps_live_timer);
+    tcase_add_test(tc_core, test_poll_keeps_timer_armed_after_earlier_cancel);
     tcase_add_test(tc_core, test_poll_arp_pending_when_nexthop_unresolved);
     tcase_add_test(tc_core, test_poll_filter_block_holds_tx);
     tcase_add_test(tc_core, test_poll_drains_icmp_tx);
@@ -1374,6 +1388,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_lt_renew_fixed);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_gt_lease_clamped);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_explicit_t1_t2);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_t1_t2_equal_lease_resets_defaults);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_offer);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_nak);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_ack);
@@ -1448,7 +1463,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_ip_recv_loopback_dst_on_non_loopback_dropped);
     tcase_add_test(tc_core, test_ip_recv_loopback_src_on_non_loopback_dropped);
     tcase_add_test(tc_core, test_ip_recv_forward_ttl_normal_decremented);
-    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_short_frame_dropped);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_short_frame_sends_ttl_exceeded);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_zero_payload_icmp_not_suppressed);
+    tcase_add_test(tc_core, test_ip_recv_forward_ttl1_partial_payload_quoted);
+    tcase_add_test(tc_core, test_forward_ttl_exceeded_copies_orig_tos);
     tcase_add_test(tc_core, test_ip_recv_dest_matches_secondary_iface_ip_is_local);
     tcase_add_test(tc_core, test_ip_recv_multicast_dst_not_forwarded);
     tcase_add_test(tc_core, test_arp_recv_htype_not_ethernet_dropped);
@@ -1589,6 +1607,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_push_no_hwrap_wraps_to_front_succeeds);
     tcase_add_test(tc_core, test_fifo_push_exact_end_sets_hwrap);
     tcase_add_test(tc_core, test_wolfip_send_port_unreachable_large_ihl);
+    tcase_add_test(tc_core, test_wolfip_send_port_unreachable_copies_orig_tos);
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_wolfip_rawsocket_from_fd_negative_fd);
 #endif /* WOLFIP_RAWSOCKETS */
@@ -1625,6 +1644,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_tx_oversize_rejected);
     tcase_add_test(tc_proto, test_vlan_tx_runt_rejected);
     tcase_add_test(tc_proto, test_vlan_rx_tagged_match_delivered);
+    tcase_add_test(tc_proto, test_vlan_udp_closed_port_sends_port_unreachable);
+    tcase_add_test(tc_proto, test_vlan_ttl1_transit_sends_ttl_exceeded);
     tcase_add_test(tc_proto, test_vlan_rx_tagged_mismatch_dropped);
     tcase_add_test(tc_proto, test_vlan_rx_untagged_on_physical_ok);
     tcase_add_test(tc_proto, test_vlan_rx_runt_tagged_dropped);

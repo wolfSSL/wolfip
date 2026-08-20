@@ -2425,12 +2425,14 @@ START_TEST(test_cancel_timer) {
     ck_assert_int_eq(heap.timers[0].expires, 0);  // tmr1 canceled
 
     popped = timers_binheap_pop(&heap);
-    ck_assert_int_eq(popped.expires, 200);  // Only tmr2 should remain
+    ck_assert_uint_eq(popped.expires, 0);  /* the tombstone itself */
+    popped = timers_binheap_pop(&heap);
+    ck_assert_uint_eq(popped.expires, 200);  /* tmr2 survived the drain */
     ck_assert_int_eq(heap.size, 0);
 }
 END_TEST
 
-START_TEST(test_timer_pop_skips_zero_expires)
+START_TEST(test_timer_pop_removes_zero_head_first)
 {
     struct timers_binheap h;
     struct wolfIP_timer tmr1 = { .expires = 50 };
@@ -2442,8 +2444,11 @@ START_TEST(test_timer_pop_skips_zero_expires)
     tmr2.id = timers_binheap_insert(&h, tmr2);
     timer_binheap_cancel(&h, tmr2.id);
 
+    /* One root per pop: the tombstone first, then the live timer. */
     popped = timers_binheap_pop(&h);
-    ck_assert_uint_ne(popped.expires, 0);
+    ck_assert_uint_eq(popped.expires, 0);
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 50);
 }
 END_TEST
 
@@ -2512,16 +2517,18 @@ START_TEST(test_is_timer_expired_skips_zero_head)
     h.timers[0].expires = 0;
     h.timers[1].expires = 50;
 
+    /* The tombstone head is drained; the live timer survives. */
     ck_assert_int_eq(is_timer_expired(&h, 10), 0);
-    ck_assert_uint_eq(h.size, 0);
+    ck_assert_uint_eq(h.size, 1);
+    ck_assert_uint_eq(h.timers[0].expires, 50);
 }
 END_TEST
 
-/* Regression: when timers_binheap_pop skips multiple cancelled timers
- * (expires==0) in its do-while loop, the sift-down cursor must reset to 0
- * on each iteration.  Without the fix the cursor stays at a leaf position
- * from the previous sift-down, so the replacement element at index 0 is
- * never sifted down, breaking the min-heap invariant. */
+/* Regression: when consecutive pops drain a run of cancelled timers
+ * (expires==0), the sift-down cursor must start at the root each time.
+ * Without the reset the cursor stays at a leaf position from the previous
+ * sift-down, so the replacement element at index 0 is never sifted down,
+ * breaking the min-heap invariant.  Each pop removes exactly one root. */
 START_TEST(test_timer_pop_siftdown_resets_after_cancelled)
 {
     struct timers_binheap h;
@@ -2541,13 +2548,19 @@ START_TEST(test_timer_pop_siftdown_resets_after_cancelled)
     timer_binheap_cancel(&h, id1);
     timer_binheap_cancel(&h, id2);
 
-    /* Pop must skip both cancelled timers and return 50 */
+    /* Pops remove one root each: both tombstones, then the live timers
+     * in order -- verifies the heap invariant held through the run. */
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 0);
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 0);
     popped = timers_binheap_pop(&h);
     ck_assert_uint_eq(popped.expires, 50);
-
-    /* Next pop must return 100 -- verifies the heap invariant held */
     popped = timers_binheap_pop(&h);
     ck_assert_uint_eq(popped.expires, 100);
+    popped = timers_binheap_pop(&h);
+    ck_assert_uint_eq(popped.expires, 200);
+    ck_assert_uint_eq(h.size, 0);
 }
 END_TEST
 
@@ -3852,8 +3865,10 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
 
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, ETH_HEADER_LEN + IP_HEADER_LEN + 8);
 
+    /* The quote is the declared total length (20), below the 28-byte
+     * default. */
     ck_assert_uint_eq(last_frame_sent_size,
-            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + ee16(frame->len)));
     icmp = (struct wolfIP_icmp_ttl_exceeded_packet *)last_frame_sent;
     ck_assert_uint_eq(icmp->type, ICMP_TTL_EXCEEDED);
     ck_assert_uint_eq(icmp->code, 0);
@@ -3862,7 +3877,7 @@ START_TEST(test_wolfip_forwarding_ttl_expired)
     ck_assert_mem_eq(icmp->ip.eth.src, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     ck_assert_uint_eq(icmp->ip.ttl, 64);
     ck_assert_uint_eq(ee16(icmp->ip.len),
-            (uint16_t)(IP_HEADER_LEN + ICMP_TTL_EXCEEDED_SIZE));
+            (uint16_t)(IP_HEADER_LEN + 8 + ee16(frame->len)));
     ck_assert_uint_eq(ee32(icmp->ip.src), s.ipconf[TEST_PRIMARY_IF].ip);
     ck_assert_uint_eq(ee32(icmp->ip.dst), ee32(frame->src));
     ck_assert_mem_eq(icmp->orig_packet,
@@ -7022,8 +7037,10 @@ START_TEST(test_regression_dhcp_nak_restarts_configuration)
     /* Build a minimal DHCPNAK message (type 6) */
     memset(&msg, 0, sizeof(msg));
     msg.op = 2; /* BOOT_REPLY */
+    msg.hlen = 6;
     msg.magic = ee32(DHCP_MAGIC);
     msg.xid = ee32(0x12345678U);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
     opt->len = 1;

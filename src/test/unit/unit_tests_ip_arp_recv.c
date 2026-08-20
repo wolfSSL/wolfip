@@ -1052,14 +1052,14 @@ START_TEST(test_ip_recv_forward_ttl_normal_decremented)
 END_TEST
 
 /* =========================================================================
- * ip_recv: TTL=1 short-frame — dropped before TTL-exceeded sent
+ * ip_recv: TTL=1 header-only datagram — TTL-exceeded sent, header quoted
  * =========================================================================
- * Branch: ip->ttl <= 1 && len < ETH_HEADER_LEN + ip_hlen + 8 → return
+ * Branch: ip->ttl <= 1 → wolfIP_send_ttl_exceeded. The quoted packet is the
+ * original header plus up to 8 payload bytes, or as much as exists.
  */
-START_TEST(test_ip_recv_forward_ttl1_short_frame_dropped)
+START_TEST(test_ip_recv_forward_ttl1_short_frame_sends_ttl_exceeded)
 {
     struct wolfIP s;
-    /* Frame too short: ETH + IP only, missing the required 8 transport bytes */
     uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN];
     struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
     ip4 primary_ip   = 0x0A000001U;
@@ -1076,19 +1076,150 @@ START_TEST(test_ip_recv_forward_ttl1_short_frame_dropped)
     memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
     ip->eth.type = ee16(ETH_TYPE_IP);
     ip->ver_ihl  = 0x45;
-    ip->ttl      = 1;  /* TTL == 1 → would send TTL exceeded if frame ok */
+    ip->ttl      = 1;
     ip->proto    = WI_IPPROTO_UDP;
     ip->len      = ee16(IP_HEADER_LEN);
     ip->src      = ee32(src_ip);
     ip->dst      = ee32(dest_ip);
     fix_ip_checksum(ip);
 
-    /* Pass only ETH+IP — total 34 bytes, missing the 8 transport bytes
-     * required by wolfIP_send_ttl_exceeded */
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
 
-    /* Short frame: TTL-exceeded must NOT have been sent */
-    ck_assert_uint_eq(last_frame_sent_size, 0);
+    /* Time-exceeded quoting the original header only (no payload exists). */
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + IP_HEADER_LEN));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+            ICMP_TTL_EXCEEDED);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 8],
+            0x45); /* quoted version/IHL */
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 20],
+            (src_ip >> 24) & 0xFF); /* quoted source address */
+}
+END_TEST
+
+/* =========================================================================
+ * ip_recv: TTL=1 datagram with partial payload — quoted as it exists
+ * =========================================================================
+ * Branch: ip->ttl <= 1 → quote = original header + min(8, payload present)
+ */
+START_TEST(test_ip_recv_forward_ttl1_partial_payload_quoted)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 4];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 1;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + 4);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Time-exceeded quoting header + the 4 payload bytes present. */
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + IP_HEADER_LEN + 4));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+            ICMP_TTL_EXCEEDED);
+}
+END_TEST
+
+/* =========================================================================
+ * ip_recv: TTL=1 on a zero-payload ICMP datagram
+ * =========================================================================
+ * Branch: proto ICMP with declared length == IHL: the ICMP type byte does
+ * not exist (nothing beyond the IP header), so there is nothing to read
+ * for error suppression. The Time-Exceeded is generated, quoting only the
+ * original header.
+ */
+START_TEST(test_ip_recv_forward_ttl1_zero_payload_icmp_not_suppressed)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 1;
+    ip->proto    = WI_IPPROTO_ICMP;
+    ip->len      = ee16(IP_HEADER_LEN); /* no ICMP payload */
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Not suppressed: time-exceeded quoting the original header only. */
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + IP_HEADER_LEN));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+            ICMP_TTL_EXCEEDED);
+}
+END_TEST
+
+/* =========================================================================
+ * ip_recv: TTL=1 — the Time Exceeded carries the triggering packet's TOS
+ * =========================================================================
+ * RFC 1812 4.3.2.5: the TOS of a generated ICMP error is the TOS of the
+ * triggering packet.
+ */
+START_TEST(test_forward_ttl_exceeded_copies_orig_tos)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->tos      = 0xB8;
+    ip->ttl      = 1;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+            ICMP_TTL_EXCEEDED);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 1], 0xB8);
 }
 END_TEST
 

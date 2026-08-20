@@ -37,6 +37,7 @@ static void build_dhcp_ack_msg(struct dhcp_msg *msg, uint32_t server_ip, uint32_
 
     memset(msg, 0, sizeof(*msg));
     msg->op = BOOT_REPLY;
+    msg->hlen = 6;
     msg->magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg->options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -162,7 +163,8 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), 0);
     ck_assert_uint_eq(s.dhcp_ip, offer_ip);
     ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
-    ck_assert_uint_eq(primary->mask, mask);
+    /* The offered netmask is stashed; the interface is committed at the ACK. */
+    ck_assert_uint_eq(s.dhcp_offered_mask, mask);
     ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
     s.last_tick = 1000U;
 
@@ -301,7 +303,9 @@ START_TEST(test_dhcp_parse_offer_defaults_mask_when_missing)
     ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), 0);
     ck_assert_uint_eq(s.dhcp_ip, offer_ip);
     ck_assert_uint_eq(s.dhcp_server_ip, server_ip);
-    ck_assert_uint_eq(primary->mask, mask);
+    /* Default 24-bit netmask stashed for the ACK; interface untouched. */
+    ck_assert_uint_eq(s.dhcp_offered_mask, mask);
+    ck_assert_uint_eq(primary->mask, 0U);
     ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
 }
 END_TEST
@@ -5444,6 +5448,7 @@ START_TEST(test_dhcp_poll_offer_and_ack)
 
     memset(&msg, 0, sizeof(msg));
     msg.op = BOOT_REPLY;
+    msg.hlen = 6;
     msg.magic = ee32(DHCP_MAGIC);
     msg.yiaddr = ee32(0x0A000064U);
     opt = (struct dhcp_option *)msg.options;
@@ -5468,6 +5473,7 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
     s.dhcp_state = DHCP_DISCOVER_SENT;
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
@@ -5476,6 +5482,7 @@ START_TEST(test_dhcp_poll_offer_and_ack)
 
     memset(&msg, 0, sizeof(msg));
     msg.op = BOOT_REPLY;
+    msg.hlen = 6;
     msg.magic = ee32(DHCP_MAGIC);
     opt = (struct dhcp_option *)msg.options;
     opt->code = DHCP_OPTION_MSG_TYPE;
@@ -5520,6 +5527,8 @@ START_TEST(test_dhcp_poll_offer_and_ack)
     opt->code = DHCP_OPTION_END;
     opt->len = 0;
 
+    msg.yiaddr = ee32(0x0A000064U);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
     s.dhcp_state = DHCP_REQUEST_SENT;
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
@@ -5558,6 +5567,8 @@ START_TEST(test_dhcp_poll_renewing_ack_binds_client)
     primary->ip = client_ip;
     build_dhcp_ack_msg(&msg, server_ip, mask, router_ip, dns_ip);
     msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(client_ip);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
 
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
@@ -5602,6 +5613,8 @@ START_TEST(test_dhcp_poll_rebinding_ack_binds_client)
     primary->ip = client_ip;
     build_dhcp_ack_msg(&msg, server_ip, mask, router_ip, dns_ip);
     msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(client_ip);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
 
     enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
     ret = dhcp_poll(&s);
@@ -5637,6 +5650,7 @@ START_TEST(test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind
 
     memset(&msg, 0, sizeof(msg));
     msg.op = BOOT_REPLY;
+    msg.hlen = 6;
     msg.magic = ee32(DHCP_MAGIC);
     msg.xid = ee32(s.dhcp_xid);
     opt = (struct dhcp_option *)msg.options;
@@ -5645,6 +5659,7 @@ START_TEST(test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind
     opt->data[0] = DHCP_NAK;
     opt = (struct dhcp_option *)((uint8_t *)opt + 3);
     opt->code = DHCP_OPTION_END;
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
 
     wolfIP_ipconfig_set(&s, 0x0A000064U, 0xFFFFFF00U, 0x0A000001U);
     s.dhcp_state = DHCP_RENEWING;

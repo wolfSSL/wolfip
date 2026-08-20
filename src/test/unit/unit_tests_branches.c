@@ -1118,6 +1118,62 @@ START_TEST(test_poll_fires_expired_timer)
 }
 END_TEST
 
+START_TEST(test_timer_binheap_drain_keeps_live_timer)
+{
+    struct timers_binheap heap;
+    struct wolfIP_timer a;
+    struct wolfIP_timer b;
+    struct wolfIP_timer got;
+    int ida;
+    int idb;
+
+    memset(&heap, 0, sizeof(heap));
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.expires = 100;
+    b.expires = 200;
+    ida = timers_binheap_insert(&heap, a);
+    idb = timers_binheap_insert(&heap, b);
+    ck_assert_int_gt(ida, 0);
+    ck_assert_int_gt(idb, 0);
+
+    /* Cancel the earliest timer, leaving a tombstone at the heap root. */
+    timer_binheap_cancel(&heap, (uint32_t)ida);
+    ck_assert_int_eq(is_timer_expired(&heap, 50), 0);
+
+    /* Draining the tombstone must leave the next live timer in place. */
+    ck_assert_int_eq((int)heap.size, 1);
+    got = timers_binheap_pop(&heap);
+    ck_assert_uint_eq(got.id, (uint32_t)idb);
+    ck_assert_uint_eq(got.expires, 200);
+}
+END_TEST
+
+START_TEST(test_poll_keeps_timer_armed_after_earlier_cancel)
+{
+    struct wolfIP s;
+    struct wolfIP_timer tmr;
+    int id_first;
+    int id_second;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = 100;
+    id_first = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_gt(id_first, 0);
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = 200;
+    tmr.cb = test_timer_cb;
+    id_second = timers_binheap_insert(&s.timers, tmr);
+    ck_assert_int_gt(id_second, 0);
+    timer_binheap_cancel(&s.timers, (uint32_t)id_first);
+    timer_cb_calls = 0;
+    ck_assert_int_eq(wolfIP_poll(&s, 250), 0);
+    ck_assert_int_eq(timer_cb_calls, 1);
+}
+END_TEST
+
 START_TEST(test_poll_arp_pending_when_nexthop_unresolved)
 {
     struct wolfIP s;

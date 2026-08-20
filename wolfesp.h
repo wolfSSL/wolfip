@@ -92,6 +92,34 @@ struct wolfIP_esp_sa {
 };
 typedef struct wolfIP_esp_sa wolfIP_esp_sa;
 
+/* ESP state persistence callbacks.
+ *
+ * The volatile per-SA state (outbound sequence number and inbound replay
+ * window) is reset by every wolfIP_esp_init/sa creation.  An application
+ * that must keep ESP traffic alive across a restart registers these
+ * callbacks and persists the state in non-volatile storage.
+ *
+ * The write callback is invoked on every state change: outbound sequence
+ * advance, inbound replay window commit, SA deletion.  It is called once
+ * per event; the application owns the persistence policy (e.g. batch or
+ * debounce before committing to flash).  A non-zero return value is
+ * reported but does not alter stack state.
+ *
+ * The read callback is invoked when a new SA is created, keyed by SPI.
+ * It may fill the (fresh) oseq/hi_seq/bitmap values with persisted state.
+ * Return 0 if state was restored, anything else to start the SA fresh.
+ * */
+typedef int (*wolfIP_esp_state_write_cb)(const uint8_t *spi,
+                                         uint32_t oseq,
+                                         uint32_t hi_seq,
+                                         uint32_t bitmap);
+typedef int (*wolfIP_esp_state_read_cb)(const uint8_t *spi,
+                                        uint32_t *oseq,
+                                        uint32_t *hi_seq,
+                                        uint32_t *bitmap);
+int  wolfIP_esp_state_set_cbs(wolfIP_esp_state_write_cb write,
+                              wolfIP_esp_state_read_cb read);
+
 int  wolfIP_esp_init(void);
 void wolfIP_esp_sa_del_all(void);
 void wolfIP_esp_sa_del(int in, uint8_t * spi);

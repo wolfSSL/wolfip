@@ -30,6 +30,51 @@ static wolfIP_esp_sa   out_sa_list[WOLFIP_ESP_NUM_SA];
 static uint16_t        in_sa_num = WOLFIP_ESP_NUM_SA;
 static uint16_t        out_sa_num = WOLFIP_ESP_NUM_SA;
 
+/* optional state persistence callbacks, set by the application. */
+static wolfIP_esp_state_write_cb esp_state_write_cb = NULL;
+static wolfIP_esp_state_read_cb  esp_state_read_cb  = NULL;
+
+int wolfIP_esp_state_set_cbs(wolfIP_esp_state_write_cb write,
+                             wolfIP_esp_state_read_cb read)
+{
+    esp_state_write_cb = write;
+    esp_state_read_cb  = read;
+    return 0;
+}
+
+/* Hand the SA's volatile state to the persistence callback (if any). */
+static void
+esp_state_save(const wolfIP_esp_sa *sa)
+{
+    if (esp_state_write_cb) {
+        (void)esp_state_write_cb(sa->spi, sa->replay.oseq,
+                                 sa->replay.hi_seq, sa->replay.bitmap);
+    }
+}
+
+/* Restore persisted state for a fresh SA (if the application provides
+ * any).  A non-zero callback return keeps the fresh state, even if the
+ * callback wrote into the out parameters before failing (corrupt NVM,
+ * version mismatch). */
+static void
+esp_state_restore(wolfIP_esp_sa *sa)
+{
+    uint32_t oseq;
+    uint32_t hi_seq;
+    uint32_t bitmap;
+
+    if (esp_state_read_cb) {
+        oseq   = sa->replay.oseq;
+        hi_seq = sa->replay.hi_seq;
+        bitmap = sa->replay.bitmap;
+        if (esp_state_read_cb(sa->spi, &oseq, &hi_seq, &bitmap) == 0) {
+            sa->replay.oseq   = oseq;
+            sa->replay.hi_seq = hi_seq;
+            sa->replay.bitmap = bitmap;
+        }
+    }
+}
+
 /* for err and important messages */
 #define ESP_LOG(fmt, ...) LOG(fmt, ##__VA_ARGS__)
 
@@ -64,14 +109,24 @@ int wolfIP_esp_init(void)
     return err;
 }
 
+static const uint8_t zero_spi[ESP_SPI_LEN] = {0x00, 0x00, 0x00, 0x00};
+
 void wolfIP_esp_sa_del_all(void)
 {
+    size_t i;
+    /* flush the volatile state of every live SA before wiping. */
+    for (i = 0; i < WOLFIP_ESP_NUM_SA; i++) {
+        if (memcmp(in_sa_list[i].spi, zero_spi, ESP_SPI_LEN) != 0) {
+            esp_state_save(&in_sa_list[i]);
+        }
+        if (memcmp(out_sa_list[i].spi, zero_spi, ESP_SPI_LEN) != 0) {
+            esp_state_save(&out_sa_list[i]);
+        }
+    }
     wc_ForceZero(in_sa_list, sizeof(in_sa_list));
     wc_ForceZero(out_sa_list, sizeof(out_sa_list));
     return;
 }
-
-static const uint8_t zero_spi[ESP_SPI_LEN] = {0x00, 0x00, 0x00, 0x00};
 
 /* Get an SA by spi.
  * If spi is null, return the first empty slot (an SA with all zero SPI).
@@ -108,6 +163,7 @@ void wolfIP_esp_sa_del(int in, uint8_t * spi)
     wolfIP_esp_sa * sa = NULL;
     sa = esp_sa_get(in, spi);
     if (sa != NULL) {
+        esp_state_save(sa);
         wc_ForceZero(sa, sizeof(*sa));
     }
     return;
@@ -207,6 +263,8 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
         err = -1;
     }
 
+    esp_state_restore(new_sa);
+
     ESP_DEBUG("info: esp_sa_new_gcm: %s\n", in == 1 ? "in" : "out");
     return err;
 }
@@ -298,6 +356,8 @@ int wolfIP_esp_sa_new_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
 
+    esp_state_restore(new_sa);
+
     ESP_DEBUG("info: esp_sa_new_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
@@ -354,6 +414,8 @@ int wolfIP_esp_sa_new_cbc_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
 
+    esp_state_restore(new_sa);
+
     ESP_DEBUG("info: esp_sa_new_cbc_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
 }
@@ -404,6 +466,8 @@ wolfIP_esp_sa_new_des3_hmac(int in, uint8_t * spi, ip4 src, ip4 dst,
     new_sa->auth         = auth;
     new_sa->auth_key_len = auth_key_len;
     new_sa->icv_len      = icv_len;
+
+    esp_state_restore(new_sa);
 
     ESP_DEBUG("info: esp_sa_new_des3_hmac: %s\n", in == 1 ? "in" : "out");
     return 0;
@@ -1352,12 +1416,17 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
 
     memset(spi, 0, sizeof(spi));
 
-    if (*frame_len <= (ETH_HEADER_LEN + IP_HEADER_LEN)) {
-        ESP_LOG("error: esp: malformed frame: %d\n", *frame_len);
-        return -1;
+    /* Scope the ESP payload to the declared IP total length; bytes past
+     * the datagram (L2 slack) are not part of the ESP extent. */
+    {
+        uint32_t ip_total = ee16(ip->len);
+        if (ip_total < IP_HEADER_LEN ||
+            *frame_len < (uint32_t)(ETH_HEADER_LEN + ip_total)) {
+            ESP_LOG("error: esp: malformed frame: %d\n", *frame_len);
+            return -1;
+        }
+        esp_len = ip_total - IP_HEADER_LEN;
     }
-
-    esp_len = *frame_len - ETH_HEADER_LEN - IP_HEADER_LEN;
 
     /* If not at least SPI and sequence, something wrong. */
     if (esp_len < (ESP_SPI_LEN + ESP_SEQ_LEN)) {
@@ -1508,6 +1577,7 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     /* icv verified for hmacs and aeads at this point. now safe to commit the
      * sequence to the replay window (RFC 4303 s3.4.3). */
     esp_replay_commit(&esp_sa->replay, seq);
+    esp_state_save(esp_sa);
 
     /* Payload is now verified and decrypted. We can now parse
      * the ESP trailer for next header and pad_len. */
@@ -1552,9 +1622,11 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     memmove(ip->data, ip->data + ESP_SPI_LEN + ESP_SEQ_LEN + iv_len,
             esp_len - (ESP_SPI_LEN + ESP_SEQ_LEN + iv_len));
 
-    /* subtract ESP header from frame_len and ip.len. */
-    *frame_len = *frame_len - (iv_len + ESP_SPI_LEN + ESP_SEQ_LEN);
+    /* subtract the ESP header from the IP total length (ip->len is in
+     * host order here); normalize the frame length to the datagram so
+     * trailing L2 bytes are excluded from dispatch. */
     ip->len = ee16(ip->len) - (iv_len + ESP_SPI_LEN + ESP_SEQ_LEN);
+    *frame_len = (uint32_t)(ETH_HEADER_LEN + ip->len);
 
     /* subtract ESP trailer from frame_len and ip.len. */
     *frame_len = *frame_len - (pad_len + ESP_PADDING_LEN +
@@ -1668,6 +1740,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
         ESP_LOG("error: oseq overflow\n");
         return -1;
     }
+    esp_state_save(esp_sa);
     seq_n = ee32(esp_sa->replay.oseq);
     memcpy(payload, &seq_n, sizeof(seq_n));
     payload += ESP_SEQ_LEN;
