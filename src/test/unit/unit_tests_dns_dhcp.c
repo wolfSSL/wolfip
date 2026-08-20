@@ -1272,6 +1272,76 @@ START_TEST(test_dhcp_request_broadcast_flag_by_state)
 END_TEST
 
 
+/* Atomicity: a rejected DHCPACK must not leave a partial network
+ * configuration behind. This ACK carries valid IP/mask/gw/DNS options
+ * (all different from the live values) but omits the mandatory
+ * lease-time option (51), so dhcp_parse_ack() rejects it. The live
+ * ipconf and dns_server must be left exactly as they were. Pre-fix, the
+ * inline option writes committed the new values before the lease-time
+ * check failed, so the rejected ACK corrupted the running config. */
+START_TEST(test_dhcp_parse_ack_reject_preserves_config)
+{
+    struct wolfIP s;
+    struct ipconf *primary;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    uint32_t ip_before, mask_before, gw_before, dns_before, srv_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0x0A000064U);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    /* Live configuration to preserve. */
+    ip_before = primary->ip;          /* 0x0A000001 */
+    mask_before = primary->mask;      /* 0xFFFFFF00 */
+    gw_before = primary->gw;          /* 0x0A000064 */
+    s.dns_server = 0x08080808U;
+    dns_before = s.dns_server;
+    s.dhcp_server_ip = 0x0A000064U;
+    srv_before = s.dhcp_server_ip;
+    s.dhcp_xid = 0x12345678U;
+
+    /* Build an ACK offering DIFFERENT config values, with a matching
+     * server-id (so the identity check passes) but no lease time. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.xid = ee32(0x12345678U);
+    msg.magic = ee32(DHCP_MAGIC);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE; opt->len = 1; opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x0A000064U);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_OFFER_IP; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x0A0000AAU);   /* != ip_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0xFFFFFE00U);   /* != mask_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_ROUTER; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x0A000099U);   /* != gw_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_DNS; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x01010101U);   /* != dns_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END; opt->len = 0;
+
+    /* No lease time -> rejected. */
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+
+    /* Live config must be untouched. */
+    ck_assert_uint_eq(primary->ip, ip_before);
+    ck_assert_uint_eq(primary->mask, mask_before);
+    ck_assert_uint_eq(primary->gw, gw_before);
+    ck_assert_uint_eq(s.dns_server, dns_before);
+    ck_assert_uint_eq(s.dhcp_server_ip, srv_before);
+}
+END_TEST
+
+
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
     struct wolfIP s;

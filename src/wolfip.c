@@ -8815,12 +8815,24 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     struct dhcp_opt_stream st;
     int saw_end = 0;
     int saw_server_id = 0;
-    int saw_offer_ip = 0;
     struct ipconf *primary = wolfIP_primary_ipconf(s);
     uint32_t lease_ip = 0;
+    uint32_t lease_mask = 0;
     uint32_t lease_s = 0;
     uint32_t renew_s = 0;
     uint32_t rebind_s = 0;
+    /* Candidate configuration values: the option stream is parsed into
+     * these first and committed atomically only on full success, so a
+     * rejected (malformed or incomplete) ACK never leaves a partial
+     * network configuration behind. */
+    uint32_t cand_ip = 0;
+    uint32_t cand_mask = 0;
+    uint32_t cand_gw = 0;
+    uint32_t cand_dns = 0;
+    uint32_t cand_server_ip = 0;
+    int have_ip = 0;
+    int have_mask = 0;
+    int have_gw = 0;
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
     if (msg->op != BOOT_REPLY)
@@ -8867,29 +8879,28 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                          * we committed to during the OFFER phase. */
                         if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip)
                             return -1;
-                        s->dhcp_server_ip = val;
+                        cand_server_ip = val;
                         saw_server_id = 1;
                     } else if (code == DHCP_OPTION_OFFER_IP) {
                         if (len < 4)
                             return -1;
-                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
-                        lease_ip = val;
-                        saw_offer_ip = 1;
+                        cand_ip = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        have_ip = 1;
                     } else if (primary && code == DHCP_OPTION_SUBNET_MASK) {
                         if (len < 4)
                             return -1;
-                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
-                        primary->mask = val;
+                        cand_mask = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        have_mask = 1;
                     } else if (primary && code == DHCP_OPTION_ROUTER) {
                         if (len < 4)
                             return -1;
-                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
-                        primary->gw = val;
+                        cand_gw = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
+                        have_gw = 1;
                     } else if ((code == DHCP_OPTION_DNS) && (s->dns_server == 0)) {
                         if (len < 4)
                             return -1;
-                        val = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
-                        s->dns_server = val;
+                        if (cand_dns == 0)
+                            cand_dns = DHCP_OPT_data_to_u32((struct dhcp_option *)idata);
                     } else if (code == DHCP_OPTION_LEASE_TIME) {
                         if (len < 4)
                             return -1;
@@ -8909,21 +8920,30 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 /* The lease address is option 50 (the requested IP) when the
                  * server echoes it, otherwise the yiaddr it committed; either
                  * way it must be a usable unicast address before it is applied
-                 * to the interface. The offered netmask applies when the ACK
-                 * carries none. */
-                if (!saw_offer_ip)
-                    lease_ip = ee32(msg->yiaddr);
-                if (primary && primary->mask == 0)
-                    primary->mask = s->dhcp_offered_mask;
+                 * to the interface. The netmask is the ACK's when it carries
+                 * one, else the interface's current mask, else the one
+                 * recorded during the OFFER phase. Both are effective values
+                 * computed here, never written until the commit below. */
+                lease_ip = have_ip ? cand_ip : ee32(msg->yiaddr);
+                lease_mask = have_mask ? cand_mask
+                            : ((primary && primary->mask != 0)
+                               ? primary->mask : s->dhcp_offered_mask);
                 /* RFC 2131: the IP-address-lease-time option (51) is mandatory
                  * in a DHCPACK. lease_s is only ever set by that option (and a
                  * short option already returns -1 above), so lease_s != 0 means
                  * it was present with a valid nonzero duration. Without it the
                  * lease would be bound with no expiry/renewal timer. */
                 if (primary && saw_server_id && lease_s != 0 &&
-                    (primary->mask != 0) &&
-                    dhcp_lease_ip_sane(lease_ip, primary->mask)) {
+                    (lease_mask != 0) &&
+                    dhcp_lease_ip_sane(lease_ip, lease_mask)) {
+                    /* Commit the validated configuration atomically. */
+                    s->dhcp_server_ip = cand_server_ip;
                     primary->ip = lease_ip;
+                    primary->mask = lease_mask;
+                    if (have_gw)
+                        primary->gw = cand_gw;
+                    if (s->dns_server == 0 && cand_dns != 0)
+                        s->dns_server = cand_dns;
                     dhcp_cancel_timer(s);
                     s->dhcp_ip = primary->ip;
 #ifdef ETHERNET
