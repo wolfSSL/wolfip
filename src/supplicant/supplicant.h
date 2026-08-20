@@ -306,8 +306,11 @@ extern "C" {
 
 /* Caller-allocated init. `out` is a struct provided by the caller (stack,
  * static, or pool) and is fully populated from cfg on success. Returns 0
- * on success, negative on bad args / crypto failure. On failure, the
- * struct is left zeroed; caller does not need to call _deinit.
+ * on success, negative on bad args / crypto failure. On failure after
+ * initialization has begun, the struct is left zeroed and the caller
+ * does not need to call _deinit; bad-argument and cfg-validation
+ * failures return before any write and leave the supplied context
+ * unchanged.
  */
 int wolfip_supplicant_init(struct wolfip_supplicant *out,
                            const struct wolfip_supplicant_cfg *cfg);
