@@ -481,7 +481,7 @@ END_TEST
 START_TEST(test_replay_first_packet_accepted)
 {
     replay_t r;
-    esp_replay_init(r); /* hi_seq=32, seq_low=1 */
+    esp_replay_init(r); /* hi_seq=64, seq_low=1 */
     ck_assert_int_eq(esp_replay_check(&r, 1U), 0);
 }
 END_TEST
@@ -503,7 +503,7 @@ START_TEST(test_replay_multiple_in_window)
 {
     replay_t r;
     uint32_t i;
-    esp_replay_init(r); /* window [1..32] */
+    esp_replay_init(r); /* window [1..64] */
     for (i = 1U; i <= 31U; i++) {
         ck_assert_int_eq(esp_replay_check(&r, i), 0);
         esp_replay_commit(&r, i);
@@ -517,8 +517,8 @@ START_TEST(test_replay_below_window_rejected)
     replay_t r;
     esp_replay_init(r);
     /* Advance the window by receiving a high sequence number. */
-    ck_assert_int_eq(esp_replay_check(&r, 64U), 0);
-    esp_replay_commit(&r, 64U);                      /* hi_seq=64, seq_low=34 */
+    ck_assert_int_eq(esp_replay_check(&r, 100U), 0);
+    esp_replay_commit(&r, 100U);                     /* hi_seq=100, seq_low=37 */
     /* seq=1 is now below the window floor. */
     ck_assert_int_ne(esp_replay_check(&r, 1U), 0);
 }
@@ -528,10 +528,10 @@ END_TEST
 START_TEST(test_replay_advance_hi_seq)
 {
     replay_t r;
-    esp_replay_init(r); /* hi_seq=32 */
-    ck_assert_int_eq(esp_replay_check(&r, 33U), 0);
-    esp_replay_commit(&r, 33U);
-    ck_assert_uint_eq(r.hi_seq, 33U);
+    esp_replay_init(r); /* hi_seq=64 */
+    ck_assert_int_eq(esp_replay_check(&r, 65U), 0);
+    esp_replay_commit(&r, 65U);
+    ck_assert_uint_eq(r.hi_seq, 65U);
 }
 END_TEST
 
@@ -539,10 +539,10 @@ END_TEST
 START_TEST(test_replay_advanced_hi_seq_duplicate_rejected)
 {
     replay_t r;
-    esp_replay_init(r); /* hi_seq=32 */
-    ck_assert_int_eq(esp_replay_check(&r, 33U), 0);
-    esp_replay_commit(&r, 33U);
-    ck_assert_int_ne(esp_replay_check(&r, 33U), 0);
+    esp_replay_init(r); /* hi_seq=64 */
+    ck_assert_int_eq(esp_replay_check(&r, 65U), 0);
+    esp_replay_commit(&r, 65U);
+    ck_assert_int_ne(esp_replay_check(&r, 65U), 0);
 }
 END_TEST
 
@@ -567,7 +567,7 @@ START_TEST(test_replay_jump_resets_bitmap)
     esp_replay_commit(&r, 1U);
     ck_assert_int_eq(esp_replay_check(&r, 2U), 0);
     esp_replay_commit(&r, 2U);
-    /* Jump more than ESP_REPLAY_WIN (32) ahead. */
+    /* Jump more than ESP_REPLAY_WIN (64) ahead. */
     ck_assert_int_eq(esp_replay_check(&r, 1000U), 0);
     esp_replay_commit(&r, 1000U);
     ck_assert_uint_eq(r.hi_seq, 1000U);
@@ -585,8 +585,8 @@ START_TEST(test_replay_old_seqs_after_jump)
     ck_assert_int_eq(esp_replay_check(&r, 10U), 0);
     esp_replay_commit(&r, 10U);
     ck_assert_int_eq(esp_replay_check(&r, 500U), 0);
-    esp_replay_commit(&r, 500U); /* jump > 32 */
-    /* 10 is now well below the new window floor (500-31=469). */
+    esp_replay_commit(&r, 500U); /* jump > 64 */
+    /* 10 is now well below the new window floor (500-63=437). */
     ck_assert_int_ne(esp_replay_check(&r, 10U), 0);
 }
 END_TEST

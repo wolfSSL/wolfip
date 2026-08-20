@@ -1311,7 +1311,7 @@ esp_replay_check(const struct replay_t * replay, uint32_t seq)
     (void)replay;
     (void)seq;
     #else
-    uint32_t bitn = 0;
+    uint64_t bitn = 0;
     uint32_t seq_low = 1U;
 
     if (seq == 0) {
@@ -1328,16 +1328,16 @@ esp_replay_check(const struct replay_t * replay, uint32_t seq)
         return -1;
     }
 
-    /* Simple 32 bit replay window:
+    /* Sliding replay window:
      *   seq_low - - - - - - - seq - - - - - - hi_seq
      *   |<----------- ESP_REPLAY_WIN --------------|
      * */
     if (seq <= replay->hi_seq) {
         /* seq number within window. */
-        bitn = 1U << (replay->hi_seq - seq);
+        bitn = 1ULL << (replay->hi_seq - seq);
 
-        if ((replay->bitmap & bitn) != 0U) {
-            ESP_LOG("error: seq replayed: %u, %d\n", bitn, seq);
+        if ((replay->bitmap & bitn) != 0ULL) {
+            ESP_LOG("error: seq replayed: %d\n", seq);
             return -1;
         }
     }
@@ -1361,16 +1361,16 @@ esp_replay_commit(struct replay_t * replay, uint32_t seq)
 
     if (seq <= replay->hi_seq) {
         /* Within window: mark the bit. */
-        replay->bitmap |= 1U << (replay->hi_seq - seq);
+        replay->bitmap |= 1ULL << (replay->hi_seq - seq);
     }
     else {
         /* Above window: slide up. */
         diff = seq - replay->hi_seq;
         if (diff < ESP_REPLAY_WIN) {
-            replay->bitmap = (replay->bitmap << diff) | 1U;
+            replay->bitmap = (replay->bitmap << diff) | 1ULL;
         }
         else {
-            replay->bitmap = 1;
+            replay->bitmap = 1ULL;
         }
         replay->hi_seq = seq;
     }

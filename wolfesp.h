@@ -53,12 +53,13 @@ typedef enum {
     ESP_AUTH_GCM_RFC4543     /* rfc4543 gmac */
 } esp_auth_t;
 
-/* simple static 32 bit replay window */
+/* simple static sliding replay window; RFC 4301 s3.3.1 recommends a
+ * window of at least 64 packets */
 #define ESP_MAX_32_SEQ  0xffffffffUL
-#define ESP_REPLAY_WIN  32U
+#define ESP_REPLAY_WIN  64U
 
 struct replay_t {
-    uint32_t  bitmap; /* inbound sequence bitmap */
+    uint64_t  bitmap; /* inbound sequence bitmap */
     uint32_t  hi_seq; /* inbound high sequence number */
     uint32_t  oseq; /* outbound sequence number */
 };
@@ -67,7 +68,7 @@ typedef struct replay_t replay_t;
 
 #define esp_replay_init(r)           \
     do {                             \
-        (r).bitmap = 0U;             \
+        (r).bitmap = 0ULL;           \
         (r).hi_seq = ESP_REPLAY_WIN; \
         (r).oseq = 0U;               \
     } while (0)
