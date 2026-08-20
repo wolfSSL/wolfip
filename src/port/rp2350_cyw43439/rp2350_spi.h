@@ -20,10 +20,12 @@
 extern "C" {
 #endif
 
-/* Initialise the GPIO and SPI peripheral for the CYW43439 gSPI bus.
- * Pin assignment lives in board.h (CYW43_PIN_SPI_*); this function
- * configures pad strength, function-mux, clock divider, and brings the
- * SPI controller out of reset. Safe to call multiple times. */
+/* Initialise the CPU-driven control lines for the CYW43439 gSPI bus:
+ * CS deasserted and WL_REG_ON driven low (radio held off). Pin
+ * assignment lives in board.h (CYW43_PIN_*). CLK and DATA are owned by
+ * the PIO transport (rp2350_pio_init), not this function. Call once,
+ * before power-up: repeating it while the radio is running drives
+ * WL_REG_ON low and powers the CYW43439 down. */
 void rp2350_spi_init(void);
 
 /* Drive WL_REG_ON high to power the CYW43439. Caller should wait
