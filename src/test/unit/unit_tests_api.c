@@ -186,7 +186,8 @@ START_TEST(test_filter_notify_tcp_metadata)
     wolfIP_filter_set_callback(test_filter_cb, NULL);
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
 
-    (void)wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, &s, 1, &tcp, sizeof(tcp));
+    (void)wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, &s, 1, &tcp, sizeof(tcp),
+                                   IP_HEADER_LEN);
     ck_assert_int_eq(filter_cb_calls, 1);
     ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_TCP);
     ck_assert_uint_eq(filter_last_event.meta.l4.tcp.src_port, tcp.src_port);
@@ -196,6 +197,101 @@ START_TEST(test_filter_notify_tcp_metadata)
     wolfIP_filter_set_callback(NULL, NULL);
 }
 END_TEST
+
+/* IHL-aware filter metadata: a forwarded datagram keeps its IP options
+ * (IHL > 5) and the filter notify must read the transport header at the
+ * actual IHL, not at a fixed 20-byte offset. This UDP datagram carries a
+ * 24-byte IP header (IHL=6) with four option bytes; the UDP header (the
+ * ports) follows the options. Pre-fix, the notify sampled the option
+ * bytes as the ports, misrepresenting them to any L4 filter and
+ * (for a header-only datagram) over-reading the received bytes. */
+START_TEST(test_filter_notify_udp_ihl_options_metadata)
+{
+    struct wolfIP s;
+    uint8_t buf[ETH_HEADER_LEN + 24 + UDP_HEADER_LEN + 4];
+    uint8_t *ip;
+    uint8_t *udp;
+    uint16_t src_port = 1234;
+    uint16_t dst_port = 5678;
+
+    memset(&s, 0, sizeof(s));
+    memset(buf, 0, sizeof(buf));
+
+    /* IP header at offset ETH_HEADER_LEN, IHL=6 (24 bytes). */
+    ip = buf + ETH_HEADER_LEN;
+    ip[0] = 0x46;                    /* ver=4, IHL=6 */
+    ip[2] = 0; ip[3] = 36;           /* total IP length: 24 + 8 + 4 */
+    ip[8] = 64;                      /* ttl */
+    ip[9] = WI_IPPROTO_UDP;          /* proto */
+    ip[12] = 0x0A; ip[13] = 0; ip[14] = 0; ip[15] = 1;   /* src 10.0.0.1 */
+    ip[16] = 0x0A; ip[17] = 0; ip[18] = 0; ip[19] = 2;   /* dst 10.0.0.2 */
+    /* Four option bytes (NOPs) at IP-header offset 20. A fixed-20-byte
+     * transport offset would read these as the UDP ports. */
+    ip[20] = 0x01; ip[21] = 0x01; ip[22] = 0x01; ip[23] = 0x01;
+
+    /* UDP header at IP-header offset 24 (after the options). */
+    udp = buf + ETH_HEADER_LEN + 24;
+    udp[0] = (uint8_t)(src_port >> 8);  udp[1] = (uint8_t)(src_port & 0xFF);
+    udp[2] = (uint8_t)(dst_port >> 8);  udp[3] = (uint8_t)(dst_port & 0xFF);
+    udp[4] = 0;    udp[5] = (uint8_t)(UDP_HEADER_LEN + 4); /* udp len */
+    udp[6] = 0;    udp[7] = 0;                  /* csum */
+    buf[ETH_HEADER_LEN + 24 + UDP_HEADER_LEN] = 0xAA;   /* 4 payload bytes */
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+
+    (void)wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, &s, 1,
+                                   (struct wolfIP_udp_datagram *)buf,
+                                   sizeof(buf), 24);
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_UDP);
+    /* The ports must come from the UDP header after the options, not from
+     * the option bytes. */
+    ck_assert_uint_eq(filter_last_event.meta.l4.udp.src_port, ee16(src_port));
+    ck_assert_uint_eq(filter_last_event.meta.l4.udp.dst_port, ee16(dst_port));
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
+
+/* The IHL-aware guard: a header-only (or truncated) datagram must not
+ * over-read the received bytes when the transport header is not fully
+ * present after the actual IHL. The notify must skip the L4 metadata
+ * (no callback) rather than read past the buffer. */
+START_TEST(test_filter_notify_udp_ihl_truncated_no_overread)
+{
+    struct wolfIP s;
+    uint8_t buf[ETH_HEADER_LEN + 24];   /* eth + 24-byte IP header only */
+    uint8_t *ip;
+
+    memset(&s, 0, sizeof(s));
+    memset(buf, 0, sizeof(buf));
+
+    ip = buf + ETH_HEADER_LEN;
+    ip[0] = 0x46;                    /* ver=4, IHL=6 */
+    ip[2] = 0; ip[3] = 24;           /* total IP length: just the header */
+    ip[8] = 64;
+    ip[9] = WI_IPPROTO_UDP;
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+
+    /* Only the IP header is present; the UDP header is not. The notify
+     * must not fire (no transport bytes to read). */
+    (void)wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, &s, 1,
+                                   (struct wolfIP_udp_datagram *)buf,
+                                   sizeof(buf), 24);
+    ck_assert_int_eq(filter_cb_calls, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
 
 START_TEST(test_filter_dispatch_no_callback)
 {

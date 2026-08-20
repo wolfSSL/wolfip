@@ -176,6 +176,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_poll_preserves_tcp_events_raised_during_callback);
     tcase_add_test(tc_utils, test_wolfip_poll_limits_device_drain_to_poll_budget);
     tcase_add_test(tc_utils, test_filter_notify_tcp_metadata);
+    tcase_add_test(tc_utils, test_filter_notify_udp_ihl_options_metadata);
+    tcase_add_test(tc_utils, test_filter_notify_udp_ihl_truncated_no_overread);
     tcase_add_test(tc_utils, test_filter_dispatch_no_callback);
     tcase_add_test(tc_utils, test_filter_dispatch_mask_not_set);
     tcase_add_test(tc_utils, test_filter_fresh_callback_consulted_before_mask_configured);

@@ -1014,46 +1014,73 @@ static int wolfIP_filter_notify_ip(enum wolfIP_filter_reason reason,
 
 static int wolfIP_filter_notify_tcp(enum wolfIP_filter_reason reason,
                                     struct wolfIP *s, unsigned int if_idx,
-                                    const struct wolfIP_tcp_seg *tcp, uint32_t len)
+                                    const struct wolfIP_tcp_seg *tcp, uint32_t len,
+                                    uint32_t ip_hlen)
 {
     struct wolfIP_filter_metadata meta;
+    const uint8_t *tp;
+    uint16_t v;
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, &tcp->ip);
     meta.ip_proto = WOLFIP_FILTER_PROTO_TCP;
-    meta.l4.tcp.src_port = tcp->src_port;
-    meta.l4.tcp.dst_port = tcp->dst_port;
-    meta.l4.tcp.flags = tcp->flags;
+    /* The transport header follows the IP header at its actual length
+     * (ip_hlen), not at a fixed 20-byte offset: a forwarded datagram may
+     * carry IP options (IHL > 5) that are not stripped before the filter
+     * is notified, so reading the struct members would sample the option
+     * bytes. The guard keeps a header-only or truncated datagram from
+     * over-reading the received bytes. */
+    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + TCP_HEADER_LEN))
+        return 0;
+    tp = (const uint8_t *)tcp + ETH_HEADER_LEN + ip_hlen;
+    memcpy(&v, tp + 0, sizeof(v));
+    meta.l4.tcp.src_port = v;
+    memcpy(&v, tp + 2, sizeof(v));
+    meta.l4.tcp.dst_port = v;
+    meta.l4.tcp.flags = tp[13];
 
     return wolfIP_filter_dispatch(reason, s, if_idx, tcp, len, &meta);
 }
 
 static int wolfIP_filter_notify_udp(enum wolfIP_filter_reason reason,
                                     struct wolfIP *s, unsigned int if_idx,
-                                    const struct wolfIP_udp_datagram *udp, uint32_t len)
+                                    const struct wolfIP_udp_datagram *udp, uint32_t len,
+                                    uint32_t ip_hlen)
 {
     struct wolfIP_filter_metadata meta;
+    const uint8_t *tp;
+    uint16_t v;
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, &udp->ip);
     meta.ip_proto = WOLFIP_FILTER_PROTO_UDP;
-    meta.l4.udp.src_port = udp->src_port;
-    meta.l4.udp.dst_port = udp->dst_port;
+    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + UDP_HEADER_LEN))
+        return 0;
+    tp = (const uint8_t *)udp + ETH_HEADER_LEN + ip_hlen;
+    memcpy(&v, tp + 0, sizeof(v));
+    meta.l4.udp.src_port = v;
+    memcpy(&v, tp + 2, sizeof(v));
+    meta.l4.udp.dst_port = v;
 
     return wolfIP_filter_dispatch(reason, s, if_idx, udp, len, &meta);
 }
 
 static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
                                      struct wolfIP *s, unsigned int if_idx,
-                                     const struct wolfIP_icmp_packet *icmp, uint32_t len)
+                                     const struct wolfIP_icmp_packet *icmp, uint32_t len,
+                                     uint32_t ip_hlen)
 {
     struct wolfIP_filter_metadata meta;
+    const uint8_t *tp;
 
     wolfIP_filter_init_metadata(&meta);
     wolfIP_filter_fill_ip_metadata(&meta, &icmp->ip);
     meta.ip_proto = WOLFIP_FILTER_PROTO_ICMP;
-    meta.l4.icmp.type = icmp->type;
-    meta.l4.icmp.code = icmp->code;
+    if (len < (uint32_t)(ETH_HEADER_LEN + ip_hlen + ICMP_HEADER_LEN))
+        return 0;
+    tp = (const uint8_t *)icmp + ETH_HEADER_LEN + ip_hlen;
+    meta.l4.icmp.type = tp[0];
+    meta.l4.icmp.code = tp[1];
 
     return wolfIP_filter_dispatch(reason, s, if_idx, icmp, len, &meta);
 }
@@ -2309,7 +2336,8 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             eth_output_add_header(s, if_idx, orig->eth.src, &icmp.ip.eth, ETH_TYPE_IP);
         }
-        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp_pkt, frame_len) != 0)
+        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp_pkt,
+                                             frame_len, IP_HEADER_LEN) != 0)
             return;
         if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &icmp.ip, frame_len) != 0)
             return;
@@ -2396,7 +2424,8 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             eth_output_add_header(s, if_idx, orig->eth.src, &icmp.ip.eth, ETH_TYPE_IP);
         }
-        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp_pkt, frame_len) != 0)
+        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp_pkt,
+                                             frame_len, IP_HEADER_LEN) != 0)
             return;
         if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &icmp.ip, frame_len) != 0)
             return;
@@ -2621,7 +2650,8 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     dst_ip = ee32(udp->ip.dst);
     src_ip = ee32(udp->ip.src);
 
-    if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len) != 0)
+    if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len,
+                          IP_HEADER_LEN) != 0)
         return;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
@@ -3489,7 +3519,8 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
         eth_output_add_header(t->S, tx_if, t->nexthop_mac, &tcp->ip.eth, ETH_TYPE_IP);
 #endif
 
-    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, tcp, frame_len) != 0)
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, tcp, frame_len,
+                          IP_HEADER_LEN) != 0)
         return -1;
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &tcp->ip, frame_len) != 0)
         return -1;
@@ -3675,7 +3706,8 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
             return;
     }
 #endif
-    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, if_idx, out, out_len) != 0)
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, if_idx, out, out_len,
+                          IP_HEADER_LEN) != 0)
         return;
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &out->ip, out_len) != 0)
         return;
@@ -4156,7 +4188,8 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
         eth_output_add_header(t->S, tx_if, t->nexthop_mac, &probe->ip.eth, ETH_TYPE_IP);
 #endif
 
-    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, probe, frame_len) != 0)
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, t->S, tx_if, probe, frame_len,
+                          IP_HEADER_LEN) != 0)
         return -1;
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, t->S, tx_if, &probe->ip, frame_len) != 0)
         return -1;
@@ -4619,6 +4652,14 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
 {
 #ifdef ETHERNET
     int drop = 0;
+    /* The forwarded datagram keeps its IP options (a router relays the
+     * packet as-is; stripping them here would alter the relayed packet),
+     * so the filter notify below must read the transport header at the
+     * actual IHL, not a fixed 20-byte offset. */
+    uint32_t ip_hlen = (uint32_t)(ip->ver_ihl & 0x0fU) << 2;
+
+    if (ip_hlen < IP_HEADER_LEN)
+        ip_hlen = IP_HEADER_LEN;
     if (!wolfIP_ll_is_non_ethernet(s, out_if)) {
         if (broadcast)
             eth_output_add_header(s, out_if, NULL, &ip->eth, ETH_TYPE_IP);
@@ -4627,13 +4668,16 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
     }
     if (ip->proto == WI_IPPROTO_TCP)
         drop = wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, out_if,
-                                        (struct wolfIP_tcp_seg *)ip, len);
+                                        (struct wolfIP_tcp_seg *)ip, len,
+                                        ip_hlen);
     else if (ip->proto == WI_IPPROTO_UDP)
         drop = wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, out_if,
-                                        (struct wolfIP_udp_datagram *)ip, len);
+                                        (struct wolfIP_udp_datagram *)ip, len,
+                                        ip_hlen);
     else if (ip->proto == WI_IPPROTO_ICMP)
         drop = wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, out_if,
-                                        (struct wolfIP_icmp_packet *)ip, len);
+                                         (struct wolfIP_icmp_packet *)ip, len,
+                                         ip_hlen);
     if (drop != 0)
         return;
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, out_if, ip, len) != 0)
@@ -5293,7 +5337,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             return;
     }
 
-    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len) != 0)
+    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len,
+                          IP_HEADER_LEN) != 0)
         return;
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         uint32_t tcplen;
@@ -8117,7 +8162,8 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     if (icmp_checksum(icmp, (uint16_t)(ee16(ip->len) - IP_HEADER_LEN)) != 0)
         return;
 
-    if (wolfIP_filter_notify_icmp(WOLFIP_FILT_RECEIVING, s, if_idx, icmp, len) != 0)
+    if (wolfIP_filter_notify_icmp(WOLFIP_FILT_RECEIVING, s, if_idx, icmp, len,
+                          IP_HEADER_LEN) != 0)
         return;
     if (icmp->type == ICMP_ECHO_REPLY) {
         ip4 dst = ee32(ip->dst);
@@ -8170,7 +8216,8 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
             eth_output_add_header(s, if_idx, ip->eth.src, &ip->eth, ETH_TYPE_IP);
         }
 #endif
-        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp, len) != 0)
+        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp, len,
+                          IP_HEADER_LEN) != 0)
             return;
         if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, ip, len) != 0)
             return;
@@ -11245,7 +11292,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     if (!wolfIP_ll_is_non_ethernet(ts->S, tx_if))
                         eth_output_add_header(ts->S, tx_if, ts->nexthop_mac, &tcp->ip.eth, ETH_TYPE_IP);
 #endif
-                    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len) != 0) {
+                    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, ts->S, tx_if, tcp, desc->len,
+                          IP_HEADER_LEN) != 0) {
                         break;
                     }
                     if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, ts->S, tx_if, &tcp->ip, desc->len) != 0) {
@@ -11388,11 +11436,13 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
 
             if (is_udp) {
                 if (wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, tx_if,
-                            (struct wolfIP_udp_datagram *)ip, desc->len) != 0)
+                            (struct wolfIP_udp_datagram *)ip, desc->len,
+                            IP_HEADER_LEN) != 0)
                     break;
             } else {
                 if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, tx_if,
-                            (struct wolfIP_icmp_packet *)ip, desc->len) != 0)
+                            (struct wolfIP_icmp_packet *)ip, desc->len,
+                            IP_HEADER_LEN) != 0)
                     break;
             }
             if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, tx_if, ip, desc->len) != 0)
