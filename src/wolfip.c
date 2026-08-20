@@ -3897,6 +3897,23 @@ static void tcp_listener_revert_to_listen(struct tsocket *t)
     t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
     t->sock.tcp.peer_mss = TCP_DEFAULT_MSS;
     t->sock.tcp.sack_offer = 1;
+    /* The receive-window scale we advertise is a property of the socket
+     * (RXBUF_SIZE), not of the dead connection: restore it with the offer
+     * flags so the baseline matches a freshly allocated socket
+     * (tcp_new_socket). Without this the next connection on the port
+     * advertises WS shift 0 and caps the receive window at 64KB when
+     * RXBUF_SIZE > 0xFFFF. */
+#if RXBUF_SIZE > 0xFFFF
+    {
+        uint32_t space = RXBUF_SIZE;
+        uint8_t shift = 0;
+        while (shift < 14 && (space >> shift) > 0xFFFF)
+            shift++;
+        t->sock.tcp.rcv_wscale = shift;
+    }
+#endif
+    t->sock.tcp.ws_offer = 1;
+    t->sock.tcp.ts_offer = 1;
     t->remote_ip = 0;
     t->dst_port = 0;
     t->events = 0;

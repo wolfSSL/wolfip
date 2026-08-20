@@ -5332,3 +5332,43 @@ START_TEST(test_tcp_listener_preaccept_revert_drains_connection_state)
     ck_assert_int_eq(lsn->sock.tcp.preaccept_timeout_active, 1);
 }
 END_TEST
+
+/* The revert must leave the listener on the same option baseline as a
+ * freshly allocated socket: the receive-window scale we advertise is a
+ * property of RXBUF_SIZE, not of the dead connection. A revert that left
+ * it zeroed would make the next connection on the port advertise WS shift
+ * 0 (receive window capped at 64KB when RXBUF_SIZE > 0xFFFF) and drop the
+ * WS/TS offers that accept() copies into new connections. */
+START_TEST(test_tcp_listener_revert_restores_option_baseline)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    struct tsocket *fresh;
+    struct wolfIP_sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+
+    /* accept() fails (ESTABLISHED) and reverts the port to LISTEN. */
+    memset(&peer, 0, sizeof(peer));
+    ck_assert_int_eq(wolfIP_sock_accept(&s, fd,
+            (struct wolfIP_sockaddr *)&peer, &peer_len), -1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_LISTEN);
+
+    /* The option baseline matches a freshly allocated socket. */
+    fresh = tcp_new_socket(&s);
+    ck_assert_ptr_nonnull(fresh);
+    ck_assert_uint_eq(lsn->sock.tcp.rcv_wscale, fresh->sock.tcp.rcv_wscale);
+    ck_assert_uint_eq(lsn->sock.tcp.ws_offer, fresh->sock.tcp.ws_offer);
+    ck_assert_uint_eq(lsn->sock.tcp.ts_offer, fresh->sock.tcp.ts_offer);
+}
+END_TEST
