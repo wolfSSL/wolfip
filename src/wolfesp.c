@@ -1077,7 +1077,7 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4106_dec_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gcm_dec);
         inited = 0;
@@ -1150,7 +1150,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4106_enc_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gcm_enc);
         inited = 0;
@@ -1204,7 +1204,7 @@ esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4543_dec_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     return err;
 }
 
@@ -1260,7 +1260,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4543_enc_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gmac_enc.aes);
         inited = 0;
