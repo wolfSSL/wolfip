@@ -269,8 +269,12 @@ struct wolfip_supplicant {
      * context zero but is wiped by _deinit() and _pmksa_clear().
      *
      * Reuse requires BOTH pmksa_magic == WOLFIP_PMKSA_MAGIC AND an exact
-     * SSID match, so an uninitialized (garbage) context on the very first
-     * init cannot be mistaken for a valid cache. */
+     * SSID match, so a garbage value cannot be mistaken for a valid
+     * cache hit. The first init still READS these fields (PMKSA
+     * snapshot) before zeroing the context, so caller-owned (stack /
+     * static / pool) contexts MUST be zero-initialized (memset /
+     * "= {0}") before their very first wolfip_supplicant_init(); only
+     * re-inits on a previously valid context may carry PMKSA state. */
     uint32_t pmksa_magic;
     uint8_t  pmksa_pmk[WPA_PMK_LEN];
     uint8_t  pmksa_pmkid[16];   /* PMKID of the cached PMKSA (for reconnect) */
