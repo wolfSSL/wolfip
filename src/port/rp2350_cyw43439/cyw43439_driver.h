@@ -72,8 +72,11 @@ int cyw43_set_powersave(uint32_t pm);
 /* Initiate association to the named SSID. open_auth = 1 for an open
  * (non-RSN) network; for WPA2/WPA3 the call kicks off MLME and the
  * 4-way / SAE handshake runs in the wolfIP supplicant. Returns 0 once
- * the (Re)Assoc Response arrives with a success code; the supplicant
- * is responsible for finishing the handshake before traffic flows.
+ * the WLC_SET_SSID command is accepted - the (Re)Association completes
+ * asynchronously; poll cyw43_assoc_up() (or the latched
+ * cyw43_assoc_seen()) for the later WLC_E_ASSOC / WLC_E_LINK event,
+ * and the supplicant is responsible for finishing the handshake before
+ * traffic flows.
  *
  * bssid may be NULL (any matching SSID). channel = 0 means scan all. */
 int cyw43_connect(const uint8_t *ssid, size_t ssid_len,
