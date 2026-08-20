@@ -5259,12 +5259,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         if (t->sock.tcp.state == TCP_CLOSED && (t->events & CB_EVENT_CLOSED))
             continue;
         if (t->src_port == ee16(tcp->dst_port)) {
-            /* TCP segment sanity checks */
+            /* TCP segment sanity checks (the ip.len vs frame_len bound is
+             * already enforced by the prologue above). */
             iplen = ee16(tcp->ip.len);
-            if (iplen > frame_len - ETH_HEADER_LEN) {
-                return; /* discard */
-            }
-
             if (t->sock.tcp.state > TCP_LISTEN) {
                 if (t->dst_port != ee16(tcp->src_port)) {
                     /* Not the right socket */
