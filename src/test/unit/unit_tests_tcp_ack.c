@@ -4329,6 +4329,41 @@ START_TEST(test_tcp_process_ts_no_ecr)
 }
 END_TEST
 
+START_TEST(test_tcp_process_ts_future_ecr_rejected)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)tcp->data;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+
+    memset(tcp, 0, sizeof(buf));
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(1000);
+    /* ECR in the future of the local clock: the guard must reject it
+     * before the sample is computed, or (last_tick - ecr) underflows
+     * into a huge RTT sample that wrecks the RTO. */
+    opt->ecr = ee32(5000);
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+
+    s.last_tick = 1000;
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), -1);
+    /* No sample taken: RTO state is untouched. */
+    ck_assert_uint_eq(ts->sock.tcp.rto_initialized, 0);
+    ck_assert_uint_eq(ts->sock.tcp.rtt, 0);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_process_ts_ooo_segment_keeps_recent)
 {
     struct wolfIP s;
