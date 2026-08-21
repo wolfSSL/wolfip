@@ -11265,20 +11265,30 @@ static void handle_socket_callbacks(struct wolfIP *s)
         if ((ts->sock.tcp.state == TCP_CLOSED) && !(ts->events & CB_EVENT_CLOSED))
             continue;
         {
+            tsocket_cb cb = ts->callback;
+            void *cb_arg = ts->callback_arg;
             uint16_t events = ts->events;
             ts->events = 0;
-            ts->callback(i | MARK_TCP_SOCKET, events, ts->callback_arg);
-        }
+            cb(i | MARK_TCP_SOCKET, events, cb_arg);
 
-        /* Now that CB_EVENT_CLOSED has been delivered, reap the deferred-close
-         * socket. Disarm the callback first so close_socket() takes the plain
-         * teardown path instead of re-deferring (it re-arms close_notify_pending
-         * whenever a TCP socket still has a callback). A socket closed elsewhere
-         * is already memset (callback NULL) and never reaches this branch. */
-        if (ts->sock.tcp.state == TCP_CLOSED) {
-            ts->callback = NULL;
-            ts->callback_arg = NULL;
-            close_socket(ts);
+            /* Now that CB_EVENT_CLOSED has been delivered, reap the
+             * deferred-close socket - but only if the slot still holds the
+             * socket that was just dispatched. The callback may have closed
+             * this socket (freeing the slot) and allocated a fresh one in its
+             * place; a fresh socket is TCP_CLOSED by design, so reaping on
+             * state alone would destroy it. A replaced slot carries a
+             * different (or no) callback, so key the reap on the identity of
+             * the callback pair. Disarm the callback first so close_socket()
+             * takes the plain teardown path instead of re-deferring (it
+             * re-arms close_notify_pending whenever a TCP socket still has a
+             * callback). A socket closed elsewhere is already memset (callback
+             * NULL) and never reaches this branch. */
+            if ((ts->callback == cb) && (ts->callback_arg == cb_arg) &&
+                    (ts->sock.tcp.state == TCP_CLOSED)) {
+                ts->callback = NULL;
+                ts->callback_arg = NULL;
+                close_socket(ts);
+            }
         }
     }
 
