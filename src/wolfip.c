@@ -2727,7 +2727,6 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         return;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
-        uint32_t expected_len;
         /* Only connected UDP sockets restrict by the peer's
          * ip/port. Unconnected sockets (sendto-only or pure listeners)
          * must accept datagrams from any source, per POSIX. This is
@@ -2760,13 +2759,10 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
 
-            /* UDP datagram sanity checks */
-            /* Allow some tolerance for padding/alignment (up to 4 bytes) */
-            expected_len = ee16(udp->len) + IP_HEADER_LEN + ETH_HEADER_LEN;
-            if ((int)frame_len < (int)expected_len)
-                return;
             /* A bound socket matched this datagram. If the RX FIFO is full,
-             * drop silently instead of misreporting the port as closed. */
+             * drop silently instead of misreporting the port as closed.
+             * (The frame_len vs declared UDP length bound is already
+             * enforced by the unconditional guard before the socket loop.) */
             matched = 1;
             if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
                 t->last_pkt_ttl = udp->ip.ttl;
