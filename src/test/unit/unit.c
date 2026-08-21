@@ -1530,6 +1530,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dns_callback_rcode_nonzero_aborts_query);
     tcase_add_test(tc_core, test_dns_callback_zero_ancount_no_delivery);
     tcase_add_test(tc_core, test_dns_callback_aaaa_answer_skipped_for_a_query);
+    tcase_add_test(tc_core, test_dns_callback_qr_without_rd_is_accepted);
     tcase_add_test(tc_core, test_dns_callback_rr_rdlen_truncated_aborts_query);
     tcase_add_test(tc_core, test_dns_callback_bad_question_name_aborts_query);
     tcase_add_test(tc_core, test_dns_callback_answer_forward_ptr_aborts_query);
