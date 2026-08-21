@@ -197,6 +197,57 @@ START_TEST(test_dns_callback_aaaa_answer_skipped_for_a_query)
 END_TEST
 
 /* ------------------------------------------------------------------ *
+ * F-6211: response detection must key on the QR bit alone (RFC 1035
+ * s4.1.1). A conformant server that does not echo the RD bit must still
+ * have its reply parsed. Requiring RD as well silently drops such a
+ * response and lets the query time out and retransmit. Flags here are
+ * 0x8000 (QR set, RD clear).
+ * ------------------------------------------------------------------ */
+START_TEST(test_dns_callback_qr_without_rd_is_accepted)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    int pos;
+    struct dns_rr *rr;
+    uint8_t a_rdata[4] = {0x0A, 0x00, 0x00, 0x02};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0x3333, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
+    dns_lookup_calls = 0;
+    dns_lookup_ip    = 0;
+    s.dns_lookup_cb  = test_dns_lookup_cb;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    /* QR set, RD clear, RCODE 0, TC clear. */
+    pos = build_dns_a_response_header(response, sizeof(response),
+                                      s.dns_id, 0x8000, 1, 1, NULL);
+    /* Answer NAME: compressed pointer to the question name. */
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type     = ee16(DNS_A);
+    rr->class    = ee16(DNS_CLASS_IN);
+    rr->ttl      = ee32(60);
+    rr->rdlength = ee16((uint16_t)sizeof(a_rdata));
+    pos += (int)sizeof(struct dns_rr);
+    memcpy(&response[pos], a_rdata, sizeof(a_rdata));
+    pos += (int)sizeof(a_rdata);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)],
+                   response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* The QR-only response must be parsed and the lookup delivered. */
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0x0A000002U);
+}
+END_TEST
+
+/* ------------------------------------------------------------------ *
  * dns_callback: answer rdlen advertised larger than remaining buffer
  * → abort query (line 8997-8999)
  * ------------------------------------------------------------------ */

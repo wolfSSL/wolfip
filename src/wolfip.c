@@ -10656,7 +10656,11 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define DNS_RD 0x0100 /* Recursion desired */
 #define DNS_TC 0x0200 /* Truncated response */
 #define DNS_RCODE_MASK 0x000F
-#define DNS_FLAGS_RESPONSE_RD (DNS_RD | ((uint16_t)DNS_RESPONSE << 8))
+/* QR bit (bit 15 of the 16-bit flags field): per RFC 1035 s4.1.1 this alone
+ * distinguishes a response from a query. RD is only the Recursion-Desired
+ * flag echoed from the query, so it must not gate response detection. */
+#define DNS_FLAGS_RESPONSE ((uint16_t)DNS_RESPONSE << 8)
+#define DNS_FLAGS_RESPONSE_RD (DNS_RD | DNS_FLAGS_RESPONSE)
 #define DNS_ID_NONE 0
 #define DNS_QUESTION_COUNT 1
 #define DNS_MIN_ID 1
@@ -11009,8 +11013,11 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
         if (ee16(hdr->id) != s->dns_id)
             return;
         flags = ee16(hdr->flags);
-        /* Parse DNS response */
-        if ((flags & DNS_FLAGS_RESPONSE_RD) == DNS_FLAGS_RESPONSE_RD) {
+        /* Parse DNS response: key on the QR bit alone (RFC 1035 s4.1.1). A
+         * conformant server that does not echo the RD bit must still have its
+         * reply parsed; requiring RD as well silently drops such responses
+         * and lets the outstanding query time out and retransmit. */
+        if ((flags & DNS_FLAGS_RESPONSE) != 0) {
             if ((flags & DNS_TC) != 0) {
                 dns_abort_query(s);
                 return;
