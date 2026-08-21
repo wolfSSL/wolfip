@@ -31,6 +31,7 @@
 #endif
 #include "wolfip.h"
 #include "config.h"
+#include <stdio.h> /* DEBUG (temporary, macos bisect) */
 
 #ifndef LINK_MTU_MIN
 #define LINK_MTU_MIN 64U
@@ -1772,6 +1773,11 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
         return -WOLFIP_EINVAL;
 #endif
     frame_mtu = wolfIP_ll_frame_mtu(ll);
+    {
+        /* DEBUG (temporary, macos bisect) */
+        printf("dbg TXgate: len=%u mtu=%u\n", (unsigned)len, (unsigned)frame_mtu);
+        fflush(stdout);
+    }
     if (len > frame_mtu)
         return -WOLFIP_EINVAL;
     if (ll->non_ethernet) {
@@ -6743,6 +6749,17 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 payload_cap = tx_cap;
             payload_len = fifo_max_push_payload(&ts->sock.tcp.txbuf, frame_base, payload_cap);
             if (payload_len == 0) {
+                {
+                    /* DEBUG (temporary, macos bisect) */
+                    struct fifo *dbg_fb = (struct fifo *)&ts->sock.tcp.txbuf;
+                    printf("dbg send-EAGAIN: %u.%u->%u.%u head=%u tail=%u "
+                           "h_wrap=%u size=%u\n",
+                           (unsigned)(ts->local_ip & 0xff), (unsigned)ts->src_port,
+                           (unsigned)(ts->remote_ip & 0xff), (unsigned)ts->dst_port,
+                           (unsigned)dbg_fb->head, (unsigned)dbg_fb->tail,
+                           (unsigned)dbg_fb->h_wrap, (unsigned)dbg_fb->size);
+                    fflush(stdout);
+                }
                 break;
             }
             if (payload_len > tx_cap)
@@ -11536,6 +11553,12 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
 #else
                         send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
 #endif /* WOLFIP_ESP */
+                    }
+                    {
+                        /* DEBUG (temporary, macos bisect) */
+                        printf("dbg flush: ret=%d len=%u\n", (int)send_ret,
+                               (unsigned)desc->len);
+                        fflush(stdout);
                     }
                     if (send_ret == -WOLFIP_EAGAIN) {
                         if (tx_has_writable_space(ts))
