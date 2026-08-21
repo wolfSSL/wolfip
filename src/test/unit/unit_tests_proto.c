@@ -4811,6 +4811,53 @@ START_TEST(test_tcp_listen_accepts_bound_interface)
 }
 END_TEST
 
+/* F-10281: a listener bound to a specific local address must only match
+ * segments addressed to that address. The SYN path already validates
+ * bound_local_ip, but a non-SYN segment for the same port and a different
+ * local address on the same host overwrites the listener's
+ * if_idx/last_pkt_ttl/peer_rwnd and sets matched (suppressing the RFC 793
+ * unmatched RST) before any address validation. A segment for the bound
+ * address must still match, so the check is not over-restricting. */
+START_TEST(test_tcp_listen_requires_matching_local_ip)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80002U;
+    const ip4 secondary_ip = 0xC0A80101U;
+    const uint16_t listen_port = 23456;
+    int listen_fd;
+    struct wolfIP_sockaddr_in addr;
+    struct tsocket *listener;
+    uint8_t ttl_before;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    listen_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_fd)];
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = ee16(listen_port);
+    addr.sin_addr.s_addr = ee32(secondary_ip);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+    ck_assert_uint_eq(listener->bound_local_ip, secondary_ip);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ttl_before = listener->last_pkt_ttl;
+
+    /* (1) A non-SYN segment for the same port but a different local address
+     * must not mutate the listener's bookkeeping. */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, primary_ip, 40000,
+                       listen_port, 100, 0, 0);
+    ck_assert_uint_eq(listener->last_pkt_ttl, ttl_before);
+
+    /* (2) A segment for the bound address still matches (not over-restricted). */
+    inject_tcp_segment(&s, TEST_SECOND_IF, 0x0A0000A2U, secondary_ip, 40000,
+                       listen_port, 200, 0, 0);
+    ck_assert_uint_eq(listener->last_pkt_ttl, 64);
+}
+END_TEST
+
 START_TEST(test_tcp_listen_accepts_any_interface)
 {
     struct wolfIP s;

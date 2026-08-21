@@ -5460,6 +5460,23 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* Not the right local endpoint */
                     continue;
                 }
+            } else {
+                /* LISTEN: a specifically-bound listener (bound_local_ip !=
+                 * 0.0.0.0) must only match segments addressed to its bound
+                 * address; a wildcard listener accepts any local address.
+                 * The SYN path already enforces this for SYNs, but without it
+                 * here a non-SYN segment for a different local IP on the same
+                 * host overwrites the listener's if_idx/last_pkt_ttl/peer_rwnd
+                 * and sets matched, which corrupts listener MTU/TTL
+                 * bookkeeping and suppresses the RFC 793 unmatched RST.
+                 * bound_local_ip (not local_ip) is the discriminator: a
+                 * 0.0.0.0 bind leaves local_ip set to the interface/primary
+                 * address as a default source. */
+                if (t->bound_local_ip != IPADDR_ANY &&
+                        t->bound_local_ip != ee32(tcp->ip.dst)) {
+                    /* Not the right local endpoint */
+                    continue;
+                }
             }
             t->if_idx = (uint8_t)if_idx;
             t->last_pkt_ttl = tcp->ip.ttl;

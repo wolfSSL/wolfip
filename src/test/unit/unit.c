@@ -925,6 +925,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_icmp_echo_request_non_local_dst_no_reply);
     tcase_add_test(tc_proto, test_tcp_listen_rejects_wrong_interface);
     tcase_add_test(tc_proto, test_tcp_listen_accepts_bound_interface);
+    tcase_add_test(tc_proto, test_tcp_listen_requires_matching_local_ip);
     tcase_add_test(tc_proto, test_tcp_listen_accepts_any_interface);
     tcase_add_test(tc_proto, test_sock_connect_selects_local_ip_multi_if);
     tcase_add_test(tc_proto, test_icmp_socket_send_recv);
