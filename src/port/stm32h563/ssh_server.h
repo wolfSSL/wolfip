@@ -35,7 +35,9 @@ int ssh_server_init(struct wolfIP *stack, uint16_t port, ssh_debug_cb debug);
  * Returns 0 on success */
 int ssh_server_poll(void);
 
-/* Get SSH server uptime in seconds (for status display) */
+/* Get SSH server uptime in seconds (for status display).
+ * Currently a placeholder: returns 0 until a main-loop tick source is
+ * integrated, so the "uptime" SSH command always reports zero. */
 uint32_t ssh_server_get_uptime(void);
 
 #endif /* SSH_SERVER_H */
