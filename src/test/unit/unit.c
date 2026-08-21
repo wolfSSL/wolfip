@@ -1362,9 +1362,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_udp_socket_callback_dispatched);
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_poll_raw_socket_callback_dispatched);
+    tcase_add_test(tc_core, test_poll_raw_socket_callback_reraised_event_survives);
 #endif /* WOLFIP_RAWSOCKETS */
 #if WOLFIP_PACKET_SOCKETS
     tcase_add_test(tc_core, test_poll_packet_socket_callback_dispatched);
+    tcase_add_test(tc_core, test_poll_packet_socket_callback_reraised_event_survives);
 #endif /* WOLFIP_PACKET_SOCKETS */
     tcase_add_test(tc_core, test_poll_tx_tcp_pkt_flag_sent_desc_skipped);
     tcase_add_test(tc_core, test_poll_tx_tcp_arp_miss_emits_arp_request);

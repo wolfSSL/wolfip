@@ -11269,8 +11269,13 @@ static void handle_socket_callbacks(struct wolfIP *s)
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];
         if (r->used && (r->callback) && (r->events)) {
-            r->callback(i | MARK_RAW_SOCKET, r->events, r->callback_arg);
+            /* Snapshot and clear before the callback (as dispatch_events
+             * does): the callback may re-enter the stack and raise events
+             * on this same slot (e.g. close + re-socket in place); a
+             * post-callback clear would wipe them. */
+            uint16_t events = r->events;
             r->events = 0;
+            r->callback(i | MARK_RAW_SOCKET, events, r->callback_arg);
         }
     }
 #endif
@@ -11278,8 +11283,13 @@ static void handle_socket_callbacks(struct wolfIP *s)
     for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
         struct packetsocket *p = &s->packetsockets[i];
         if (p->used && (p->callback) && (p->events)) {
-            p->callback(i | MARK_PACKET_SOCKET, p->events, p->callback_arg);
+            /* Snapshot and clear before the callback (as dispatch_events
+             * does): the callback may re-enter the stack and raise events
+             * on this same slot (e.g. close + re-socket in place); a
+             * post-callback clear would wipe them. */
+            uint16_t events = p->events;
             p->events = 0;
+            p->callback(i | MARK_PACKET_SOCKET, events, p->callback_arg);
         }
     }
 #endif
