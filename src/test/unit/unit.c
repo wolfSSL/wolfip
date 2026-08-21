@@ -978,6 +978,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_udp_len_exceeds_ip_len_dropped);
     tcase_add_test(tc_proto, test_regression_udp_len_below_header_discards_and_unblocks);
     tcase_add_test(tc_proto, test_regression_udp_payload_exceeds_buffer_discards_and_unblocks);
+    tcase_add_test(tc_proto, test_udp_dhcp_relaxation_scoped_to_dhcp_socket);
     tcase_add_test(tc_proto, test_regression_icmp_payload_exceeds_buffer_discards_and_unblocks);
     tcase_add_test(tc_proto, test_regression_tcp_ip_len_below_ip_header);
     tcase_add_test(tc_proto, test_regression_syn_on_established_not_silently_processed);

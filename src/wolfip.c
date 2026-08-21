@@ -2737,8 +2737,15 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         int peer_match = (t->sock.udp.connected == 0) ||
                 ((t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                  (t->remote_ip == 0 || t->remote_ip == src_ip));
+        /* The local_ip==0 relaxation exists so the DHCP client socket can
+         * receive OFFER/ACK before it owns an address. It must apply only to
+         * that socket: scoping it to s->dhcp_udp_sd keeps peer_match in force
+         * for any other (e.g. connected) socket that still has no local
+         * address while DHCP is running. */
+        int is_dhcp = (s->dhcp_udp_sd > 0) &&
+                ((uint32_t)(MARK_UDP_SOCKET | i) == (uint32_t)s->dhcp_udp_sd);
         int addr_match =
-                (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
+                (((t->local_ip == 0) && DHCP_IS_RUNNING(s) && is_dhcp) ||
                  (t->local_ip == dst_ip && peer_match));
 #ifdef IP_MULTICAST
         if (wolfIP_ip_is_multicast(dst_ip)) {
