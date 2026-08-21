@@ -372,7 +372,19 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
     uint32_t h_wrap = f->h_wrap;
     memset(&desc, 0, sizeof(struct pkt_desc));
     /* Ensure 4-byte alignment in the buffer */
-    head = fifo_align_head_pos(head, f->size);
+    {
+        uint32_t raw_head = head;
+        head = fifo_align_head_pos(head, f->size);
+        /* fifo_align_head_pos() wraps an unaligned head in {size-3,size-2,
+         * size-1} to 0. If the FIFO is non-empty and not yet wrapped, that
+         * wrap must be recorded in h_wrap: otherwise head==tail==0 &&
+         * h_wrap==0 is indistinguishable from the empty state, the space test
+         * below reports the whole buffer as free, and the push clobbers every
+         * previously queued descriptor (or, when the write lands exactly on
+         * tail, leaves a non-empty FIFO that reports as empty). */
+        if (head == 0 && raw_head != 0 && h_wrap == 0 && !fifo_is_empty(f))
+            h_wrap = raw_head;
+    }
     {
         uint32_t space;
         if (head == tail && h_wrap == 0)
@@ -440,9 +452,17 @@ static int fifo_can_push_len(const struct fifo *fin, uint32_t len)
     needed = sizeof(struct pkt_desc) + len;
     if (needed > fin->size)
         return 0;
-    head = fifo_align_head_pos(fin->head, fin->size);
-    tail = fin->tail;
-    h_wrap = fin->h_wrap;
+    {
+        uint32_t raw_head = fin->head;
+        head = fifo_align_head_pos(fin->head, fin->size);
+        tail = fin->tail;
+        h_wrap = fin->h_wrap;
+        /* Mirror fifo_push(): record an alignment-induced head->0 wrap so the
+         * capacity check agrees with the empty/full test rather than reporting
+         * a nearly-full FIFO as fully free. */
+        if (head == 0 && raw_head != 0 && h_wrap == 0 && !fifo_is_empty(fin))
+            h_wrap = raw_head;
+    }
 
     {
         uint32_t space;
