@@ -1803,6 +1803,30 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
         return parent->send(parent, staging, len + WOLFIP_VLAN_TAG_LEN);
     }
 #endif
+    {
+        /* DEBUG (temporary, macos bisect): every frame leaving the stack */
+        const uint8_t *fb = (const uint8_t *)buf;
+        uint16_t et = (uint16_t)((fb[12] << 8) | fb[13]);
+        if (et == 0x0800) {
+            const uint8_t *iph = fb + ETH_HEADER_LEN;
+            uint8_t ihl = (iph[0] & 0x0f) * 4;
+            if (iph[9] == 6 &&
+                len >= (uint32_t)(ETH_HEADER_LEN + ihl + 14)) {
+                const uint8_t *tp = iph + ihl;
+                printf("dbg TX tcp: %u->%u sport=%u dport=%u flags=0x%02x\n",
+                       (unsigned)(iph[12] & 0xff), (unsigned)(iph[15] & 0xff),
+                       (unsigned)((tp[0] << 8) | tp[1]),
+                       (unsigned)((tp[2] << 8) | tp[3]),
+                       (unsigned)tp[13]);
+            } else {
+                printf("dbg TX ip: proto=%u len=%u\n",
+                       (unsigned)iph[9], (unsigned)len);
+            }
+        } else {
+            printf("dbg TX: et=0x%04x len=%u\n", (unsigned)et, (unsigned)len);
+        }
+        fflush(stdout);
+    }
     return ll->send(ll, buf, len);
 }
 
@@ -5424,6 +5448,14 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             return;
     }
 
+    {
+        /* DEBUG (temporary, macos bisect): every TCP segment passing checksum */
+        printf("dbg RX tcp: %u->%u sport=%u dport=%u flags=0x%02x\n",
+               (unsigned)(tcp->ip.src & 0xff), (unsigned)(tcp->ip.dst & 0xff),
+               (unsigned)ee16(tcp->src_port), (unsigned)ee16(tcp->dst_port),
+               (unsigned)tcp->flags);
+        fflush(stdout);
+    }
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len,
                           IP_HEADER_LEN) != 0)
         return;
@@ -5477,6 +5509,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             t->if_idx = (uint8_t)if_idx;
             t->last_pkt_ttl = tcp->ip.ttl;
             matched = 1;
+            {
+                /* DEBUG (temporary, macos bisect) */
+                printf("dbg RX matched: sock=%d state=%d\n", i,
+                       (int)t->sock.tcp.state);
+                fflush(stdout);
+            }
             /* Validate minimum TCP header length (data offset). */
             if (tcp_data_offset_bytes(tcp->hlen) < TCP_HEADER_LEN) {
                 return; /* malformed: TCP header below minimum length */
@@ -11327,6 +11365,12 @@ static void handle_socket_callbacks(struct wolfIP *s)
             void *cb_arg = ts->callback_arg;
             uint16_t events = ts->events;
             ts->events = 0;
+            {
+                /* DEBUG (temporary, macos bisect) */
+                printf("dbg dispatch: sock=%d ev=0x%04x state=%d\n", i,
+                       (unsigned)events, (int)ts->sock.tcp.state);
+                fflush(stdout);
+            }
             cb(i | MARK_TCP_SOCKET, events, cb_arg);
 
             /* Now that CB_EVENT_CLOSED has been delivered, reap the

@@ -65,6 +65,9 @@ int wolfSSL_SetIO_wolfIP_CTX(WOLFSSL_CTX *ctx, struct wolfIP *s);
 static void server_cb(int fd, uint16_t event, void *arg)
 {
     int ret = 0;
+    printf("dbg cb: fd=0x%04x ev=0x%04x client_fd=0x%04x\n",
+           (unsigned)fd, (unsigned)event, (unsigned)client_fd);
+    fflush(stdout);
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) && (client_fd == -1)) {
         client_fd = wolfIP_sock_accept((struct wolfIP *)arg, listen_fd, NULL, NULL);
         if (client_fd > 0) {
@@ -144,6 +147,8 @@ static void server_cb(int fd, uint16_t event, void *arg)
 /* wolfIP side: main loop of the stack under test. */
 static int test_loop(struct wolfIP *s, int active_close)
 {
+    long last_beat = 0;
+    int dbg_n = 0;
     exit_ok = 0;
     exit_count = 0;
     tot_sent = 0;
@@ -156,6 +161,14 @@ static int test_loop(struct wolfIP *s, int active_close)
         gettimeofday(&tv, NULL);
         ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         usleep(ms_next * 1000);
+        gettimeofday(&tv, NULL);
+        dbg_n++;
+        if (tv.tv_sec - last_beat >= 2) {
+            last_beat = tv.tv_sec;
+            printf("dbg loop: n=%d ms_next=%u exit_ok=%d\n",
+                   dbg_n, (unsigned)ms_next, exit_ok);
+            fflush(stdout);
+        }
         if (exit_ok > 0) {
             if (exit_count++ < 10)
                 continue;
@@ -415,6 +428,7 @@ int main(int argc, char **argv)
 
     wolfSSL_Init();
     wolfSSL_Debugging_OFF();
+    setvbuf(stdout, NULL, _IONBF, 0); /* DEBUG: unbuffered for CI logs */
 
     (void)argc;
     (void)argv;
