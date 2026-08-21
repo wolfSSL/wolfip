@@ -5601,6 +5601,82 @@ START_TEST(test_regression_icmp_payload_exceeds_buffer_discards_and_unblocks)
 }
 END_TEST
 
+/* F-10280: while the DHCP client is running, the local_ip==0 relaxation in
+ * udp_try_recv must apply only to the DHCP client socket. A connected app
+ * socket created before the interface owns an address (local_ip==0) must
+ * still enforce peer matching, so a datagram from a non-connected peer is
+ * not delivered to it; the DHCP socket itself must still receive datagrams
+ * from any source. Socket fields are host order; wire fields are network
+ * order (ee16/ee32), matching udp_try_recv's comparison convention. */
+START_TEST(test_udp_dhcp_relaxation_scoped_to_dhcp_socket)
+{
+    struct wolfIP s;
+    struct tsocket *app;
+    struct tsocket *dhc;
+    uint8_t buf[sizeof(struct wolfIP_udp_datagram) + 32];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)buf;
+    uint8_t payload[8];
+    uint16_t total;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    /* No interface IP is configured: sockets created now carry local_ip 0.
+     * The DHCP client is running. */
+    s.dhcp_state = DHCP_RENEWING;
+
+    /* App socket: connected to 10.0.0.2:9001, local port 9000. */
+    app = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(app);
+    app->src_port = 9000;
+    app->local_ip = 0;
+    app->remote_ip = 0x0A000002U;
+    app->dst_port = 9001;
+    app->sock.udp.connected = 1;
+
+    /* DHCP client socket: unconnected, local port 68, local_ip 0. */
+    dhc = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(dhc);
+    dhc->src_port = 68;
+    dhc->local_ip = 0;
+    dhc->sock.udp.connected = 0;
+    s.dhcp_udp_sd = (int)(MARK_UDP_SOCKET | (uint32_t)(dhc - s.udpsockets));
+
+    memset(payload, 0x5A, sizeof(payload));
+    total = UDP_HEADER_LEN + sizeof(payload);
+
+    /* (1) Datagram to the app socket's port from a non-connected peer
+     * (10.0.0.99:1234, not the connected 10.0.0.2:9001). peer_match must
+     * reject it: the relaxation is scoped to the DHCP socket. */
+    memset(buf, 0, sizeof(buf));
+    udp->src_port = ee16(1234);
+    udp->dst_port = ee16(9000);
+    udp->len = ee16(total);
+    udp->csum = 0; /* skip checksum validation */
+    udp->ip.len = ee16(IP_HEADER_LEN + total);
+    udp->ip.src = ee32(0x0A000099U);
+    udp->ip.dst = ee32(0x0A000002U);
+    memcpy(udp->data, payload, sizeof(payload));
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+                 (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + total));
+    ck_assert_ptr_eq(fifo_peek(&app->sock.udp.rxbuf), NULL);
+
+    /* (2) Datagram to the DHCP socket's port from any source: the relaxation
+     * still applies to the DHCP socket, so it must be delivered. */
+    memset(buf, 0, sizeof(buf));
+    udp->src_port = ee16(67);
+    udp->dst_port = ee16(68);
+    udp->len = ee16(total);
+    udp->csum = 0;
+    udp->ip.len = ee16(IP_HEADER_LEN + total);
+    udp->ip.src = ee32(0x0A000099U);
+    udp->ip.dst = ee32(0xFFFFFF00U); /* broadcast */
+    memcpy(udp->data, payload, sizeof(payload));
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+                 (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + total));
+    ck_assert_ptr_nonnull(fifo_peek(&dhc->sock.udp.rxbuf));
+}
+END_TEST
+
 START_TEST(test_regression_icmp_ip_len_below_header)
 {
     struct wolfIP s;
