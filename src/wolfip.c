@@ -6873,6 +6873,12 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EINVAL;
         if (len == 0)
             return -WOLFIP_EINVAL;
+        /* Reject payloads that cannot fit in a frame before narrowing len to
+         * uint32_t below: a size_t len above the LINK_MTU-derived bound wraps
+         * in the total_len computation, slips past the LINK_MTU guard, and
+         * lets the payload memcpy overflow the fixed-size frame buffer. */
+        if (len > (size_t)LINK_MTU)
+            return -WOLFIP_EINVAL;
         if (sin) {
             if (addrlen < sizeof(struct wolfIP_sockaddr_in))
                 return -WOLFIP_EINVAL;

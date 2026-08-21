@@ -1150,6 +1150,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_icmp_input_echo_reply_path_filter_at_eth);
     tcase_add_test(tc_core, test_ip_recv_with_options_oversize_dropped);
     tcase_add_test(tc_core, test_wolfip_recv_on_null_stack_returns);
+#if WOLFIP_RAWSOCKETS
+    tcase_add_test(tc_core, test_raw_sendto_rejects_oversized_len_before_narrowing);
+#endif
 
     /* Socket API arms: TCP, RAW, PACKET */
     tcase_add_test(tc_core, test_register_callback_tcp_stores_handle);
