@@ -1301,9 +1301,12 @@ START_TEST(test_dhcp_lease_expiry_relearns_dns_server)
     ck_assert_uint_eq(s.dns_server, first_dns);
     ck_assert_uint_ne(s.dhcp_lease_expires, 0U);
 
-    /* The lease expires: every parameter it carried is released. */
+    /* The lease expires: every parameter it carried is released. Drive it
+     * through handle_timers so the renew timer is popped before the
+     * callback runs (exactly as in production), leaving no orphaned timer
+     * behind. */
     s.last_tick = s.dhcp_lease_expires;
-    dhcp_timer_cb(&s);
+    handle_timers(&s, s.last_tick);
     ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
     ck_assert_uint_eq(primary->ip, 0U);
     ck_assert_uint_eq(primary->gw, 0U);

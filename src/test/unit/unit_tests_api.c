@@ -186,7 +186,8 @@ START_TEST(test_filter_notify_tcp_metadata)
     wolfIP_filter_set_callback(test_filter_cb, NULL);
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
 
-    (void)wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, &s, 1, &tcp, sizeof(tcp));
+    (void)wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, &s, 1, &tcp, sizeof(tcp),
+                                   IP_HEADER_LEN);
     ck_assert_int_eq(filter_cb_calls, 1);
     ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_TCP);
     ck_assert_uint_eq(filter_last_event.meta.l4.tcp.src_port, tcp.src_port);
@@ -196,6 +197,101 @@ START_TEST(test_filter_notify_tcp_metadata)
     wolfIP_filter_set_callback(NULL, NULL);
 }
 END_TEST
+
+/* IHL-aware filter metadata: a forwarded datagram keeps its IP options
+ * (IHL > 5) and the filter notify must read the transport header at the
+ * actual IHL, not at a fixed 20-byte offset. This UDP datagram carries a
+ * 24-byte IP header (IHL=6) with four option bytes; the UDP header (the
+ * ports) follows the options. Pre-fix, the notify sampled the option
+ * bytes as the ports, misrepresenting them to any L4 filter and
+ * (for a header-only datagram) over-reading the received bytes. */
+START_TEST(test_filter_notify_udp_ihl_options_metadata)
+{
+    struct wolfIP s;
+    uint8_t buf[ETH_HEADER_LEN + 24 + UDP_HEADER_LEN + 4];
+    uint8_t *ip;
+    uint8_t *udp;
+    uint16_t src_port = 1234;
+    uint16_t dst_port = 5678;
+
+    memset(&s, 0, sizeof(s));
+    memset(buf, 0, sizeof(buf));
+
+    /* IP header at offset ETH_HEADER_LEN, IHL=6 (24 bytes). */
+    ip = buf + ETH_HEADER_LEN;
+    ip[0] = 0x46;                    /* ver=4, IHL=6 */
+    ip[2] = 0; ip[3] = 36;           /* total IP length: 24 + 8 + 4 */
+    ip[8] = 64;                      /* ttl */
+    ip[9] = WI_IPPROTO_UDP;          /* proto */
+    ip[12] = 0x0A; ip[13] = 0; ip[14] = 0; ip[15] = 1;   /* src 10.0.0.1 */
+    ip[16] = 0x0A; ip[17] = 0; ip[18] = 0; ip[19] = 2;   /* dst 10.0.0.2 */
+    /* Four option bytes (NOPs) at IP-header offset 20. A fixed-20-byte
+     * transport offset would read these as the UDP ports. */
+    ip[20] = 0x01; ip[21] = 0x01; ip[22] = 0x01; ip[23] = 0x01;
+
+    /* UDP header at IP-header offset 24 (after the options). */
+    udp = buf + ETH_HEADER_LEN + 24;
+    udp[0] = (uint8_t)(src_port >> 8);  udp[1] = (uint8_t)(src_port & 0xFF);
+    udp[2] = (uint8_t)(dst_port >> 8);  udp[3] = (uint8_t)(dst_port & 0xFF);
+    udp[4] = 0;    udp[5] = (uint8_t)(UDP_HEADER_LEN + 4); /* udp len */
+    udp[6] = 0;    udp[7] = 0;                  /* csum */
+    buf[ETH_HEADER_LEN + 24 + UDP_HEADER_LEN] = 0xAA;   /* 4 payload bytes */
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+
+    (void)wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, &s, 1,
+                                   (struct wolfIP_udp_datagram *)buf,
+                                   sizeof(buf), 24);
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto, WOLFIP_FILTER_PROTO_UDP);
+    /* The ports must come from the UDP header after the options, not from
+     * the option bytes. */
+    ck_assert_uint_eq(filter_last_event.meta.l4.udp.src_port, ee16(src_port));
+    ck_assert_uint_eq(filter_last_event.meta.l4.udp.dst_port, ee16(dst_port));
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
+
+/* The IHL-aware guard: a header-only (or truncated) datagram must not
+ * over-read the received bytes when the transport header is not fully
+ * present after the actual IHL. The notify must skip the L4 metadata
+ * (no callback) rather than read past the buffer. */
+START_TEST(test_filter_notify_udp_ihl_truncated_no_overread)
+{
+    struct wolfIP s;
+    uint8_t buf[ETH_HEADER_LEN + 24];   /* eth + 24-byte IP header only */
+    uint8_t *ip;
+
+    memset(&s, 0, sizeof(s));
+    memset(buf, 0, sizeof(buf));
+
+    ip = buf + ETH_HEADER_LEN;
+    ip[0] = 0x46;                    /* ver=4, IHL=6 */
+    ip[2] = 0; ip[3] = 24;           /* total IP length: just the header */
+    ip[8] = 64;
+    ip[9] = WI_IPPROTO_UDP;
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+
+    /* Only the IP header is present; the UDP header is not. The notify
+     * must not fire (no transport bytes to read). */
+    (void)wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, &s, 1,
+                                   (struct wolfIP_udp_datagram *)buf,
+                                   sizeof(buf), 24);
+    ck_assert_int_eq(filter_cb_calls, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+}
+END_TEST
+
 
 START_TEST(test_filter_dispatch_no_callback)
 {
@@ -2503,6 +2599,7 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     uint32_t pre_accept_seq;
     uint32_t pre_accept_ack;
     uint32_t pre_accept_last_ts;
+    uint8_t pre_accept_ts_recent_valid;
     uint32_t pre_accept_local_ip;
     uint32_t pre_accept_remote_ip;
     uint32_t pre_accept_peer_rwnd;
@@ -2541,6 +2638,7 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
 
     /* Seed half-open negotiation state so accept() must clone it into the child socket. */
     listener->sock.tcp.last_ts = 0x11223344U;
+    listener->sock.tcp.ts_recent_valid = 1;
     listener->sock.tcp.peer_rwnd = 4096;
     listener->sock.tcp.peer_mss = 1200;
     listener->sock.tcp.snd_wscale = 4;
@@ -2555,6 +2653,7 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     pre_accept_seq = listener->sock.tcp.seq;
     pre_accept_ack = listener->sock.tcp.ack;
     pre_accept_last_ts = listener->sock.tcp.last_ts;
+    pre_accept_ts_recent_valid = listener->sock.tcp.ts_recent_valid;
     pre_accept_local_ip = listener->local_ip;
     pre_accept_remote_ip = listener->remote_ip;
     pre_accept_peer_rwnd = listener->sock.tcp.peer_rwnd;
@@ -2588,6 +2687,8 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     ck_assert_uint_eq(accepted->sock.tcp.ack, pre_accept_ack);
     ck_assert_uint_eq(accepted->sock.tcp.snd_una, pre_accept_seq);
     ck_assert_uint_eq(accepted->sock.tcp.last_ts, pre_accept_last_ts);
+    ck_assert_uint_eq(accepted->sock.tcp.ts_recent_valid,
+                      pre_accept_ts_recent_valid);
     ck_assert_uint_eq(accepted->sock.tcp.peer_rwnd, pre_accept_peer_rwnd);
     ck_assert_uint_eq(accepted->sock.tcp.peer_mss, pre_accept_peer_mss);
     ck_assert_uint_eq(accepted->sock.tcp.snd_wscale, pre_accept_snd_wscale);
@@ -4652,6 +4753,129 @@ START_TEST(test_syn_sent_bad_ack_synack_sends_rst)
     ck_assert_uint_gt(last_frame_sent_size, 0);
     /* Socket must remain in SYN_SENT */
     ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+/* Regression: per RFC 9293 §3.10.7.3, a bare ACK (no SYN) with an
+ * unacceptable ACK number in SYN_SENT must trigger a RST
+ * (<SEQ=SEG.ACK><CTL=RST>). The code only matched the SYN|ACK flag
+ * combination, so a stray bare ACK was silently dropped instead of
+ * eliciting the required reset. */
+START_TEST(test_syn_sent_bad_ack_bare_ack_sends_rst)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* Inject a bare ACK (no SYN) with an unacceptable ACK number. */
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF,
+                       0x0A000002U, 0x0A000001U,
+                       80, ts->src_port,
+                       1000, 99,
+                       TCP_FLAG_ACK);
+
+    /* A RST must be sent */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    /* Socket must remain in SYN_SENT */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+}
+END_TEST
+
+/* Regression: per RFC 7323, a generated RST must carry a Timestamps
+ * option (TSecr = incoming TSval, TSval = 0) whenever the segment that
+ * triggered it carried one, so PAWS-aware peers can apply stricter RST
+ * acceptance checks. tcp_send_reset_reply built a bare 20-byte header
+ * and dropped the option. */
+START_TEST(test_rst_reply_carries_timestamp_when_incoming_had_one)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct wolfIP_tcp_seg *rst;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)seg->data;
+    struct tcp_opt_ts *rts;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(80);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+                     -WOLFIP_EAGAIN);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* Build a bare ACK with an unacceptable ACK number AND a Timestamps
+     * option (TSval = 43981). In SYN_SENT this elicits a RST. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.eth.type = ee16(ETH_TYPE_IP);
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN);
+    seg->ip.src = ee32(0x0A000002U);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->src_port = ee16(80);
+    seg->dst_port = ee16(ts->src_port);
+    seg->seq = ee32(1000);
+    seg->ack = ee32(99); /* unacceptable in SYN_SENT */
+    seg->hlen = (uint8_t)((TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2);
+    seg->flags = TCP_FLAG_ACK;
+    seg->win = ee16(65535);
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(43981); /* incoming TSval */
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    fix_tcp_checksums(seg);
+
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+            TCP_HEADER_LEN + TCP_OPTIONS_LEN);
+    last_frame_sent_size = 0;
+    tcp_input(&s, TEST_PRIMARY_IF, seg, frame_len);
+
+    /* A RST must be sent and the socket must stay in SYN_SENT. */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_SENT);
+
+    /* The RST must carry the Timestamps option: TSval = 0, TSecr = the
+     * incoming TSval (43981). */
+    rst = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(rst->flags & (TCP_FLAG_RST | TCP_FLAG_ACK), TCP_FLAG_RST);
+    rts = (struct tcp_opt_ts *)rst->data;
+    ck_assert_uint_eq(rts->opt, TCP_OPTION_TS);
+    ck_assert_uint_eq(rts->len, TCP_OPTION_TS_LEN);
+    ck_assert_uint_eq(ee32(rts->val), 0);
+    ck_assert_uint_eq(ee32(rts->ecr), 43981);
 }
 END_TEST
 

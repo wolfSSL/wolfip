@@ -19,9 +19,10 @@
  *                       channel registration.
  *
  *   cyw43_connect()   = WLC_SET_SSID + SET_KEY plumbing for an open or
- *                       pre-shared assoc; the WPA{2,3} 4-way / SAE
- *                       handshake itself runs in the wolfIP supplicant
- *                       and we just shuttle EAPOL frames in/out.
+ *                       WPA2-PSK assoc only (no SAE/WPA3 on this path);
+ *                       the 4-way handshake itself runs in the wolfIP
+ *                       supplicant and we just shuttle EAPOL frames
+ *                       in/out.
  *
  *   cyw43_tx_eapol()  = push one EAPOL frame onto the F2 data channel
  *                       (BDC encapsulation, type 0x888E).
@@ -70,10 +71,14 @@ int cyw43_wifi_up(const char *country);
 int cyw43_set_powersave(uint32_t pm);
 
 /* Initiate association to the named SSID. open_auth = 1 for an open
- * (non-RSN) network; for WPA2/WPA3 the call kicks off MLME and the
- * 4-way / SAE handshake runs in the wolfIP supplicant. Returns 0 once
- * the (Re)Assoc Response arrives with a success code; the supplicant
- * is responsible for finishing the handshake before traffic flows.
+ * (non-RSN) network; for WPA2-PSK the call kicks off MLME (WPA2_AUTH_PSK
+ * + WPA2-PSK RSN IE, no AKM selector) and the 4-way handshake runs in the
+ * wolfIP supplicant. Returns 0 once
+ * the WLC_SET_SSID command is accepted - the (Re)Association completes
+ * asynchronously; poll cyw43_assoc_up() (or the latched
+ * cyw43_assoc_seen()) for the later WLC_E_ASSOC / WLC_E_LINK event,
+ * and the supplicant is responsible for finishing the handshake before
+ * traffic flows.
  *
  * bssid may be NULL (any matching SSID). channel = 0 means scan all. */
 int cyw43_connect(const uint8_t *ssid, size_t ssid_len,
@@ -119,8 +124,11 @@ void cyw43_set_rx_callbacks(cyw43_eapol_cb_t eapol_cb,
 
 int  cyw43_poll(void);
 
-/* Read the radio's permanent MAC address (set during firmware load
- * from OTP). out is 6 bytes. Returns 0 on success. */
+/* Read the radio's STA MAC address. The 6-byte cache is populated from
+ * the cur_etheraddr iovar read inside cyw43_wifi_up(), so the value is
+ * only valid after that call; before it the cache is zero-filled. out
+ * is 6 bytes. Returns 0 once firmware is up (cyw43_init done), -1
+ * before that. */
 int  cyw43_get_mac(uint8_t out[6]);
 
 /* Read the associated AP's BSSID (learned during assoc). out is 6

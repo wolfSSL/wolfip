@@ -3932,7 +3932,7 @@ START_TEST(test_tcp_last_ack_closes_socket)
     uint16_t remote_port = 7777;
     uint32_t ctrl_rto_id;
     uint32_t i;
-    int found_canceled = 0;
+    int found = 0;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -3961,14 +3961,13 @@ START_TEST(test_tcp_last_ack_closes_socket)
     inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip, remote_port, local_port,
             10, 10, TCP_FLAG_ACK);
     ck_assert_int_eq(ts->proto, 0);
+    /* Eager cancel removes the control RTO timer physically; it must no
+     * longer be present in the heap. */
     for (i = 0; i < s.timers.size; i++) {
-        if (s.timers.timers[i].id == ctrl_rto_id) {
-            found_canceled = 1;
-            ck_assert_uint_eq(s.timers.timers[i].expires, 0);
-            break;
-        }
+        if (s.timers.timers[i].id == ctrl_rto_id)
+            found = 1;
     }
-    ck_assert_int_eq(found_canceled, 1);
+    ck_assert_int_eq(found, 0);
 }
 END_TEST
 
@@ -4326,6 +4325,183 @@ START_TEST(test_tcp_process_ts_no_ecr)
     opt->eoo = TCP_OPTION_EOO;
 
     ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), -1);
+}
+END_TEST
+
+START_TEST(test_tcp_process_ts_future_ecr_rejected)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)tcp->data;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+
+    memset(tcp, 0, sizeof(buf));
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(1000);
+    /* ECR in the future of the local clock: the guard must reject it
+     * before the sample is computed, or (last_tick - ecr) underflows
+     * into a huge RTT sample that wrecks the RTO. */
+    opt->ecr = ee32(5000);
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+
+    s.last_tick = 1000;
+    ck_assert_int_eq(tcp_process_ts(ts, tcp, sizeof(buf)), -1);
+    /* No sample taken: RTO state is untouched. */
+    ck_assert_uint_eq(ts->sock.tcp.rto_initialized, 0);
+    ck_assert_uint_eq(ts->sock.tcp.rtt, 0);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_process_ts_ooo_segment_keeps_recent)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN];
+    struct wolfIP_tcp_seg *tcp = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)tcp->data;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.ack = 1000;     /* RCV.NXT == Last.ACK.sent (host order) */
+    ts->sock.tcp.last_ts = ee32(100);
+    ts->sock.tcp.ts_recent_valid = 1; /* TS.Recent (stored network order) */
+
+    memset(buf, 0, sizeof(buf));
+    tcp->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+
+    /* Out-of-order segment (SEQ above the left edge): RFC 7323 4.3
+     * rule (2) - TS.Recent must NOT be replaced. */
+    tcp->seq = ee32(1100);
+    opt->val = ee32(5000);
+    tcp_process_ts(ts, tcp, sizeof(buf));
+    ck_assert_uint_eq(ts->sock.tcp.last_ts, ee32(100));
+
+    /* In-order segment (SEQ == RCV.NXT) with a newer TSval: replace. */
+    tcp->seq = ee32(1000);
+    opt->val = ee32(200);
+    tcp_process_ts(ts, tcp, sizeof(buf));
+    ck_assert_uint_eq(ts->sock.tcp.last_ts, ee32(200));
+
+    /* Retransmission with an older TSval: never roll back. */
+    opt->val = ee32(150);
+    tcp_process_ts(ts, tcp, sizeof(buf));
+    ck_assert_uint_eq(ts->sock.tcp.last_ts, ee32(200));
+}
+END_TEST
+
+START_TEST(test_tcp_input_paws_ooo_does_not_poison_hole_fill)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 10];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct tcp_opt_ts *opt = (struct tcp_opt_ts *)seg->data;
+    uint32_t frame_len;
+    uint8_t out[32];
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 1000;
+    ts->sock.tcp.seq = 1;
+    ts->sock.tcp.snd_una = 1;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.sack_permitted = 1;
+    ts->sock.tcp.last_ts = ee32(100);
+    ts->sock.tcp.ts_recent_valid = 1;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->if_idx = TEST_PRIMARY_IF;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 1000);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+            TCP_HEADER_LEN + TCP_OPTIONS_LEN + 10);
+
+    /* Out-of-order segment: seq 1010 (above RCV.NXT 1000), 10 bytes,
+     * TSval 5000. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN + 10);
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->src_port = ee16(ts->dst_port);
+    seg->dst_port = ee16(ts->src_port);
+    seg->seq = ee32(1010);
+    seg->ack = ee32(ts->sock.tcp.snd_una);
+    seg->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    seg->flags = TCP_FLAG_ACK;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(5000);
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    memcpy(seg->data + TCP_OPTIONS_LEN, "ABCDEFGHIJ", 10);
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg, frame_len);
+    /* OOO: cached above the hole; TS.Recent must not be poisoned. */
+    ck_assert_uint_eq(ts->sock.tcp.ack, 1000);
+    ck_assert_uint_eq(ts->sock.tcp.last_ts, ee32(100));
+
+    /* The in-order hole-filling segment carries a LOWER TSval than the
+     * OOO one. If TS.Recent had been advanced to 5000 by the OOO
+     * segment, tcp_paws_check would drop this segment and the hole
+     * could never fill. */
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_OPTIONS_LEN + 10);
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->src_port = ee16(ts->dst_port);
+    seg->dst_port = ee16(ts->src_port);
+    seg->seq = ee32(1000);
+    seg->ack = ee32(ts->sock.tcp.snd_una);
+    seg->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
+    seg->flags = TCP_FLAG_ACK;
+    opt->opt = TCP_OPTION_TS;
+    opt->len = TCP_OPTION_TS_LEN;
+    opt->val = ee32(200);
+    opt->ecr = 0;
+    opt->pad = TCP_OPTION_NOP;
+    opt->eoo = TCP_OPTION_EOO;
+    memcpy(seg->data + TCP_OPTIONS_LEN, "0123456789", 10);
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg, frame_len);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 1020);
+    ck_assert_uint_eq(ts->sock.tcp.last_ts, ee32(200));
+    ck_assert_int_eq(queue_pop(&ts->sock.tcp.rxbuf, out, sizeof(out)), 20);
+    ck_assert_mem_eq(out, "0123456789ABCDEFGHIJ", 20);
 }
 END_TEST
 

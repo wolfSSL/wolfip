@@ -1187,6 +1187,160 @@ START_TEST(test_dhcp_discover_retry_delay_small_base_no_underflow)
 }
 END_TEST
 
+/* RFC 2131 4.4.1: a discovering client has no IP address and cannot
+ * receive a unicast reply, so DHCPDISCOVER must carry the BROADCAST bit
+ * (bit 15 of the flags field) so the server broadcasts the DHCPOFFER. */
+START_TEST(test_dhcp_discover_sets_broadcast_flag)
+{
+    struct wolfIP s;
+    struct dhcp_msg *msg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_discover(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, ee16(0x8000));
+}
+END_TEST
+
+/* RFC 2131 4.4.1: the BROADCAST bit is set only while the client has no
+ * bound IP (the initial DHCPREQUEST). In RENEWING and REBINDING the client
+ * holds a bound IP and expects a unicast reply, so the bit stays clear. */
+START_TEST(test_dhcp_request_broadcast_flag_by_state)
+{
+    struct wolfIP s;
+    struct dhcp_msg *msg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_xid = 1U;
+    s.last_tick = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_server_ip = 0x0A000064U;
+    s.dhcp_ip = 0x0A000065U;
+
+    /* Pre-seed ARP for the renewal server so the RENEWING unicast flushes
+     * (otherwise the frame waits on ARP and the capture stays stale). */
+    s.arp.neighbors[0].ip = 0x0A000064U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memset(s.arp.neighbors[0].mac, 0x02, 6);
+
+    /* Initial REQUEST (no bound IP): BROADCAST bit set. */
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, ee16(0x8000));
+
+    /* RENEWING (bound IP): BROADCAST bit clear. */
+    s.dhcp_state = DHCP_RENEWING;
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, 0);
+
+    /* REBINDING (bound IP): BROADCAST bit clear. */
+    s.dhcp_state = DHCP_REBINDING;
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(dhcp_send_request(&s), 0);
+    (void)wolfIP_poll(&s, 10);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    msg = (struct dhcp_msg *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN);
+    ck_assert_uint_eq(msg->flags, 0);
+}
+END_TEST
+
+
+/* Atomicity: a rejected DHCPACK must not leave a partial network
+ * configuration behind. This ACK carries valid IP/mask/gw/DNS options
+ * (all different from the live values) but omits the mandatory
+ * lease-time option (51), so dhcp_parse_ack() rejects it. The live
+ * ipconf and dns_server must be left exactly as they were. Pre-fix, the
+ * inline option writes committed the new values before the lease-time
+ * check failed, so the rejected ACK corrupted the running config. */
+START_TEST(test_dhcp_parse_ack_reject_preserves_config)
+{
+    struct wolfIP s;
+    struct ipconf *primary;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    uint32_t ip_before, mask_before, gw_before, dns_before, srv_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0x0A000064U);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+
+    /* Live configuration to preserve. */
+    ip_before = primary->ip;          /* 0x0A000001 */
+    mask_before = primary->mask;      /* 0xFFFFFF00 */
+    gw_before = primary->gw;          /* 0x0A000064 */
+    s.dns_server = 0x08080808U;
+    dns_before = s.dns_server;
+    s.dhcp_server_ip = 0x0A000064U;
+    srv_before = s.dhcp_server_ip;
+    s.dhcp_xid = 0x12345678U;
+
+    /* Build an ACK offering DIFFERENT config values, with a matching
+     * server-id (so the identity check passes) but no lease time. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.xid = ee32(0x12345678U);
+    msg.magic = ee32(DHCP_MAGIC);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE; opt->len = 1; opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x0A000064U);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_OFFER_IP; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x0A0000AAU);   /* != ip_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0xFFFFFE00U);   /* != mask_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_ROUTER; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x0A000099U);   /* != gw_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_DNS; opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0x01010101U);   /* != dns_before */
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END; opt->len = 0;
+
+    /* No lease time -> rejected. */
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), -1);
+
+    /* Live config must be untouched. */
+    ck_assert_uint_eq(primary->ip, ip_before);
+    ck_assert_uint_eq(primary->mask, mask_before);
+    ck_assert_uint_eq(primary->gw, gw_before);
+    ck_assert_uint_eq(s.dns_server, dns_before);
+    ck_assert_uint_eq(s.dhcp_server_ip, srv_before);
+}
+END_TEST
+
 
 START_TEST(test_sock_connect_tcp_src_port_low)
 {
@@ -2041,6 +2195,42 @@ START_TEST(test_icmp_input_echo_reply_sets_df)
 }
 END_TEST
 
+START_TEST(test_icmp_echo_reply_code_zeroed)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp_packet icmp;
+    struct wolfIP_icmp_packet *reply;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_state = DHCP_OFF;
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    /* a non-zero code on the request is malformed per RFC 792, but the
+     * reply must not propagate it - echo reply code is always 0 */
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A000002U);
+    icmp.ip.dst = ee32(0x0A000001U);
+    icmp.ip.ttl = 64;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REQUEST;
+    icmp.code = 5;
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    reply = (struct wolfIP_icmp_packet *)last_frame_sent;
+    ck_assert_uint_eq(reply->type, ICMP_ECHO_REPLY);
+    ck_assert_uint_eq(reply->code, 0U);
+    /* reply checksum must cover the corrected type/code pair */
+    ck_assert_uint_eq(icmp_checksum(reply, ICMP_HEADER_LEN), 0U);
+}
+END_TEST
+
 START_TEST(test_icmp_input_echo_request_bad_checksum_dropped)
 {
     struct wolfIP s;
@@ -2513,6 +2703,69 @@ START_TEST(test_icmp_input_dest_unreach_frag_needed_below_floor_preserves_peer_m
 
         ck_assert_uint_eq(ts->sock.tcp.peer_mss, 1460U);
     }
+}
+END_TEST
+
+/* Regression: the PMTU peer_mss guard is monotonic-decrease (never
+ * increase). A spoofed FRAG_NEEDED advertising a LARGER next-hop MTU must
+ * not re-inflate peer_mss back up after a legitimate prior PMTU reduction.
+ * This pins the `new_mss < peer_mss` direction: deleting/inverting that
+ * clause lets a forged message restore peer_mss to the local MSS, cancelling
+ * the reduction and re-creating a Path-MTU black hole (DF is set). */
+START_TEST(test_icmp_input_dest_unreach_frag_needed_larger_mtu_does_not_raise_peer_mss)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+    uint16_t next_hop_mtu;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    /* Simulate a prior legitimate PMTU reduction. */
+    ts->sock.tcp.peer_mss = 536U;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_FRAG_NEEDED;
+    /* Large next-hop MTU: derived MSS (1460) is ABOVE the current 536. */
+    next_hop_mtu = ee16(1500U);
+    memcpy(&icmp.unused[2], &next_hop_mtu, sizeof(next_hop_mtu));
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16(ts->dst_port);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    /* peer_mss must be unchanged: the guard never raises it. */
+    ck_assert_uint_eq(ts->sock.tcp.peer_mss, 536U);
 }
 END_TEST
 
@@ -4922,6 +5175,108 @@ START_TEST(test_dhcp_request_retransmit_backoff)
 }
 END_TEST
 
+/* RFC 2131: in RENEWING/REBINDING a DHCPREQUEST with no response is
+ * retransmitted after one-half the remaining time (to T2 / to lease expiry),
+ * floored at 60 s. The pure delay function is pinned here, including the
+ * floor and the cap at the remaining time (a retry must never land past the
+ * deadline, where the state transition fires). */
+START_TEST(test_dhcp_renew_rebind_delay_ms)
+{
+    /* one-half remaining, above the 60 s floor */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(200000), 100000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(120000), 60000); /* exactly the floor */
+    /* half below the floor -> floored to 60 s */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(100000), 60000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(90000), 60000);
+    /* remaining at/below the floor -> capped at remaining */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(60000), 60000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(30000), 30000);
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(1000), 1000);
+    /* zero remaining -> 1 ms, never an indefinite/past-now schedule */
+    ck_assert_uint_eq(dhcp_renew_rebind_delay_ms(0), 1);
+}
+END_TEST
+
+/* The RENEWING/REBINDING scheduler must place the retry at
+ * last_tick + max(60 s, remaining/2), capped at the deadline. */
+START_TEST(test_dhcp_schedule_renew_rebind_retry)
+{
+    struct wolfIP s;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* remaining 200 s -> half = 100 s (above the floor) */
+    s.last_tick = now;
+    dhcp_schedule_renew_rebind_retry(&s, now + 200000);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 100000);
+
+    /* remaining 100 s -> half = 50 s, floored to 60 s */
+    s.last_tick = now;
+    dhcp_schedule_renew_rebind_retry(&s, now + 100000);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 60000);
+
+    /* remaining 30 s -> floored to 60 s, capped to 30 s (the deadline) */
+    s.last_tick = now;
+    dhcp_schedule_renew_rebind_retry(&s, now + 30000);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 30000);
+}
+END_TEST
+
+/* End-to-end: a RENEWING DHCPREQUEST with no response must be retransmitted
+ * at one-half the remaining time to T2 (RFC 2131), not on the generic 2 s
+ * exponential backoff. With T2 200 s out the retry lands at +100 s. Pre-fix
+ * this scheduled ~2 s (the backoff), so this assertion fails without the fix. */
+START_TEST(test_dhcp_renewing_retry_half_remaining_to_t2)
+{
+    struct wolfIP s;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1;
+    s.dhcp_server_ip = 0x0A000064U; /* on-link, so the renewal unicast routes */
+
+    s.dhcp_state = DHCP_RENEWING;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 0;
+    s.dhcp_rebind_at = now + 200000; /* T2 is 200 s ahead */
+    dhcp_timer_cb(&s);
+
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 100000);
+}
+END_TEST
+
+/* End-to-end: a REBINDING DHCPREQUEST with no response must be retransmitted
+ * at one-half the remaining lease time (RFC 2131). With the lease 200 s from
+ * expiry the retry lands at +100 s. Pre-fix this scheduled ~2 s backoff. */
+START_TEST(test_dhcp_rebinding_retry_half_remaining_to_lease)
+{
+    struct wolfIP s;
+    const uint64_t now = 100000U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    s.dhcp_xid = 1;
+    s.dhcp_server_ip = 0x0A000064U;
+
+    s.dhcp_state = DHCP_REBINDING;
+    s.last_tick = now;
+    s.dhcp_timeout_count = 0;
+    s.dhcp_lease_expires = now + 200000; /* lease expires in 200 s */
+    dhcp_timer_cb(&s);
+
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer) - now, 100000);
+}
+END_TEST
+
 START_TEST(test_regression_dhcp_lease_expiry_deconfigures_address)
 {
     struct wolfIP s;
@@ -5297,7 +5652,7 @@ START_TEST(test_sock_close_tcp_cancels_rto_timer)
     int sd;
     uint32_t rto_id;
     uint32_t i;
-    int found_canceled = 0;
+    int found = 0;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -5317,14 +5672,13 @@ START_TEST(test_sock_close_tcp_cancels_rto_timer)
 
     ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->proto, 0);
+    /* Eager cancel removes the RTO timer physically; it must no longer be
+     * present in the heap. */
     for (i = 0; i < s.timers.size; i++) {
-        if (s.timers.timers[i].id == rto_id) {
-            found_canceled = 1;
-            ck_assert_uint_eq(s.timers.timers[i].expires, 0);
-            break;
-        }
+        if (s.timers.timers[i].id == rto_id)
+            found = 1;
     }
-    ck_assert_int_eq(found_canceled, 1);
+    ck_assert_int_eq(found, 0);
 }
 END_TEST
 

@@ -193,10 +193,11 @@ struct wolfip_supplicant_cfg {
      * M3 to detect downgrade attacks (IEEE 802.11-2020 12.7.6.4).
      *
      * If ap_rsn_ie is NULL, the supplicant falls back to using its own
-     * default WPA2-PSK RSN IE for the comparison. This is acceptable
-     * for a closed PSK deployment where supplicant and AP agree on
-     * cipher choices by configuration, but real hardware ports should
-     * pass the IE from the chip's scan results.
+     * generated RSN IE for the comparison - the AKM suite patched to
+     * the configured mode (PSK, SAE or 802.1X), not always WPA2-PSK.
+     * This is acceptable for a closed deployment where supplicant and
+     * AP agree on cipher choices by configuration, but real hardware
+     * ports should pass the IE from the chip's scan results.
      */
     const uint8_t *ap_rsn_ie;
     size_t         ap_rsn_ie_len;
@@ -268,8 +269,12 @@ struct wolfip_supplicant {
      * context zero but is wiped by _deinit() and _pmksa_clear().
      *
      * Reuse requires BOTH pmksa_magic == WOLFIP_PMKSA_MAGIC AND an exact
-     * SSID match, so an uninitialized (garbage) context on the very first
-     * init cannot be mistaken for a valid cache. */
+     * SSID match, so a garbage value cannot be mistaken for a valid
+     * cache hit. The first init still READS these fields (PMKSA
+     * snapshot) before zeroing the context, so caller-owned (stack /
+     * static / pool) contexts MUST be zero-initialized (memset /
+     * "= {0}") before their very first wolfip_supplicant_init(); only
+     * re-inits on a previously valid context may carry PMKSA state. */
     uint32_t pmksa_magic;
     uint8_t  pmksa_pmk[WPA_PMK_LEN];
     uint8_t  pmksa_pmkid[16];   /* PMKID of the cached PMKSA (for reconnect) */
@@ -301,8 +306,11 @@ extern "C" {
 
 /* Caller-allocated init. `out` is a struct provided by the caller (stack,
  * static, or pool) and is fully populated from cfg on success. Returns 0
- * on success, negative on bad args / crypto failure. On failure, the
- * struct is left zeroed; caller does not need to call _deinit.
+ * on success, negative on bad args / crypto failure. On failure after
+ * initialization has begun, the struct is left zeroed and the caller
+ * does not need to call _deinit; bad-argument and cfg-validation
+ * failures return before any write and leave the supplied context
+ * unchanged.
  */
 int wolfip_supplicant_init(struct wolfip_supplicant *out,
                            const struct wolfip_supplicant_cfg *cfg);
@@ -322,9 +330,16 @@ struct wolfip_supplicant *wolfip_supplicant_new(
 
 void wolfip_supplicant_free(struct wolfip_supplicant *s);
 
-/* Signal that the radio reports "associated" - supplicant moves from
- * IDLE to 4WAY_M1_WAIT. (On real hardware, called by the driver after
- * the FullMAC chip completes auth+assoc.) `now_ms` is the current
+/* Start the handshake from IDLE. The transition depends on the auth
+ * mode:
+ *   PSK (or SAE with a pre-installed FullMAC PMK): IDLE -> 4WAY_M1_WAIT.
+ *   EAP (TLS / PEAP): sends EAPOL-Start, IDLE -> EAP_IDENTITY_WAIT.
+ *   Software SAE: sends the SAE Commit, IDLE -> SAE_COMMIT_SENT. SAE
+ *   authentication runs BEFORE radio association, so software-SAE
+ *   callers must kick the supplicant before the driver associates -
+ *   waiting for the association inverts the required sequencing.
+ * (On FullMAC hardware where the chip did auth itself, the driver calls
+ * this after the chip completes auth+assoc.) `now_ms` is the current
  * monotonic timestamp; the supplicant uses it as the handshake start.
  */
 int wolfip_supplicant_kick(struct wolfip_supplicant *s, uint64_t now_ms);
@@ -368,10 +383,16 @@ const uint8_t *wolfip_supplicant_kck(const struct wolfip_supplicant *s);
 const uint8_t *wolfip_supplicant_tk (const struct wolfip_supplicant *s);
 const uint8_t *wolfip_supplicant_snonce(const struct wolfip_supplicant *s);
 
-/* Export the current PMK (32 bytes). Returns 0 on success, -1 if no
- * PMK is available (state == IDLE / FAILED, or auth_mode never derived
- * a PSK-grade PMK). Caller can persist the PMK and pass it back via
- * cfg.psk_pmk on the next wolfip_supplicant_init() to skip PBKDF2. */
+/* Export the current PMK (32 bytes). Reports PMK-material availability,
+ * NOT authentication success: PSK mode holds a PMK right after init, and
+ * a context with a PTK or an installed (pmk_installed) SAE PMK exports
+ * it from every state, FAILED included - in FAILED state a PMK that was
+ * never derived is exported as all zeros with rc 0. Returns -1 only
+ * while IDLE with no derived/installed PMK (EAP / software SAE before
+ * the handshake). Callers that need "did authentication complete" must
+ * check wolfip_supplicant_state() separately. Caller can persist the PMK
+ * and pass it back via cfg.psk_pmk on the next wolfip_supplicant_init()
+ * to skip PBKDF2. */
 int wolfip_supplicant_get_pmk(const struct wolfip_supplicant *s,
                               uint8_t out_pmk[WPA_PMK_LEN]);
 

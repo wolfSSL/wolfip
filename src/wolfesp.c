@@ -196,7 +196,7 @@ esp_spi_valid(const uint8_t * spi, int log_it)
 }
 
 /* Configure a new Security Association based on either
- * enc = ESP_ENC_GCM_RFC4106 (gcm), or enc = ESP_AUTH_GCM_RFC4543 (gmac).
+ * enc = ESP_ENC_GCM_RFC4106 (gcm), or enc = ESP_ENC_GCM_RFC4543 (gmac).
  * */
 int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
                           esp_enc_t enc, uint8_t * enc_key,
@@ -652,6 +652,7 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
     int       err = 0;
     int       type = 0;
     uint32_t  auth_len = esp_len;
+    uint8_t   inited = 0;
 
     switch (esp_sa->auth) {
     case ESP_AUTH_MD5_RFC2403:
@@ -674,9 +675,10 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
 
     err = wc_HmacInit(&hmac, NULL, INVALID_DEVID);
     if (err) {
-        ESP_LOG("error: wc_HmacSetKey: %d\n", err);
-        goto calc_icv_hmac_end;
+        ESP_LOG("error: wc_HmacInit: %d\n", err);
+        return err;
     }
+    inited = 1;
 
     err = wc_HmacSetKey(&hmac, type, esp_sa->auth_key, esp_sa->auth_key_len);
     if (err) {
@@ -699,7 +701,11 @@ esp_calc_icv_hmac(uint8_t * hash, const wolfIP_esp_sa * esp_sa,
     }
 
 calc_icv_hmac_end:
-    wc_HmacFree(&hmac);
+    /* Free only after a successful init: freeing an Hmac whose
+     * wc_HmacInit() failed would release state that was never set up. */
+    if (inited) {
+        wc_HmacFree(&hmac);
+    }
 
     return err;
 }
@@ -1049,17 +1055,13 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
     inited = 1;
 
-    /* subtract 4 byte salt from enc_key_len */
+    /* subtract 4 byte salt from enc_key_len. wc_AesGcmInit installs the
+     * key itself (it calls wc_AesGcmSetKey internally), so no second
+     * key set is needed before the one-shot decrypt. */
     err = wc_AesGcmInit(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
     if (err != 0) {
         ESP_LOG("error: wc_AesGcmInit: %d\n", err);
-        goto rfc4106_dec_out;
-    }
-
-    err = wc_AesGcmSetKey(&gcm_dec, esp_sa->enc_key, esp_sa->enc_key_len - 4);
-    if (err != 0) {
-        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_dec_out;
     }
 
@@ -1071,7 +1073,7 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4106_dec_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gcm_dec);
         inited = 0;
@@ -1122,17 +1124,13 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
     inited = 1;
 
-    /* subtract 4 byte salt from enc_key_len */
+    /* subtract 4 byte salt from enc_key_len. wc_AesGcmInit installs the
+     * key itself (it calls wc_AesGcmSetKey internally), so no second
+     * key set is needed before the one-shot encrypt. */
     err = wc_AesGcmInit(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4,
                         nonce, sizeof(nonce));
     if (err != 0) {
         ESP_LOG("error: wc_AesGcmInit: %d\n", err);
-        goto rfc4106_enc_out;
-    }
-
-    err = wc_AesGcmSetKey(&gcm_enc, esp_sa->enc_key, esp_sa->enc_key_len - 4);
-    if (err != 0) {
-        ESP_LOG("error: wc_AesGcmSetKey: %d\n", err);
         goto rfc4106_enc_out;
     }
 
@@ -1144,7 +1142,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4106_enc_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gcm_enc);
         inited = 0;
@@ -1198,7 +1196,7 @@ esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4543_dec_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     return err;
 }
 
@@ -1254,7 +1252,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4543_enc_out:
-    wc_ForceZero(nonce, salt_len);
+    wc_ForceZero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gmac_enc.aes);
         inited = 0;
@@ -1311,7 +1309,7 @@ esp_replay_check(const struct replay_t * replay, uint32_t seq)
     (void)replay;
     (void)seq;
     #else
-    uint32_t bitn = 0;
+    uint64_t bitn = 0;
     uint32_t seq_low = 1U;
 
     if (seq == 0) {
@@ -1324,20 +1322,21 @@ esp_replay_check(const struct replay_t * replay, uint32_t seq)
     }
 
     if (seq < seq_low) {
-        ESP_LOG("error: seq (%d) below window (%d)\n", seq, seq_low);
+        ESP_LOG("error: seq (%lu) below window (%lu)\n",
+                (unsigned long)seq, (unsigned long)seq_low);
         return -1;
     }
 
-    /* Simple 32 bit replay window:
+    /* Sliding replay window:
      *   seq_low - - - - - - - seq - - - - - - hi_seq
      *   |<----------- ESP_REPLAY_WIN --------------|
      * */
     if (seq <= replay->hi_seq) {
         /* seq number within window. */
-        bitn = 1U << (replay->hi_seq - seq);
+        bitn = 1ULL << (replay->hi_seq - seq);
 
-        if ((replay->bitmap & bitn) != 0U) {
-            ESP_LOG("error: seq replayed: %u, %d\n", bitn, seq);
+        if ((replay->bitmap & bitn) != 0ULL) {
+            ESP_LOG("error: seq replayed: %lu\n", (unsigned long)seq);
             return -1;
         }
     }
@@ -1361,16 +1360,16 @@ esp_replay_commit(struct replay_t * replay, uint32_t seq)
 
     if (seq <= replay->hi_seq) {
         /* Within window: mark the bit. */
-        replay->bitmap |= 1U << (replay->hi_seq - seq);
+        replay->bitmap |= 1ULL << (replay->hi_seq - seq);
     }
     else {
         /* Above window: slide up. */
         diff = seq - replay->hi_seq;
         if (diff < ESP_REPLAY_WIN) {
-            replay->bitmap = (replay->bitmap << diff) | 1U;
+            replay->bitmap = (replay->bitmap << diff) | 1ULL;
         }
         else {
-            replay->bitmap = 1;
+            replay->bitmap = 1ULL;
         }
         replay->hi_seq = seq;
     }
@@ -1488,9 +1487,17 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
         return -1;
     }
 
-    err = esp_replay_check(&esp_sa->replay, seq);
-    if (err) {
-        return -1;
+    /* RFC 4303 s3.4.3: anti-replay MUST NOT be enabled unless the SA also
+     * provides integrity. A cipher-only SA (icv_len == 0) leaves the
+     * Sequence Number field unprotected, so the window must neither be
+     * consulted nor advanced for it: it would protect nothing, and an
+     * attacker able to rewrite the sequence could advance the window and
+     * drop legitimate packets. */
+    if (esp_sa->icv_len) {
+        err = esp_replay_check(&esp_sa->replay, seq);
+        if (err) {
+            return -1;
+        }
     }
 
     iv_len = esp_iv_len_from_enc(esp_sa->enc);
@@ -1575,9 +1582,12 @@ esp_transport_unwrap(struct wolfIP_ip_packet *ip, uint32_t * frame_len)
     }
 
     /* icv verified for hmacs and aeads at this point. now safe to commit the
-     * sequence to the replay window (RFC 4303 s3.4.3). */
-    esp_replay_commit(&esp_sa->replay, seq);
-    esp_state_save(esp_sa);
+     * sequence to the replay window (RFC 4303 s3.4.3). Cipher-only SAs
+     * (icv_len == 0) keep the window untouched, matching the check above. */
+    if (esp_sa->icv_len) {
+        esp_replay_commit(&esp_sa->replay, seq);
+        esp_state_save(esp_sa);
+    }
 
     /* Payload is now verified and decrypted. We can now parse
      * the ESP trailer for next header and pad_len. */

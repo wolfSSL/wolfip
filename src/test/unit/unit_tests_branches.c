@@ -1137,11 +1137,11 @@ START_TEST(test_timer_binheap_drain_keeps_live_timer)
     ck_assert_int_gt(ida, 0);
     ck_assert_int_gt(idb, 0);
 
-    /* Cancel the earliest timer, leaving a tombstone at the heap root. */
+    /* Cancel the earliest timer (eager: slot removed physically). */
     timer_binheap_cancel(&heap, (uint32_t)ida);
     ck_assert_int_eq(is_timer_expired(&heap, 50), 0);
 
-    /* Draining the tombstone must leave the next live timer in place. */
+    /* The surviving live timer must still be in place. */
     ck_assert_int_eq((int)heap.size, 1);
     got = timers_binheap_pop(&heap);
     ck_assert_uint_eq(got.id, (uint32_t)idb);
