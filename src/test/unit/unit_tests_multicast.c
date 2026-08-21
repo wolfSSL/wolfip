@@ -384,11 +384,22 @@ END_TEST
  * could not be a legitimate on-link membership query - TTL != 1 (transited a
  * router), or a destination that is neither all-hosts (224.0.0.1) nor the
  * group - must not solicit membership reports (which would disclose the host's
- * group memberships). */
+ * group memberships).
+ *
+ * F-6475: the report is always deferred to a timer, so "no frame sent
+ * synchronously" proves nothing on its own - a deleted guard would still
+ * pass that assertion and only surface as a report on a later poll (hidden
+ * by the §5.2 coalescing of the compliant case). Each spoofed case here
+ * therefore also asserts that no report timer was armed, then polls past
+ * the Max Resp window and asserts that still nothing was sent. Cases run at
+ * distinct tick marks so a report armed by a mutated guard cannot be
+ * coalesced into or hidden by the compliant case. */
 START_TEST(test_multicast_igmp_query_spoofed_dropped)
 {
     struct wolfIP s;
     int sd;
+    int m_idx = -1;
+    unsigned int i;
     struct wolfIP_ip_mreq mreq;
     struct wolfIP_ll_dev *ll;
     uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
@@ -407,7 +418,15 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
     ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
             WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
 
-    /* (1) Otherwise-valid general query but with TTL != 1 -> dropped. */
+    for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+        if (s.mcast[i].refs > 0 && s.mcast[i].group == group)
+            m_idx = (int)i;
+    }
+    ck_assert_int_gt(m_idx, -1);
+
+    /* (1) Otherwise-valid general query but with TTL != 1 -> dropped: no
+     * synchronous frame and no deferred report armed. Polling past the Max
+     * Resp window (100 = 10 s) must still send nothing. */
     memset(frame, 0, sizeof(frame));
     memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
     memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
@@ -419,12 +438,17 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
     ip->src = ee32(0x0A000001U);
     ip->dst = ee32(IGMP_ALL_HOSTS);
     igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    igmp[1] = 100; /* Max Resp Code 100 = 10 s */
     put_be32(igmp + 4, group);
     put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
     fix_ip_checksum(ip);
     last_frame_sent_size = 0;
+    last_frame_sent_count = 0;
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
     ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_eq(s.mcast[m_idx].tmr_report, NO_TIMER);
+    wolfIP_poll(&s, 10001);
+    ck_assert_uint_eq(last_frame_sent_count, 0);
 
     /* (2) TTL == 1 but addressed to our unicast IP (not all-hosts/group) ->
      * dropped. Sent to our unicast MAC so it reaches igmp_input. */
@@ -439,16 +463,21 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
     ip->src = ee32(0x0A000001U);
     ip->dst = ee32(0x0A000002U); /* our unicast IP */
     igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    igmp[1] = 100; /* Max Resp Code 100 = 10 s */
     put_be32(igmp + 4, group);
     put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
     fix_ip_checksum(ip);
     last_frame_sent_size = 0;
+    last_frame_sent_count = 0;
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
     ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_eq(s.mcast[m_idx].tmr_report, NO_TIMER);
+    wolfIP_poll(&s, 20001);
+    ck_assert_uint_eq(last_frame_sent_count, 0);
 
-    /* Sanity: a compliant query (TTL 1, all-hosts dst) still solicits a report
-     * (deferred per RFC 3376 §5.2, then emitted on poll), so the guards did not
-     * over-block. */
+    /* (3) Sanity: a compliant query (TTL 1, all-hosts dst) still solicits a
+     * report (deferred per RFC 3376 §5.2, then emitted on poll), so the
+     * guards did not over-block. */
     memset(frame, 0, sizeof(frame));
     memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
     memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
@@ -460,14 +489,19 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
     ip->src = ee32(0x0A000001U);
     ip->dst = ee32(IGMP_ALL_HOSTS);
     igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    igmp[1] = 100; /* Max Resp Code 100 = 10 s */
     put_be32(igmp + 4, group);
     put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
     fix_ip_checksum(ip);
     last_frame_sent_size = 0;
+    last_frame_sent_count = 0;
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
     ck_assert_uint_eq(last_frame_sent_size, 0);
-    wolfIP_poll(&s, 2);
+    ck_assert_uint_ne(s.mcast[m_idx].tmr_report, NO_TIMER);
+    wolfIP_poll(&s, 30001);
+    ck_assert_uint_eq(last_frame_sent_count, 1);
     ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
 }
 END_TEST
 
