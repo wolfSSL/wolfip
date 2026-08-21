@@ -67,9 +67,11 @@
 
 /* Worst-case RRQ/WRQ on the wire:
  *   opcode(2) + filename(MAX_FILENAME, null-terminated) + "octet\0"(6)
- *   + blksize/value(13) + timeout/value(12) + windowsize/value(13)
- *   + tsize/value(17) = 63 + MAX_FILENAME. The constant below adds a
- *   generous margin so future options do not silently truncate. */
+ *   + blksize/value(13) + timeout/value(14) + windowsize/value(13)
+ *   + tsize/value(17) = 65 + MAX_FILENAME. The constant below adds a
+ *   generous margin so future options do not silently truncate. The timeout
+ *   value is the widest: timeout_s is an unclamped uint16_t, so 65535 serializes
+ *   as "65535\0" (6 bytes) behind "timeout\0" (8 bytes). */
 #define WOLFTFTP_REQ_BUF_MAX (WOLFTFTP_MAX_FILENAME + 128U)
 
 #define WOLFTFTP_ERR_IO          (-1000)
