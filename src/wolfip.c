@@ -11619,7 +11619,11 @@ static void flush_raw_tx(struct wolfIP *s)
                 break;
             eth_output_add_header(s, tx_if, r->nexthop_mac, &ip->eth, ETH_TYPE_IP);
 #endif
-            wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
+            /* Mirror flush_datagram_tx: on driver backpressure/hard error
+             * keep the descriptor at the FIFO head so the next poll retries
+             * it instead of silently dropping the frame. */
+            if (wolfIP_ll_send_frame(s, tx_if, ip, desc->len) < 0)
+                break;
             fifo_pop(&r->txbuf);
             desc = fifo_peek(&r->txbuf);
             (void)nexthop;
@@ -11655,7 +11659,11 @@ static void flush_packet_tx(struct wolfIP *s)
                 desc = fifo_peek(&p->txbuf);
                 continue;
             }
-            wolfIP_ll_send_frame(s, tx_if, frame, desc->len);
+            /* Mirror flush_datagram_tx: on driver backpressure/hard error
+             * keep the descriptor at the FIFO head so the next poll retries
+             * it instead of silently dropping the frame. */
+            if (wolfIP_ll_send_frame(s, tx_if, frame, desc->len) < 0)
+                break;
             fifo_pop(&p->txbuf);
             desc = fifo_peek(&p->txbuf);
         }
