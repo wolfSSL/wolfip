@@ -1550,6 +1550,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dns_skip_name_label_past_end);
     tcase_add_test(tc_core, test_dns_copy_name_second_label_separator_and_label_fit);
     tcase_add_test(tc_core, test_dns_callback_ptr_bad_copy_name_stays_pending);
+    tcase_add_test(tc_core, test_dns_callback_ptr_name_beyond_rdata_rejected);
+    tcase_add_test(tc_core, test_dns_callback_ptr_rdata_ends_in_pointer_ok);
     tcase_add_test(tc_core, test_dns_copy_name_jumped_no_pos_increment);
     tcase_add_test(tc_core, test_dns_send_query_socket_alloc_failure);
     /* --- unit_tests_misc_edges.c (75 tests) --- */

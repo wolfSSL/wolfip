@@ -1098,14 +1098,14 @@ START_TEST(test_dns_skip_and_copy_name)
     ret = dns_skip_name(buf, sizeof(buf), 0);
     ck_assert_int_eq(ret, pos);
 
-    ret = dns_copy_name(buf, sizeof(buf), 0, out, sizeof(out));
+    ret = dns_copy_name(buf, sizeof(buf), 0, out, sizeof(out), sizeof(buf));
     ck_assert_int_eq(ret, 0);
     ck_assert_str_eq(out, "www.example.com");
 
     /* add a pointer to the name at offset 0 */
     buf[pos++] = 0xC0;
     buf[pos++] = 0x00;
-    ret = dns_copy_name(buf, sizeof(buf), pos - 2, out, sizeof(out));
+    ret = dns_copy_name(buf, sizeof(buf), pos - 2, out, sizeof(out), sizeof(buf));
     ck_assert_int_eq(ret, 0);
     ck_assert_str_eq(out, "www.example.com");
 
@@ -1115,7 +1115,7 @@ START_TEST(test_dns_skip_and_copy_name)
     buf[pos++] = (uint8_t)(ptr_pos + 2);
     buf[pos++] = 3; memcpy(&buf[pos], "bad", 3); pos += 3;
     buf[pos++] = 0;
-    ret = dns_copy_name(buf, pos, ptr_pos, out, sizeof(out));
+    ret = dns_copy_name(buf, pos, ptr_pos, out, sizeof(out), pos);
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
