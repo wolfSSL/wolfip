@@ -4029,6 +4029,60 @@ START_TEST(test_tcp_last_ack_closes_socket_delivers_closed_event)
 }
 END_TEST
 
+/* F-8523: the post-callback reap in handle_socket_callbacks must not destroy
+ * a socket that the close callback closed and re-created in the same slot.
+ * The reap historically keyed on the slot's TCP_CLOSED state, which a fresh
+ * socket has by design, so it must be gated on the slot still holding the
+ * dispatched socket (same callback pair). */
+static int test_f8523_recreated_fd;
+static void test_f8523_close_recreate_cb(int fd, uint16_t events, void *arg)
+{
+    struct wolfIP *s = (struct wolfIP *)arg;
+    (void)events;
+    /* Close the socket (frees its slot) and create a fresh one in its place. */
+    (void)wolfIP_sock_close(s, fd);
+    test_f8523_recreated_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+}
+
+START_TEST(test_handle_socket_callbacks_keeps_recreated_socket)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    uint16_t local_port = 6669;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    /* Put slot 0 in the RX-deferred close state: TCP_CLOSED with a pending
+     * CB_EVENT_CLOSED and an armed callback, no close_notify_pending. */
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSED;
+    ts->local_ip = local_ip;
+    ts->src_port = local_port;
+    ts->callback = test_f8523_close_recreate_cb;
+    ts->callback_arg = &s;
+    ts->events = CB_EVENT_CLOSED;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+
+    test_f8523_recreated_fd = -1;
+
+    /* poll Step 3 dispatches the deferred CB_EVENT_CLOSED; the callback closes
+     * the socket and re-creates a fresh one in the same slot. */
+    (void)wolfIP_poll(&s, 1);
+
+    /* The callback ran and created a fresh socket. */
+    ck_assert_int_ge(test_f8523_recreated_fd, 0);
+    /* The fresh socket must have survived the dispatcher's post-callback reap. */
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(test_f8523_recreated_fd)].proto,
+            (uint8_t)WI_IPPROTO_TCP);
+}
+END_TEST
+
 START_TEST(test_tcp_last_ack_partial_ack_keeps_socket_and_timer)
 {
     struct wolfIP s;
