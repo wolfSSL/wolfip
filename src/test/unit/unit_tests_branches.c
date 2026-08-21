@@ -2607,3 +2607,37 @@ START_TEST(test_wolfip_recv_on_null_stack_returns)
     wolfIP_recv_on(NULL, TEST_PRIMARY_IF, buf, sizeof(buf));
 }
 END_TEST
+
+#if WOLFIP_RAWSOCKETS
+/* F-8525: the raw-socket sendto path must reject a payload that cannot fit
+ * in a frame before narrowing len to uint32_t. A size_t len above the
+ * LINK_MTU-derived bound wraps in the total_len computation, slips past the
+ * LINK_MTU guard, and lets the payload memcpy overflow the fixed-size frame
+ * buffer. len = UINT32_MAX + 100 narrows to 100 (which would pass the MTU
+ * guard) but must be rejected before any memcpy. The overflow itself cannot
+ * be exercised in a unit test (it needs a >4GB buffer), so this pins the
+ * new size_t bound: the oversized length is refused, not narrowed. */
+START_TEST(test_raw_sendto_rejects_oversized_len_before_narrowing)
+{
+    struct wolfIP s;
+    int fd;
+    uint8_t buf[8];
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, 0);
+    ck_assert_int_ge(fd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, buf, (size_t)UINT32_MAX + 100, 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+}
+END_TEST
+#endif /* WOLFIP_RAWSOCKETS */
+
