@@ -68,6 +68,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_fifo_wrap_full_pop_then_refill_keeps_order_without_drops);
     tcase_add_test(tc_core, test_fifo_wrap_flag_transitions_push_pop_around_boundary);
     tcase_add_test(tc_core, test_fifo_wrap_flag_repeated_flips_keep_data_consistent);
+    tcase_add_test(tc_core, test_fifo_push_align_wrap_tail0_rejects_not_clobbers);
+    tcase_add_test(tc_core, test_fifo_push_align_wrap_keeps_nonempty_state);
     tcase_add_test(tc_core, test_fifo_wrap_flag_transitions_with_odd_payload_sizes);
     tcase_add_test(tc_core, test_fifo_wrap_flag_repeated_flips_with_odd_payload_sizes);
 
