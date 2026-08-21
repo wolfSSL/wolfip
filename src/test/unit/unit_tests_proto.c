@@ -7611,6 +7611,60 @@ START_TEST(test_regression_raw_socket_send_ip_id_network_byte_order)
 }
 END_TEST
 
+/* F-6209: a driver -WOLFIP_EAGAIN from the link-layer send must leave the
+ * descriptor queued for retry on the next poll, not silently drop the frame
+ * (flush_raw_tx used to pop unconditionally, unlike flush_datagram_tx). */
+START_TEST(test_regression_raw_socket_tx_eagain_keeps_descriptor)
+{
+    struct wolfIP s;
+    int sd;
+    uint8_t payload[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    struct wolfIP_sockaddr_in sin;
+    uint32_t dst_ip = 0x0A00000CU;
+    uint8_t nh_mac[6] = {0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    s.arp.neighbors[0].ip = dst_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, nh_mac, sizeof(nh_mac));
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(dst_ip);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+
+    mock_link_capture_reset();
+    mock_send_eagain_armed = 1;
+
+    /* The driver reports backpressure: nothing goes on the wire, and the
+     * descriptor must stay queued at the FIFO head for the next poll. */
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 0U);
+    ck_assert_ptr_nonnull(fifo_peek(&s.rawsockets[SOCKET_UNMARK(sd)].txbuf));
+
+    /* Next poll: the queued frame is retransmitted intact. */
+    mock_link_capture_reset();
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 1U);
+    ck_assert_uint_eq(last_frame_sent_size,
+                      ETH_HEADER_LEN + IP_HEADER_LEN + sizeof(payload));
+    {
+        struct wolfIP_ip_packet *sent = (struct wolfIP_ip_packet *)last_frame_sent;
+        ck_assert_mem_eq(sent->data, payload, sizeof(payload));
+        ck_assert_mem_eq(sent->eth.dst, nh_mac, 6);
+    }
+}
+END_TEST
+
 START_TEST(test_raw_socket_sendto_short_addrlen_returns_einval)
 {
     struct wolfIP s;
@@ -7862,6 +7916,68 @@ START_TEST(test_packet_socket_send_frame)
 #else
     ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
 #endif
+}
+END_TEST
+
+/* F-6209: same retry contract for packet sockets: a driver -WOLFIP_EAGAIN
+ * must keep the frame queued, not drop it. */
+START_TEST(test_regression_packet_socket_tx_eagain_keeps_descriptor)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_ll sll;
+    struct wolfIP_sockaddr_ll bind_sll;
+    uint8_t frame_buf[ETH_HEADER_LEN + 8];
+    struct wolfIP_eth_frame *ethf = (struct wolfIP_eth_frame *)frame_buf;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+    ck_assert_int_ge(sd, 0);
+
+    memset(&bind_sll, 0, sizeof(bind_sll));
+    bind_sll.sll_family = AF_PACKET;
+    bind_sll.sll_protocol = ee16(ETH_TYPE_IP);
+    bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+    bind_sll.sll_halen = 6;
+    memset(bind_sll.sll_addr, 0xFF, 6);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+                (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+
+    memset(&sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = ee16(ETH_TYPE_IP);
+    sll.sll_ifindex = TEST_PRIMARY_IF;
+    sll.sll_halen = 6;
+    memset(sll.sll_addr, 0xFF, 6);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(ethf->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(ethf->src, "\x00\x00\x00\x00\x00\x01", 6);
+    ethf->type = ee16(ETH_TYPE_IP);
+    memset(ethf->data, 0xCD, 8);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_buf, sizeof(frame_buf), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)),
+            (int)sizeof(frame_buf));
+
+    mock_link_capture_reset();
+    mock_send_eagain_armed = 1;
+
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 0U);
+    ck_assert_ptr_nonnull(
+            fifo_peek(&s.packetsockets[SOCKET_UNMARK(sd)].txbuf));
+
+    mock_link_capture_reset();
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 1U);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(frame_buf));
+    {
+        struct wolfIP_eth_frame *sent = (struct wolfIP_eth_frame *)last_frame_sent;
+        ck_assert_mem_eq(sent->data, ethf->data, 8);
+    }
 }
 END_TEST
 
