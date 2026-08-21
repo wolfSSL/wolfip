@@ -10774,15 +10774,31 @@ static int dns_question_matches(struct wolfIP *s, const uint8_t *buf, int len,
             sizeof(struct dns_question)) == 0;
 }
 
+/* len bounds the whole message (compression-pointer targets and the
+ * post-jump name portion are validated against it); rdata_end bounds the
+ * initial inline portion of the name, which per RFC 1035 must be encoded
+ * within the record's RDATA. Pass rdata_end == len when the name encoding
+ * is not part of an RDATA (unit tests on bare buffers). */
 static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
-                         size_t out_len)
+                         size_t out_len, int rdata_end)
 {
     int pos = offset;
     size_t o = 0;
     int loop = 0;
     int jumped = 0;
-    while (pos < len && loop++ < len) {
-        uint8_t c = buf[pos];
+    while (loop++ < len) {
+        int bound;
+        uint8_t c;
+        /* The inline portion stops at the RDATA edge; once a compression
+         * pointer has jumped elsewhere in the message the name is bounded
+         * by the message length. */
+        if (jumped)
+            bound = len;
+        else
+            bound = (rdata_end < len) ? rdata_end : len;
+        if (pos >= bound)
+            break;
+        c = buf[pos];
         if (c == DNS_NAME_TERMINATOR) {
             if (!jumped)
                 pos++;
@@ -10798,6 +10814,10 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
             int ptr_pos = pos;
             if (pos + 1 >= len)
                 return -1;
+            /* The pointer is part of the inline encoding: both bytes must
+             * lie within the RDATA. */
+            if (!jumped && pos + 2 > rdata_end)
+                return -1;
             {
                 uint16_t ptr = ((c & DNS_COMPRESSION_OFFSET_MASK) << 8) |
                         buf[pos + 1];
@@ -10810,6 +10830,10 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
         }
         pos++;
         if (pos + c > len)
+            return -1;
+        /* An inline label (length byte + label bytes) must fit in the
+         * RDATA; do not let it continue into the following record. */
+        if (!jumped && pos + c > rdata_end)
             return -1;
         if (o != 0) {
             if (o + 1 >= out_len)
@@ -11005,7 +11029,8 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                         ee16(rr->type) == DNS_PTR &&
                         ee16(rr->class) == DNS_CLASS_IN) {
                     if (dns_copy_name((const uint8_t *)buf, dns_len, pos,
-                            s->dns_ptr_name, sizeof(s->dns_ptr_name)) == 0) {
+                            s->dns_ptr_name, sizeof(s->dns_ptr_name),
+                            pos + (int)rdlen) == 0) {
                         if (s->dns_ptr_cb)
                             s->dns_ptr_cb(s->dns_ptr_name);
                         dns_abort_query(s);
