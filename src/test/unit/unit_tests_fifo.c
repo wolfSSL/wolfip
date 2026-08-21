@@ -631,3 +631,104 @@ START_TEST(test_queue_insert_no_head_update_when_pos_plus_len_le_head)
 }
 END_TEST
 
+
+/* F-8521: a single descriptor that fills the ring just short of the end
+ * (head left unaligned at size-2) makes fifo_align_head_pos() wrap the
+ * insertion cursor to 0. If that wrap is not recorded in h_wrap, the
+ * nearly-full FIFO is indistinguishable from the empty state, the space
+ * test reports the whole buffer as free, and the next push clobbers the
+ * live descriptor at offset 0 instead of being rejected for lack of space. */
+START_TEST(test_fifo_push_align_wrap_tail0_rejects_not_clobbers)
+{
+    struct fifo f;
+    uint8_t data[64];
+    uint8_t big[46];
+    uint8_t small[8];
+    struct pkt_desc *desc;
+    int i;
+
+    memset(data, 0, sizeof(data));
+    for (i = 0; i < 46; i++)
+        big[i] = (uint8_t)(0x10 + i);
+    for (i = 0; i < 8; i++)
+        small[i] = (uint8_t)(0x50 + i);
+
+    fifo_init(&f, data, sizeof(data));
+
+    /* One descriptor filling [0,62): 16-byte pkt_desc + 46 payload.
+     * head = 62 (unaligned), tail = 0, h_wrap = 0, non-empty. */
+    ck_assert_int_eq(fifo_push(&f, big, sizeof(big)), 0);
+    ck_assert_uint_eq(f.head, 62);
+    ck_assert_uint_eq(f.tail, 0);
+    ck_assert_uint_eq(f.h_wrap, 0);
+    ck_assert_int_eq(fifo_is_empty(&f), 0);
+
+    /* Second push: aligned head 62 -> 64 -> 0. The wrap must be recorded so
+     * the (nearly full) FIFO is not mistaken for empty; the push is rejected
+     * for lack of space rather than overwriting the live descriptor. */
+    ck_assert_int_eq(fifo_push(&f, small, sizeof(small)), -1);
+
+    /* The queued descriptor must survive intact. */
+    ck_assert_int_eq(fifo_is_empty(&f), 0);
+    ck_assert_uint_eq(f.head, 62);
+    desc = fifo_peek(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_eq(desc->pos, 0);
+    ck_assert_uint_eq(desc->len, 46);
+    ck_assert_mem_eq(data + 16, big, 46);
+}
+END_TEST
+
+/* F-8521 (wrap-lands-on-tail variant): a wrap write whose aligned head
+ * collapses to 0 and whose payload ends exactly on tail stores head == tail.
+ * Without the h_wrap marker the non-empty FIFO reports as empty and every
+ * previously queued descriptor is orphaned (fifo_peek returns NULL). The
+ * wrap must be recorded so the FIFO stays visible and the oldest live
+ * descriptor remains reachable. */
+START_TEST(test_fifo_push_align_wrap_keeps_nonempty_state)
+{
+    struct fifo f;
+    uint8_t data[64];
+    uint8_t p0[8], pj[4], pk[1], trig[8];
+    struct pkt_desc *desc;
+    int i;
+
+    memset(data, 0, sizeof(data));
+    for (i = 0; i < 8; i++)
+        p0[i] = (uint8_t)(0xA0 + i);
+    for (i = 0; i < 4; i++)
+        pj[i] = (uint8_t)(0xB0 + i);
+    pk[0] = 0xC0;
+    for (i = 0; i < 8; i++)
+        trig[i] = (uint8_t)(0xD0 + i);
+
+    fifo_init(&f, data, sizeof(data));
+
+    /* p0@0 (head 24), pj@24 (head 44), pk@44 (head 61, unaligned). */
+    ck_assert_int_eq(fifo_push(&f, p0, sizeof(p0)), 0);
+    ck_assert_int_eq(fifo_push(&f, pj, sizeof(pj)), 0);
+    ck_assert_int_eq(fifo_push(&f, pk, sizeof(pk)), 0);
+    ck_assert_uint_eq(f.head, 61);
+    ck_assert_uint_eq(f.h_wrap, 0);
+
+    /* Pop p0: tail 0 -> 24. Two descriptors live at 24 and 44. */
+    desc = fifo_pop(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_eq(f.tail, 24);
+    ck_assert_int_eq(fifo_is_empty(&f), 0);
+
+    /* Trigger: needed 24 == tail. Aligned head 61 -> 64 -> 0; the wrap write
+     * [0,24) ends exactly on tail. The wrap must be recorded. */
+    ck_assert_int_eq(fifo_push(&f, trig, sizeof(trig)), 0);
+    ck_assert_uint_eq(f.head, f.tail);
+
+    /* Three descriptors are live: the FIFO must report non-empty and peek
+     * must reach the oldest live one (pj at 24). */
+    ck_assert_int_eq(fifo_is_empty(&f), 0);
+    desc = fifo_peek(&f);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_eq(desc->pos, 24);
+    ck_assert_uint_eq(desc->len, 4);
+    ck_assert_mem_eq(data + 40, pj, 4);
+}
+END_TEST

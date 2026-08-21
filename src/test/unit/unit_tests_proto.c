@@ -4811,6 +4811,53 @@ START_TEST(test_tcp_listen_accepts_bound_interface)
 }
 END_TEST
 
+/* F-10281: a listener bound to a specific local address must only match
+ * segments addressed to that address. The SYN path already validates
+ * bound_local_ip, but a non-SYN segment for the same port and a different
+ * local address on the same host overwrites the listener's
+ * if_idx/last_pkt_ttl/peer_rwnd and sets matched (suppressing the RFC 793
+ * unmatched RST) before any address validation. A segment for the bound
+ * address must still match, so the check is not over-restricting. */
+START_TEST(test_tcp_listen_requires_matching_local_ip)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80002U;
+    const ip4 secondary_ip = 0xC0A80101U;
+    const uint16_t listen_port = 23456;
+    int listen_fd;
+    struct wolfIP_sockaddr_in addr;
+    struct tsocket *listener;
+    uint8_t ttl_before;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    listen_fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_fd)];
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = ee16(listen_port);
+    addr.sin_addr.s_addr = ee32(secondary_ip);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd, (struct wolfIP_sockaddr *)&addr, sizeof(addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+    ck_assert_uint_eq(listener->bound_local_ip, secondary_ip);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ttl_before = listener->last_pkt_ttl;
+
+    /* (1) A non-SYN segment for the same port but a different local address
+     * must not mutate the listener's bookkeeping. */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, primary_ip, 40000,
+                       listen_port, 100, 0, 0);
+    ck_assert_uint_eq(listener->last_pkt_ttl, ttl_before);
+
+    /* (2) A segment for the bound address still matches (not over-restricted). */
+    inject_tcp_segment(&s, TEST_SECOND_IF, 0x0A0000A2U, secondary_ip, 40000,
+                       listen_port, 200, 0, 0);
+    ck_assert_uint_eq(listener->last_pkt_ttl, 64);
+}
+END_TEST
+
 START_TEST(test_tcp_listen_accepts_any_interface)
 {
     struct wolfIP s;
@@ -5598,6 +5645,82 @@ START_TEST(test_regression_icmp_payload_exceeds_buffer_discards_and_unblocks)
 
     ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0, NULL, NULL);
     ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
+/* F-10280: while the DHCP client is running, the local_ip==0 relaxation in
+ * udp_try_recv must apply only to the DHCP client socket. A connected app
+ * socket created before the interface owns an address (local_ip==0) must
+ * still enforce peer matching, so a datagram from a non-connected peer is
+ * not delivered to it; the DHCP socket itself must still receive datagrams
+ * from any source. Socket fields are host order; wire fields are network
+ * order (ee16/ee32), matching udp_try_recv's comparison convention. */
+START_TEST(test_udp_dhcp_relaxation_scoped_to_dhcp_socket)
+{
+    struct wolfIP s;
+    struct tsocket *app;
+    struct tsocket *dhc;
+    uint8_t buf[sizeof(struct wolfIP_udp_datagram) + 32];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)buf;
+    uint8_t payload[8];
+    uint16_t total;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    /* No interface IP is configured: sockets created now carry local_ip 0.
+     * The DHCP client is running. */
+    s.dhcp_state = DHCP_RENEWING;
+
+    /* App socket: connected to 10.0.0.2:9001, local port 9000. */
+    app = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(app);
+    app->src_port = 9000;
+    app->local_ip = 0;
+    app->remote_ip = 0x0A000002U;
+    app->dst_port = 9001;
+    app->sock.udp.connected = 1;
+
+    /* DHCP client socket: unconnected, local port 68, local_ip 0. */
+    dhc = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(dhc);
+    dhc->src_port = 68;
+    dhc->local_ip = 0;
+    dhc->sock.udp.connected = 0;
+    s.dhcp_udp_sd = (int)(MARK_UDP_SOCKET | (uint32_t)(dhc - s.udpsockets));
+
+    memset(payload, 0x5A, sizeof(payload));
+    total = UDP_HEADER_LEN + sizeof(payload);
+
+    /* (1) Datagram to the app socket's port from a non-connected peer
+     * (10.0.0.99:1234, not the connected 10.0.0.2:9001). peer_match must
+     * reject it: the relaxation is scoped to the DHCP socket. */
+    memset(buf, 0, sizeof(buf));
+    udp->src_port = ee16(1234);
+    udp->dst_port = ee16(9000);
+    udp->len = ee16(total);
+    udp->csum = 0; /* skip checksum validation */
+    udp->ip.len = ee16(IP_HEADER_LEN + total);
+    udp->ip.src = ee32(0x0A000099U);
+    udp->ip.dst = ee32(0x0A000002U);
+    memcpy(udp->data, payload, sizeof(payload));
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+                 (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + total));
+    ck_assert_ptr_eq(fifo_peek(&app->sock.udp.rxbuf), NULL);
+
+    /* (2) Datagram to the DHCP socket's port from any source: the relaxation
+     * still applies to the DHCP socket, so it must be delivered. */
+    memset(buf, 0, sizeof(buf));
+    udp->src_port = ee16(67);
+    udp->dst_port = ee16(68);
+    udp->len = ee16(total);
+    udp->csum = 0;
+    udp->ip.len = ee16(IP_HEADER_LEN + total);
+    udp->ip.src = ee32(0x0A000099U);
+    udp->ip.dst = ee32(0xFFFFFF00U); /* broadcast */
+    memcpy(udp->data, payload, sizeof(payload));
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+                 (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + total));
+    ck_assert_ptr_nonnull(fifo_peek(&dhc->sock.udp.rxbuf));
 }
 END_TEST
 
@@ -7611,6 +7734,60 @@ START_TEST(test_regression_raw_socket_send_ip_id_network_byte_order)
 }
 END_TEST
 
+/* F-6209: a driver -WOLFIP_EAGAIN from the link-layer send must leave the
+ * descriptor queued for retry on the next poll, not silently drop the frame
+ * (flush_raw_tx used to pop unconditionally, unlike flush_datagram_tx). */
+START_TEST(test_regression_raw_socket_tx_eagain_keeps_descriptor)
+{
+    struct wolfIP s;
+    int sd;
+    uint8_t payload[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    struct wolfIP_sockaddr_in sin;
+    uint32_t dst_ip = 0x0A00000CU;
+    uint8_t nh_mac[6] = {0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    s.arp.neighbors[0].ip = dst_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, nh_mac, sizeof(nh_mac));
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(dst_ip);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+
+    mock_link_capture_reset();
+    mock_send_eagain_armed = 1;
+
+    /* The driver reports backpressure: nothing goes on the wire, and the
+     * descriptor must stay queued at the FIFO head for the next poll. */
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 0U);
+    ck_assert_ptr_nonnull(fifo_peek(&s.rawsockets[SOCKET_UNMARK(sd)].txbuf));
+
+    /* Next poll: the queued frame is retransmitted intact. */
+    mock_link_capture_reset();
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 1U);
+    ck_assert_uint_eq(last_frame_sent_size,
+                      ETH_HEADER_LEN + IP_HEADER_LEN + sizeof(payload));
+    {
+        struct wolfIP_ip_packet *sent = (struct wolfIP_ip_packet *)last_frame_sent;
+        ck_assert_mem_eq(sent->data, payload, sizeof(payload));
+        ck_assert_mem_eq(sent->eth.dst, nh_mac, 6);
+    }
+}
+END_TEST
+
 START_TEST(test_raw_socket_sendto_short_addrlen_returns_einval)
 {
     struct wolfIP s;
@@ -7862,6 +8039,68 @@ START_TEST(test_packet_socket_send_frame)
 #else
     ck_abort_msg("WOLFIP_PACKET_SOCKETS disabled");
 #endif
+}
+END_TEST
+
+/* F-6209: same retry contract for packet sockets: a driver -WOLFIP_EAGAIN
+ * must keep the frame queued, not drop it. */
+START_TEST(test_regression_packet_socket_tx_eagain_keeps_descriptor)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_ll sll;
+    struct wolfIP_sockaddr_ll bind_sll;
+    uint8_t frame_buf[ETH_HEADER_LEN + 8];
+    struct wolfIP_eth_frame *ethf = (struct wolfIP_eth_frame *)frame_buf;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+    ck_assert_int_ge(sd, 0);
+
+    memset(&bind_sll, 0, sizeof(bind_sll));
+    bind_sll.sll_family = AF_PACKET;
+    bind_sll.sll_protocol = ee16(ETH_TYPE_IP);
+    bind_sll.sll_ifindex = TEST_PRIMARY_IF;
+    bind_sll.sll_halen = 6;
+    memset(bind_sll.sll_addr, 0xFF, 6);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+                (struct wolfIP_sockaddr *)&bind_sll, sizeof(bind_sll)), 0);
+
+    memset(&sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = ee16(ETH_TYPE_IP);
+    sll.sll_ifindex = TEST_PRIMARY_IF;
+    sll.sll_halen = 6;
+    memset(sll.sll_addr, 0xFF, 6);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(ethf->dst, "\xff\xff\xff\xff\xff\xff", 6);
+    memcpy(ethf->src, "\x00\x00\x00\x00\x00\x01", 6);
+    ethf->type = ee16(ETH_TYPE_IP);
+    memset(ethf->data, 0xCD, 8);
+
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, frame_buf, sizeof(frame_buf), 0,
+                (struct wolfIP_sockaddr *)&sll, sizeof(sll)),
+            (int)sizeof(frame_buf));
+
+    mock_link_capture_reset();
+    mock_send_eagain_armed = 1;
+
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 0U);
+    ck_assert_ptr_nonnull(
+            fifo_peek(&s.packetsockets[SOCKET_UNMARK(sd)].txbuf));
+
+    mock_link_capture_reset();
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 1U);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(frame_buf));
+    {
+        struct wolfIP_eth_frame *sent = (struct wolfIP_eth_frame *)last_frame_sent;
+        ck_assert_mem_eq(sent->data, ethf->data, 8);
+    }
 }
 END_TEST
 

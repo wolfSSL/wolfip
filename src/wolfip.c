@@ -372,7 +372,19 @@ static int fifo_push(struct fifo *f, void *data, uint32_t len)
     uint32_t h_wrap = f->h_wrap;
     memset(&desc, 0, sizeof(struct pkt_desc));
     /* Ensure 4-byte alignment in the buffer */
-    head = fifo_align_head_pos(head, f->size);
+    {
+        uint32_t raw_head = head;
+        head = fifo_align_head_pos(head, f->size);
+        /* fifo_align_head_pos() wraps an unaligned head in {size-3,size-2,
+         * size-1} to 0. If the FIFO is non-empty and not yet wrapped, that
+         * wrap must be recorded in h_wrap: otherwise head==tail==0 &&
+         * h_wrap==0 is indistinguishable from the empty state, the space test
+         * below reports the whole buffer as free, and the push clobbers every
+         * previously queued descriptor (or, when the write lands exactly on
+         * tail, leaves a non-empty FIFO that reports as empty). */
+        if (head == 0 && raw_head != 0 && h_wrap == 0 && !fifo_is_empty(f))
+            h_wrap = raw_head;
+    }
     {
         uint32_t space;
         if (head == tail && h_wrap == 0)
@@ -440,9 +452,17 @@ static int fifo_can_push_len(const struct fifo *fin, uint32_t len)
     needed = sizeof(struct pkt_desc) + len;
     if (needed > fin->size)
         return 0;
-    head = fifo_align_head_pos(fin->head, fin->size);
-    tail = fin->tail;
-    h_wrap = fin->h_wrap;
+    {
+        uint32_t raw_head = fin->head;
+        head = fifo_align_head_pos(fin->head, fin->size);
+        tail = fin->tail;
+        h_wrap = fin->h_wrap;
+        /* Mirror fifo_push(): record an alignment-induced head->0 wrap so the
+         * capacity check agrees with the empty/full test rather than reporting
+         * a nearly-full FIFO as fully free. */
+        if (head == 0 && raw_head != 0 && h_wrap == 0 && !fifo_is_empty(fin))
+            h_wrap = raw_head;
+    }
 
     {
         uint32_t space;
@@ -2707,7 +2727,6 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         return;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
-        uint32_t expected_len;
         /* Only connected UDP sockets restrict by the peer's
          * ip/port. Unconnected sockets (sendto-only or pure listeners)
          * must accept datagrams from any source, per POSIX. This is
@@ -2717,8 +2736,15 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         int peer_match = (t->sock.udp.connected == 0) ||
                 ((t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                  (t->remote_ip == 0 || t->remote_ip == src_ip));
+        /* The local_ip==0 relaxation exists so the DHCP client socket can
+         * receive OFFER/ACK before it owns an address. It must apply only to
+         * that socket: scoping it to s->dhcp_udp_sd keeps peer_match in force
+         * for any other (e.g. connected) socket that still has no local
+         * address while DHCP is running. */
+        int is_dhcp = (s->dhcp_udp_sd > 0) &&
+                ((uint32_t)(MARK_UDP_SOCKET | i) == (uint32_t)s->dhcp_udp_sd);
         int addr_match =
-                (((t->local_ip == 0) && DHCP_IS_RUNNING(s)) ||
+                (((t->local_ip == 0) && DHCP_IS_RUNNING(s) && is_dhcp) ||
                  (t->local_ip == dst_ip && peer_match));
 #ifdef IP_MULTICAST
         if (wolfIP_ip_is_multicast(dst_ip)) {
@@ -2733,13 +2759,10 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
             if (t->local_ip == 0)
                 t->if_idx = (uint8_t)if_idx;
 
-            /* UDP datagram sanity checks */
-            /* Allow some tolerance for padding/alignment (up to 4 bytes) */
-            expected_len = ee16(udp->len) + IP_HEADER_LEN + ETH_HEADER_LEN;
-            if ((int)frame_len < (int)expected_len)
-                return;
             /* A bound socket matched this datagram. If the RX FIFO is full,
-             * drop silently instead of misreporting the port as closed. */
+             * drop silently instead of misreporting the port as closed.
+             * (The frame_len vs declared UDP length bound is already
+             * enforced by the unconditional guard before the socket loop.) */
             matched = 1;
             if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
                 t->last_pkt_ttl = udp->ip.ttl;
@@ -5433,6 +5456,23 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     /* Not the right local endpoint */
                     continue;
                 }
+            } else {
+                /* LISTEN: a specifically-bound listener (bound_local_ip !=
+                 * 0.0.0.0) must only match segments addressed to its bound
+                 * address; a wildcard listener accepts any local address.
+                 * The SYN path already enforces this for SYNs, but without it
+                 * here a non-SYN segment for a different local IP on the same
+                 * host overwrites the listener's if_idx/last_pkt_ttl/peer_rwnd
+                 * and sets matched, which corrupts listener MTU/TTL
+                 * bookkeeping and suppresses the RFC 793 unmatched RST.
+                 * bound_local_ip (not local_ip) is the discriminator: a
+                 * 0.0.0.0 bind leaves local_ip set to the interface/primary
+                 * address as a default source. */
+                if (t->bound_local_ip != IPADDR_ANY &&
+                        t->bound_local_ip != ee32(tcp->ip.dst)) {
+                    /* Not the right local endpoint */
+                    continue;
+                }
             }
             t->if_idx = (uint8_t)if_idx;
             t->last_pkt_ttl = tcp->ip.ttl;
@@ -6859,6 +6899,12 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (!rs)
             return -WOLFIP_EINVAL;
         if (len == 0)
+            return -WOLFIP_EINVAL;
+        /* Reject payloads that cannot fit in a frame before narrowing len to
+         * uint32_t below: a size_t len above the LINK_MTU-derived bound wraps
+         * in the total_len computation, slips past the LINK_MTU guard, and
+         * lets the payload memcpy overflow the fixed-size frame buffer. */
+        if (len > (size_t)LINK_MTU)
             return -WOLFIP_EINVAL;
         if (sin) {
             if (addrlen < sizeof(struct wolfIP_sockaddr_in))
@@ -10616,7 +10662,11 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define DNS_RD 0x0100 /* Recursion desired */
 #define DNS_TC 0x0200 /* Truncated response */
 #define DNS_RCODE_MASK 0x000F
-#define DNS_FLAGS_RESPONSE_RD (DNS_RD | ((uint16_t)DNS_RESPONSE << 8))
+/* QR bit (bit 15 of the 16-bit flags field): per RFC 1035 s4.1.1 this alone
+ * distinguishes a response from a query. RD is only the Recursion-Desired
+ * flag echoed from the query, so it must not gate response detection. */
+#define DNS_FLAGS_RESPONSE ((uint16_t)DNS_RESPONSE << 8)
+#define DNS_FLAGS_RESPONSE_RD (DNS_RD | DNS_FLAGS_RESPONSE)
 #define DNS_ID_NONE 0
 #define DNS_QUESTION_COUNT 1
 #define DNS_MIN_ID 1
@@ -10774,15 +10824,31 @@ static int dns_question_matches(struct wolfIP *s, const uint8_t *buf, int len,
             sizeof(struct dns_question)) == 0;
 }
 
+/* len bounds the whole message (compression-pointer targets and the
+ * post-jump name portion are validated against it); rdata_end bounds the
+ * initial inline portion of the name, which per RFC 1035 must be encoded
+ * within the record's RDATA. Pass rdata_end == len when the name encoding
+ * is not part of an RDATA (unit tests on bare buffers). */
 static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
-                         size_t out_len)
+                         size_t out_len, int rdata_end)
 {
     int pos = offset;
     size_t o = 0;
     int loop = 0;
     int jumped = 0;
-    while (pos < len && loop++ < len) {
-        uint8_t c = buf[pos];
+    while (loop++ < len) {
+        int bound;
+        uint8_t c;
+        /* The inline portion stops at the RDATA edge; once a compression
+         * pointer has jumped elsewhere in the message the name is bounded
+         * by the message length. */
+        if (jumped)
+            bound = len;
+        else
+            bound = (rdata_end < len) ? rdata_end : len;
+        if (pos >= bound)
+            break;
+        c = buf[pos];
         if (c == DNS_NAME_TERMINATOR) {
             if (!jumped)
                 pos++;
@@ -10798,6 +10864,10 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
             int ptr_pos = pos;
             if (pos + 1 >= len)
                 return -1;
+            /* The pointer is part of the inline encoding: both bytes must
+             * lie within the RDATA. */
+            if (!jumped && pos + 2 > rdata_end)
+                return -1;
             {
                 uint16_t ptr = ((c & DNS_COMPRESSION_OFFSET_MASK) << 8) |
                         buf[pos + 1];
@@ -10810,6 +10880,10 @@ static int dns_copy_name(const uint8_t *buf, int len, int offset, char *out,
         }
         pos++;
         if (pos + c > len)
+            return -1;
+        /* An inline label (length byte + label bytes) must fit in the
+         * RDATA; do not let it continue into the following record. */
+        if (!jumped && pos + c > rdata_end)
             return -1;
         if (o != 0) {
             if (o + 1 >= out_len)
@@ -10945,8 +11019,11 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
         if (ee16(hdr->id) != s->dns_id)
             return;
         flags = ee16(hdr->flags);
-        /* Parse DNS response */
-        if ((flags & DNS_FLAGS_RESPONSE_RD) == DNS_FLAGS_RESPONSE_RD) {
+        /* Parse DNS response: key on the QR bit alone (RFC 1035 s4.1.1). A
+         * conformant server that does not echo the RD bit must still have its
+         * reply parsed; requiring RD as well silently drops such responses
+         * and lets the outstanding query time out and retransmit. */
+        if ((flags & DNS_FLAGS_RESPONSE) != 0) {
             if ((flags & DNS_TC) != 0) {
                 dns_abort_query(s);
                 return;
@@ -11005,7 +11082,8 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                         ee16(rr->type) == DNS_PTR &&
                         ee16(rr->class) == DNS_CLASS_IN) {
                     if (dns_copy_name((const uint8_t *)buf, dns_len, pos,
-                            s->dns_ptr_name, sizeof(s->dns_ptr_name)) == 0) {
+                            s->dns_ptr_name, sizeof(s->dns_ptr_name),
+                            pos + (int)rdlen) == 0) {
                         if (s->dns_ptr_cb)
                             s->dns_ptr_cb(s->dns_ptr_name);
                         dns_abort_query(s);
@@ -11245,20 +11323,30 @@ static void handle_socket_callbacks(struct wolfIP *s)
         if ((ts->sock.tcp.state == TCP_CLOSED) && !(ts->events & CB_EVENT_CLOSED))
             continue;
         {
+            tsocket_cb cb = ts->callback;
+            void *cb_arg = ts->callback_arg;
             uint16_t events = ts->events;
             ts->events = 0;
-            ts->callback(i | MARK_TCP_SOCKET, events, ts->callback_arg);
-        }
+            cb(i | MARK_TCP_SOCKET, events, cb_arg);
 
-        /* Now that CB_EVENT_CLOSED has been delivered, reap the deferred-close
-         * socket. Disarm the callback first so close_socket() takes the plain
-         * teardown path instead of re-deferring (it re-arms close_notify_pending
-         * whenever a TCP socket still has a callback). A socket closed elsewhere
-         * is already memset (callback NULL) and never reaches this branch. */
-        if (ts->sock.tcp.state == TCP_CLOSED) {
-            ts->callback = NULL;
-            ts->callback_arg = NULL;
-            close_socket(ts);
+            /* Now that CB_EVENT_CLOSED has been delivered, reap the
+             * deferred-close socket - but only if the slot still holds the
+             * socket that was just dispatched. The callback may have closed
+             * this socket (freeing the slot) and allocated a fresh one in its
+             * place; a fresh socket is TCP_CLOSED by design, so reaping on
+             * state alone would destroy it. A replaced slot carries a
+             * different (or no) callback, so key the reap on the identity of
+             * the callback pair. Disarm the callback first so close_socket()
+             * takes the plain teardown path instead of re-deferring (it
+             * re-arms close_notify_pending whenever a TCP socket still has a
+             * callback). A socket closed elsewhere is already memset (callback
+             * NULL) and never reaches this branch. */
+            if ((ts->callback == cb) && (ts->callback_arg == cb_arg) &&
+                    (ts->sock.tcp.state == TCP_CLOSED)) {
+                ts->callback = NULL;
+                ts->callback_arg = NULL;
+                close_socket(ts);
+            }
         }
     }
 
@@ -11269,8 +11357,13 @@ static void handle_socket_callbacks(struct wolfIP *s)
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         struct rawsocket *r = &s->rawsockets[i];
         if (r->used && (r->callback) && (r->events)) {
-            r->callback(i | MARK_RAW_SOCKET, r->events, r->callback_arg);
+            /* Snapshot and clear before the callback (as dispatch_events
+             * does): the callback may re-enter the stack and raise events
+             * on this same slot (e.g. close + re-socket in place); a
+             * post-callback clear would wipe them. */
+            uint16_t events = r->events;
             r->events = 0;
+            r->callback(i | MARK_RAW_SOCKET, events, r->callback_arg);
         }
     }
 #endif
@@ -11278,8 +11371,13 @@ static void handle_socket_callbacks(struct wolfIP *s)
     for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
         struct packetsocket *p = &s->packetsockets[i];
         if (p->used && (p->callback) && (p->events)) {
-            p->callback(i | MARK_PACKET_SOCKET, p->events, p->callback_arg);
+            /* Snapshot and clear before the callback (as dispatch_events
+             * does): the callback may re-enter the stack and raise events
+             * on this same slot (e.g. close + re-socket in place); a
+             * post-callback clear would wipe them. */
+            uint16_t events = p->events;
             p->events = 0;
+            p->callback(i | MARK_PACKET_SOCKET, events, p->callback_arg);
         }
     }
 #endif
@@ -11619,7 +11717,11 @@ static void flush_raw_tx(struct wolfIP *s)
                 break;
             eth_output_add_header(s, tx_if, r->nexthop_mac, &ip->eth, ETH_TYPE_IP);
 #endif
-            wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
+            /* Mirror flush_datagram_tx: on driver backpressure/hard error
+             * keep the descriptor at the FIFO head so the next poll retries
+             * it instead of silently dropping the frame. */
+            if (wolfIP_ll_send_frame(s, tx_if, ip, desc->len) < 0)
+                break;
             fifo_pop(&r->txbuf);
             desc = fifo_peek(&r->txbuf);
             (void)nexthop;
@@ -11655,7 +11757,11 @@ static void flush_packet_tx(struct wolfIP *s)
                 desc = fifo_peek(&p->txbuf);
                 continue;
             }
-            wolfIP_ll_send_frame(s, tx_if, frame, desc->len);
+            /* Mirror flush_datagram_tx: on driver backpressure/hard error
+             * keep the descriptor at the FIFO head so the next poll retries
+             * it instead of silently dropping the frame. */
+            if (wolfIP_ll_send_frame(s, tx_if, frame, desc->len) < 0)
+                break;
             fifo_pop(&p->txbuf);
             desc = fifo_peek(&p->txbuf);
         }

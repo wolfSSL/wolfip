@@ -197,6 +197,57 @@ START_TEST(test_dns_callback_aaaa_answer_skipped_for_a_query)
 END_TEST
 
 /* ------------------------------------------------------------------ *
+ * F-6211: response detection must key on the QR bit alone (RFC 1035
+ * s4.1.1). A conformant server that does not echo the RD bit must still
+ * have its reply parsed. Requiring RD as well silently drops such a
+ * response and lets the query time out and retransmit. Flags here are
+ * 0x8000 (QR set, RD clear).
+ * ------------------------------------------------------------------ */
+START_TEST(test_dns_callback_qr_without_rd_is_accepted)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    int pos;
+    struct dns_rr *rr;
+    uint8_t a_rdata[4] = {0x0A, 0x00, 0x00, 0x02};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0x3333, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
+    dns_lookup_calls = 0;
+    dns_lookup_ip    = 0;
+    s.dns_lookup_cb  = test_dns_lookup_cb;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    /* QR set, RD clear, RCODE 0, TC clear. */
+    pos = build_dns_a_response_header(response, sizeof(response),
+                                      s.dns_id, 0x8000, 1, 1, NULL);
+    /* Answer NAME: compressed pointer to the question name. */
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type     = ee16(DNS_A);
+    rr->class    = ee16(DNS_CLASS_IN);
+    rr->ttl      = ee32(60);
+    rr->rdlength = ee16((uint16_t)sizeof(a_rdata));
+    pos += (int)sizeof(struct dns_rr);
+    memcpy(&response[pos], a_rdata, sizeof(a_rdata));
+    pos += (int)sizeof(a_rdata);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)],
+                   response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* The QR-only response must be parsed and the lookup delivered. */
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0x0A000002U);
+}
+END_TEST
+
+/* ------------------------------------------------------------------ *
  * dns_callback: answer rdlen advertised larger than remaining buffer
  * → abort query (line 8997-8999)
  * ------------------------------------------------------------------ */
@@ -414,7 +465,7 @@ START_TEST(test_dns_copy_name_label_too_big_for_output)
     int ret;
 
     /* out_len == 2: 0 + 2 >= 2 → label-bound guard fires → -1 */
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out), (int)sizeof(buf));
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -431,7 +482,7 @@ START_TEST(test_dns_copy_name_zero_out_len_rejects_terminator_write)
     char out[1]; /* not written; placeholder */
     int ret;
 
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, 0);
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, 0, (int)sizeof(buf));
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -448,7 +499,7 @@ START_TEST(test_dns_copy_name_ptr_at_end_of_buffer)
     char out[32];
     int ret;
 
-    ret = dns_copy_name(buf, 3, 2, out, sizeof(out));
+    ret = dns_copy_name(buf, 3, 2, out, sizeof(out), 3);
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -463,7 +514,7 @@ START_TEST(test_dns_copy_name_label_past_end)
     char out[32];
     int ret;
 
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out), (int)sizeof(buf));
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -484,7 +535,7 @@ START_TEST(test_dns_copy_name_separator_overflow)
     char out[3];
     int ret;
 
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out), (int)sizeof(buf));
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -501,7 +552,7 @@ START_TEST(test_dns_copy_name_label_overflow_output)
     char out[3];
     int ret;
 
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out, sizeof(out), (int)sizeof(buf));
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -536,13 +587,13 @@ START_TEST(test_dns_copy_name_second_label_separator_and_label_fit)
     int ret;
 
     /* Should succeed with enough room */
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out_ok, sizeof(out_ok));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out_ok, sizeof(out_ok), (int)sizeof(buf));
     ck_assert_int_eq(ret, 0);
     ck_assert_str_eq(out_ok, "ab.cd");
 
     /* Should fail: out_len == 5, after "ab" o=2, need o+1 < 5 (ok),
      * then o+c = 2+1+2 = 5 >= 5 → overflow at label copy */
-    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out_small, sizeof(out_small));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 0, out_small, sizeof(out_small), (int)sizeof(buf));
     ck_assert_int_eq(ret, -1);
 }
 END_TEST
@@ -612,6 +663,133 @@ START_TEST(test_dns_callback_ptr_bad_copy_name_stays_pending)
 END_TEST
 
 /* ------------------------------------------------------------------ *
+ * F-10260: a PTR RDATA whose name encoding does not fit in the declared
+ * rdlength must be rejected. The old code bounded dns_copy_name by the
+ * full message length, so an inline label could continue past the RDATA
+ * into the following record and dns_ptr_cb was invoked with a name the
+ * RDATA never contained. The bytes after the 1-byte RDATA spell "foo."
+ * but the RDATA itself holds only the label-length byte 3.
+ * ------------------------------------------------------------------ */
+START_TEST(test_dns_callback_ptr_name_beyond_rdata_rejected)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    int pos;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0xBBBB, dns_qname_a, (int)sizeof(dns_qname_a), DNS_PTR);
+    s.dns_ptr_cb     = test_dns_ptr_cb;
+    s.dns_lookup_cb  = NULL;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    memset(response, 0, sizeof(response));
+    hdr->id      = ee16(s.dns_id);
+    hdr->flags   = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = (int)sizeof(struct dns_header);
+    response[pos++] = 1; response[pos++] = 'a'; response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype  = ee16(DNS_PTR);
+    q->qclass = ee16(DNS_CLASS_IN);
+    pos += (int)sizeof(struct dns_question);
+
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+
+    rr = (struct dns_rr *)(response + pos);
+    rr->type     = ee16(DNS_PTR);
+    rr->class    = ee16(DNS_CLASS_IN);
+    rr->ttl      = ee32(60);
+    rr->rdlength = ee16(1);
+    pos += (int)sizeof(struct dns_rr);
+
+    /* RDATA is a single byte claiming a 3-char label; "foo" + terminator
+     * sit in the bytes that follow the RDATA (outside it). */
+    response[pos++] = 3;
+    response[pos++] = 'f';
+    response[pos++] = 'o';
+    response[pos++] = 'o';
+    response[pos++] = 0;
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)],
+                   response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* The name does not fit the RDATA → copy fails → the bogus name must
+     * not be delivered and the query stays pending. */
+    ck_assert_uint_eq(s.dns_id, 0xBBBB);
+    ck_assert_int_eq(s.dns_query_type, DNS_QUERY_TYPE_PTR);
+}
+END_TEST
+
+/* ------------------------------------------------------------------ *
+ * F-10260 companion: a PTR RDATA that legitimately ends in a compression
+ * pointer (RFC 1035 s4.1.4 allows the pointer to reference any offset in
+ * the message) must still parse. Guards the rdata_end bound from being
+ * applied past the pointer jump.
+ * ------------------------------------------------------------------ */
+START_TEST(test_dns_callback_ptr_rdata_ends_in_pointer_ok)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    struct dns_header *hdr = (struct dns_header *)response;
+    struct dns_question *q;
+    struct dns_rr *rr;
+    int pos;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0xBBBB, dns_qname_a, (int)sizeof(dns_qname_a), DNS_PTR);
+    s.dns_ptr_cb     = test_dns_ptr_cb;
+    s.dns_lookup_cb  = NULL;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    memset(response, 0, sizeof(response));
+    hdr->id      = ee16(s.dns_id);
+    hdr->flags   = ee16(0x8100);
+    hdr->qdcount = ee16(1);
+    hdr->ancount = ee16(1);
+    pos = (int)sizeof(struct dns_header);
+    response[pos++] = 1; response[pos++] = 'a'; response[pos++] = 0;
+    q = (struct dns_question *)(response + pos);
+    q->qtype  = ee16(DNS_PTR);
+    q->qclass = ee16(DNS_CLASS_IN);
+    pos += (int)sizeof(struct dns_question);
+
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+
+    rr = (struct dns_rr *)(response + pos);
+    rr->type     = ee16(DNS_PTR);
+    rr->class    = ee16(DNS_CLASS_IN);
+    rr->ttl      = ee32(60);
+    /* RDATA: label "x" then a pointer to the question name ("a") → "x.a" */
+    rr->rdlength = ee16(4);
+    pos += (int)sizeof(struct dns_rr);
+    response[pos++] = 1;
+    response[pos++] = 'x';
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)],
+                   response, (uint16_t)pos, DNS_PORT);
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+
+    /* Valid name → ptr_cb called → query aborted */
+    ck_assert_uint_eq(s.dns_id, 0U);
+}
+END_TEST
+
+/* ------------------------------------------------------------------ *
  * dns_copy_name: jumped == 1, so pos is NOT incremented after reading
  * the NUL terminator (line 8813-8814 true branch).
  * Use a valid compression pointer followed by the NUL terminator.
@@ -630,7 +808,7 @@ START_TEST(test_dns_copy_name_jumped_no_pos_increment)
     /* Start at the compression pointer (offset 1).
      * The pointer lands at offset 0 which is '\0', so jumped == 1 and
      * the NUL-terminator branch sets out[0]='\0' without touching pos. */
-    ret = dns_copy_name(buf, (int)sizeof(buf), 1, out, sizeof(out));
+    ret = dns_copy_name(buf, (int)sizeof(buf), 1, out, sizeof(out), (int)sizeof(buf));
     ck_assert_int_eq(ret, 0);
     ck_assert_uint_eq((uint8_t)out[0], 0);
 }

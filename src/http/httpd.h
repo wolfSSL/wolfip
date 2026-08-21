@@ -41,7 +41,7 @@ struct httpd;
 struct http_request {
     char method[HTTP_METHOD_LEN];      // "GET", "POST", etc.
     char path[HTTP_PATH_LEN];          // URL path
-    char query[HTTP_QUERY_LEN];        // URL query string (for GET requests)
+    char query[HTTP_QUERY_LEN];        // URL query string, if present in the target
     char headers[HTTP_HEADERS_LEN];    // HTTP headers
     char body[HTTP_BODY_LEN];          // HTTP body (for POST requests)
     size_t body_len;

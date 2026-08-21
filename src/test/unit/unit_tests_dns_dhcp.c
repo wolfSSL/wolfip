@@ -6457,6 +6457,10 @@ START_TEST(test_udp_try_recv_dhcp_running_local_zero)
     ck_assert_ptr_nonnull(ts);
     ts->src_port = 1234;
     ts->local_ip = 0;
+    /* F-10280: the local_ip==0 relaxation is scoped to the DHCP client
+     * socket, so this socket must be the DHCP socket to receive before it
+     * owns an address. */
+    s.dhcp_udp_sd = (int)(MARK_UDP_SOCKET | (uint32_t)(ts - s.udpsockets));
 
     memset(udp_buf, 0, sizeof(udp_buf));
     udp->ip.dst = ee32(local_ip);

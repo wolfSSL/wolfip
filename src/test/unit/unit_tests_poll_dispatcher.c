@@ -479,6 +479,121 @@ START_TEST(test_poll_packet_socket_callback_dispatched)
 END_TEST
 #endif /* WOLFIP_PACKET_SOCKETS */
 
+/* F-10259: an event raised on a raw/packet socket slot while the callback is
+ * still on the stack (callback closes the socket and re-opens a new one in
+ * the same slot) must survive dispatch. The old loops cleared the events
+ * field after the callback returned, wiping the new socket's event so a
+ * consumer waiting on it never woke. */
+static struct wolfIP *f10259_stack;
+static int f10259_reentered;
+
+#if WOLFIP_RAWSOCKETS
+static int f10259_reopen_fd;
+static void f10259_raw_reopen_cb(int sock_fd, uint16_t events, void *arg)
+{
+    (void)events;
+    (void)arg;
+    if (!f10259_reentered) {
+        f10259_reentered = 1;
+        wolfIP_sock_close(f10259_stack, sock_fd);
+        f10259_reopen_fd = wolfIP_sock_socket(f10259_stack, AF_INET,
+                IPSTACK_SOCK_RAW, WI_IPPROTO_ICMP);
+        if (f10259_reopen_fd >= 0) {
+            wolfIP_register_callback(f10259_stack, f10259_reopen_fd,
+                    test_socket_cb, NULL);
+            /* Event raised on the reused slot while the old callback is
+             * still executing. */
+            f10259_stack->rawsockets[SOCKET_UNMARK(f10259_reopen_fd)].events |=
+                CB_EVENT_WRITABLE;
+        }
+    }
+}
+START_TEST(test_poll_raw_socket_callback_reraised_event_survives)
+{
+    struct wolfIP s;
+    int raw_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    socket_cb_calls = 0;
+    socket_cb_last_fd = -1;
+    f10259_stack = &s;
+    f10259_reentered = 0;
+    f10259_reopen_fd = -1;
+
+    raw_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_ICMP);
+    ck_assert_int_ge(raw_sd, 0);
+    wolfIP_register_callback(&s, raw_sd, f10259_raw_reopen_cb, NULL);
+    s.rawsockets[SOCKET_UNMARK(raw_sd)].events = CB_EVENT_READABLE;
+
+    (void)wolfIP_poll(&s, 100);
+    /* The reopened socket reuses slot 0; the event raised during dispatch
+     * must not be wiped by the old iteration's clear. */
+    ck_assert_int_ge(f10259_reopen_fd, 0);
+    ck_assert_int_eq(f10259_reopen_fd, raw_sd);
+    ck_assert(s.rawsockets[SOCKET_UNMARK(f10259_reopen_fd)].events &
+              CB_EVENT_WRITABLE);
+
+    /* Next poll: the reopened socket's own callback is woken by it. */
+    socket_cb_calls = 0;
+    (void)wolfIP_poll(&s, 200);
+    ck_assert_int_eq(socket_cb_calls, 1);
+    ck_assert_int_eq(socket_cb_last_fd, f10259_reopen_fd);
+}
+END_TEST
+#endif /* WOLFIP_RAWSOCKETS */
+
+#if WOLFIP_PACKET_SOCKETS
+static int f10259_pkt_reopen_fd;
+static void f10259_pkt_reopen_cb(int sock_fd, uint16_t events, void *arg)
+{
+    (void)events;
+    (void)arg;
+    if (!f10259_reentered) {
+        f10259_reentered = 1;
+        wolfIP_sock_close(f10259_stack, sock_fd);
+        f10259_pkt_reopen_fd = wolfIP_sock_socket(f10259_stack, AF_PACKET,
+                IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+        if (f10259_pkt_reopen_fd >= 0) {
+            wolfIP_register_callback(f10259_stack, f10259_pkt_reopen_fd,
+                    test_socket_cb, NULL);
+            f10259_stack->packetsockets[SOCKET_UNMARK(f10259_pkt_reopen_fd)].events |=
+                CB_EVENT_WRITABLE;
+        }
+    }
+}
+START_TEST(test_poll_packet_socket_callback_reraised_event_survives)
+{
+    struct wolfIP s;
+    int pkt_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    socket_cb_calls = 0;
+    socket_cb_last_fd = -1;
+    f10259_stack = &s;
+    f10259_reentered = 0;
+    f10259_pkt_reopen_fd = -1;
+
+    pkt_sd = wolfIP_sock_socket(&s, AF_PACKET, IPSTACK_SOCK_RAW, ee16(ETH_TYPE_IP));
+    ck_assert_int_ge(pkt_sd, 0);
+    wolfIP_register_callback(&s, pkt_sd, f10259_pkt_reopen_cb, NULL);
+    s.packetsockets[SOCKET_UNMARK(pkt_sd)].events = CB_EVENT_READABLE;
+
+    (void)wolfIP_poll(&s, 100);
+    ck_assert_int_ge(f10259_pkt_reopen_fd, 0);
+    ck_assert_int_eq(f10259_pkt_reopen_fd, pkt_sd);
+    ck_assert(s.packetsockets[SOCKET_UNMARK(f10259_pkt_reopen_fd)].events &
+              CB_EVENT_WRITABLE);
+
+    socket_cb_calls = 0;
+    (void)wolfIP_poll(&s, 200);
+    ck_assert_int_eq(socket_cb_calls, 1);
+    ck_assert_int_eq(socket_cb_last_fd, f10259_pkt_reopen_fd);
+}
+END_TEST
+#endif /* WOLFIP_PACKET_SOCKETS */
+
 /* ------------------------------------------------------------------ */
 /* TCP TX loop                                                         */
 /* ------------------------------------------------------------------ */
