@@ -38,17 +38,19 @@
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
+#include "unit_tests_wolfcert.c"
 
 Suite *wolf_suite(void)
 {
     Suite *s;
-    TCase *tc_core, *tc_proto, *tc_utils, *tc_wolfssl;
+    TCase *tc_core, *tc_proto, *tc_utils, *tc_wolfssl, *tc_wolfcert;
 
     s = suite_create("wolfIP");
     tc_core = tcase_create("Core");
     tc_utils = tcase_create("Utils");
     tc_proto = tcase_create("Protocols");
     tc_wolfssl = tcase_create("wolfSSL-IO");
+    tc_wolfcert = tcase_create("wolfCert-IO");
 
 
     tcase_add_test(tc_core, test_fifo_init);
@@ -1065,6 +1067,39 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_wolfssl, test_wolfssh_io_send_behaviors);
     tcase_add_test(tc_wolfssl, test_wolfssh_io_recv_behaviors);
 
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_init_populates_vtable);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_init_rejects_bad_args);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_init_pool_exhaustion);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_ip_literal);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_retries_eagain);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_deadline_closes_socket);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_hard_error_closes_socket);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_default_timeout_bounds_spin);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_resolves_name);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_rejects_bad_args);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_dns_busy_then_resolves);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_dns_busy_hits_deadline);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_ignores_stale_dns_answer);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_write_blocking_deadline);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_write_blocking_pumps);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_socket_failure);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_dns_send_eagain_retries);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_dns_hard_error);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_dns_answer_is_zero);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_dns_never_answers);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_unusable_ip_literal);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_read_nonblocking_maps_eagain);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_read_blocking_pumps_instead_of_want_read);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_read_maps_close_and_reset);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_read_blocking_deadline);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_write_short_write_and_eagain);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_rw_reject_bad_args);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_connect_rejects_out_of_range_octets);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_disconnect_closes_once);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_disconnect_completes_async_close);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_disconnect_deadline);
+    tcase_add_test(tc_wolfcert, test_wolfcert_io_handle_survives_round_trip);
+
     /* Branch-coverage tests backported from the trimmed wolfIP suite. */
     tcase_add_test(tc_core, test_socket_from_fd_invalid_inputs);
     tcase_add_test(tc_core, test_can_read_write_icmp_socket);
@@ -1765,6 +1800,7 @@ Suite *wolf_suite(void)
     suite_add_tcase(s, tc_utils);
     suite_add_tcase(s, tc_proto);
     suite_add_tcase(s, tc_wolfssl);
+    suite_add_tcase(s, tc_wolfcert);
     return s;
 }
 
