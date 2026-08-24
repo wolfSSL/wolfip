@@ -300,7 +300,14 @@ static inline int ip6_is_solicited_node(const ip6 *a)
     return ((a->addr[11] == 0x01) && (a->addr[12] == 0xFF)) ? 1 : 0;
 }
 
-/* An address usable as a packet source or destination on the wire. */
+/* Unicast or anycast form: anything that is neither multicast nor the
+ * unspecified address (RFC 4291 section 2.4). Deliberately not an on-the-wire
+ * validity test: ::1 is a unicast address and passes here, yet must never
+ * appear as the source or destination of a packet on a link (RFC 4291
+ * section 2.5.3). A caller validating an address seen on the wire has to
+ * exclude ip6_is_loopback() as well, and the source of a packet also has to
+ * exclude the unspecified address only in the contexts where it is not
+ * allowed - duplicate address detection legitimately sends from ::. */
 static inline int ip6_is_unicast(const ip6 *a)
 {
     return (!ip6_is_multicast(a) && !ip6_is_unspecified(a)) ? 1 : 0;
