@@ -12381,6 +12381,28 @@ int wolfIP_register_eapol_handler(struct wolfIP *s,
     return 0;
 }
 
+/* Generic link-layer protocol hook. Declared in wolfip.h as the contract a
+ * third-party ring implementation needs; the demux table behind it does not
+ * exist yet. Defined rather than left dangling so a consumer links and gets a
+ * run-time answer instead of an undefined symbol, and reports "not
+ * implemented" rather than a plausible failure such as a full table, which
+ * would invite a retry. */
+int wolfIP_register_l2_handler(struct wolfIP *s, uint16_t ethertype,
+                               int (*handler)(void *ctx, unsigned int if_idx,
+                                              const uint8_t *frame,
+                                              uint32_t len),
+                               void *ctx,
+                               const uint8_t *accept_macs, unsigned int count)
+{
+    (void)s;
+    (void)ethertype;
+    (void)handler;
+    (void)ctx;
+    (void)accept_macs;
+    (void)count;
+    return -WOLFIP_ENOSYS;
+}
+
 size_t wolfIP_instance_size(void)
 {
     return sizeof(struct wolfIP);

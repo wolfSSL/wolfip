@@ -171,6 +171,12 @@ of `wolfIP_register_l2_handler()` — the registration table and the demux and
 MAC-filter changes that consume it — is not written yet, and no driver
 currently populates `switch_ops`.
 
+`wolfIP_register_l2_handler()` is nonetheless defined in the library: it
+registers nothing and returns `-WOLFIP_ENOSYS`. Integration code links
+against it today and finds out at run time that the demux is absent, instead
+of failing to link. The signature is fixed and will not change when the
+table lands.
+
 Open items before an implementation lands:
 
 1. Confirm the DLR ethertype and multicast MAC range against the ODVA

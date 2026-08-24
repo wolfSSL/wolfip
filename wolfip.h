@@ -236,6 +236,14 @@ typedef uint32_t ip4;
 #endif
 #endif
 
+#ifndef WOLFIP_ENOSYS
+#ifdef ENOSYS
+#define WOLFIP_ENOSYS ENOSYS
+#else
+#define WOLFIP_ENOSYS (38)
+#endif
+#endif
+
 
 #ifdef DEBUG
 #include <stdio.h>
@@ -768,7 +776,12 @@ int wolfIP_register_eapol_handler(struct wolfIP *s,
  * Returns 0 on success, negative on bad arguments or when the table of
  * registered protocols is full. Pass a NULL handler to unregister.
  *
- * NOTE: declared, not yet implemented. See docs/dlr_integration.md.
+ * NOTE: this is the declared interface of a feature the stack does not
+ * implement yet - see docs/dlr_integration.md. The definition exists, so
+ * linking against it works, but it registers nothing and every call returns
+ * -WOLFIP_ENOSYS. A consumer can therefore compile and link today and detect
+ * at run time that the demux is not there, rather than meeting an undefined
+ * symbol. The signature will not change when the table lands.
  */
 int wolfIP_register_l2_handler(struct wolfIP *s, uint16_t ethertype,
                                int (*handler)(void *ctx, unsigned int if_idx,
