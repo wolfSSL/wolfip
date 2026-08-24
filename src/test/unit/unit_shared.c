@@ -327,6 +327,267 @@ void *wolfSSH_GetIOReadCtx(WOLFSSH *ssh)
 #undef io_desc_alloc
 #undef io_desc_free
 
+/* wolfCert IO glue mocks. The transport drives the stack itself, so it needs
+ * socket, connect, close and poll on top of the recv/send pair above. */
+#include <wolfcert/types.h>
+
+static int wc_socket_ret;
+static int wc_socket_calls;
+static int wc_connect_steps[8];
+static int wc_connect_steps_len;
+static int wc_connect_step;
+static int wc_recv_steps[8];
+static int wc_recv_steps_len;
+static int wc_recv_step;
+static int wc_send_steps[8];
+static int wc_send_steps_len;
+static int wc_send_step;
+static uint32_t wc_connect_last_ip;
+static uint16_t wc_connect_last_port;
+static size_t wc_recv_last_len;
+static size_t wc_send_last_len;
+static int wc_connect_calls;
+static int wc_ready_steps[8];
+static int wc_ready_steps_len;
+static int wc_ready_step;
+static int wc_peer_flip_at;
+static uint32_t wc_peer_flip_ip;
+static uint16_t wc_peer_flip_port;
+static int wc_close_calls;
+static int wc_close_last_fd;
+static int wc_close_ret;
+static int wc_poll_calls;
+static int wc_nslookup_ret;
+static int wc_nslookup_steps[8];
+static int wc_nslookup_steps_len;
+static int wc_nslookup_step;
+static uint32_t wc_nslookup_ip;
+static int wc_nslookup_answer;
+static void (*wc_dns_cb)(uint32_t ip);
+static int wc_dns_pending;
+static uint32_t wc_dns_ips[4];
+static int wc_dns_ips_len;
+static int wc_dns_ip_idx;
+static uint64_t wc_fake_now;
+static uint64_t wc_now_step_ms;
+
+static int wc_next_step(const int *steps, int len, int *cursor, int dflt)
+{
+    if (len <= 0)
+        return dflt;
+    if (*cursor < len)
+        return steps[(*cursor)++];
+    return steps[len - 1];
+}
+
+static uint64_t test_wc_now_ms(void)
+{
+    return wc_fake_now;
+}
+
+static int test_wc_sock_socket(struct wolfIP *s, int domain, int type, int proto)
+{
+    (void)s;
+    (void)domain;
+    (void)type;
+    (void)proto;
+    wc_socket_calls++;
+    return wc_socket_ret;
+}
+
+static int test_wc_sock_connect(struct wolfIP *s, int fd,
+                                const struct wolfIP_sockaddr *addr,
+                                socklen_t addrlen)
+{
+    const struct wolfIP_sockaddr_in *sin;
+
+    (void)s;
+    (void)fd;
+    (void)addrlen;
+    wc_connect_calls++;
+    if (addr != NULL) {
+        sin = (const struct wolfIP_sockaddr_in *)addr;
+        /* Read it back the way wolfIP_sock_connect does, so a dropped or
+         * doubled ee16/ee32 shows up here. */
+        wc_connect_last_ip = ee32(sin->sin_addr.s_addr);
+        wc_connect_last_port = ee16(sin->sin_port);
+    }
+    return wc_next_step(wc_connect_steps, wc_connect_steps_len,
+                        &wc_connect_step, 0);
+}
+
+static int test_wc_sock_recv(struct wolfIP *s, int fd, void *buf, size_t len,
+                             int flags)
+{
+    int step;
+
+    (void)s;
+    (void)fd;
+    (void)flags;
+    wc_recv_last_len = len;
+    step = wc_next_step(wc_recv_steps, wc_recv_steps_len, &wc_recv_step, 0);
+    if ((step > 0) && (buf != NULL)) {
+        if ((size_t)step > len)
+            step = (int)len;
+        memset(buf, 'x', (size_t)step);
+    }
+    return step;
+}
+
+static int test_wc_sock_send(struct wolfIP *s, int fd, const void *buf,
+                             size_t len, int flags)
+{
+    int step;
+
+    (void)s;
+    (void)fd;
+    (void)buf;
+    (void)flags;
+    wc_send_last_len = len;
+    step = wc_next_step(wc_send_steps, wc_send_steps_len, &wc_send_step, 0);
+    if ((step > 0) && ((size_t)step > len))
+        step = (int)len;
+    return step;
+}
+
+/* Reports the peer connect() was given, until wc_peer_flip_at polls have run:
+ * then the slot reads as torn down (0.0.0.0:0) or as another caller's. */
+static int test_wc_sock_getpeername(struct wolfIP *s, int fd,
+                                    struct wolfIP_sockaddr *addr,
+                                    const socklen_t *addrlen)
+{
+    struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+    uint32_t ip = wc_connect_last_ip;
+    uint16_t port = wc_connect_last_port;
+
+    (void)s;
+    (void)fd;
+    (void)addrlen;
+    if ((wc_peer_flip_at > 0) && (wc_poll_calls >= wc_peer_flip_at)) {
+        ip = wc_peer_flip_ip;
+        port = wc_peer_flip_port;
+    }
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = ee32(ip);
+    sin->sin_port = ee16(port);
+    return 0;
+}
+
+/* 0 while the handshake is in flight, 1 once established. */
+static int test_wc_sock_can_write(struct wolfIP *s, int fd)
+{
+    (void)s;
+    (void)fd;
+    return wc_next_step(wc_ready_steps, wc_ready_steps_len, &wc_ready_step, 1);
+}
+
+static int test_wc_sock_close(struct wolfIP *s, int fd)
+{
+    (void)s;
+    wc_close_calls++;
+    wc_close_last_fd = fd;
+    return wc_close_ret;
+}
+
+static int test_wc_poll(struct wolfIP *s, uint64_t now)
+{
+    (void)s;
+    (void)now;
+    wc_poll_calls++;
+    /* Advancing here is what lets a deadline expire inside a pump loop. */
+    wc_fake_now += wc_now_step_ms;
+    if ((wc_dns_pending != 0) && (wc_nslookup_answer != 0) &&
+            (wc_dns_cb != NULL)) {
+        uint32_t ip = wc_nslookup_ip;
+        if (wc_dns_ips_len > 0) {
+            ip = wc_dns_ips[wc_dns_ip_idx];
+            if (wc_dns_ip_idx < (wc_dns_ips_len - 1))
+                wc_dns_ip_idx++;
+        }
+        wc_dns_pending = 0;
+        wc_dns_cb(ip);
+    }
+    return 0;
+}
+
+static int test_wc_nslookup(struct wolfIP *s, const char *name, uint16_t *id,
+                            void (*cb)(uint32_t ip))
+{
+    int ret;
+
+    (void)s;
+    (void)name;
+    if (id != NULL)
+        *id = 1;
+    ret = wc_next_step(wc_nslookup_steps, wc_nslookup_steps_len,
+                       &wc_nslookup_step, wc_nslookup_ret);
+    if (ret == 0) {
+        wc_dns_cb = cb;
+        wc_dns_pending = 1;
+    }
+    return ret;
+}
+
+#define wolfIP_sock_socket test_wc_sock_socket
+#define wolfIP_sock_connect test_wc_sock_connect
+#define wolfIP_sock_recv test_wc_sock_recv
+#define wolfIP_sock_send test_wc_sock_send
+#define wolfIP_sock_close test_wc_sock_close
+#define wolfIP_sock_getpeername test_wc_sock_getpeername
+#define wolfIP_sock_can_write test_wc_sock_can_write
+#define wolfIP_poll test_wc_poll
+#define nslookup test_wc_nslookup
+#include "../../port/wolfcert_io.c"
+#undef wolfIP_sock_socket
+#undef wolfIP_sock_connect
+#undef wolfIP_sock_recv
+#undef wolfIP_sock_send
+#undef wolfIP_sock_close
+#undef wolfIP_sock_getpeername
+#undef wolfIP_sock_can_write
+#undef wolfIP_poll
+#undef nslookup
+
+static void reset_wolfcert_io_state(void)
+{
+    memset(io_ctxs, 0, sizeof(io_ctxs));
+    wc_socket_ret = 0x100;
+    wc_socket_calls = 0;
+    wc_connect_steps_len = 0;
+    wc_connect_step = 0;
+    wc_recv_steps_len = 0;
+    wc_recv_step = 0;
+    wc_send_steps_len = 0;
+    wc_send_step = 0;
+    wc_connect_last_ip = 0;
+    wc_connect_last_port = 0;
+    wc_recv_last_len = 0;
+    wc_send_last_len = 0;
+    wc_connect_calls = 0;
+    wc_ready_steps_len = 0;
+    wc_ready_step = 0;
+    wc_peer_flip_at = 0;
+    wc_peer_flip_ip = 0;
+    wc_peer_flip_port = 0;
+    wc_close_calls = 0;
+    wc_close_last_fd = -1;
+    wc_close_ret = 0;
+    wc_poll_calls = 0;
+    wc_nslookup_ret = 0;
+    wc_nslookup_steps_len = 0;
+    wc_nslookup_step = 0;
+    wc_nslookup_ip = 0x0A000001;
+    wc_nslookup_answer = 1;
+    wc_dns_cb = NULL;
+    wc_dns_pending = 0;
+    wc_dns_ips_len = 0;
+    wc_dns_ip_idx = 0;
+    wc_fake_now = 0;
+    wc_now_step_ms = 1;
+    dns_result_ip = 0;
+    dns_result_ready = 0;
+}
+
 static void reset_wolfssh_io_state(void)
 {
     memset(wolfssh_io_descs, 0, sizeof(wolfssh_io_descs));
