@@ -1109,18 +1109,26 @@ unit-ipv6-leaksan: clean-unit build/test/unit
 # The pending tests are guarded by named WOLFIP_IPV6_HAVE_* macros rather than
 # "#if 0" precisely so that this count is possible.
 IPV6_PENDING_SRC:=src/test/unit/unit_tests_ipv6_pending.c
+# The defaults live in wolfip6_config.h; config.h only ever holds an override,
+# and being #ifndef-guarded the override is the one that wins. Reporting on
+# config.h alone would call every feature pending whatever the defaults say.
+IPV6_CONFIG_SRC:=wolfip6_config.h
 
 .PHONY: unit-ipv6-pending-count
 unit-ipv6-pending-count:
 	@total=`grep -c '^START_TEST' $(IPV6_PENDING_SRC) 2>/dev/null || echo 0`; \
 	echo "[IPv6] $$total requirement test(s) written and awaiting implementation"; \
 	for m in EXTHDR ICMP6 ND6 SLAAC DHCP6 SOCKETS; do \
-		if grep -q "define WOLFIP_IPV6_HAVE_$$m 1" config.h 2>/dev/null; then \
+		src=$(IPV6_CONFIG_SRC); \
+		if grep -q "define WOLFIP_IPV6_HAVE_$$m " config.h 2>/dev/null; then \
+			src=config.h; \
+		fi; \
+		if grep -q "define WOLFIP_IPV6_HAVE_$$m 1" $$src 2>/dev/null; then \
 			state=enabled; \
 		else \
 			state=pending; \
 		fi; \
-		echo "         WOLFIP_IPV6_HAVE_$$m: $$state"; \
+		echo "         WOLFIP_IPV6_HAVE_$$m: $$state ($$src)"; \
 	done
 
 ESP_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
