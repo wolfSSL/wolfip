@@ -63,6 +63,33 @@
 #define IP6_NEXTHDR_DSTOPTS 60
 
 /* ICMPv6 message types (RFC 4443 sections 4.1 and 4.2, RFC 4861 section 4). */
+/* Error messages (RFC 4443 section 3). Types below 128 are errors, 128 and
+ * above are informational, and the split governs how an unrecognised type
+ * is handled (section 2.4 (b)). */
+#define ICMP6_DEST_UNREACH     1
+#define ICMP6_PACKET_TOO_BIG   2
+#define ICMP6_TIME_EXCEEDED    3
+#define ICMP6_PARAM_PROBLEM    4
+
+/* Destination Unreachable codes (RFC 4443 section 3.1). */
+#define ICMP6_DST_NO_ROUTE     0
+#define ICMP6_DST_PROHIBITED   1
+#define ICMP6_DST_BEYOND_SCOPE 2
+#define ICMP6_DST_ADDR_UNREACH 3
+#define ICMP6_DST_PORT_UNREACH 4
+
+/* Time Exceeded codes (RFC 4443 section 3.3). */
+#define ICMP6_TIME_HOP_LIMIT   0
+#define ICMP6_TIME_FRAGMENT    1
+
+/* Parameter Problem codes (RFC 4443 section 3.4). */
+#define ICMP6_PARAM_HEADER     0
+#define ICMP6_PARAM_NEXTHDR    1
+#define ICMP6_PARAM_OPTION     2
+
+/* Type 128 is the first informational type. */
+#define ICMP6_INFORMATIONAL_MIN 128
+
 #define ICMP6_ECHO_REQUEST     128
 #define ICMP6_ECHO_REPLY       129
 #define ICMP6_ROUTER_SOLICIT   133
@@ -346,10 +373,30 @@ static uint32_t ip6_upper_min_len(uint8_t next_hdr)
 
 static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
                         struct wolfIP_ip6_packet *pkt, uint32_t len);
+static unsigned int wolfIP_if_for_local_ip6(struct wolfIP *s,
+                                            unsigned int ingress_if,
+                                            const ip6 *addr, int *found);
+static void icmp6_send_error(struct wolfIP *s, unsigned int if_idx,
+                             const struct wolfIP_ip6_packet *orig,
+                             uint32_t orig_frame_len, uint8_t type,
+                             uint8_t code, uint32_t param);
+static void icmp6_try_recv(struct wolfIP *s, unsigned int if_idx,
+                           struct wolfIP_icmp6_packet *icmp,
+                           uint32_t frame_len);
+static int icmp6_type_is_error(uint8_t type);
+static uint32_t udp6_max_payload(struct wolfIP *s, unsigned int if_idx);
+static int sock_addr_from_ip6(struct wolfIP_sockaddr *addr, socklen_t *addrlen,
+                              const ip6 *v6, uint16_t port,
+                              unsigned int scope_id);
 static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
                           struct wolfIP_udp6_datagram *udp, uint32_t frame_len);
 static void tcp6_input(struct wolfIP *s, unsigned int if_idx,
                        struct wolfIP_tcp6_seg *seg, uint32_t frame_len);
+static int ip6_select_source(struct wolfIP *s, unsigned int if_idx,
+                             const ip6 *dst, ip6 *src);
+static unsigned int ip6_route_for_dest(struct wolfIP *s, const ip6 *dst);
+static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
+                       uint8_t *mac);
 static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                            struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
                            const struct ip_flow *flow);
@@ -378,9 +425,6 @@ static int ip6_recv(struct wolfIP *s, unsigned int if_idx,
     uint32_t min_upper;
     ip6 src;
     ip6 dst;
-
-    (void)s;
-    (void)if_idx;
 
     if (len < (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN))
         return IP6_DROP_SHORT_FRAME;
@@ -421,8 +465,22 @@ static int ip6_recv(struct wolfIP *s, unsigned int if_idx,
         return IP6_DROP_EXTENSION_HEADER;
 
     min_upper = ip6_upper_min_len(pkt->next_hdr);
-    if (min_upper == 0)
+    if (min_upper == 0) {
+        /* RFC 4443 section 3.4: a node that cannot process the Next Header
+         * reports it, pointing at the field that named it. The offset is
+         * from the start of the IPv6 header, and next_hdr is its 7th octet.
+         * Reporting rather than dropping silently is what lets the sender
+         * fall back instead of retrying forever - and the destination is
+         * checked because a packet that was not for us is not ours to
+         * complain about. */
+        int local = 0;
+
+        (void)wolfIP_if_for_local_ip6(s, if_idx, &dst, &local);
+        if (local)
+            icmp6_send_error(s, if_idx, pkt, len, ICMP6_PARAM_PROBLEM,
+                             ICMP6_PARAM_NEXTHDR, 6);
         return IP6_DROP_UNKNOWN_NEXTHDR;
+    }
     if (payload_len < min_upper)
         return IP6_DROP_SHORT_TRANSPORT;
 
@@ -626,12 +684,27 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
         nd6_input(s, if_idx, pkt, payload_len);
         return;
     }
-    if (icmp->type == ICMP6_ECHO_REPLY) {
-        /* icmp_input() hands this to icmp_try_recv() for delivery to an
-         * application ICMP socket. There is no IPv6 socket yet, so the reply
-         * is consumed here; answering it would loop between two hosts. */
+    /* RFC 4443 section 2.4 (b) splits the remaining types two ways, and the
+     * split decides what reaches an application ICMPv6 socket.
+     *
+     * An error message is passed to the upper layer even when its type is
+     * unrecognised - that is how a program learns its destination was
+     * unreachable, and refusing to relay a type this stack happens not to
+     * know would hide exactly the reports worth having. An Echo Reply goes
+     * the same way; answering it would loop between two hosts.
+     *
+     * An unrecognised informational message gets the opposite treatment and
+     * is silently discarded. A node that cannot interpret it has nothing
+     * useful to say back, and passing it up would hand an application
+     * traffic it never asked for. */
+    if (icmp6_type_is_error(icmp->type) ||
+            (icmp->type == ICMP6_ECHO_REPLY)) {
+        icmp6_try_recv(s, if_idx, icmp, len);
         return;
     }
+    if (icmp->type != ICMP6_ECHO_REQUEST)
+        return;
+
     if (icmp->type == ICMP6_ECHO_REQUEST) {
         int dst_match = 0;
 
@@ -1364,6 +1437,323 @@ static int nd6_select_nexthop(struct wolfIP *s, unsigned int if_idx,
 }
 
 /* ---------------------------------------------------------------------- */
+/* ICMPv6 sockets                                                         */
+/* ---------------------------------------------------------------------- */
+
+/* The Echo identifier, which is the first half of the four type-specific
+ * octets of an Echo Request or Reply (RFC 4443 section 4.1). An ICMPv6
+ * socket binds to one, the way the IPv4 ICMP socket does, so several
+ * pingers can share the stack. */
+static uint16_t icmp6_echo_id(const struct wolfIP_icmp6_packet *icmp)
+{
+    return (uint16_t)((icmp->data[0] << 8) | icmp->data[1]);
+}
+
+/* Deliver an ICMPv6 message to any socket that wants it.
+ *
+ * Matching mirrors the IPv4 ICMP socket: the local address if the socket
+ * is bound to one, the Echo identifier if it has claimed one, and the peer
+ * if it is connected. An error message carries the identifier of whatever
+ * provoked it rather than one of its own, so identifier matching applies
+ * only to Echo Replies - otherwise a socket would never see the errors its
+ * own traffic caused, which is the main reason to have the socket at all. */
+static void icmp6_try_recv(struct wolfIP *s, unsigned int if_idx,
+                           struct wolfIP_icmp6_packet *icmp, uint32_t frame_len)
+{
+    int is_echo_reply = (icmp->type == ICMP6_ECHO_REPLY);
+    uint16_t echo_id = 0;
+    ip6 src;
+    ip6 dst;
+    int i;
+
+    (void)if_idx;
+    if (frame_len < sizeof(struct wolfIP_icmp6_packet))
+        return;
+    if (is_echo_reply) {
+        if (ee16(icmp->ip6.payload_len) < ICMP6_ECHO_MIN_LEN)
+            return;
+        echo_id = icmp6_echo_id(icmp);
+    }
+    ip6_hdr_get_src(&icmp->ip6, &src);
+    ip6_hdr_get_dst(&icmp->ip6, &dst);
+
+    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
+        struct tsocket *t = &s->icmpsockets[i];
+
+        if (t->proto != WI_IPPROTO_ICMP)
+            continue;
+        if (t->domain != AF_INET6)
+            continue;
+        if (!ip6_is_unspecified(&t->bound_local_ip6) &&
+                (ip6_cmp(&t->bound_local_ip6, &dst) != 0))
+            continue;
+        if (is_echo_reply && (t->src_port != 0) && (t->src_port != echo_id))
+            continue;
+        if (t->peer_is_v6 && !ip6_is_unspecified(&t->remote_ip6) &&
+                (ip6_cmp(&t->remote_ip6, &src) != 0))
+            continue;
+        if (fifo_push(&t->sock.udp.rxbuf, icmp, frame_len) == 0) {
+            t->last_pkt_ttl = icmp->ip6.hop_limit;
+            t->events |= CB_EVENT_READABLE;
+        }
+    }
+}
+
+/* sendto() on an ICMPv6 socket. The application supplies the whole ICMPv6
+ * message from the type octet onwards; the stack fills in the checksum,
+ * which it must, because that checksum covers the IPv6 pseudo-header and so
+ * cannot be computed until the source address has been selected. That is
+ * the one real difference from the IPv4 ICMP socket, where an application
+ * can and often does checksum its own packet. */
+static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
+                        const void *buf, size_t len)
+{
+    struct wolfIP_icmp6_packet *icmp = (struct wolfIP_icmp6_packet *)frame;
+    uint32_t frame_len;
+    uint32_t max_payload;
+    unsigned int if_idx;
+    ip6 src;
+
+    if (len < ICMP6_ECHO_MIN_LEN)
+        return -WOLFIP_EINVAL; /* type, code, checksum and the 4-byte word */
+    if (ip6_is_unspecified(&t->remote_ip6))
+        return -1;
+
+    if (!ip6_is_unspecified(&t->bound_local_ip6)) {
+        int match = 0;
+
+        if_idx = wolfIP_if_for_local_ip6(s, t->if_idx, &t->bound_local_ip6,
+                                         &match);
+        if (!match)
+            return -WOLFIP_EINVAL;
+        ip6_copy(&src, &t->bound_local_ip6);
+    } else {
+        if_idx = ip6_route_for_dest(s, &t->remote_ip6);
+        if (ip6_select_source(s, if_idx, &t->remote_ip6, &src) != 0)
+            return -1;
+    }
+    t->if_idx = (uint8_t)if_idx;
+    ip6_copy(&t->local_ip6, &src);
+
+    max_payload = udp6_max_payload(s, t->if_idx) + UDP_HEADER_LEN;
+    if ((max_payload == 0) || (len > max_payload))
+        return -WOLFIP_EINVAL;
+
+    /* The application's message starts at the type octet, which is where
+     * the ICMPv6 header begins, so it lands on the header itself rather
+     * than after it. */
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + (uint32_t)len;
+    if (!fifo_can_push_len(&t->sock.udp.txbuf, frame_len))
+        return -WOLFIP_EAGAIN;
+
+    memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN);
+    memcpy(&icmp->type, buf, len);
+    /* An Echo Request identifies the socket, so a socket that has not
+     * claimed an identifier adopts the one it just sent, and a socket that
+     * has keeps it - the same contract the IPv4 ICMP socket offers. */
+    if (icmp->type == ICMP6_ECHO_REQUEST) {
+        if (t->src_port == 0)
+            t->src_port = icmp6_echo_id(icmp);
+        else {
+            icmp->data[0] = (uint8_t)((t->src_port >> 8) & 0xFFu);
+            icmp->data[1] = (uint8_t)(t->src_port & 0xFFu);
+        }
+    }
+    if (ip6_output_add_header(s, t->if_idx, &icmp->ip6, &t->local_ip6,
+                              &t->remote_ip6, IP6_NEXTHDR_ICMPV6,
+                              (uint16_t)len, 0, NULL) != 0)
+        return -1;
+    if (fifo_push(&t->sock.udp.txbuf, frame, frame_len) < 0)
+        return -WOLFIP_EAGAIN;
+    return (int)len;
+}
+
+/* recvfrom() on an ICMPv6 socket: the whole ICMPv6 message from the type
+ * octet onwards, and the peer as a sockaddr_in6. */
+static int icmp6_recvfrom(struct wolfIP *s, struct tsocket *t, void *buf,
+                          size_t len, struct wolfIP_sockaddr *src_addr,
+                          socklen_t *addrlen)
+{
+    struct pkt_desc *desc = fifo_peek(&t->sock.udp.rxbuf);
+    struct wolfIP_icmp6_packet *icmp;
+    uint32_t msg_len;
+    ip6 src;
+
+    (void)s;
+    if (!desc)
+        return -WOLFIP_EAGAIN;
+    icmp = (struct wolfIP_icmp6_packet *)(t->rxmem + desc->pos + sizeof(*desc));
+    msg_len = ee16(icmp->ip6.payload_len);
+    if (msg_len > (desc->len - (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN)))
+        msg_len = desc->len - (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN);
+    if (msg_len > len) {
+        fifo_pop(&t->sock.udp.rxbuf);
+        if (fifo_peek(&t->sock.udp.rxbuf) == NULL)
+            t->events &= ~CB_EVENT_READABLE;
+        return -WOLFIP_EINVAL;
+    }
+    ip6_hdr_get_src(&icmp->ip6, &src);
+    if (src_addr) {
+        socklen_t want = sizeof(struct wolfIP_sockaddr_in6);
+
+        if (addrlen && (*addrlen < want))
+            return -WOLFIP_EINVAL;
+        /* ICMPv6 has no ports, so the reported port is zero, as the IPv4
+         * ICMP socket also reports. */
+        if (sock_addr_from_ip6(src_addr, &want, &src, 0, t->if_idx) != 0)
+            return -WOLFIP_EINVAL;
+        if (addrlen)
+            *addrlen = want;
+    }
+    memcpy(buf, &icmp->type, msg_len);
+    fifo_pop(&t->sock.udp.rxbuf);
+    if (fifo_peek(&t->sock.udp.rxbuf) == NULL)
+        t->events &= ~CB_EVENT_READABLE;
+    return (int)msg_len;
+}
+
+/* ---------------------------------------------------------------------- */
+/* ICMPv6 error messages (RFC 4443 section 2.4 and 3)                     */
+/* ---------------------------------------------------------------------- */
+
+/* Is this an ICMPv6 error message rather than an informational one?
+ * The type space is split at 128 precisely so this question has a cheap
+ * answer (RFC 4443 section 2.1). */
+static int icmp6_type_is_error(uint8_t type)
+{
+    return (type < ICMP6_INFORMATIONAL_MIN) ? 1 : 0;
+}
+
+/* May an error be generated in response to this packet?
+ *
+ * RFC 4443 section 2.4 (e) lists what must never provoke one, and every
+ * item on that list exists to stop the stack being turned into an
+ * amplifier or into one half of a loop:
+ *
+ *   (e.1) another ICMPv6 error message - two nodes would sustain it forever
+ *   (e.2) a packet destined to a multicast address, with two exceptions:
+ *         Packet Too Big, without which multicast path MTU discovery cannot
+ *         work, and Parameter Problem code 2, which reports an unrecognised
+ *         option the sender genuinely has to hear about
+ *   (e.3) a link-layer multicast or broadcast - the IPv6 destination being
+ *         multicast is what this stack can see of that
+ *   (e.5) a source that does not uniquely identify a single node: the
+ *         unspecified address, or any multicast address
+ *
+ * `orig_next_hdr` and `orig_type` describe the offending packet; orig_type
+ * is only meaningful when it is ICMPv6. */
+static int icmp6_error_allowed(uint8_t out_type, uint8_t out_code,
+                               uint8_t orig_next_hdr, uint8_t orig_type,
+                               const ip6 *orig_src, const ip6 *orig_dst)
+{
+    /* (e.1) */
+    if ((orig_next_hdr == IP6_NEXTHDR_ICMPV6) && icmp6_type_is_error(orig_type))
+        return 0;
+    /* (e.5) */
+    if (ip6_is_unspecified(orig_src) || ip6_is_multicast(orig_src))
+        return 0;
+    /* (e.2) and (e.3) */
+    if (ip6_is_multicast(orig_dst)) {
+        if (out_type == ICMP6_PACKET_TOO_BIG)
+            return 1;
+        if ((out_type == ICMP6_PARAM_PROBLEM) &&
+                (out_code == ICMP6_PARAM_OPTION))
+            return 1;
+        return 0;
+    }
+    return 1;
+}
+
+/* Send an ICMPv6 error about `orig`.
+ *
+ * `param` is the type-specific word: the MTU for Packet Too Big, the offset
+ * of the offending octet for Parameter Problem, zero otherwise.
+ *
+ * RFC 4443 section 2.4 (c): the message carries as much of the offending
+ * packet as fits without the result exceeding the minimum IPv6 MTU. That is
+ * a cap on the whole datagram, not on the quotation, which is why the
+ * budget is computed from 1280 downwards rather than from the payload up.
+ * Unlike ICMPv4's fixed 8 bytes, this is deliberately as much as possible:
+ * it is what lets the receiving node match the error to a connection. */
+static void icmp6_send_error(struct wolfIP *s, unsigned int if_idx,
+                             const struct wolfIP_ip6_packet *orig,
+                             uint32_t orig_frame_len, uint8_t type,
+                             uint8_t code, uint32_t param)
+{
+    uint8_t frame[IP6_MIN_MTU + ETH_HEADER_LEN];
+    struct wolfIP_icmp6_packet *err = (struct wolfIP_icmp6_packet *)frame;
+    unsigned int tx_if = if_idx;
+    uint32_t orig_len;
+    uint32_t quote;
+    uint32_t payload_len;
+    uint8_t mac[6];
+    ip6 orig_src;
+    ip6 orig_dst;
+    ip6 src;
+    uint8_t orig_type = 0;
+
+    if (!s || !orig)
+        return;
+    if (orig_frame_len < (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN))
+        return;
+    ip6_hdr_get_src(orig, &orig_src);
+    ip6_hdr_get_dst(orig, &orig_dst);
+    if ((orig->next_hdr == IP6_NEXTHDR_ICMPV6) &&
+            (orig_frame_len >= sizeof(struct wolfIP_icmp6_packet)))
+        orig_type = ((const struct wolfIP_icmp6_packet *)orig)->type;
+    if (!icmp6_error_allowed(type, code, orig->next_hdr, orig_type,
+                             &orig_src, &orig_dst))
+        return;
+
+    /* The reply is sourced from the address the offending packet was sent
+     * to when that is one of ours, so the peer recognises it; otherwise
+     * source selection picks one. */
+    tx_if = ip6_route_for_dest(s, &orig_src);
+    {
+        int local = 0;
+
+        (void)wolfIP_if_for_local_ip6(s, if_idx, &orig_dst, &local);
+        if (local && !ip6_is_multicast(&orig_dst))
+            ip6_copy(&src, &orig_dst);
+        else if (ip6_select_source(s, tx_if, &orig_src, &src) != 0)
+            return;
+    }
+
+    orig_len = orig_frame_len - (uint32_t)ETH_HEADER_LEN;
+    /* 1280 total, less our own IPv6 header, less the 8-byte ICMPv6 header
+     * (4 bytes of type/code/checksum and the 4-byte type-specific word). */
+    quote = IP6_MIN_MTU - IP6_HEADER_LEN - ICMP6_ECHO_MIN_LEN;
+    if (orig_len < quote)
+        quote = orig_len;
+
+    memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN + ICMP6_ECHO_MIN_LEN);
+    err->type = type;
+    err->code = code;
+    /* The four octets after the checksum are the type-specific word: the
+     * MTU, the pointer, or unused-and-zero (RFC 4443 sections 3.1 to 3.4). */
+    err->data[0] = (uint8_t)((param >> 24) & 0xFFu);
+    err->data[1] = (uint8_t)((param >> 16) & 0xFFu);
+    err->data[2] = (uint8_t)((param >> 8) & 0xFFu);
+    err->data[3] = (uint8_t)(param & 0xFFu);
+    memcpy(err->data + 4, (const uint8_t *)orig + ETH_HEADER_LEN, quote);
+    payload_len = ICMP6_ECHO_MIN_LEN + quote;
+
+    if (ip6_output_add_header(s, tx_if, &err->ip6, &src, &orig_src,
+                              IP6_NEXTHDR_ICMPV6, (uint16_t)payload_len,
+                              0, NULL) != 0)
+        return;
+    if (nd6_resolve(s, &tx_if, &orig_src, mac) != 0)
+        return; /* unresolved: an error is not worth queueing for later */
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(s, tx_if))
+        eth_output_add_header(s, tx_if, mac, &err->ip6.eth, ETH_TYPE_IPV6);
+#endif
+    (void)wolfIP_ll_send_frame(s, tx_if, frame,
+                               (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) +
+                               payload_len);
+}
+
+/* ---------------------------------------------------------------------- */
 /* UDP over IPv6                                                          */
 /* ---------------------------------------------------------------------- */
 
@@ -1392,8 +1782,8 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
     ip6 src;
     ip6 dst;
     int i;
+    int matched;
 
-    (void)if_idx;
     if (frame_len < sizeof(struct wolfIP_udp6_datagram))
         return;
     udp_len = ee16(udp->len);
@@ -1412,6 +1802,7 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
     ip6_hdr_get_src(&udp->ip6, &src);
     ip6_hdr_get_dst(&udp->ip6, &dst);
 
+    matched = 0;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
         int peer_match;
@@ -1430,10 +1821,22 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
                   (ip6_cmp(&t->remote_ip6, &src) == 0)));
         if (!peer_match)
             continue;
+        matched = 1;
         if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
             t->last_pkt_ttl = udp->ip6.hop_limit;
             t->events |= CB_EVENT_READABLE;
         }
+    }
+    if (!matched) {
+        int local = 0;
+
+        /* RFC 4443 section 3.1 code 4: nothing holds the port. Only owed
+         * when the datagram was actually addressed to us; icmp6_send_error()
+         * applies the rest of the suppression rules. */
+        (void)wolfIP_if_for_local_ip6(s, if_idx, &dst, &local);
+        if (local)
+            icmp6_send_error(s, if_idx, &udp->ip6, frame_len,
+                             ICMP6_DEST_UNREACH, ICMP6_DST_PORT_UNREACH, 0);
     }
 }
 

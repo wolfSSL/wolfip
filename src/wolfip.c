@@ -8509,7 +8509,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
             return -WOLFIP_EINVAL;
         if (ip6_addr_is_wire_v6(&dst6)) {
-            if (dport == 0)
+            if ((dport == 0) && !IS_SOCKET_ICMP(sockfd))
                 return -WOLFIP_EINVAL;
             if (ip6_is_multicast(&dst6))
                 return -WOLFIP_EINVAL;
@@ -8528,6 +8528,14 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
                 if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
                     return -WOLFIP_EINVAL;
                 return tcp6_connect(s, ts, &dst6, dport);
+            }
+            if (IS_SOCKET_ICMP(sockfd)) {
+                /* ICMPv6 has no ports, so connect() only fixes the peer. */
+                if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
+                    return -WOLFIP_EINVAL;
+                ts->peer_is_v6 = 1;
+                ip6_copy(&ts->remote_ip6, &dst6);
+                return 0;
             }
             return -WOLFIP_EINVAL;
         }
@@ -9253,6 +9261,33 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
+#if WOLFIP_IPV6
+        if (ts->domain == AF_INET6) {
+            ip6 dst6;
+
+            if (dest_addr) {
+                if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, NULL) != 0)
+                    return -1;
+                if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
+                    return -1;
+                if (ip6_addr_is_wire_v6(&dst6)) {
+                    ts->peer_is_v6 = 1;
+                    ip6_copy(&ts->remote_ip6, &dst6);
+                } else {
+                    ts->peer_is_v6 = 0;
+                    ts->remote_ip = ip6_is_v4mapped(&dst6) ?
+                            ip6_get_v4mapped(&dst6) : IPADDR_ANY;
+                }
+            }
+            if (ts->peer_is_v6)
+                return icmp6_sendto(s, ts, frame, buf, len);
+            /* A v4-mapped destination on an ICMPv6 socket would mean
+             * sending ICMPv4 from a socket the application opened for
+             * ICMPv6, which are different protocols with different type
+             * numbers. Refused rather than silently reinterpreted. */
+            return -WOLFIP_EINVAL;
+        }
+#endif
         /* Per-datagram addressing: an explicit sendto destination applies to
          * this datagram only. The connected peer and icmp_try_recv's source
          * filter are set only by connect(), and must survive this send even
@@ -9639,6 +9674,18 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
+#if WOLFIP_IPV6
+        /* Dispatched before the IPv4 arm rewrites *addrlen, and on the
+         * family of the queued message rather than on the socket, for the
+         * same reason as the UDP arm. */
+        {
+            struct pkt_desc *d6 = fifo_peek(&ts->sock.udp.rxbuf);
+
+            if (d6 && ((*(const uint8_t *)(ts->rxmem + d6->pos + sizeof(*d6) +
+                                           ETH_HEADER_LEN) >> 4) == 6))
+                return icmp6_recvfrom(s, ts, buf, len, src_addr, addrlen);
+        }
+#endif
         if (sin && !addrlen)
             return -WOLFIP_EINVAL;
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))

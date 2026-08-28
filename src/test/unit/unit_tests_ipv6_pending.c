@@ -46,84 +46,27 @@
 /* =========================================================================
  * ICMPv6 - RFC 4443
  * ========================================================================= */
-#if WOLFIP_IPV6_HAVE_ICMP6
-
-/* Echo Request and Reply, and the receive checksum, are implemented and
- * have real tests in unit_tests_ipv6_icmp.c. What remains here is the
- * error-message half of RFC 4443. */
-
-
-
-
-START_TEST(test_icmp6_error_is_not_sent_in_response_to_an_error)
-{
-    /* RFC 4443 s2.4 (e.3): an ICMPv6 error message must never be generated
-     * in response to another ICMPv6 error message. Without this rule two
-     * hosts can sustain an error loop. */
-    ck_abort_msg("pending: ICMPv6 error suppression");
-}
-END_TEST
-
-START_TEST(test_icmp6_error_is_not_sent_for_multicast_destinations)
-{
-    /* RFC 4443 s2.4 (e.3): no error for a packet sent to a multicast
-     * address, with the two Packet Too Big and Parameter Problem
-     * exceptions. This is the rule that stops multicast amplification. */
-    ck_abort_msg("pending: ICMPv6 multicast error suppression");
-}
-END_TEST
-
-START_TEST(test_icmp6_error_quotes_as_much_as_fits_in_min_mtu)
-{
-    /* RFC 4443 s2.4 (c): the error carries as much of the offending packet
-     * as fits without exceeding the 1280-byte minimum IPv6 MTU. */
-    ck_abort_msg("pending: ICMPv6 error quoting");
-}
-END_TEST
-
-START_TEST(test_icmp6_destination_unreachable_codes)
-{
-    /* Type 1, codes 0 to 4 (RFC 4443 s3.1). Port unreachable (code 4) is
-     * the one UDP needs when no socket matches. */
-    ck_abort_msg("pending: ICMPv6 destination unreachable");
-}
-END_TEST
-
-START_TEST(test_icmp6_packet_too_big_carries_the_mtu)
-{
-    /* Type 2 (RFC 4443 s3.2). IPv6 routers never fragment, so this is the
-     * only path MTU signal there is. */
-    ck_abort_msg("pending: ICMPv6 packet too big");
-}
-END_TEST
+/* ICMPv6 (RFC 4443) is implemented: the Echo pair, the four error types,
+ * the section 2.4 suppression rules, the quoting bound and the error /
+ * informational split all have real tests in unit_tests_ipv6_icmp.c and
+ * unit_tests_ipv6_sockets.c.
+ *
+ * What is left is not an ICMPv6 gap but a forwarding one. Time Exceeded
+ * code 0 is raised when a hop limit reaches zero *in transit*, so it needs
+ * a forwarding path, and wolfIP forwards IPv4 only. The message itself is
+ * generated and tested; nothing in the stack can trigger it yet. */
+#if WOLFIP_IPV6_HAVE_FORWARDING
 
 START_TEST(test_icmp6_time_exceeded_on_hop_limit_zero_when_forwarding)
 {
-    /* Type 3 code 0 (RFC 4443 s3.3). Note this is a forwarding-time event:
-     * a packet addressed to us at hop limit zero is accepted, which
+    /* Type 3 code 0 (RFC 4443 s3.3), raised while forwarding. A packet
+     * addressed to us at hop limit zero is accepted instead, which
      * test_ip6_recv_accepts_hop_limit_zero already pins down. */
-    ck_abort_msg("pending: ICMPv6 time exceeded");
+    ck_abort_msg("pending: IPv6 forwarding");
 }
 END_TEST
 
-START_TEST(test_icmp6_parameter_problem_points_at_the_bad_octet)
-{
-    /* Type 4 (RFC 4443 s3.4): the pointer field must be the offset of the
-     * offending octet from the start of the IPv6 header. */
-    ck_abort_msg("pending: ICMPv6 parameter problem");
-}
-END_TEST
-
-START_TEST(test_icmp6_unknown_informational_message_is_discarded)
-{
-    /* RFC 4443 s2.4 (b): an unknown informational message (type >= 128) is
-     * silently discarded, whereas an unknown error message (type < 128)
-     * must be passed to the upper layer. */
-    ck_abort_msg("pending: ICMPv6 unknown type handling");
-}
-END_TEST
-
-#endif /* WOLFIP_IPV6_HAVE_ICMP6 */
+#endif /* WOLFIP_IPV6_HAVE_FORWARDING */
 
 /* =========================================================================
  * Neighbor Discovery - RFC 4861

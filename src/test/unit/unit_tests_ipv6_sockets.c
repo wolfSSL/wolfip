@@ -1212,4 +1212,627 @@ START_TEST(test_sock6_tcp_af_inet_listener_ignores_ipv6)
 }
 END_TEST
 
+
+/* =========================================================================
+ * 6. ICMPv6: error messages (RFC 4443) and sockets
+ * ========================================================================= */
+
+/* Deliver an ICMPv6 message of a given type and code, with a correct
+ * checksum, through the real ingress path. */
+static void sock6_deliver_icmp6_body(struct wolfIP *s, const ip6 *src,
+                                     const ip6 *dst, const uint8_t *body,
+                                     uint16_t body_len)
+{
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_icmp6_packet *icmp = (struct wolfIP_icmp6_packet *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    union transport6_pseudo_header ph;
+
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(icmp->ip6.eth.dst, ll->mac, 6);
+    memset(icmp->ip6.eth.src, 0x22, 6);
+    icmp->ip6.eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(&icmp->ip6, 0, 0);
+    icmp->ip6.payload_len = ee16(body_len);
+    icmp->ip6.next_hdr = IP6_NEXTHDR_ICMPV6;
+    icmp->ip6.hop_limit = 64;
+    ip6_hdr_set_src(&icmp->ip6, src);
+    ip6_hdr_set_dst(&icmp->ip6, dst);
+    memcpy(&icmp->type, body, body_len);
+    icmp->csum = 0;
+    transport6_pseudo_header_init(&ph, src, dst, body_len,
+                                  IP6_NEXTHDR_ICMPV6);
+    icmp->csum = ee16(transport6_checksum(&ph, &icmp->type));
+    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + body_len);
+}
+
+/* A bare ICMPv6 message: type, code and an empty type-specific word. */
+static void sock6_deliver_icmp6_msg(struct wolfIP *s, const ip6 *src,
+                                    const ip6 *dst, uint8_t type, uint8_t code)
+{
+    uint8_t body[16];
+
+    memset(body, 0, sizeof(body));
+    body[0] = type;
+    body[1] = code;
+    sock6_deliver_icmp6_body(s, src, dst, body, sizeof(body));
+}
+
+/* An Echo Request or Reply with a chosen identifier and sequence. */
+static void sock6_deliver_icmp6_echo(struct wolfIP *s, const ip6 *src,
+                                     const ip6 *dst, uint8_t type,
+                                     uint16_t id, uint16_t seq)
+{
+    uint8_t body[12];
+
+    memset(body, 0, sizeof(body));
+    body[0] = type;
+    body[4] = (uint8_t)(id >> 8);
+    body[5] = (uint8_t)(id & 0xFF);
+    body[6] = (uint8_t)(seq >> 8);
+    body[7] = (uint8_t)(seq & 0xFF);
+    sock6_deliver_icmp6_body(s, src, dst, body, sizeof(body));
+}
+
+/* Deliver an arbitrary IPv6 packet with a chosen next header, for driving
+ * the error paths. Returns the frame length used. */
+static uint32_t sock6_deliver_raw6(struct wolfIP *s, const ip6 *src,
+                                   const ip6 *dst, uint8_t next_hdr,
+                                   const void *payload, uint16_t payload_len)
+{
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_ip6_packet *pkt = (struct wolfIP_ip6_packet *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    uint32_t frame_len;
+
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    if (ip6_is_multicast(dst))
+        ip6_mcast_to_eth(dst, pkt->eth.dst);
+    else
+        memcpy(pkt->eth.dst, ll->mac, 6);
+    memset(pkt->eth.src, 0x22, 6);
+    pkt->eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(pkt, 0, 0);
+    pkt->payload_len = ee16(payload_len);
+    pkt->next_hdr = next_hdr;
+    pkt->hop_limit = 64;
+    ip6_hdr_set_src(pkt, src);
+    ip6_hdr_set_dst(pkt, dst);
+    if (payload_len > 0)
+        memcpy(pkt->data, payload, payload_len);
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + payload_len;
+    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame, frame_len);
+    return frame_len;
+}
+
+/* The error the stack last emitted, restaged so the accessors line up. */
+static struct wolfIP_icmp6_packet *sock6_last_icmp6(uint8_t *staging)
+{
+    if (last_frame_sent_size < (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN + 4))
+        return NULL;
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    return (struct wolfIP_icmp6_packet *)staging;
+}
+
+/* A datagram to a port nobody holds draws Destination Unreachable code 4,
+ * which is the error UDP actually needs (RFC 4443 section 3.1). */
+START_TEST(test_icmp6_udp_port_unreachable)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp6_packet *err;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    ip6 got;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    mock_link_capture_reset();
+    sock6_deliver_udp(&s, S6_PEER, &local, 6000, 7100, "x", 1);
+
+    err = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(err);
+    ck_assert_uint_eq(err->ip6.next_hdr, IP6_NEXTHDR_ICMPV6);
+    ck_assert_uint_eq(err->type, ICMP6_DEST_UNREACH);
+    ck_assert_uint_eq(err->code, ICMP6_DST_PORT_UNREACH);
+    /* The four type-specific octets are unused and must be zero. */
+    ck_assert_uint_eq(err->data[0], 0);
+    ck_assert_uint_eq(err->data[1], 0);
+    ck_assert_uint_eq(err->data[2], 0);
+    ck_assert_uint_eq(err->data[3], 0);
+    /* Sourced from the address that was addressed, sent to the sender. */
+    ip6_hdr_get_src(&err->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &local), 0);
+    ip6_hdr_get_dst(&err->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+    /* The offending datagram is quoted after the 8-byte ICMPv6 header. */
+    ck_assert_uint_eq(err->data[4] >> 4, 6);
+}
+END_TEST
+
+/* An unrecognised Next Header draws Parameter Problem code 1, with the
+ * pointer at the Next Header field - octet 6 of the IPv6 header (RFC 4443
+ * section 3.4). */
+START_TEST(test_icmp6_parameter_problem_points_at_the_bad_octet)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp6_packet *err;
+    uint8_t staging[LINK_MTU];
+    uint8_t body[8];
+    uint64_t now = 0;
+    uint32_t pointer;
+    ip6 local;
+    ip6 peer;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    memset(body, 0xAB, sizeof(body));
+    mock_link_capture_reset();
+    /* 253 is reserved for experimentation (RFC 3692) and is not a protocol
+     * this stack knows. */
+    (void)sock6_deliver_raw6(&s, &peer, &local, 253, body, sizeof(body));
+
+    err = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(err);
+    ck_assert_uint_eq(err->type, ICMP6_PARAM_PROBLEM);
+    ck_assert_uint_eq(err->code, ICMP6_PARAM_NEXTHDR);
+    pointer = ((uint32_t)err->data[0] << 24) | ((uint32_t)err->data[1] << 16) |
+              ((uint32_t)err->data[2] << 8) | err->data[3];
+    ck_assert_uint_eq(pointer, 6);
+}
+END_TEST
+
+/* RFC 4443 section 2.4 (e.1): never in response to another error message,
+ * or two nodes sustain the exchange forever. */
+START_TEST(test_icmp6_error_is_not_sent_in_response_to_an_error)
+{
+    struct wolfIP s;
+    uint8_t body[16];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    /* An ICMPv6 error carrying an unroutable inner packet. Delivered by
+     * hand rather than through icmp6_input(), because what is being pinned
+     * down is the generator's own rule. */
+    memset(body, 0, sizeof(body));
+    body[0] = ICMP6_DEST_UNREACH;
+    body[1] = ICMP6_DST_NO_ROUTE;
+    mock_link_capture_reset();
+    {
+        uint8_t frame[LINK_MTU];
+        struct wolfIP_ip6_packet *pkt = (struct wolfIP_ip6_packet *)frame;
+
+        memset(frame, 0, sizeof(frame));
+        ip6_hdr_set_vtf(pkt, 0, 0);
+        pkt->payload_len = ee16(sizeof(body));
+        pkt->next_hdr = IP6_NEXTHDR_ICMPV6;
+        pkt->hop_limit = 64;
+        ip6_hdr_set_src(pkt, &peer);
+        ip6_hdr_set_dst(pkt, &local);
+        memcpy(pkt->data, body, sizeof(body));
+        icmp6_send_error(&s, TEST_PRIMARY_IF, pkt,
+                         (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                    sizeof(body)),
+                         ICMP6_DEST_UNREACH, ICMP6_DST_PORT_UNREACH, 0);
+    }
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* An informational ICMPv6 message is not an error, so it may provoke
+     * one - otherwise nothing addressed by ping could ever be reported. */
+    {
+        uint8_t frame[LINK_MTU];
+        struct wolfIP_ip6_packet *pkt = (struct wolfIP_ip6_packet *)frame;
+
+        memset(frame, 0, sizeof(frame));
+        ip6_hdr_set_vtf(pkt, 0, 0);
+        pkt->payload_len = ee16(sizeof(body));
+        pkt->next_hdr = IP6_NEXTHDR_ICMPV6;
+        pkt->hop_limit = 64;
+        ip6_hdr_set_src(pkt, &peer);
+        ip6_hdr_set_dst(pkt, &local);
+        pkt->data[0] = ICMP6_ECHO_REQUEST;
+        mock_link_capture_reset();
+        icmp6_send_error(&s, TEST_PRIMARY_IF, pkt,
+                         (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                    sizeof(body)),
+                         ICMP6_DEST_UNREACH, ICMP6_DST_ADDR_UNREACH, 0);
+    }
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* RFC 4443 section 2.4 (e.2)/(e.3): no error for a multicast destination,
+ * except Packet Too Big and Parameter Problem code 2. This is the rule that
+ * stops multicast amplification. And (e.5): no error to a source that does
+ * not name a single node. */
+START_TEST(test_icmp6_error_suppression_rules)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_ip6_packet *pkt = (struct wolfIP_ip6_packet *)frame;
+    uint64_t now = 0;
+    uint32_t flen = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN + 8);
+    ip6 local;
+    ip6 peer;
+    ip6 group;
+    ip6 unspec;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ip6_set_all_nodes(&group);
+    ip6_set_unspecified(&unspec);
+
+    memset(frame, 0, sizeof(frame));
+    ip6_hdr_set_vtf(pkt, 0, 0);
+    pkt->payload_len = ee16(8);
+    pkt->next_hdr = IP6_NEXTHDR_UDP;
+    pkt->hop_limit = 64;
+
+    /* Multicast destination: suppressed. */
+    ip6_hdr_set_src(pkt, &peer);
+    ip6_hdr_set_dst(pkt, &group);
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_DEST_UNREACH,
+                     ICMP6_DST_PORT_UNREACH, 0);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* ...but Packet Too Big is allowed, or multicast path MTU discovery
+     * could not work. */
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_PACKET_TOO_BIG, 0,
+                     1280);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+
+    /* ...and so is Parameter Problem code 2, which reports an option the
+     * sender has to hear about. */
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_PARAM_PROBLEM,
+                     ICMP6_PARAM_OPTION, 40);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+
+    /* Parameter Problem code 1 to a multicast destination is not. */
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_PARAM_PROBLEM,
+                     ICMP6_PARAM_NEXTHDR, 6);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* A multicast source names no single node, so there is nobody to tell. */
+    ip6_hdr_set_src(pkt, &group);
+    ip6_hdr_set_dst(pkt, &local);
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_DEST_UNREACH,
+                     ICMP6_DST_PORT_UNREACH, 0);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* Neither does the unspecified address. */
+    ip6_hdr_set_src(pkt, &unspec);
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_DEST_UNREACH,
+                     ICMP6_DST_PORT_UNREACH, 0);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* RFC 4443 section 2.4 (c): as much of the offending packet as fits without
+ * the whole message exceeding the minimum IPv6 MTU. Unlike ICMPv4's fixed 8
+ * bytes, this is deliberately as much as possible. */
+START_TEST(test_icmp6_error_quotes_as_much_as_fits_in_min_mtu)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp6_packet *err;
+    static uint8_t staging[LINK_MTU];
+    static uint8_t big[LINK_MTU];
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_ip6_packet *pkt = (struct wolfIP_ip6_packet *)frame;
+    uint64_t now = 0;
+    uint16_t body_len = 1200;
+    uint32_t flen;
+    ip6 local;
+    ip6 peer;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    memset(big, 0x7E, sizeof(big));
+    memset(frame, 0, sizeof(frame));
+    ip6_hdr_set_vtf(pkt, 0, 0);
+    pkt->payload_len = ee16(body_len);
+    pkt->next_hdr = IP6_NEXTHDR_UDP;
+    pkt->hop_limit = 64;
+    ip6_hdr_set_src(pkt, &peer);
+    ip6_hdr_set_dst(pkt, &local);
+    memcpy(pkt->data, big, body_len);
+    flen = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + body_len;
+
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_DEST_UNREACH,
+                     ICMP6_DST_PORT_UNREACH, 0);
+    err = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(err);
+
+    /* The whole datagram, our own IPv6 header included, is capped at 1280. */
+    ck_assert_uint_le(last_frame_sent_size - ETH_HEADER_LEN, IP6_MIN_MTU);
+    /* And it is the cap that bound it, not the offending packet: the
+     * quotation had more to give. */
+    ck_assert_uint_eq(last_frame_sent_size - ETH_HEADER_LEN, IP6_MIN_MTU);
+    ck_assert_uint_eq(ee16(err->ip6.payload_len),
+                      IP6_MIN_MTU - IP6_HEADER_LEN);
+
+    /* A short offending packet is quoted whole, with no padding. */
+    pkt->payload_len = ee16(8);
+    flen = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN + 8);
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_DEST_UNREACH,
+                     ICMP6_DST_PORT_UNREACH, 0);
+    err = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(err);
+    ck_assert_uint_eq(ee16(err->ip6.payload_len),
+                      ICMP6_ECHO_MIN_LEN + IP6_HEADER_LEN + 8);
+}
+END_TEST
+
+/* Packet Too Big carries the MTU in the type-specific word - the only path
+ * MTU signal IPv6 has, since routers never fragment (RFC 4443 s3.2). Time
+ * Exceeded carries a zero one (RFC 4443 s3.3). Both are generated by a
+ * router; this stack does not forward IPv6 yet, so what is pinned here is
+ * the message itself. */
+START_TEST(test_icmp6_packet_too_big_and_time_exceeded_wire_format)
+{
+    struct wolfIP s;
+    struct wolfIP_icmp6_packet *err;
+    uint8_t staging[LINK_MTU];
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_ip6_packet *pkt = (struct wolfIP_ip6_packet *)frame;
+    uint64_t now = 0;
+    uint32_t flen = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN + 8);
+    uint32_t word;
+    ip6 local;
+    ip6 peer;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    memset(frame, 0, sizeof(frame));
+    ip6_hdr_set_vtf(pkt, 0, 0);
+    pkt->payload_len = ee16(8);
+    pkt->next_hdr = IP6_NEXTHDR_UDP;
+    pkt->hop_limit = 64;
+    ip6_hdr_set_src(pkt, &peer);
+    ip6_hdr_set_dst(pkt, &local);
+
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_PACKET_TOO_BIG, 0,
+                     IP6_MIN_MTU);
+    err = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(err);
+    ck_assert_uint_eq(err->type, ICMP6_PACKET_TOO_BIG);
+    ck_assert_uint_eq(err->code, 0);
+    word = ((uint32_t)err->data[0] << 24) | ((uint32_t)err->data[1] << 16) |
+           ((uint32_t)err->data[2] << 8) | err->data[3];
+    ck_assert_uint_eq(word, IP6_MIN_MTU);
+
+    mock_link_capture_reset();
+    icmp6_send_error(&s, TEST_PRIMARY_IF, pkt, flen, ICMP6_TIME_EXCEEDED,
+                     ICMP6_TIME_HOP_LIMIT, 0);
+    err = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(err);
+    ck_assert_uint_eq(err->type, ICMP6_TIME_EXCEEDED);
+    ck_assert_uint_eq(err->code, ICMP6_TIME_HOP_LIMIT);
+    word = ((uint32_t)err->data[0] << 24) | ((uint32_t)err->data[1] << 16) |
+           ((uint32_t)err->data[2] << 8) | err->data[3];
+    ck_assert_uint_eq(word, 0);
+}
+END_TEST
+
+/* RFC 4443 section 2.4 (b): an unknown informational message is silently
+ * discarded; an unknown error message is passed to the upper layer. */
+START_TEST(test_icmp6_unknown_types_follow_the_error_split)
+{
+    struct wolfIP s;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+
+    /* Type 200: informational, unknown. Discarded, and nothing is sent
+     * back - a node that cannot interpret it has nothing to say. */
+    mock_link_capture_reset();
+    sock6_deliver_icmp6_msg(&s, &peer, &local, 200, 0);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+
+    /* Type 100: an error, unknown. Must reach the application. */
+    mock_link_capture_reset();
+    sock6_deliver_icmp6_msg(&s, &peer, &local, 100, 0);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 0);
+    ck_assert_uint_eq(buf[0], 100);
+    /* And it must not have provoked a reply of its own. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* An ICMPv6 socket sends an Echo Request and reads the Reply, with the peer
+ * reported as a sockaddr_in6. */
+START_TEST(test_icmp6_socket_echo_roundtrip)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    struct wolfIP_icmp6_packet *sent;
+    uint8_t staging[LINK_MTU];
+    uint8_t req[12];
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    ip6 got;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+
+    memset(req, 0, sizeof(req));
+    req[0] = ICMP6_ECHO_REQUEST;
+    req[1] = 0;
+    /* identifier 0xBEEF, sequence 1 */
+    req[4] = 0xBE; req[5] = 0xEF;
+    req[6] = 0x00; req[7] = 0x01;
+    memcpy(req + 8, "abcd", 4);
+
+    sock6_addr(&dst, S6_PEER, 0);
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, req, sizeof(req), 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), (int)sizeof(req));
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    sent = sock6_last_icmp6(staging);
+    ck_assert_ptr_nonnull(sent);
+    ck_assert_uint_eq(sent->ip6.next_hdr, IP6_NEXTHDR_ICMPV6);
+    ck_assert_uint_eq(sent->type, ICMP6_ECHO_REQUEST);
+    ck_assert_uint_eq(ee16(sent->ip6.payload_len), sizeof(req));
+    /* The stack computes the checksum: it covers the pseudo-header, so the
+     * application cannot have done it before source selection. */
+    ck_assert_uint_ne(sent->csum, 0);
+    ip6_hdr_get_dst(&sent->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+    /* The socket adopted the identifier it sent. */
+    ck_assert_uint_eq(s.icmpsockets[SOCKET_UNMARK(fd)].src_port, 0xBEEF);
+
+    /* Answer it. */
+    sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY, 0xBEEF, 1);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          &fromlen), 0);
+    ck_assert_uint_eq(buf[0], ICMP6_ECHO_REPLY);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+    memcpy(got.addr, &from.sin6_addr, 16);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+}
+END_TEST
+
+/* A reply carrying somebody else's identifier belongs to somebody else. */
+START_TEST(test_icmp6_socket_filters_on_the_echo_identifier)
+{
+    struct wolfIP s;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+    s.icmpsockets[SOCKET_UNMARK(fd)].src_port = 0x1234;
+
+    sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY, 0x9999, 1);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+
+    sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY, 0x1234, 1);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 0);
+    ck_assert_uint_eq(buf[0], ICMP6_ECHO_REPLY);
+}
+END_TEST
+
+/* An error message reaches the socket whatever identifier it carries: an
+ * error quotes the packet that caused it and has no identifier of its own,
+ * so filtering on one would hide exactly the reports worth having. */
+START_TEST(test_icmp6_socket_receives_errors_regardless_of_identifier)
+{
+    struct wolfIP s;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+    s.icmpsockets[SOCKET_UNMARK(fd)].src_port = 0x1234;
+
+    mock_link_capture_reset();
+    sock6_deliver_icmp6_msg(&s, &peer, &local, ICMP6_DEST_UNREACH,
+                            ICMP6_DST_PORT_UNREACH);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 0);
+    ck_assert_uint_eq(buf[0], ICMP6_DEST_UNREACH);
+    ck_assert_uint_eq(buf[1], ICMP6_DST_PORT_UNREACH);
+}
+END_TEST
+
+/* An AF_INET ICMP socket must never be handed an ICMPv6 message: the two
+ * are different protocols with different type numbering. */
+START_TEST(test_icmp6_af_inet_icmp_socket_never_receives_icmpv6)
+{
+    struct wolfIP s;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_ge(fd, 0);
+
+    sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY, 0, 1);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

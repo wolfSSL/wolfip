@@ -1171,7 +1171,7 @@ IPV6_CONFIG_SRC:=wolfip6_config.h
 unit-ipv6-pending-count:
 	@total=`grep -c '^START_TEST' $(IPV6_PENDING_SRC) 2>/dev/null || echo 0`; \
 	echo "[IPv6] $$total requirement test(s) written and awaiting implementation"; \
-	for m in EXTHDR ICMP6 ND6 SLAAC DHCP6 SOCKETS; do \
+	for m in EXTHDR ICMP6 ND6 SLAAC DHCP6 SOCKETS FORWARDING; do \
 		src=$(IPV6_CONFIG_SRC); \
 		if grep -q "define WOLFIP_IPV6_HAVE_$$m " config.h 2>/dev/null; then \
 			src=config.h; \

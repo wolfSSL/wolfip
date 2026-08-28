@@ -1390,17 +1390,23 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_tcp_bad_checksum_is_dropped);
     tcase_add_test(tc_proto, test_sock6_tcp_af_inet_listener_ignores_ipv6);
 
+    /* ICMPv6: error messages (RFC 4443) and sockets. */
+    tcase_add_test(tc_proto, test_icmp6_udp_port_unreachable);
+    tcase_add_test(tc_proto, test_icmp6_parameter_problem_points_at_the_bad_octet);
+    tcase_add_test(tc_proto, test_icmp6_error_is_not_sent_in_response_to_an_error);
+    tcase_add_test(tc_proto, test_icmp6_error_suppression_rules);
+    tcase_add_test(tc_proto, test_icmp6_error_quotes_as_much_as_fits_in_min_mtu);
+    tcase_add_test(tc_proto, test_icmp6_packet_too_big_and_time_exceeded_wire_format);
+    tcase_add_test(tc_proto, test_icmp6_unknown_types_follow_the_error_split);
+    tcase_add_test(tc_proto, test_icmp6_socket_echo_roundtrip);
+    tcase_add_test(tc_proto, test_icmp6_socket_filters_on_the_echo_identifier);
+    tcase_add_test(tc_proto, test_icmp6_socket_receives_errors_regardless_of_identifier);
+    tcase_add_test(tc_proto, test_icmp6_af_inet_icmp_socket_never_receives_icmpv6);
+
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
-#if WOLFIP_IPV6_HAVE_ICMP6
-    tcase_add_test(tc_proto, test_icmp6_error_is_not_sent_in_response_to_an_error);
-    tcase_add_test(tc_proto, test_icmp6_error_is_not_sent_for_multicast_destinations);
-    tcase_add_test(tc_proto, test_icmp6_error_quotes_as_much_as_fits_in_min_mtu);
-    tcase_add_test(tc_proto, test_icmp6_destination_unreachable_codes);
-    tcase_add_test(tc_proto, test_icmp6_packet_too_big_carries_the_mtu);
+#if WOLFIP_IPV6_HAVE_FORWARDING
     tcase_add_test(tc_proto, test_icmp6_time_exceeded_on_hop_limit_zero_when_forwarding);
-    tcase_add_test(tc_proto, test_icmp6_parameter_problem_points_at_the_bad_octet);
-    tcase_add_test(tc_proto, test_icmp6_unknown_informational_message_is_discarded);
 #endif
 #if WOLFIP_IPV6_HAVE_ND6
     tcase_add_test(tc_proto, test_nd6_cache_state_machine_transitions);
