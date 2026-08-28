@@ -2099,4 +2099,135 @@ START_TEST(test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6)
 }
 END_TEST
 
+/* IPV6_V6ONLY has to hold on the receive path too. A socket that asked for
+ * IPv6 only must not be handed IPv4 datagrams, and must not reserve the
+ * IPv4 port either - it does not occupy that address space. */
+START_TEST(test_sock6_v6only_wildcard_receives_no_ipv4)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind6;
+    struct wolfIP_sockaddr_in sin4;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)frame;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    uint16_t udp_len = UDP_HEADER_LEN + 2;
+    int fd6;
+    int fd4;
+    int on = 1;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd6 = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd6, 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, fd6, WOLFIP_SOL_IPV6,
+                                            WOLFIP_IPV6_V6ONLY, &on,
+                                            sizeof(on)), 0);
+    sock6_addr(&bind6, NULL, 9400);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd6,
+                                      (struct wolfIP_sockaddr *)&bind6,
+                                      sizeof(bind6)), 0);
+
+    /* The IPv4 wildcard on the same port is still free, because the
+     * IPv6-only socket does not occupy it. */
+    fd4 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd4, 0);
+    memset(&sin4, 0, sizeof(sin4));
+    sin4.sin_family = AF_INET;
+    sin4.sin_port = ee16(9400);
+    sin4.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd4,
+                                      (struct wolfIP_sockaddr *)&sin4,
+                                      sizeof(sin4)), 0);
+
+    /* An IPv4 datagram to that port belongs to the AF_INET socket alone. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(udp->ip.eth.dst, ll->mac, 6);
+    udp->ip.eth.type = ee16(ETH_TYPE_IP);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.len = ee16(IP_HEADER_LEN + udp_len);
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.src = ee32(atoip4("192.168.10.1"));
+    udp->ip.dst = ee32(atoip4("192.168.10.2"));
+    iphdr_set_checksum(&udp->ip);
+    udp->src_port = ee16(6200);
+    udp->dst_port = ee16(9400);
+    udp->len = ee16(udp_len);
+    udp->csum = 0;
+    memcpy(udp->data, "v4", 2);
+    ph.ph.src = udp->ip.src;
+    ph.ph.dst = udp->ip.dst;
+    ph.ph.zero = 0;
+    ph.ph.proto = WI_IPPROTO_UDP;
+    ph.ph.len = udp->len;
+    udp->csum = ee16(transport_checksum(&ph, &udp->src_port));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN) + udp_len);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd6, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd4, buf, sizeof(buf), 0, NULL,
+                                          NULL), 2);
+
+    /* ...and IPv6 still reaches the IPv6-only socket. */
+    {
+        ip6 local6;
+
+        ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local6), 0);
+        sock6_deliver_udp(&s, S6_PEER, &local6, 6200, 9400, "v6", 2);
+        ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd6, buf, sizeof(buf), 0,
+                                              NULL, NULL), 2);
+    }
+}
+END_TEST
+
+/* ICMP and ICMPv6 are different protocols sharing one socket pool. An
+ * AF_INET6 socket must never be handed an ICMPv4 message - the converse of
+ * test_icmp6_af_inet_icmp_socket_never_receives_icmpv6. */
+START_TEST(test_icmp6_socket_never_receives_icmpv4)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_icmp_packet *icmp = (struct wolfIP_icmp_packet *)frame;
+    struct wolfIP_ll_dev *ll;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    uint32_t total_len = (uint32_t)IP_HEADER_LEN + 8u;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(icmp->ip.eth.dst, ll->mac, 6);
+    icmp->ip.eth.type = ee16(ETH_TYPE_IP);
+    icmp->ip.ver_ihl = 0x45;
+    icmp->ip.len = ee16((uint16_t)total_len);
+    icmp->ip.ttl = 64;
+    icmp->ip.proto = WI_IPPROTO_ICMP;
+    icmp->ip.src = ee32(atoip4("192.168.10.1"));
+    icmp->ip.dst = ee32(atoip4("192.168.10.2"));
+    iphdr_set_checksum(&icmp->ip);
+    icmp->type = ICMP_ECHO_REPLY;
+    icmp->code = 0;
+    icmp->csum = 0;
+    icmp->csum = ee16(icmp_checksum(icmp, (uint16_t)(total_len - IP_HEADER_LEN)));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)ETH_HEADER_LEN + total_len);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

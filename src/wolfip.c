@@ -166,8 +166,10 @@ struct wolfIP_icmp_packet;
 #define IP6_HEADER_LEN_PUB 40
 #if WOLFIP_IPV6
 #define TSOCKET_IS_V6(t) ((t)->peer_is_v6)
+#define TSOCKET_IS_V6ONLY(t) (((t)->domain == AF_INET6) && (t)->v6only)
 #else
 #define TSOCKET_IS_V6(t) (0)
+#define TSOCKET_IS_V6ONLY(t) (0)
 #endif
 #define ETH_TYPE_IP 0x0800
 #define ETH_TYPE_ARP 0x0806
@@ -1384,6 +1386,12 @@ struct tsocket {
     uint8_t domain;     /* AF_INET or AF_INET6 */
     uint8_t peer_is_v6; /* frame as IPv6 rather than IPv4 */
     uint8_t v6only;     /* IPV6_V6ONLY: refuse v4-mapped addresses */
+    /* This socket's local binding lives in the IPv6 address space and not
+     * the IPv4 one, so it neither reserves an IPv4 port nor collides with a
+     * socket that does. Set by bind() and never inferred: peer_is_v6 is not
+     * a substitute, because a dual-stack socket that reserved an IPv4 port
+     * sets it later on its first IPv6 send. */
+    uint8_t bound_v6;
 #endif
     uint8_t tos; /* outgoing IPv4 TOS/DS field (setsockopt WOLFIP_IP_TOS) */
     uint8_t recv_ttl;
@@ -3577,7 +3585,14 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
          * src_port != 0 (a bound slot), not local_ip != 0: a socket bound
          * before any interface had an address snapshots local_ip == 0 and
          * must still receive once the address arrives. */
+        /* A socket that asked for IPv6 only takes no IPv4 traffic. It
+         * should have no IPv4 identity to match on either, since its bind
+         * never went through the IPv4 path - this is the second lock on the
+         * same door, because the cost of the first one being bypassed is
+         * delivering to an application that declared it would not parse
+         * these addresses. */
         int bound_match = (t->src_port != 0) &&
+                !TSOCKET_IS_V6ONLY(t) &&
                 ((t->bound_local_ip == IPADDR_ANY) ||
                  (t->bound_local_ip == dst_ip));
         int addr_match;
@@ -3716,6 +3731,15 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
         struct tsocket *t = &s->icmpsockets[i];
         if (t->proto != WI_IPPROTO_ICMP)
             continue;
+#if WOLFIP_IPV6
+        /* ICMP and ICMPv6 share this socket pool but are different
+         * protocols with different type numbering, so an AF_INET6 socket
+         * must never be handed an ICMPv4 message. Its local_ip is zero
+         * unless it was bound through the IPv4 path, and a zero local_ip
+         * matches everything below. */
+        if (t->domain == AF_INET6)
+            continue;
+#endif
         /* Ingress matches the bound address, not the per-send egress
          * address in local_ip: a wildcard (or unbound) socket receives
          * replies to pings sent through any interface. */
@@ -8942,6 +8966,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->domain = ts->domain;
             newts->v6only = ts->v6only;
             newts->peer_is_v6 = ts->peer_is_v6;
+            newts->bound_v6 = ts->bound_v6;
             ip6_copy(&newts->local_ip6, &ts->local_ip6);
             ip6_copy(&newts->remote_ip6, &ts->remote_ip6);
             ip6_copy(&newts->bound_local_ip6,
@@ -10754,6 +10779,13 @@ static int bind_port_in_use(const struct tsocket *arr, int n,
             continue;
         if (tk->src_port != new_port)
             continue;
+#if WOLFIP_IPV6
+        /* A socket bound in the IPv6 address space holds no claim here, and
+         * its local_ip of IPADDR_ANY would otherwise read as an IPv4
+         * wildcard and block every IPv4 bind on the port. */
+        if (tk->bound_v6)
+            continue;
+#endif
         if (claim != IPADDR_ANY && new_local_ip != IPADDR_ANY &&
             claim != new_local_ip)
             continue;
@@ -10785,7 +10817,7 @@ static int bind_port_in_use6(const struct tsocket *arr, int n,
             continue;
         if (tk->src_port != new_port)
             continue;
-        if (!tk->peer_is_v6)
+        if (!tk->bound_v6)
             continue;
         if (!ip6_is_unspecified(&tk->bound_local_ip6) &&
                 !ip6_is_unspecified(new_local) &&
@@ -10811,13 +10843,22 @@ static int sock_bind6(struct wolfIP *s, int sockfd, struct tsocket *ts,
     int match = 0;
 
     (void)sockfd;
-    if_idx = wolfIP_if_for_local_ip6(s, scope_id, addr, &match);
+    if (ip6_is_unspecified(addr)) {
+        /* The IPv6 wildcard, which only reaches here for an IPv6-only
+         * socket: a dual-stack :: occupies the IPv4 space as well and is
+         * bound through the IPv4 path instead. */
+        if_idx = WOLFIP_PRIMARY_IF_IDX;
+        match = 1;
+    } else {
+        if_idx = wolfIP_if_for_local_ip6(s, scope_id, addr, &match);
+    }
     if (!match)
         return -1; /* not one of ours, or still tentative */
     if (bind_port_in_use6(arr, arr_len, ts, addr, port))
         return -1;
     ts->if_idx = (uint8_t)if_idx;
     ts->peer_is_v6 = 1;
+    ts->bound_v6 = 1;
     ip6_copy(&ts->local_ip6, addr);
     ip6_copy(&ts->bound_local_ip6, addr);
     /* The IPv4 fields stay empty and must not be matched against: an
@@ -10908,7 +10949,12 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         } else {
             return -WOLFIP_EINVAL;
         }
-        if (ip6_addr_is_wire_v6(&a))
+        /* An IPv6-only socket never occupies the IPv4 address space, so
+         * even the wildcard is bound natively: routing it through the IPv4
+         * path would reserve the IPv4 port it has no claim on and leave it
+         * matchable by the IPv4 receive path. */
+        if (ip6_addr_is_wire_v6(&a) ||
+                (ts->v6only && ip6_is_unspecified(&a)))
             return sock_bind6(s, sockfd, ts, arr, arr_len, &a, port,
                               sin6->sin6_scope_id);
         /* v4-mapped, or the wildcard which has not chosen a family yet.

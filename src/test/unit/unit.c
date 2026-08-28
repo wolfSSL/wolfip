@@ -1412,6 +1412,8 @@ Suite *wolf_suite(void)
     /* Family confusion on paths shared with IPv4. */
     tcase_add_test(tc_proto, test_sock6_tcp_listener_reset_is_framed_as_ipv6);
     tcase_add_test(tc_proto, test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6);
+    tcase_add_test(tc_proto, test_sock6_v6only_wildcard_receives_no_ipv4);
+    tcase_add_test(tc_proto, test_icmp6_socket_never_receives_icmpv4);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
