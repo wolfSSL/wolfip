@@ -2331,4 +2331,47 @@ START_TEST(test_sock6_socket_connected_to_v4_peer_rejects_ipv6)
 }
 END_TEST
 
+/* A datagram addressed to a multicast group reaches every host on the link.
+ * Without group membership there is nothing that says this socket wanted
+ * it, so it must not be delivered - the IPv4 path requires mcast_is_joined()
+ * and tcp6_input() drops multicast outright. */
+START_TEST(test_sock6_udp_multicast_destination_is_not_delivered)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 group;
+    ip6 local;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, NULL, 9700);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+
+    /* all-nodes, which every interface is implicitly a member of, and an
+     * arbitrary group nobody asked for. Neither carries UDP for us. */
+    ip6_set_all_nodes(&group);
+    sock6_deliver_udp(&s, S6_PEER, &group, 6300, 9700, "mc", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+
+    ck_assert_int_eq(atoip6("ff02::1234", &group), 0);
+    sock6_deliver_udp(&s, S6_PEER, &group, 6300, 9700, "mc", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+
+    /* A unicast datagram to one of our own addresses still arrives. */
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_udp(&s, S6_PEER, &local, 6300, 9700, "uc", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 2);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

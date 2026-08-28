@@ -1418,6 +1418,7 @@ Suite *wolf_suite(void)
     /* Stale family state when a dual-stack socket changes peer. */
     tcase_add_test(tc_proto, test_sock6_reconnect_to_mapped_peer_clears_ipv6_state);
     tcase_add_test(tc_proto, test_sock6_socket_connected_to_v4_peer_rejects_ipv6);
+    tcase_add_test(tc_proto, test_sock6_udp_multicast_destination_is_not_delivered);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */

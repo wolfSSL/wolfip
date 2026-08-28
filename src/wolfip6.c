@@ -1810,6 +1810,22 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
     ip6_hdr_get_src(&udp->ip6, &src);
     ip6_hdr_get_dst(&udp->ip6, &dst);
 
+    /* The datagram has to be addressed to us. The ingress filter admits
+     * every 33:33:* destination MAC, because Neighbor Discovery and Router
+     * Advertisements arrive that way, so without this any on-link host
+     * could put payload into a socket bound to :: by aiming it at an
+     * arbitrary group. Multicast delivery needs group membership, which
+     * this stack does not keep for IPv6 yet; until it does, the honest
+     * answer is that no group carries UDP for us. The IPv4 path requires
+     * mcast_is_joined() and tcp6_input() drops multicast outright. */
+    {
+        int dst_is_local = 0;
+
+        (void)wolfIP_if_for_local_ip6(s, if_idx, &dst, &dst_is_local);
+        if (!dst_is_local)
+            return;
+    }
+
     matched = 0;
     for (i = 0; i < MAX_UDPSOCKETS; i++) {
         struct tsocket *t = &s->udpsockets[i];
@@ -1840,15 +1856,11 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
         }
     }
     if (!matched) {
-        int local = 0;
-
-        /* RFC 4443 section 3.1 code 4: nothing holds the port. Only owed
-         * when the datagram was actually addressed to us; icmp6_send_error()
-         * applies the rest of the suppression rules. */
-        (void)wolfIP_if_for_local_ip6(s, if_idx, &dst, &local);
-        if (local)
-            icmp6_send_error(s, if_idx, &udp->ip6, frame_len,
-                             ICMP6_DEST_UNREACH, ICMP6_DST_PORT_UNREACH, 0);
+        /* RFC 4443 section 3.1 code 4: nothing holds the port. The
+         * destination was checked to be ours above, and
+         * icmp6_send_error() applies the rest of the suppression rules. */
+        icmp6_send_error(s, if_idx, &udp->ip6, frame_len,
+                         ICMP6_DEST_UNREACH, ICMP6_DST_PORT_UNREACH, 0);
     }
 }
 
