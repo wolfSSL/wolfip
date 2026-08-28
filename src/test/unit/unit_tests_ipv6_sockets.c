@@ -2230,4 +2230,65 @@ START_TEST(test_icmp6_socket_never_receives_icmpv4)
 }
 END_TEST
 
+
+/* =========================================================================
+ * 9. Stale family state when a dual-stack socket changes peer
+ * ========================================================================= */
+
+/* Re-connecting from an IPv6 peer to a v4-mapped one must move the socket
+ * back to IPv4. The mapped arm builds a sockaddr_in and recurses, and if it
+ * leaves peer_is_v6 set the next send goes out over IPv6 to the address the
+ * socket used to be connected to. */
+START_TEST(test_sock6_reconnect_to_mapped_peer_clears_ipv6_state)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_ip_packet *sent;
+    uint8_t staging[LINK_MTU];
+    const uint8_t peer_mac[6] = {0x02, 0xDD, 0, 0, 0, 2};
+    uint64_t now = 0;
+    ip6 mapped;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, atoip4("192.168.10.1"),
+                       (uint8_t *)peer_mac);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    /* First an IPv6 peer. */
+    sock6_addr(&dst, S6_PEER, 9500);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), 0);
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(fd)].peer_is_v6, 1);
+
+    /* Then a v4-mapped one on the same socket. */
+    ip6_set_v4mapped(&mapped, atoip4("192.168.10.1"));
+    memset(&dst, 0, sizeof(dst));
+    dst.sin6_family = AF_INET6;
+    dst.sin6_port = ee16(9501);
+    memcpy(&dst.sin6_addr, mapped.addr, 16);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), 0);
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(fd)].peer_is_v6, 0);
+
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_send(&s, fd, "m", 1, 0), 1);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* It must leave as IPv4, addressed to the new peer. */
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                                 UDP_HEADER_LEN + 1));
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    sent = (struct wolfIP_ip_packet *)staging;
+    ck_assert_uint_eq(ee16(sent->eth.type), ETH_TYPE_IP);
+    ck_assert_uint_eq(ee32(sent->dst), atoip4("192.168.10.1"));
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

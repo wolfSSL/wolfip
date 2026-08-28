@@ -1415,6 +1415,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_v6only_wildcard_receives_no_ipv4);
     tcase_add_test(tc_proto, test_icmp6_socket_never_receives_icmpv4);
 
+    /* Stale family state when a dual-stack socket changes peer. */
+    tcase_add_test(tc_proto, test_sock6_reconnect_to_mapped_peer_clears_ipv6_state);
+
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
 #if WOLFIP_IPV6_HAVE_FORWARDING

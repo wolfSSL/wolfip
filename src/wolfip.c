@@ -8580,6 +8580,13 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             }
             return -WOLFIP_EINVAL;
         }
+        /* Moving to a v4-mapped peer moves the socket back to IPv4, so the
+         * IPv6 peer state has to go with it: a socket left with peer_is_v6
+         * set would take the IPv6 transmit path on its next send and address
+         * it to whichever IPv6 peer it used to be connected to. The sendto
+         * arm clears the same two fields for the same reason. */
+        ts->peer_is_v6 = 0;
+        ip6_set_unspecified(&ts->remote_ip6);
         memset(&sin4, 0, sizeof(sin4));
         sin4.sin_family = AF_INET;
         sin4.sin_port = ee16(dport);
