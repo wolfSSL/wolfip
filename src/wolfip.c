@@ -113,6 +113,9 @@ struct wolfIP_icmp_packet;
 #define ICMP_PARAM_PROBLEM 12
 
 #define WI_IPPROTO_ICMP 0x01
+/* RFC 4443: ICMPv6 is protocol 58, not 1. The two are distinct protocols
+ * with distinct type numbering, so nothing may treat them as one. */
+#define WI_IPPROTO_ICMPV6 0x3A
 #define WI_IPPROTO_IGMP 0x02
 #define WI_IPPROTO_TCP 0x06
 #define WI_IPPROTO_UDP 0x11
@@ -1358,6 +1361,21 @@ struct tsocket {
     uint8_t nexthop_mac[6];
 #endif
     uint8_t if_idx;
+#if WOLFIP_IPV6
+    /* IPv6 is additive rather than a replacement, because a dual-stack
+     * socket needs both at once. `domain` is what the application asked for
+     * and decides how addresses are rendered back to it; `peer_is_v6`
+     * decides how packets are framed, and the two are not the same thing.
+     * A v4-mapped destination on an AF_INET6 socket travels as IPv4 with a
+     * 20-byte header (RFC 3493 section 3.7), so it keeps using local_ip and
+     * remote_ip above and only its API representation differs. The v6
+     * fields below are meaningful only when peer_is_v6 is set. */
+    ip6 local_ip6, remote_ip6;
+    ip6 bound_local_ip6;
+    uint8_t domain;     /* AF_INET or AF_INET6 */
+    uint8_t peer_is_v6; /* frame as IPv6 rather than IPv4 */
+    uint8_t v6only;     /* IPV6_V6ONLY: refuse v4-mapped addresses */
+#endif
     uint8_t tos; /* outgoing IPv4 TOS/DS field (setsockopt WOLFIP_IP_TOS) */
     uint8_t recv_ttl;
     uint8_t last_pkt_ttl;
@@ -8005,6 +8023,159 @@ int wolfIP_ipv6_nexthop(struct wolfIP *s, unsigned int if_idx, const ip6 *dst,
 }
 #endif /* !WOLFIP_IPV6 */
 
+#if WOLFIP_IPV6
+/* ---------------------------------------------------------------------- */
+/* Socket address conversion, AF_INET6                                    */
+/* ---------------------------------------------------------------------- */
+
+/* Read a sockaddr into an ip6 plus the port, whichever family it carries.
+ * An AF_INET address becomes its v4-mapped form, so a caller working on an
+ * AF_INET6 socket sees one address type; sock_addr_is_v6() below is what
+ * distinguishes the two afterwards. Returns 0 on success. */
+static int sock_addr_to_ip6(const struct wolfIP_sockaddr *addr,
+                            socklen_t addrlen, ip6 *out, uint16_t *port)
+{
+    if (!addr || !out)
+        return -WOLFIP_EINVAL;
+    if (addr->sa_family == AF_INET6) {
+        const struct wolfIP_sockaddr_in6 *sin6 =
+            (const struct wolfIP_sockaddr_in6 *)addr;
+
+        if (addrlen < sizeof(struct wolfIP_sockaddr_in6))
+            return -WOLFIP_EINVAL;
+        memcpy(out->addr, &sin6->sin6_addr, 16);
+        if (port)
+            *port = ee16(sin6->sin6_port);
+        return 0;
+    }
+    if (addr->sa_family == AF_INET) {
+        const struct wolfIP_sockaddr_in *sin =
+            (const struct wolfIP_sockaddr_in *)addr;
+
+        if (addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -WOLFIP_EINVAL;
+        ip6_set_v4mapped(out, ee32(sin->sin_addr.s_addr));
+        if (port)
+            *port = ee16(sin->sin_port);
+        return 0;
+    }
+    return -WOLFIP_EINVAL;
+}
+
+/* Does this address make the socket speak IPv6 on the wire?
+ *
+ * The unspecified address is the awkward one: :: means "any" rather than a
+ * destination, so a bind to it settles nothing about framing and is treated
+ * as not-yet-v6. A v4-mapped address is IPv4 on the wire by definition. */
+static int ip6_addr_is_wire_v6(const ip6 *a)
+{
+    return (!ip6_is_v4mapped(a) && !ip6_is_unspecified(a)) ? 1 : 0;
+}
+
+/* Render an address back to the application in the family of its socket. An
+ * AF_INET6 socket always gets a sockaddr_in6, with an IPv4 peer appearing as
+ * ::ffff:a.b.c.d (RFC 3493 section 3.7), because that is the one address
+ * type such an application is prepared to parse. */
+static int sock_addr_from_ip6(struct wolfIP_sockaddr *addr, socklen_t *addrlen,
+                              const ip6 *v6, uint16_t port,
+                              unsigned int scope_id)
+{
+    struct wolfIP_sockaddr_in6 *sin6 = (struct wolfIP_sockaddr_in6 *)addr;
+
+    if (!addr)
+        return -WOLFIP_EINVAL;
+    if (addrlen && (*addrlen < sizeof(struct wolfIP_sockaddr_in6)))
+        return -WOLFIP_EINVAL;
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_port = ee16(port);
+    memcpy(&sin6->sin6_addr, v6->addr, 16);
+    /* Only a link-local address is ambiguous without one (RFC 4007 s6). */
+    if (ip6_is_link_local(v6))
+        sin6->sin6_scope_id = scope_id;
+    if (addrlen)
+        *addrlen = sizeof(struct wolfIP_sockaddr_in6);
+    return 0;
+}
+
+/* The socket's local address as an ip6, whatever it is holding. */
+static void tsocket_local_ip6(const struct tsocket *t, ip6 *out)
+{
+    if (t->peer_is_v6)
+        ip6_copy(out, &t->local_ip6);
+    else
+        ip6_set_v4mapped(out, t->local_ip);
+}
+
+static void tsocket_remote_ip6(const struct tsocket *t, ip6 *out)
+{
+    if (t->peer_is_v6)
+        ip6_copy(out, &t->remote_ip6);
+    else
+        ip6_set_v4mapped(out, t->remote_ip);
+}
+
+#define TSOCKET_SET_DOMAIN(t, d) do { (t)->domain = (uint8_t)(d); } while (0)
+#else
+#define TSOCKET_SET_DOMAIN(t, d) do { (void)(t); (void)(d); } while (0)
+#endif /* WOLFIP_IPV6 */
+
+/* Report a socket's own or peer address, in the family the application
+ * opened the socket with rather than the one the packets are using. An
+ * AF_INET6 socket talking to an IPv4 peer is told ::ffff:a.b.c.d, because
+ * that is the address type it is prepared to parse (RFC 3493 s3.7).
+ *
+ * `addrlen` is an input-only bound at both call sites, which is why it is
+ * const: getsockname() and getpeername() here do not report back how much
+ * they wrote. */
+static int tsocket_getname(const struct tsocket *t, struct wolfIP_sockaddr *addr,
+                           const socklen_t *addrlen, int peer)
+{
+    if (!addr)
+        return -WOLFIP_EINVAL;
+#if WOLFIP_IPV6
+    if (t->domain == AF_INET6) {
+        socklen_t len = sizeof(struct wolfIP_sockaddr_in6);
+        ip6 a;
+
+        if (addrlen && (*addrlen < len))
+            return -1;
+        if (peer)
+            tsocket_remote_ip6(t, &a);
+        else
+            tsocket_local_ip6(t, &a);
+        return sock_addr_from_ip6(addr, &len, &a,
+                                  peer ? t->dst_port : t->src_port, t->if_idx);
+    }
+#endif
+    {
+        struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+
+        if (addrlen && (*addrlen < sizeof(struct wolfIP_sockaddr_in)))
+            return -1;
+        sin->sin_family = AF_INET;
+        sin->sin_port = ee16(peer ? t->dst_port : t->src_port);
+        sin->sin_addr.s_addr = ee32(peer ? t->remote_ip : t->local_ip);
+        return 0;
+    }
+}
+
+/* ICMP and ICMPv6 are different protocols with different numbers, and each
+ * belongs to one family: SOCK_DGRAM/IPPROTO_ICMP on AF_INET, and
+ * SOCK_DGRAM/IPPROTO_ICMPV6 on AF_INET6. Pairing them the other way round is
+ * refused rather than quietly accepted, because the socket would then never
+ * match anything on receive. */
+static int icmp_protocol_matches_domain(int domain, int protocol)
+{
+#if WOLFIP_IPV6
+    if (domain == AF_INET6)
+        return (protocol == WI_IPPROTO_ICMPV6) ? 1 : 0;
+#else
+    (void)domain;
+#endif
+    return (protocol == WI_IPPROTO_ICMP) ? 1 : 0;
+}
+
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 {
     struct tsocket *ts;
@@ -8013,23 +8184,31 @@ int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 #endif
     if (!s)
         return -WOLFIP_EINVAL;
+#if WOLFIP_IPV6
+    if ((domain != AF_INET) && (domain != AF_INET6))
+        goto packet_try;
+#else
     if (domain != AF_INET)
         goto packet_try;
+#endif
     if (type == IPSTACK_SOCK_STREAM) {
         ts = tcp_new_socket(s);
         if (!ts)
             return -1;
+        TSOCKET_SET_DOMAIN(ts, domain);
         return sock_fd_open(s, MARK_TCP_SOCKET, (int)(ts - s->tcpsockets));
     } else if (type == IPSTACK_SOCK_DGRAM) {
         if (protocol == 0 || protocol == WI_IPPROTO_UDP) {
             ts = udp_new_socket(s);
             if (!ts)
                 return -1;
+            TSOCKET_SET_DOMAIN(ts, domain);
             return sock_fd_open(s, MARK_UDP_SOCKET, (int)(ts - s->udpsockets));
-        } else if (protocol == WI_IPPROTO_ICMP) {
+        } else if (icmp_protocol_matches_domain(domain, protocol)) {
             ts = icmp_new_socket(s);
             if (!ts)
                 return -1;
+            TSOCKET_SET_DOMAIN(ts, domain);
             return sock_fd_open(s, MARK_ICMP_SOCKET, (int)(ts - s->icmpsockets));
         } else {
             return -1;
@@ -9433,6 +9612,28 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         ts->tos = (uint8_t)tos;
         return 0;
     }
+#if WOLFIP_IPV6
+    if (level == WOLFIP_SOL_IPV6 && optname == WOLFIP_IPV6_V6ONLY) {
+        int enable;
+
+        /* This function returns 0 for options it does not implement, so an
+         * unhandled IPV6_V6ONLY would look like it had been honoured
+         * whatever the stack went on to do. It is stored, reported back by
+         * getsockopt(), and enforced at bind() and connect(). */
+        if (ts->domain != AF_INET6)
+            return -WOLFIP_EINVAL;
+        if (!optval || optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+        memcpy(&enable, optval, sizeof(int));
+        /* POSIX leaves the option settable only before the socket is bound;
+         * changing it afterwards would contradict an address already
+         * chosen. */
+        if (ts->src_port != 0)
+            return -WOLFIP_EINVAL;
+        ts->v6only = enable ? 1 : 0;
+        return 0;
+    }
+#endif
 #ifdef IP_MULTICAST
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
         if (optname == WOLFIP_IP_ADD_MEMBERSHIP ||
@@ -9624,6 +9825,20 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
         }
         return -WOLFIP_EINVAL;
     }
+#if WOLFIP_IPV6
+    if (level == WOLFIP_SOL_IPV6 && optname == WOLFIP_IPV6_V6ONLY) {
+        int value;
+
+        if (!optval || !optlen || *optlen < (socklen_t)sizeof(int))
+            return -WOLFIP_EINVAL;
+        if (!ts || (ts->domain != AF_INET6))
+            return -WOLFIP_EINVAL;
+        value = ts->v6only ? 1 : 0;
+        memcpy(optval, &value, sizeof(int));
+        *optlen = sizeof(int);
+        return 0;
+    }
+#endif
 #ifdef IP_MULTICAST
     if (level == WOLFIP_SOL_IP && IS_SOCKET_UDP(sockfd)) {
         if (optname == WOLFIP_IP_MULTICAST_TTL ||
@@ -9942,26 +10157,17 @@ int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-        sin->sin_family = AF_INET;
-        sin->sin_port = ee16(ts->src_port);
-        sin->sin_addr.s_addr = ee32(ts->local_ip);
-        return 0;
+        return tsocket_getname(ts, addr, addrlen, 0);
     } else if (IS_SOCKET_UDP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
-        sin->sin_family = AF_INET;
-        sin->sin_port = ee16(ts->src_port);
-        sin->sin_addr.s_addr = ee32(ts->local_ip);
-        return 0;
+        return tsocket_getname(ts, addr, addrlen, 0);
     } else if (IS_SOCKET_ICMP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
-        sin->sin_family = AF_INET;
-        sin->sin_port = ee16(ts->src_port);
-        sin->sin_addr.s_addr = ee32(ts->local_ip);
-        return 0;
+        return tsocket_getname(ts, addr, addrlen, 0);
     }
 #if WOLFIP_RAWSOCKETS
     else if (IS_SOCKET_RAW(sockfd)) {
@@ -10113,6 +10319,73 @@ static int bind_port_in_use(const struct tsocket *arr, int n,
     return 0;
 }
 
+#if WOLFIP_IPV6
+/* The IPv6 half of the conflict check above. An AF_INET socket and an
+ * AF_INET6 socket bound to a real IPv6 address occupy different address
+ * spaces and may share a port, which is what
+ * test_socket_ipv4_and_ipv6_sockets_coexist_on_one_port requires. Only two
+ * sockets that are both framing as IPv6 can collide here; the dual-stack
+ * wildcard case goes through the IPv4 path and is caught by
+ * bind_port_in_use(). */
+static int bind_port_in_use6(const struct tsocket *arr, int n,
+                             const struct tsocket *self,
+                             const ip6 *new_local, uint16_t new_port)
+{
+    int i;
+
+    if (new_port == 0)
+        return 0;
+    for (i = 0; i < n; i++) {
+        const struct tsocket *tk = &arr[i];
+
+        if (tk == self)
+            continue;
+        if (tk->src_port != new_port)
+            continue;
+        if (!tk->peer_is_v6)
+            continue;
+        if (!ip6_is_unspecified(&tk->bound_local_ip6) &&
+                !ip6_is_unspecified(new_local) &&
+                (ip6_cmp(&tk->bound_local_ip6, new_local) != 0))
+            continue;
+        return 1;
+    }
+    return 0;
+}
+
+/* bind() for an AF_INET6 socket carrying a real IPv6 address.
+ *
+ * The v4-mapped and unspecified cases never reach here: the caller sends
+ * them through the IPv4 path, which is right, because a socket bound to
+ * ::ffff:a.b.c.d speaks IPv4 on the wire and a socket bound to :: has not
+ * decided yet. Only an address that fixes the socket to IPv6 is handled
+ * here, and doing so is what sets peer_is_v6. */
+static int sock_bind6(struct wolfIP *s, int sockfd, struct tsocket *ts,
+                      struct tsocket *arr, int arr_len,
+                      const ip6 *addr, uint16_t port, unsigned int scope_id)
+{
+    unsigned int if_idx;
+    int match = 0;
+
+    (void)sockfd;
+    if_idx = wolfIP_if_for_local_ip6(s, scope_id, addr, &match);
+    if (!match)
+        return -1; /* not one of ours, or still tentative */
+    if (bind_port_in_use6(arr, arr_len, ts, addr, port))
+        return -1;
+    ts->if_idx = (uint8_t)if_idx;
+    ts->peer_is_v6 = 1;
+    ip6_copy(&ts->local_ip6, addr);
+    ip6_copy(&ts->bound_local_ip6, addr);
+    /* The IPv4 fields stay empty and must not be matched against: an
+     * address of 0.0.0.0 here means "no IPv4 identity", not a wildcard. */
+    ts->local_ip = IPADDR_ANY;
+    ts->bound_local_ip = IPADDR_ANY;
+    ts->src_port = port;
+    return 0;
+}
+#endif /* WOLFIP_IPV6 */
+
 int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr *addr,
                      socklen_t addrlen)
 {
@@ -10159,6 +10432,66 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         if (ps->bind_addr.sll_halen == 0)
             ps->bind_addr.sll_halen = 6;
         return 0;
+    }
+#endif
+
+#if WOLFIP_IPV6
+    if (addr->sa_family == AF_INET6) {
+        const struct wolfIP_sockaddr_in6 *sin6 =
+            (const struct wolfIP_sockaddr_in6 *)addr;
+        struct tsocket *arr = NULL;
+        int arr_len = 0;
+        ip6 a;
+        uint16_t port = 0;
+
+        if (sock_addr_to_ip6(addr, addrlen, &a, &port) != 0)
+            return -WOLFIP_EINVAL;
+        ts = wolfIP_socket_from_fd(s, sockfd);
+        if (!ts || (ts->domain != AF_INET6))
+            return -WOLFIP_EINVAL;
+        if (IS_SOCKET_TCP(sockfd)) {
+            if (ts->sock.tcp.state != TCP_CLOSED)
+                return -1;
+            arr = s->tcpsockets;
+            arr_len = MAX_TCPSOCKETS;
+        } else if (IS_SOCKET_UDP(sockfd)) {
+            if (ts->src_port != 0)
+                return -1;
+            arr = s->udpsockets;
+            arr_len = MAX_UDPSOCKETS;
+        } else if (IS_SOCKET_ICMP(sockfd)) {
+            arr = s->icmpsockets;
+            arr_len = MAX_ICMPSOCKETS;
+        } else {
+            return -WOLFIP_EINVAL;
+        }
+        if (ip6_addr_is_wire_v6(&a))
+            return sock_bind6(s, sockfd, ts, arr, arr_len, &a, port,
+                              sin6->sin6_scope_id);
+        /* v4-mapped, or the wildcard which has not chosen a family yet.
+         * Both are IPv4 on the wire, so they go through the IPv4 bind
+         * unchanged - reusing its address validation, its port-conflict
+         * check and its filter callback rather than growing a second copy
+         * of all three. Only the recorded v6 identity differs. */
+        if (ts->v6only && !ip6_is_unspecified(&a))
+            return -1; /* IPV6_V6ONLY: a mapped address is not acceptable */
+        {
+            struct wolfIP_sockaddr_in sin4;
+            int rc;
+
+            memset(&sin4, 0, sizeof(sin4));
+            sin4.sin_family = AF_INET;
+            sin4.sin_port = ee16(port);
+            sin4.sin_addr.s_addr =
+                ee32(ip6_is_v4mapped(&a) ? ip6_get_v4mapped(&a) : IPADDR_ANY);
+            rc = wolfIP_sock_bind(s, sockfd, (struct wolfIP_sockaddr *)&sin4,
+                                  sizeof(sin4));
+            if (rc == 0) {
+                ip6_copy(&ts->bound_local_ip6, &a);
+                ts->peer_is_v6 = 0;
+            }
+            return rc;
+        }
     }
 #endif
 
@@ -10383,12 +10716,11 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-        if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
+        /* -1 rather than -EINVAL for a missing buffer, which is what this
+         * entry point has always returned for it. */
+        if (!addr || !addrlen)
             return -1;
-        sin->sin_family = AF_INET;
-        sin->sin_port = ee16(ts->dst_port);
-        sin->sin_addr.s_addr = ee32(ts->remote_ip);
-        return 0;
+        return tsocket_getname(ts, addr, addrlen, 1);
     }
     if (IS_SOCKET_UDP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
@@ -10408,6 +10740,8 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
 #if WOLFIP_RAWSOCKETS
     if (IS_SOCKET_RAW(sockfd)) {
         struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
+        struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+
         if (!rs)
             return -WOLFIP_EINVAL;
         if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))

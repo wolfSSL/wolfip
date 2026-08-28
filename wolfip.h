@@ -96,6 +96,26 @@ typedef unsigned long size_t;
 #endif
 #endif
 
+/* IPv6 option level and the one option that has to be honoured rather than
+ * accepted. setsockopt() returns 0 for options it does not implement, so an
+ * application setting IPV6_V6ONLY would believe it had taken effect whatever
+ * the stack did; it is stored and reported. */
+#ifndef WOLFIP_SOL_IPV6
+#ifdef IPPROTO_IPV6
+#define WOLFIP_SOL_IPV6 IPPROTO_IPV6
+#else
+#define WOLFIP_SOL_IPV6 41
+#endif
+#endif
+
+#ifndef WOLFIP_IPV6_V6ONLY
+#ifdef IPV6_V6ONLY
+#define WOLFIP_IPV6_V6ONLY IPV6_V6ONLY
+#else
+#define WOLFIP_IPV6_V6ONLY 26
+#endif
+#endif
+
 #ifdef IP_MULTICAST
 #ifndef WOLFIP_IP_ADD_MEMBERSHIP
 #ifdef IP_ADD_MEMBERSHIP
@@ -470,6 +490,21 @@ struct wolfIP_sockaddr_in {
     uint16_t sin_port;
     struct sin_addr { uint32_t s_addr; } sin_addr;
 };
+/* Field names and layout follow RFC 3493, so that code written against the
+ * POSIX definition compiles unchanged against this one. sin6_flowinfo is
+ * accepted and ignored: wolfIP does not use flow labels. sin6_scope_id
+ * carries the interface index for a link-local address, which is the only
+ * scope that needs one (RFC 4007). */
+struct wolfIP_in6_addr {
+    uint8_t s6_addr[16];
+};
+struct wolfIP_sockaddr_in6 {
+    uint16_t sin6_family;
+    uint16_t sin6_port;
+    uint32_t sin6_flowinfo;
+    struct wolfIP_in6_addr sin6_addr;
+    uint32_t sin6_scope_id;
+};
 struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
 
@@ -537,6 +572,8 @@ struct msghdr {
 #endif
 #endif
 #define wolfIP_sockaddr_in sockaddr_in
+#define wolfIP_sockaddr_in6 sockaddr_in6
+#define wolfIP_in6_addr in6_addr
 #define wolfIP_sockaddr sockaddr
 #define IPSTACK_SOCK_RAW SOCK_RAW
 #endif

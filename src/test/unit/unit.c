@@ -46,6 +46,7 @@
 #include "unit_tests_ipv6_icmp.c"
 #include "unit_tests_ipv6_nd.c"
 #include "unit_tests_ipv6_ptp.c"
+#include "unit_tests_ipv6_sockets.c"
 #include "unit_tests_ipv6_pending.c"
 
 Suite *wolf_suite(void)
@@ -1354,6 +1355,20 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ptp_dad_still_detects_a_duplicate);
     tcase_add_test(tc_proto, test_ptp_solicitation_is_answered_without_a_target_lla);
     tcase_add_test(tc_proto, test_ptp_solicitation_with_a_stray_source_lla_is_still_answered);
+
+    /* AF_INET6 socket surface: creation, bind, names, IPV6_V6ONLY. */
+    tcase_add_test(tc_proto, test_sock6_stream_and_dgram_are_created);
+    tcase_add_test(tc_proto, test_sock6_icmpv6_socket_requires_the_icmpv6_protocol);
+    tcase_add_test(tc_proto, test_sock6_bind_and_getsockname_roundtrip);
+    tcase_add_test(tc_proto, test_sock6_bind_to_a_foreign_address_is_refused);
+    tcase_add_test(tc_proto, test_sock6_wildcard_bind_reports_the_unspecified_address);
+    tcase_add_test(tc_proto, test_sock6_v4_mapped_bind_is_reported_as_mapped);
+    tcase_add_test(tc_proto, test_sock6_af_inet_socket_still_reports_sockaddr_in);
+    tcase_add_test(tc_proto, test_sock6_ipv4_and_ipv6_sockets_coexist_on_one_port);
+    tcase_add_test(tc_proto, test_sock6_duplicate_ipv6_bind_is_refused);
+    tcase_add_test(tc_proto, test_sock6_v6only_is_stored_and_reported);
+    tcase_add_test(tc_proto, test_sock6_v6only_is_refused_where_it_has_no_meaning);
+    tcase_add_test(tc_proto, test_sock6_v6only_socket_rejects_a_v4_mapped_bind);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
