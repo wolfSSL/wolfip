@@ -2001,4 +2001,102 @@ START_TEST(test_sock6_v6only_socket_rejects_a_v4_mapped_destination)
 }
 END_TEST
 
+
+/* =========================================================================
+ * 8. Family confusion on paths shared with IPv4
+ * ========================================================================= */
+
+/* An IPv6 segment that reaches one of the in-loop reset sites must draw an
+ * IPv6 reset. The shared state machine sees a segment pointer aliased 20
+ * bytes into the frame, whose `ip` member overlaps the IPv6 addresses, so
+ * building an IPv4 reset from it would emit a frame whose destination MAC
+ * and IPv4 addresses are bytes the sender chose. */
+START_TEST(test_sock6_tcp_listener_reset_is_framed_as_ipv6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 got;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 8100);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, fd, 1), 0);
+
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+
+    /* An ACK with no SYN to a listening port: RFC 9293 3.10.7.2 says reset,
+     * and this is the site that reaches tcp_send_reset_reply() from inside
+     * the socket loop. */
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer, &local, 41000, 8100, 0x3000, 0x4000,
+                      TCP_FLAG_ACK, NULL, 0);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    seg = (struct wolfIP_tcp6_seg *)staging;
+    ck_assert_uint_eq(ee16(seg->ip6.eth.type), ETH_TYPE_IPV6);
+    ck_assert_uint_eq(ip6_hdr_version(&seg->ip6), 6);
+    ck_assert_uint_eq(seg->ip6.next_hdr, IP6_NEXTHDR_TCP);
+    ck_assert_uint_eq(seg->flags & TCP_FLAG_RST, TCP_FLAG_RST);
+    ip6_hdr_get_dst(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+    ip6_hdr_get_src(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &local), 0);
+}
+END_TEST
+
+/* The same for an unacceptable ACK in SYN_SENT, which is the second
+ * in-loop reset site. */
+START_TEST(test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    uint16_t sport;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&dst, S6_PEER, 80);
+    (void)wolfIP_sock_connect(&s, fd, (struct wolfIP_sockaddr *)&dst,
+                              sizeof(dst));
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_SYN_SENT);
+    sport = s.tcpsockets[SOCKET_UNMARK(fd)].src_port;
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ip6_copy(&local, &s.tcpsockets[SOCKET_UNMARK(fd)].local_ip6);
+
+    /* An ACK the socket never sent anything to justify. */
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer, &local, 80, sport, 0x9000, 0xDEADBEEF,
+                      TCP_FLAG_ACK, NULL, 0);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    seg = (struct wolfIP_tcp6_seg *)staging;
+    ck_assert_uint_eq(ee16(seg->ip6.eth.type), ETH_TYPE_IPV6);
+    ck_assert_uint_eq(seg->flags & TCP_FLAG_RST, TCP_FLAG_RST);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

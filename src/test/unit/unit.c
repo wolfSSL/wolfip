@@ -1409,6 +1409,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_v4_mapped_peer_is_reported_as_mapped);
     tcase_add_test(tc_proto, test_sock6_v6only_socket_rejects_a_v4_mapped_destination);
 
+    /* Family confusion on paths shared with IPv4. */
+    tcase_add_test(tc_proto, test_sock6_tcp_listener_reset_is_framed_as_ipv6);
+    tcase_add_test(tc_proto, test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6);
+
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
 #if WOLFIP_IPV6_HAVE_FORWARDING

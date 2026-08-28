@@ -6769,6 +6769,29 @@ static void tsocket_flow_adopt_peer(struct tsocket *t,
 static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                       struct wolfIP_tcp_seg *tcp, uint32_t frame_len);
 
+/* Reset in reply to a segment, in the family the segment arrived as.
+ *
+ * Every reset raised from tcp_input_flow() goes through here. The IPv4
+ * builder must not be reached for an IPv6 flow: the segment pointer is
+ * aliased 20 bytes into the frame, so its `ip` member overlaps the IPv6
+ * addresses and the reset would be built from bytes the sender chose - its
+ * IPv4 addresses, its declared length, and through in->ip.eth.src its
+ * destination MAC. */
+static void tcp_reset_reply_flow(struct wolfIP *S, unsigned int if_idx,
+                                 const struct wolfIP_tcp_seg *tcp,
+                                 const struct ip_flow *flow)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        tcp6_send_reset_reply(S, if_idx, tcp, flow);
+        return;
+    }
+#else
+    (void)flow;
+#endif
+    tcp_send_reset_reply(S, if_idx, tcp);
+}
+
 /* Fill a flow from an IPv4 segment, which is what every existing caller
  * has. */
 static void ip_flow_from_v4(struct ip_flow *flow,
@@ -6909,7 +6932,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 if (tcp->flags & TCP_FLAG_ACK) {
                     if (!tcp_listen_ack_matches_child_socket(S, t, tcp, flow))
-                        tcp_send_reset_reply(S, if_idx, tcp);
+                        tcp_reset_reply_flow(S, if_idx, tcp, flow);
                     continue;
                 }
             }
@@ -7048,7 +7071,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     (!tcp_seq_lt(t->sock.tcp.snd_una, ee32(tcp->ack)) ||
                      tcp_seq_lt(tcp_seq_inc(t->sock.tcp.seq, 1),
                                 ee32(tcp->ack)))) {
-                tcp_send_reset_reply(S, if_idx, tcp);
+                tcp_reset_reply_flow(S, if_idx, tcp, flow);
                 continue;
             }
             /* Check if SYN */
@@ -7161,7 +7184,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     if (ee32(tcp->ack) != expected_ack) {
                         /* RFC 9293 section 3.10.7.4: acceptable sequence but
                          * unacceptable ACK in SYN_RCVD - send RST to peer. */
-                        tcp_send_reset_reply(S, if_idx, tcp);
+                        tcp_reset_reply_flow(S, if_idx, tcp, flow);
                         continue;
                     }
                     t->sock.tcp.state = TCP_ESTABLISHED;
@@ -7370,31 +7393,25 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
         }
     }
     if (!matched) {
+        int dst_match = 0;
+
+        /* A segment to a port nobody holds is answered with a reset, but
+         * only when the destination really is ours: answering anything else
+         * would make the stack a reflector. */
 #if WOLFIP_IPV6
         if (flow->is_v6) {
-            /* A segment to a port nobody holds is answered with a reset, the
-             * same rule as IPv4. The reply is only owed when the destination
-             * really is ours: answering anything else would make the stack a
-             * reflector. */
-            int dst_match = 0;
-
             (void)wolfIP_if_for_local_ip6(S, if_idx, &flow->dst6, &dst_match);
             if (dst_match && !ip6_is_multicast(&flow->dst6))
-                tcp6_send_reset_reply(S, if_idx, tcp, flow);
+                tcp_reset_reply_flow(S, if_idx, tcp, flow);
             return;
         }
 #endif
-        {
-            ip4 dst = flow->dst;
-            int dst_match = 0;
-
-            if (dst != IPADDR_ANY &&
-                    !wolfIP_ip_is_broadcast(S, dst) &&
-                    !wolfIP_ip_is_multicast(dst)) {
-                (void)wolfIP_if_for_local_ip(S, dst, &dst_match);
-                if (dst_match)
-                    tcp_send_reset_reply(S, if_idx, tcp);
-            }
+        if ((flow->dst != IPADDR_ANY) &&
+                !wolfIP_ip_is_broadcast(S, flow->dst) &&
+                !wolfIP_ip_is_multicast(flow->dst)) {
+            (void)wolfIP_if_for_local_ip(S, flow->dst, &dst_match);
+            if (dst_match)
+                tcp_reset_reply_flow(S, if_idx, tcp, flow);
         }
     }
 }
