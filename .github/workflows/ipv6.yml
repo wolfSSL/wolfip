@@ -106,36 +106,15 @@ jobs:
       - name: ESP object builds against the packaged wolfSSL
         run: make build/esp/wolfip.o
 
-      # Informational, not a gate. IPv6 still carries deliberate stubs, so
-      # 100% function coverage is not achievable yet; the enforced gate
-      # remains the one on src/wolfip.c in wolfip-autocov.yml.
+      # Enforced, like the src/wolfip.c gate in wolfip-autocov.yml. Every
+      # function in the IPv6 sources must be reached by the unit tests: an
+      # unreached one is either untested or dead, and both are worth
+      # failing on. Line coverage stays informational - some lines are
+      # defensive branches that need a malformed packet to reach.
       - name: IPv6 coverage report
         run: |
           make clean
-          make autocov-ipv6
-          gcovr -r . --exclude "src/test/unit/.*" \
-            --gcov-ignore-parse-errors=all --json -o build/coverage/ipv6.json
-          python3 - <<'PY'
-          import json
-          with open("build/coverage/ipv6.json", encoding="utf-8") as f:
-              data = json.load(f)
-          for name in ("src/wolfip6.c", "wolfip6.h"):
-              entry = next((e for e in data.get("files", [])
-                            if e.get("file", "").endswith(name)), None)
-              if entry is None:
-                  print(f"{name}: no coverage data")
-                  continue
-              fns = entry.get("functions", [])
-              if not fns:
-                  print(f"{name}: no function data")
-                  continue
-              covered = sum(1 for fn in fns if fn.get("execution_count", 0) > 0)
-              print(f"{name}: {covered}/{len(fns)} functions "
-                    f"({covered * 100.0 / len(fns):.2f}%)")
-              for fn in fns:
-                  if fn.get("execution_count", 0) == 0:
-                      print("   uncovered:", fn.get("name"))
-          PY
+          make autocov-ipv6-check
 
       # End-to-end against the Linux stack over a TAP device. Needs root for
       # the device, and captures to a pcap so a CI failure can be opened in

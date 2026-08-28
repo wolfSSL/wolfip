@@ -1386,6 +1386,17 @@ cov-ipv6: unit-ipv6 $(COV_IPV6_UNIT)
 		--html-details -o build/coverage/ipv6.html
 	@$(OPEN_CMD) build/coverage/ipv6.html
 
+# Enforced gate: every function in the IPv6 sources must be reached by the
+# unit tests. Same rule the default build applies to src/wolfip.c.
+.PHONY: autocov-ipv6-check
+autocov-ipv6-check: autocov-ipv6
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
+		--merge-mode-functions=merge-use-line-min \
+		--json -o build/coverage/ipv6.json
+	@python3 tools/scripts/ipv6-func-coverage.py build/coverage/ipv6.json
+
 autocov-ipv6: unit-ipv6 $(COV_IPV6_UNIT)
 	@echo "[RUN] unit ipv6 (coverage)"
 	@rm -f $(COV_DIR)/*.gcda

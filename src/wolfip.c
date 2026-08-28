@@ -8024,80 +8024,6 @@ int wolfIP_ipv6_nexthop(struct wolfIP *s, unsigned int if_idx, const ip6 *dst,
 #endif /* !WOLFIP_IPV6 */
 
 #if WOLFIP_IPV6
-/* ---------------------------------------------------------------------- */
-/* Socket address conversion, AF_INET6                                    */
-/* ---------------------------------------------------------------------- */
-
-/* Read a sockaddr into an ip6 plus the port, whichever family it carries.
- * An AF_INET address becomes its v4-mapped form, so a caller working on an
- * AF_INET6 socket sees one address type; sock_addr_is_v6() below is what
- * distinguishes the two afterwards. Returns 0 on success. */
-static int sock_addr_to_ip6(const struct wolfIP_sockaddr *addr,
-                            socklen_t addrlen, ip6 *out, uint16_t *port)
-{
-    if (!addr || !out)
-        return -WOLFIP_EINVAL;
-    if (addr->sa_family == AF_INET6) {
-        const struct wolfIP_sockaddr_in6 *sin6 =
-            (const struct wolfIP_sockaddr_in6 *)addr;
-
-        if (addrlen < sizeof(struct wolfIP_sockaddr_in6))
-            return -WOLFIP_EINVAL;
-        memcpy(out->addr, &sin6->sin6_addr, 16);
-        if (port)
-            *port = ee16(sin6->sin6_port);
-        return 0;
-    }
-    if (addr->sa_family == AF_INET) {
-        const struct wolfIP_sockaddr_in *sin =
-            (const struct wolfIP_sockaddr_in *)addr;
-
-        if (addrlen < sizeof(struct wolfIP_sockaddr_in))
-            return -WOLFIP_EINVAL;
-        ip6_set_v4mapped(out, ee32(sin->sin_addr.s_addr));
-        if (port)
-            *port = ee16(sin->sin_port);
-        return 0;
-    }
-    return -WOLFIP_EINVAL;
-}
-
-/* Does this address make the socket speak IPv6 on the wire?
- *
- * The unspecified address is the awkward one: :: means "any" rather than a
- * destination, so a bind to it settles nothing about framing and is treated
- * as not-yet-v6. A v4-mapped address is IPv4 on the wire by definition. */
-static int ip6_addr_is_wire_v6(const ip6 *a)
-{
-    return (!ip6_is_v4mapped(a) && !ip6_is_unspecified(a)) ? 1 : 0;
-}
-
-/* Render an address back to the application in the family of its socket. An
- * AF_INET6 socket always gets a sockaddr_in6, with an IPv4 peer appearing as
- * ::ffff:a.b.c.d (RFC 3493 section 3.7), because that is the one address
- * type such an application is prepared to parse. */
-static int sock_addr_from_ip6(struct wolfIP_sockaddr *addr, socklen_t *addrlen,
-                              const ip6 *v6, uint16_t port,
-                              unsigned int scope_id)
-{
-    struct wolfIP_sockaddr_in6 *sin6 = (struct wolfIP_sockaddr_in6 *)addr;
-
-    if (!addr)
-        return -WOLFIP_EINVAL;
-    if (addrlen && (*addrlen < sizeof(struct wolfIP_sockaddr_in6)))
-        return -WOLFIP_EINVAL;
-    memset(sin6, 0, sizeof(*sin6));
-    sin6->sin6_family = AF_INET6;
-    sin6->sin6_port = ee16(port);
-    memcpy(&sin6->sin6_addr, v6->addr, 16);
-    /* Only a link-local address is ambiguous without one (RFC 4007 s6). */
-    if (ip6_is_link_local(v6))
-        sin6->sin6_scope_id = scope_id;
-    if (addrlen)
-        *addrlen = sizeof(struct wolfIP_sockaddr_in6);
-    return 0;
-}
-
 /* The socket's local address as an ip6, whatever it is holding. */
 static void tsocket_local_ip6(const struct tsocket *t, ip6 *out)
 {
@@ -8291,6 +8217,48 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     if (!s)
         return -WOLFIP_EINVAL;
     sin = (const struct wolfIP_sockaddr_in *)addr;
+#if WOLFIP_IPV6
+    /* An AF_INET6 socket connecting to a real IPv6 address. A v4-mapped
+     * destination is IPv4 on the wire and falls through to the code below
+     * with an equivalent sockaddr_in, so there is one connect path per
+     * family rather than per socket domain. */
+    if (addr->sa_family == AF_INET6) {
+        struct wolfIP_sockaddr_in sin4;
+        ip6 dst6;
+        uint16_t dport = 0;
+
+        ts = wolfIP_socket_from_fd(s, sockfd);
+        if (!ts || (ts->domain != AF_INET6))
+            return -WOLFIP_EINVAL;
+        if (sock_addr_to_ip6(addr, addrlen, &dst6, &dport) != 0)
+            return -WOLFIP_EINVAL;
+        if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
+            return -WOLFIP_EINVAL;
+        if (ip6_addr_is_wire_v6(&dst6)) {
+            if (!IS_SOCKET_UDP(sockfd))
+                return -WOLFIP_EINVAL; /* TCP over IPv6 not wired up yet */
+            if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
+                return -WOLFIP_EINVAL;
+            if (dport == 0)
+                return -WOLFIP_EINVAL;
+            if (udp6_prepare_tx(s, ts, &dst6) != 0)
+                return -WOLFIP_EINVAL;
+            ts->peer_is_v6 = 1;
+            ip6_copy(&ts->remote_ip6, &dst6);
+            ts->dst_port = dport;
+            ts->sock.udp.connected = 1;
+            return 0;
+        }
+        memset(&sin4, 0, sizeof(sin4));
+        sin4.sin_family = AF_INET;
+        sin4.sin_port = ee16(dport);
+        sin4.sin_addr.s_addr =
+            ee32(ip6_is_v4mapped(&dst6) ? ip6_get_v4mapped(&dst6) : IPADDR_ANY);
+        return wolfIP_sock_connect(s, sockfd,
+                                   (struct wolfIP_sockaddr *)&sin4,
+                                   sizeof(sin4));
+    }
+#endif
     if (IS_SOCKET_UDP(sockfd)) {
         struct ipconf *conf;
         uint16_t new_dst_port;
@@ -8830,6 +8798,36 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
         if ((ts->dst_port == 0) && (dest_addr == NULL))
             return -1;
+#if WOLFIP_IPV6
+        /* Which family this datagram travels as is decided by the
+         * destination, not by the socket: a v4-mapped destination on an
+         * AF_INET6 socket goes out as IPv4 (RFC 3493 s3.7) and falls
+         * through to the code below unchanged. Only a real IPv6
+         * destination takes the IPv6 path. */
+        if (ts->domain == AF_INET6) {
+            ip6 dst6;
+            uint16_t dport = 0;
+
+            if (dest_addr) {
+                if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, &dport) != 0)
+                    return -1;
+                if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
+                    return -1;
+                if (ip6_addr_is_wire_v6(&dst6)) {
+                    ts->peer_is_v6 = 1;
+                    ip6_copy(&ts->remote_ip6, &dst6);
+                    ts->dst_port = dport;
+                } else {
+                    ts->peer_is_v6 = 0;
+                    ts->remote_ip = ip6_is_v4mapped(&dst6) ?
+                            ip6_get_v4mapped(&dst6) : IPADDR_ANY;
+                    ts->dst_port = dport;
+                }
+            }
+            if (ts->peer_is_v6)
+                return udp6_sendto(s, ts, frame, buf, len);
+        }
+#endif
         memset(udp, 0, sizeof(struct wolfIP_udp_datagram));
         /* Per-datagram addressing: an explicit sendto destination applies
          * to this datagram only. The connected peer and udp_try_recv's
@@ -9257,6 +9255,19 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
+#if WOLFIP_IPV6
+        /* Dispatch on the family of the datagram at the head of the queue,
+         * before the IPv4 arm below rewrites *addrlen: the whole packet is
+         * queued, IP header included, so its version nibble is the answer,
+         * and a dual-stack socket can be holding both kinds at once. */
+        {
+            struct pkt_desc *d6 = fifo_peek(&ts->sock.udp.rxbuf);
+
+            if (d6 && ((*(const uint8_t *)(ts->rxmem + d6->pos + sizeof(*d6) +
+                                           ETH_HEADER_LEN) >> 4) == 6))
+                return udp6_recvfrom(s, ts, buf, len, src_addr, addrlen);
+        }
+#endif
         if (sin && !addrlen)
             return -WOLFIP_EINVAL;
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
@@ -14486,9 +14497,27 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
             /* The IP header was filled at enqueue time and carries this
              * descriptor's destination; route and resolve for that address,
              * not the socket's current one. */
-            ip4 desc_dst = ee32(ip->dst);
+            ip4 desc_dst;
 #ifdef ETHERNET
             ip4 nexthop;
+#endif
+#if WOLFIP_IPV6
+            /* The queued packet carries its own family: the IPv6 header was
+             * written at enqueue time, because its checksum covers the
+             * addresses. Routing and address resolution still happen here,
+             * so a datagram queued before the neighbour was known is sent
+             * once Neighbor Discovery answers. */
+            if ((((const uint8_t *)ip)[ETH_HEADER_LEN] >> 4) == 6) {
+                if (flush_datagram6_one(s, t, desc, &tx_if) < 0)
+                    break;      /* unresolved or unroutable: hold and retry */
+                fifo_pop(&t->sock.udp.txbuf);
+                desc = fifo_peek(&t->sock.udp.txbuf);
+                tx_drained = 1;
+                continue;
+            }
+#endif
+            desc_dst = ee32(ip->dst);
+#ifdef ETHERNET
 #ifdef IP_MULTICAST
             if (is_udp && wolfIP_ip_is_multicast(desc_dst) &&
                     t->sock.udp.mcast_if_set) {

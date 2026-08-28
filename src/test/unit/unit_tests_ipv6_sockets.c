@@ -408,4 +408,430 @@ START_TEST(test_sock6_v6only_socket_rejects_a_v4_mapped_bind)
 }
 END_TEST
 
+
+/* =========================================================================
+ * 4. UDP over IPv6
+ * ========================================================================= */
+
+#define S6_PEER "2001:db8:5::9"
+
+/* Bring the interface's IPv6 address out of TENTATIVE so it can be used as
+ * a source, and make the peer reachable without waiting for Neighbor
+ * Discovery - address resolution is exercised separately. */
+static void sock6_ready(struct wolfIP *s, uint64_t *now)
+{
+    const uint8_t peer_mac[6] = {0x02, 0xEE, 0x00, 0x00, 0x00, 0x01};
+    struct wolfIP_ifaddr_slot *slot;
+    ip6 peer;
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        slot = &s->ifaddr[i];
+        if (slot->used && (slot->info.family == AF_INET6))
+            slot->info.state = WOLFIP_IFADDR_PREFERRED;
+    }
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(s, TEST_PRIMARY_IF, &peer,
+                                             peer_mac), 0);
+    *now += 100;
+    wolfIP_poll(s, *now);
+}
+
+/* Deliver a UDP datagram over IPv6 to the stack, built the way a peer would
+ * send it: real checksum, real header, through the ingress path. */
+static void sock6_deliver_udp(struct wolfIP *s, const char *src_str,
+                              const ip6 *dst, uint16_t sport, uint16_t dport,
+                              const void *payload, uint16_t payload_len)
+{
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_udp6_datagram *udp = (struct wolfIP_udp6_datagram *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    union transport6_pseudo_header ph;
+    uint16_t udp_len = (uint16_t)(UDP_HEADER_LEN + payload_len);
+    ip6 src;
+
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6(src_str, &src), 0);
+    memset(frame, 0, sizeof(frame));
+    memcpy(udp->ip6.eth.dst, ll->mac, 6);
+    memset(udp->ip6.eth.src, 0x22, 6);
+    udp->ip6.eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(&udp->ip6, 0, 0);
+    udp->ip6.payload_len = ee16(udp_len);
+    udp->ip6.next_hdr = IP6_NEXTHDR_UDP;
+    udp->ip6.hop_limit = 64;
+    ip6_hdr_set_src(&udp->ip6, &src);
+    ip6_hdr_set_dst(&udp->ip6, dst);
+    udp->src_port = ee16(sport);
+    udp->dst_port = ee16(dport);
+    udp->len = ee16(udp_len);
+    udp->csum = 0;
+    if (payload_len > 0)
+        memcpy(udp->data, payload, payload_len);
+    transport6_pseudo_header_init(&ph, &src, dst, udp_len, IP6_NEXTHDR_UDP);
+    udp->csum = ee16(transport6_checksum(&ph, &udp->src_port));
+    if (udp->csum == 0)
+        udp->csum = 0xFFFFu;
+    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + udp_len);
+}
+
+START_TEST(test_sock6_udp_sendto_emits_an_ipv6_datagram)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_udp6_datagram *sent;
+    uint8_t staged[LINK_MTU + ETH_HEADER_LEN];
+    uint64_t now = 0;
+    ip6 got_src;
+    ip6 got_dst;
+    ip6 expect_dst;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    sock6_addr(&dst, S6_PEER, 7777);
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "hello", 5, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 5);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                 UDP_HEADER_LEN + 5));
+    memcpy(staged, last_frame_sent, last_frame_sent_size);
+    sent = (struct wolfIP_udp6_datagram *)staged;
+    ck_assert_uint_eq(ee16(sent->ip6.eth.type), ETH_TYPE_IPV6);
+    ck_assert_uint_eq(ip6_hdr_version(&sent->ip6), 6);
+    ck_assert_uint_eq(sent->ip6.next_hdr, IP6_NEXTHDR_UDP);
+    ck_assert_uint_eq(ee16(sent->dst_port), 7777);
+    ck_assert_uint_eq(ee16(sent->len), UDP_HEADER_LEN + 5);
+    ck_assert_int_eq(memcmp(sent->data, "hello", 5), 0);
+
+    ip6_hdr_get_src(&sent->ip6, &got_src);
+    ip6_hdr_get_dst(&sent->ip6, &got_dst);
+    ck_assert_int_eq(atoip6(S6_PEER, &expect_dst), 0);
+    ck_assert_int_eq(ip6_cmp(&got_dst, &expect_dst), 0);
+    /* Source selection must have picked one of our own addresses. */
+    ck_assert_int_eq(ip6_is_unspecified(&got_src), 0);
+
+    /* RFC 8200 section 8.1: a zero UDP checksum is not permitted over
+     * IPv6, unlike IPv4 where it means "not computed". */
+    ck_assert_uint_ne(sent->csum, 0);
+}
+END_TEST
+
+START_TEST(test_sock6_udp_recvfrom_reports_an_ipv6_peer)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 expect;
+    ip6 got;
+    int fd;
+    int rc;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 7000);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_udp(&s, S6_PEER, &local, 6000, 7000, "abcd", 4);
+
+    rc = wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0,
+                              (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_eq(rc, 4);
+    ck_assert_int_eq(memcmp(buf, "abcd", 4), 0);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+    ck_assert_uint_eq(ee16(from.sin6_port), 6000);
+    memcpy(got.addr, &from.sin6_addr, 16);
+    ck_assert_int_eq(atoip6(S6_PEER, &expect), 0);
+    ck_assert_int_eq(ip6_cmp(&got, &expect), 0);
+}
+END_TEST
+
+/* A datagram addressed to a port nobody holds, or to an address that is not
+ * ours, must not be delivered. */
+START_TEST(test_sock6_udp_unmatched_datagram_is_not_delivered)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 elsewhere;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 7001);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_OTHER, &elsewhere), 0);
+
+    /* Right address, wrong port. */
+    sock6_deliver_udp(&s, S6_PEER, &local, 6000, 7999, "x", 1);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+    /* Right port, an address that is not ours. */
+    sock6_deliver_udp(&s, S6_PEER, &elsewhere, 6000, 7001, "x", 1);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+/* A wildcard bind takes datagrams addressed to any of our addresses, the
+ * same rule the IPv4 path applies. */
+START_TEST(test_sock6_udp_wildcard_bind_receives_any_local_address)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 local;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, NULL, 7002);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_udp(&s, S6_PEER, &local, 6000, 7002, "wild", 4);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 4);
+}
+END_TEST
+
+/* An AF_INET socket must never be handed an IPv6 datagram: it has no way to
+ * report the peer to its application. */
+START_TEST(test_sock6_udp_af_inet_socket_never_receives_ipv6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 local;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7003);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_udp(&s, S6_PEER, &local, 6000, 7003, "no", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+/* A connected socket filters by peer; an unconnected one takes anything. */
+START_TEST(test_sock6_udp_connected_socket_filters_by_peer)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 peer;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 local;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&peer, S6_PEER, 6000);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&peer,
+                                         sizeof(peer)), 0);
+    /* connect() picks the source and the ephemeral port at first send. */
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "q", 1, 0, NULL, 0), 1);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+
+    /* From the connected peer: delivered. */
+    sock6_deliver_udp(&s, S6_PEER, &local, 6000,
+                      s.udpsockets[SOCKET_UNMARK(fd)].src_port, "yes", 3);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 3);
+    /* From somebody else: refused. */
+    sock6_deliver_udp(&s, S6_TEST_OTHER, &local, 6000,
+                      s.udpsockets[SOCKET_UNMARK(fd)].src_port, "no", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+/* IPv6 routers do not fragment and this stack does not fragment at the
+ * source, so an oversized datagram is refused at sendto rather than
+ * truncated on the way out. */
+START_TEST(test_sock6_udp_oversize_datagram_is_refused)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    static uint8_t big[LINK_MTU];
+    uint64_t now = 0;
+    uint32_t mtu;
+    uint32_t max_payload;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&dst, S6_PEER, 7777);
+
+    mtu = wolfIP_ip_mtu(&s, TEST_PRIMARY_IF);
+    if (mtu < IP6_MIN_MTU)
+        mtu = IP6_MIN_MTU;
+    max_payload = mtu - IP6_HEADER_LEN - UDP_HEADER_LEN;
+    ck_assert_uint_lt(max_payload, sizeof(big));
+
+    memset(big, 0x5A, sizeof(big));
+    /* Exactly at the limit still goes. */
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, big, max_payload, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), (int)max_payload);
+    /* One byte more does not. */
+    ck_assert_int_lt(wolfIP_sock_sendto(&s, fd, big, max_payload + 1, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 0);
+}
+END_TEST
+
+/* An unresolved neighbour holds the datagram rather than dropping it, and a
+ * Neighbor Solicitation goes out for it. Once the advertisement arrives the
+ * queued datagram is sent. */
+START_TEST(test_sock6_udp_unresolved_neighbour_holds_the_datagram)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    const uint8_t peer_mac[6] = {0x02, 0xEE, 0x00, 0x00, 0x00, 0x02};
+    struct wolfIP_ifaddr_slot *slot;
+    uint64_t now = 0;
+    unsigned int i;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    /* Deliberately no neighbour entry this time. */
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        slot = &s.ifaddr[i];
+        if (slot->used && (slot->info.family == AF_INET6))
+            slot->info.state = WOLFIP_IFADDR_PREFERRED;
+    }
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&dst, S6_PEER, 7777);
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "held", 4, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 4);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* What went out is a solicitation, not the datagram. */
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP6_HEADER_LEN],
+                      ICMP6_NEIGHBOR_SOLICIT);
+
+    /* Answer it, and the held datagram follows. */
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &peer,
+                                             peer_mac), 0);
+    mock_link_capture_reset();
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                 UDP_HEADER_LEN + 4));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                      UDP_HEADER_LEN], 'h');
+}
+END_TEST
+
+/* A datagram whose checksum does not verify is dropped. RFC 8200 s8.1 also
+ * forbids the zero checksum that IPv4 allows, so that is refused too. */
+START_TEST(test_sock6_udp_bad_checksum_is_dropped)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_udp6_datagram *udp = (struct wolfIP_udp6_datagram *)frame;
+    struct wolfIP_ll_dev *ll;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 local;
+    ip6 src;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 7004);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &src), 0);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    /* Deliberately wrong checksum. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(udp->ip6.eth.dst, ll->mac, 6);
+    udp->ip6.eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(&udp->ip6, 0, 0);
+    udp->ip6.payload_len = ee16(UDP_HEADER_LEN + 2);
+    udp->ip6.next_hdr = IP6_NEXTHDR_UDP;
+    udp->ip6.hop_limit = 64;
+    ip6_hdr_set_src(&udp->ip6, &src);
+    ip6_hdr_set_dst(&udp->ip6, &local);
+    udp->src_port = ee16(6000);
+    udp->dst_port = ee16(7004);
+    udp->len = ee16(UDP_HEADER_LEN + 2);
+    udp->csum = 0xDEAD;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                              UDP_HEADER_LEN + 2));
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+
+    /* And a zero checksum, which IPv4 would have accepted as "not
+     * computed" but IPv6 does not permit at all. */
+    udp->csum = 0;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                              UDP_HEADER_LEN + 2));
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

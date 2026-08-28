@@ -1370,6 +1370,17 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_v6only_is_refused_where_it_has_no_meaning);
     tcase_add_test(tc_proto, test_sock6_v6only_socket_rejects_a_v4_mapped_bind);
 
+    /* UDP over IPv6. */
+    tcase_add_test(tc_proto, test_sock6_udp_sendto_emits_an_ipv6_datagram);
+    tcase_add_test(tc_proto, test_sock6_udp_recvfrom_reports_an_ipv6_peer);
+    tcase_add_test(tc_proto, test_sock6_udp_unmatched_datagram_is_not_delivered);
+    tcase_add_test(tc_proto, test_sock6_udp_wildcard_bind_receives_any_local_address);
+    tcase_add_test(tc_proto, test_sock6_udp_af_inet_socket_never_receives_ipv6);
+    tcase_add_test(tc_proto, test_sock6_udp_connected_socket_filters_by_peer);
+    tcase_add_test(tc_proto, test_sock6_udp_oversize_datagram_is_refused);
+    tcase_add_test(tc_proto, test_sock6_udp_unresolved_neighbour_holds_the_datagram);
+    tcase_add_test(tc_proto, test_sock6_udp_bad_checksum_is_dropped);
+
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
 #if WOLFIP_IPV6_HAVE_ICMP6
