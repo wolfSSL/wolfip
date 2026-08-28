@@ -1235,6 +1235,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ip6toa_never_exceeds_addrstrlen);
     tcase_add_test(tc_utils, test_ip6_text_roundtrip_is_stable);
     tcase_add_test(tc_utils, test_ip6_text_roundtrip_exhaustive_single_bit);
+    tcase_add_test(tc_utils, test_ip6_api_is_linkable_without_ipv6);
 
 #if WOLFIP_IPV6
     /* IPv6 header layout, checksum and encapsulation. Needs the IPv6 stack

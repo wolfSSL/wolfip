@@ -605,7 +605,8 @@ struct wolfIP_ifaddr_info {
 /* Add an address. Returns 0, or negative on a bad argument, a duplicate, or
  * when the interface has reached WOLFIP_IF_CONF_MAX. Adding the first IPv4
  * address of an interface sets the primary, so a single-address build is
- * fully usable through this API alone. */
+ * fully usable through this API alone. The v6 calls return -WOLFIP_ENOSYS in
+ * a build without WOLFIP_IPV6, where nothing can hold such an address. */
 int wolfIP_ifaddr_add4(struct wolfIP *s, unsigned int if_idx, ip4 addr,
                        uint8_t prefix_len);
 int wolfIP_ifaddr_add6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
@@ -632,6 +633,13 @@ int wolfIP_ifaddr_get(struct wolfIP *s, unsigned int if_idx, int family,
 int wolfIP_ifaddr_is_local4(struct wolfIP *s, ip4 addr, unsigned int *if_idx);
 
 /* IPv6 Neighbor Discovery and address autoconfiguration.
+ *
+ * Everything in this section, and wolfIP_ifaddr_add6()/del6() above, is
+ * declared whether or not the library was built with WOLFIP_IPV6 - it has to
+ * be, since wolfip.h is included before config.h and so cannot see the
+ * macro. In a build without IPv6 each one is defined and returns
+ * -WOLFIP_ENOSYS: an application links against either build and finds out at
+ * run time which it got, rather than meeting an undefined symbol.
  *
  * wolfIP_ipv6_start() brings IPv6 up on an interface: it forms the
  * link-local address from the interface MAC (RFC 4862 section 5.3), runs

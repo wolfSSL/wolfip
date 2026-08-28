@@ -70,6 +70,14 @@ jobs:
           make unit
           ./build/test/unit
 
+      # wolfip.h declares the IPv6 entry points whatever the build, because
+      # it is included before config.h and cannot see WOLFIP_IPV6. This links
+      # a consumer of the IPv4-only library against all of them, which the
+      # unit binary cannot do: it #includes src/wolfip.c, so a declaration
+      # with no definition would never show up there.
+      - name: IPv6 API links against the IPv4-only library
+        run: make ipv6-api-link-test
+
       - name: Library builds with IPv6 enabled
         run: |
           make clean

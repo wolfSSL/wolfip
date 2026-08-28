@@ -7850,8 +7850,10 @@ int wolfIP_ifaddr_add6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
         return -WOLFIP_EINVAL;
 #if !WOLFIP_IPV6
     /* Nothing can hold a v6 address in this build, and saying so beats
-     * appearing to succeed. */
-    return -WOLFIP_EINVAL;
+     * appearing to succeed. Not EINVAL: the arguments were fine, the
+     * feature is absent, and a caller that cannot tell those apart will
+     * keep correcting a call that was never wrong. */
+    return -WOLFIP_ENOSYS;
 #else
     if (ip6_is_unspecified(addr) || ip6_is_multicast(addr))
         return -WOLFIP_EINVAL;
@@ -7897,7 +7899,7 @@ int wolfIP_ifaddr_del6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr)
     if (!ifaddr_if_valid(s, if_idx) || !addr)
         return -WOLFIP_EINVAL;
 #if !WOLFIP_IPV6
-    return -WOLFIP_EINVAL;
+    return -WOLFIP_ENOSYS;
 #else
     for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
         if (!s->ifaddr[i].used)
@@ -7914,6 +7916,94 @@ int wolfIP_ifaddr_del6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr)
     return -WOLFIP_EINVAL;
 #endif
 }
+
+#if !WOLFIP_IPV6
+/* The IPv6 entry points in a build without IPv6.
+ *
+ * They are declared in wolfip.h unconditionally, and have to be: wolfip.h is
+ * included before config.h, so a header cannot see WOLFIP_IPV6 unless the
+ * command line sets it, and hiding the declarations would mean an
+ * application that includes wolfip.h normally sees a different API from the
+ * one the library was built with. Declared without being defined, though,
+ * they were a link error - the one failure mode that says nothing about
+ * why, from a header that advertises the function.
+ *
+ * Defined here instead, returning -WOLFIP_ENOSYS. An application links
+ * against either build of the library and finds out at run time which one
+ * it got. The same arrangement as wolfIP_register_l2_handler() above, and as
+ * wolfIP_ifaddr_add6()/del6(), so the whole IPv6 surface answers the same
+ * way in a build that does not have it. */
+int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
+{
+    (void)s;
+    (void)if_idx;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_ipv6_stop(struct wolfIP *s, unsigned int if_idx)
+{
+    (void)s;
+    (void)if_idx;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_ipv6_addr_add(struct wolfIP *s, unsigned int if_idx,
+                         const ip6 *addr, uint8_t prefix_len)
+{
+    (void)s;
+    (void)if_idx;
+    (void)addr;
+    (void)prefix_len;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_ipv6_set_iid(struct wolfIP *s, unsigned int if_idx,
+                        const uint8_t *iid)
+{
+    (void)s;
+    (void)if_idx;
+    (void)iid;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_ipv6_get_iid(struct wolfIP *s, unsigned int if_idx, uint8_t *iid)
+{
+    (void)s;
+    (void)if_idx;
+    (void)iid;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_nd6_neighbor_add(struct wolfIP *s, unsigned int if_idx,
+                            const ip6 *addr, const uint8_t *mac)
+{
+    (void)s;
+    (void)if_idx;
+    (void)addr;
+    (void)mac;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
+                      uint8_t *mac)
+{
+    (void)s;
+    (void)if_idx;
+    (void)addr;
+    (void)mac;
+    return -WOLFIP_ENOSYS;
+}
+
+int wolfIP_ipv6_nexthop(struct wolfIP *s, unsigned int if_idx, const ip6 *dst,
+                        ip6 *nexthop)
+{
+    (void)s;
+    (void)if_idx;
+    (void)dst;
+    (void)nexthop;
+    return -WOLFIP_ENOSYS;
+}
+#endif /* !WOLFIP_IPV6 */
 
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
 {

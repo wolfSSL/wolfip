@@ -850,3 +850,74 @@ START_TEST(test_ip6_text_roundtrip_exhaustive_single_bit)
     }
 }
 END_TEST
+
+/* =========================================================================
+ * The IPv6 API in a build without IPv6
+ * ========================================================================= */
+
+/* Every one of these is declared in wolfip.h whatever the build, because the
+ * header cannot see WOLFIP_IPV6. Without a definition to match, a build
+ * without IPv6 turned an ordinary call into an undefined symbol at link
+ * time. This test calls all of them: that it links at all is half of what is
+ * being checked, and the other half is that they report the feature missing
+ * rather than a bad argument, which a caller would try to correct.
+ *
+ * Not gated on WOLFIP_IPV6 for the same reason as the rest of this file - it
+ * has to run in the default build, which is the one that has the problem. */
+START_TEST(test_ip6_api_is_linkable_without_ipv6)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    uint8_t mac[6] = {0};
+    uint8_t iid[8] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77};
+    ip6 addr;
+    ip6 nexthop;
+
+    wolfIP_init(&s);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8::1", &addr), 0);
+
+#if WOLFIP_IPV6
+    /* With IPv6 present these do real work, covered by the other IPv6 test
+     * files. All that matters here is that none of them claims to be
+     * missing. */
+    ck_assert_int_ne(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), -WOLFIP_ENOSYS);
+    ck_assert_int_ne(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), -WOLFIP_ENOSYS);
+    ck_assert_int_ne(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &addr, 64),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_ne(wolfIP_ifaddr_del6(&s, TEST_PRIMARY_IF, &addr),
+                     -WOLFIP_ENOSYS);
+#else
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_ipv6_addr_add(&s, TEST_PRIMARY_IF, &addr, 64),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_ipv6_set_iid(&s, TEST_PRIMARY_IF, iid),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_ipv6_get_iid(&s, TEST_PRIMARY_IF, iid),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &addr, mac),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &addr, mac),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &addr, &nexthop),
+                     -WOLFIP_ENOSYS);
+    /* The address list calls say the same thing, so the whole surface
+     * answers alike rather than half of it reporting a bad argument. */
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &addr, 64),
+                     -WOLFIP_ENOSYS);
+    ck_assert_int_eq(wolfIP_ifaddr_del6(&s, TEST_PRIMARY_IF, &addr),
+                     -WOLFIP_ENOSYS);
+    /* A genuinely bad argument still reports itself as one: the two are
+     * different failures and must not be collapsed. */
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, NULL, 64),
+                     -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &addr, 129),
+                     -WOLFIP_EINVAL);
+#endif
+    (void)mac;
+    (void)iid;
+    (void)nexthop;
+}
+END_TEST

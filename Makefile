@@ -877,6 +877,23 @@ build/test/wolfip_forwarding.o: src/wolfip.c
 	@$(CC) $(CFLAGS) -DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1 -c $< -o $@
 
 build/test/test_ttl_expired.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
+# A consumer of the IPv4-only library calling the IPv6 entry points, which
+# wolfip.h declares whatever the build. Linking is most of the test: the unit
+# binary #includes src/wolfip.c and so cannot catch a missing definition.
+build/test/test_ipv6_api_link.o: src/test/test_ipv6_api_link.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+build/test-ipv6-api-link: build/wolfip.o build/test/test_ipv6_api_link.o $(NETDEV_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-api-link-test
+ipv6-api-link-test: build/test-ipv6-api-link
+	@echo "[RUN] $<"
+	@./build/test-ipv6-api-link
+
 # IPv6 end-to-end ping test. Needs its own wolfip object because
 # WOLFIP_IPV6 has to reach wolfip.h, which is included before config.h.
 build/ipv6/wolfip.o: src/wolfip.c
