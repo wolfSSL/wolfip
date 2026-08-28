@@ -490,21 +490,6 @@ struct wolfIP_sockaddr_in {
     uint16_t sin_port;
     struct sin_addr { uint32_t s_addr; } sin_addr;
 };
-/* Field names and layout follow RFC 3493, so that code written against the
- * POSIX definition compiles unchanged against this one. sin6_flowinfo is
- * accepted and ignored: wolfIP does not use flow labels. sin6_scope_id
- * carries the interface index for a link-local address, which is the only
- * scope that needs one (RFC 4007). */
-struct wolfIP_in6_addr {
-    uint8_t s6_addr[16];
-};
-struct wolfIP_sockaddr_in6 {
-    uint16_t sin6_family;
-    uint16_t sin6_port;
-    uint32_t sin6_flowinfo;
-    struct wolfIP_in6_addr sin6_addr;
-    uint32_t sin6_scope_id;
-};
 struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
 
@@ -549,6 +534,43 @@ struct msghdr {
     void *msg_control;
     size_t msg_controllen;
     int msg_flags;
+};
+#endif
+
+/* IPv6 socket address.
+ *
+ * When the platform supplies <netinet/in.h> its own struct in6_addr and
+ * struct sockaddr_in6 are used rather than a parallel pair. That is not
+ * just tidier: glibc defines s6_addr as a macro onto an anonymous union, so
+ * a local struct with a member of that name does not compile in any
+ * translation unit that has seen the system header - which is most of them,
+ * since <arpa/inet.h> pulls it in.
+ *
+ * The fallback follows RFC 3493 field for field, so code written against
+ * the POSIX definition compiles against either. sin6_flowinfo is accepted
+ * and ignored: wolfIP does not use flow labels. sin6_scope_id carries the
+ * interface index for a link-local address, the only scope that needs one
+ * (RFC 4007). */
+#if defined(__has_include) && !defined(WOLFIP_NO_SYS_HEADERS)
+#if __has_include(<netinet/in.h>)
+#include <netinet/in.h>
+#define WOLFIP_HAVE_SYS_IN6 1
+#endif
+#endif
+
+#ifdef WOLFIP_HAVE_SYS_IN6
+#define wolfIP_in6_addr in6_addr
+#define wolfIP_sockaddr_in6 sockaddr_in6
+#else
+struct wolfIP_in6_addr {
+    uint8_t s6_addr[16];
+};
+struct wolfIP_sockaddr_in6 {
+    uint16_t sin6_family;
+    uint16_t sin6_port;
+    uint32_t sin6_flowinfo;
+    struct wolfIP_in6_addr sin6_addr;
+    uint32_t sin6_scope_id;
 };
 #endif
 

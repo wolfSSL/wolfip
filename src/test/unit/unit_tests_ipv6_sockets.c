@@ -834,4 +834,382 @@ START_TEST(test_sock6_udp_bad_checksum_is_dropped)
 }
 END_TEST
 
+
+/* =========================================================================
+ * 5. TCP over IPv6
+ * ========================================================================= */
+
+/* The segment the stack last transmitted, re-based so the IPv6 accessors
+ * line up. Returns NULL when nothing was sent. */
+static struct wolfIP_tcp6_seg *sock6_last_tcp(uint8_t *staging)
+{
+    if (last_frame_sent_size < (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                          TCP_HEADER_LEN))
+        return NULL;
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    return (struct wolfIP_tcp6_seg *)staging;
+}
+
+/* Inject a TCP segment over IPv6, built the way a peer would send it. */
+static void sock6_deliver_tcp(struct wolfIP *s, const ip6 *src, const ip6 *dst,
+                              uint16_t sport, uint16_t dport, uint32_t seq,
+                              uint32_t ack, uint8_t flags,
+                              const void *payload, uint16_t payload_len)
+{
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_tcp6_seg *tcp = (struct wolfIP_tcp6_seg *)frame;
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    union transport6_pseudo_header ph;
+    uint16_t seg_len = (uint16_t)(TCP_HEADER_LEN + payload_len);
+
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(tcp->ip6.eth.dst, ll->mac, 6);
+    memset(tcp->ip6.eth.src, 0x22, 6);
+    tcp->ip6.eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(&tcp->ip6, 0, 0);
+    tcp->ip6.payload_len = ee16(seg_len);
+    tcp->ip6.next_hdr = IP6_NEXTHDR_TCP;
+    tcp->ip6.hop_limit = 64;
+    ip6_hdr_set_src(&tcp->ip6, src);
+    ip6_hdr_set_dst(&tcp->ip6, dst);
+    tcp->src_port = ee16(sport);
+    tcp->dst_port = ee16(dport);
+    tcp->seq = ee32(seq);
+    tcp->ack = ee32(ack);
+    tcp->hlen = (uint8_t)(TCP_HEADER_LEN << 2);
+    tcp->flags = flags;
+    tcp->win = ee16(8192);
+    tcp->csum = 0;
+    tcp->urg = 0;
+    if (payload_len > 0)
+        memcpy(tcp->data, payload, payload_len);
+    transport6_pseudo_header_init(&ph, src, dst, seg_len, IP6_NEXTHDR_TCP);
+    tcp->csum = ee16(transport6_checksum(&ph, &tcp->src_port));
+    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + seg_len);
+}
+
+/* A full active open: connect emits a SYN over IPv6, the SYN-ACK is
+ * answered, and the socket reaches ESTABLISHED. */
+START_TEST(test_sock6_tcp_connect_completes_the_handshake)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 got;
+    uint32_t peer_seq = 0x11223344;
+    uint32_t our_isn;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&dst, S6_PEER, 80);
+
+    mock_link_capture_reset();
+    /* connect reports "in progress", as the IPv4 arm does. */
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(ee16(seg->ip6.eth.type), ETH_TYPE_IPV6);
+    ck_assert_uint_eq(seg->ip6.next_hdr, IP6_NEXTHDR_TCP);
+    ck_assert_uint_eq(seg->flags & TCP_FLAG_SYN, TCP_FLAG_SYN);
+    ck_assert_uint_eq(seg->flags & TCP_FLAG_ACK, 0);
+    ck_assert_uint_eq(ee16(seg->dst_port), 80);
+    ip6_hdr_get_dst(&seg->ip6, &got);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+    our_isn = ee32(seg->seq);
+
+    /* Answer it. */
+    ip6_hdr_get_src(&seg->ip6, &local);
+    sock6_deliver_tcp(&s, &peer, &local, 80,
+                      s.tcpsockets[SOCKET_UNMARK(fd)].src_port,
+                      peer_seq, our_isn + 1,
+                      TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_ESTABLISHED);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), 0);
+}
+END_TEST
+
+/* Data in both directions over an established IPv6 connection. */
+START_TEST(test_sock6_tcp_carries_data_both_ways)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    uint32_t peer_seq = 0x55667788;
+    uint32_t our_isn;
+    uint16_t sport;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&dst, S6_PEER, 80);
+    mock_link_capture_reset();
+    (void)wolfIP_sock_connect(&s, fd, (struct wolfIP_sockaddr *)&dst,
+                              sizeof(dst));
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    our_isn = ee32(seg->seq);
+    ip6_hdr_get_src(&seg->ip6, &local);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    sport = s.tcpsockets[SOCKET_UNMARK(fd)].src_port;
+    sock6_deliver_tcp(&s, &peer, &local, 80, sport, peer_seq, our_isn + 1,
+                      TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_ESTABLISHED);
+
+    /* Outbound. */
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_send(&s, fd, "ping6", 5, 0), 5);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(seg->ip6.next_hdr, IP6_NEXTHDR_TCP);
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                 TCP_HEADER_LEN + 5));
+    ck_assert_int_eq(memcmp(seg->data, "ping6", 5), 0);
+
+    /* Inbound. */
+    sock6_deliver_tcp(&s, &peer, &local, 80, sport, peer_seq + 1,
+                      our_isn + 1 + 5, TCP_FLAG_ACK, "pong6", 5);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_sock_recv(&s, fd, buf, sizeof(buf), 0), 5);
+    ck_assert_int_eq(memcmp(buf, "pong6", 5), 0);
+}
+END_TEST
+
+/* A listening AF_INET6 socket accepts an IPv6 connection and reports the
+ * peer as a sockaddr_in6. */
+START_TEST(test_sock6_tcp_listener_accepts_an_ipv6_connection)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 got;
+    int listen_fd;
+    int conn_fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    listen_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 8080);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer, &local, 40000, 8080, 0x99aabbcc, 0,
+                      TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    conn_fd = wolfIP_sock_accept(&s, listen_fd,
+                                 (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_ge(conn_fd, 0);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+    ck_assert_uint_eq(ee16(from.sin6_port), 40000);
+    memcpy(got.addr, &from.sin6_addr, 16);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+
+    /* The SYN-ACK goes out over IPv6, from the address that was addressed. */
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(seg->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
+                      TCP_FLAG_SYN | TCP_FLAG_ACK);
+    ip6_hdr_get_src(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &local), 0);
+}
+END_TEST
+
+/* The IPv6 header is 20 bytes larger, so the MSS derived from the same link
+ * MTU must be 20 bytes smaller. */
+START_TEST(test_sock6_tcp_mss_accounts_for_the_40_byte_header)
+{
+    struct wolfIP s;
+    struct tsocket *t4;
+    struct tsocket *t6;
+    uint64_t now = 0;
+    int fd4;
+    int fd6;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd4 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    fd6 = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd4, 0);
+    ck_assert_int_ge(fd6, 0);
+    t4 = &s.tcpsockets[SOCKET_UNMARK(fd4)];
+    t6 = &s.tcpsockets[SOCKET_UNMARK(fd6)];
+    t4->if_idx = TEST_PRIMARY_IF;
+    t6->if_idx = TEST_PRIMARY_IF;
+    /* peer_is_v6 is what selects the header size, and it is set once the
+     * destination is known. */
+    t6->peer_is_v6 = 1;
+
+    ck_assert_uint_gt(wolfIP_socket_tcp_mss(t4), 0);
+    ck_assert_uint_eq(wolfIP_socket_tcp_mss(t4) - wolfIP_socket_tcp_mss(t6),
+                      IP6_HEADER_LEN - IP_HEADER_LEN);
+}
+END_TEST
+
+/* A segment to a port nobody holds is answered with a reset, so the peer
+ * learns at once rather than retrying. */
+START_TEST(test_sock6_tcp_segment_to_a_dead_port_is_reset)
+{
+    struct wolfIP s;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 got;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer, &local, 40001, 9999, 0x1000, 0,
+                      TCP_FLAG_SYN, NULL, 0);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(seg->flags & TCP_FLAG_RST, TCP_FLAG_RST);
+    ck_assert_uint_eq(ee16(seg->dst_port), 40001);
+    /* Source and destination swapped: the reply comes from the address
+     * that was addressed. */
+    ip6_hdr_get_src(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &local), 0);
+    ip6_hdr_get_dst(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+
+    /* A reset is never answered with a reset. */
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer, &local, 40001, 9999, 0x1000, 0,
+                      TCP_FLAG_RST, NULL, 0);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* A segment with a broken checksum is dropped rather than answered. */
+START_TEST(test_sock6_tcp_bad_checksum_is_dropped)
+{
+    struct wolfIP s;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_tcp6_seg *tcp = (struct wolfIP_tcp6_seg *)frame;
+    struct wolfIP_ll_dev *ll;
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(tcp->ip6.eth.dst, ll->mac, 6);
+    tcp->ip6.eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(&tcp->ip6, 0, 0);
+    tcp->ip6.payload_len = ee16(TCP_HEADER_LEN);
+    tcp->ip6.next_hdr = IP6_NEXTHDR_TCP;
+    tcp->ip6.hop_limit = 64;
+    ip6_hdr_set_src(&tcp->ip6, &peer);
+    ip6_hdr_set_dst(&tcp->ip6, &local);
+    tcp->src_port = ee16(40002);
+    tcp->dst_port = ee16(9999);
+    tcp->hlen = (uint8_t)(TCP_HEADER_LEN << 2);
+    tcp->flags = TCP_FLAG_SYN;
+    tcp->csum = 0xBEEF;
+
+    mock_link_capture_reset();
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                              TCP_HEADER_LEN));
+    /* No reset: a segment that fails the checksum was never received. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
+/* An AF_INET listener must never accept an IPv6 SYN. */
+START_TEST(test_sock6_tcp_af_inet_listener_ignores_ipv6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(8081);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, fd, 1), 0);
+
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_tcp(&s, &peer, &local, 40003, 8081, 0x2000, 0,
+                      TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    /* Not accepted: the listener is still in LISTEN. */
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_LISTEN);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

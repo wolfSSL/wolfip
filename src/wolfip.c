@@ -160,6 +160,15 @@ struct wolfIP_icmp_packet;
 #define ETH_HEADER_LEN 0
 #endif
 
+/* The IPv6 header length, needed by the socket sizing helpers above the
+ * point where src/wolfip6.c is included. Checked against IP6_HEADER_LEN
+ * there so the two cannot drift. */
+#define IP6_HEADER_LEN_PUB 40
+#if WOLFIP_IPV6
+#define TSOCKET_IS_V6(t) ((t)->peer_is_v6)
+#else
+#define TSOCKET_IS_V6(t) (0)
+#endif
 #define ETH_TYPE_IP 0x0800
 #define ETH_TYPE_ARP 0x0806
 #if WOLFIP_IPV6
@@ -1449,6 +1458,33 @@ static inline int tcp_seq_leq(uint32_t a, uint32_t b);
 static inline int tcp_seq_lt(uint32_t a, uint32_t b);
 static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
                                 uint8_t proto, ip4 src_ip, ip4 dst_ip, uint16_t len);
+
+/* The addresses a received segment arrived with, lifted out of the IP header
+ * so that the transport code does not have to know which one it was.
+ *
+ * The TCP state machine is entirely address-agnostic apart from socket
+ * matching, so rather than a second copy of it for IPv6 the addresses are
+ * passed in and the eight places that care read them from here. `hdr_len`
+ * is the IP header that preceded the segment, and `transport_len` the TCP
+ * header plus payload, which IPv4 derives from ip.len and IPv6 states
+ * outright as the payload length. */
+struct ip_flow {
+    uint8_t is_v6;
+    uint8_t ttl;            /* hop limit, for IPv6 */
+    uint16_t hdr_len;
+    uint32_t transport_len;
+    ip4 src, dst;
+#if WOLFIP_IPV6
+    ip6 src6, dst6;
+#endif
+};
+static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
+                           struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
+                           const struct ip_flow *flow);
+#if WOLFIP_IPV6
+static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
+                         const void *v4frame, uint32_t frame_len);
+#endif
 static void tcp_persist_cb(void *arg);
 static void tcp_persist_start(struct tsocket *t, uint64_t now);
 static void tcp_persist_stop(struct tsocket *t);
@@ -1823,13 +1859,28 @@ static inline uint32_t wolfIP_socket_ip_mtu(const struct tsocket *t)
     return wolfIP_ip_mtu(t->S, wolfIP_socket_if_idx(t));
 }
 
+/* The IP header this socket's segments carry: 20 bytes for IPv4, 40 for
+ * IPv6 (RFC 8200 s3). Everything that sizes a segment goes through here, so
+ * the twenty-byte difference is accounted for once. */
+static inline uint32_t wolfIP_socket_ip_hdr_len(const struct tsocket *t)
+{
+#if WOLFIP_IPV6
+    if (t && t->peer_is_v6)
+        return IP6_HEADER_LEN_PUB;
+#else
+    (void)t;
+#endif
+    return IP_HEADER_LEN;
+}
+
 static inline uint32_t wolfIP_socket_tcp_mss(const struct tsocket *t)
 {
     uint32_t ip_mtu = wolfIP_socket_ip_mtu(t);
+    uint32_t hdr = wolfIP_socket_ip_hdr_len(t);
 
-    if (ip_mtu <= (IP_HEADER_LEN + TCP_HEADER_LEN))
+    if (ip_mtu <= (hdr + TCP_HEADER_LEN))
         return 0;
-    return ip_mtu - (IP_HEADER_LEN + TCP_HEADER_LEN);
+    return ip_mtu - (hdr + TCP_HEADER_LEN);
 }
 
 static inline uint32_t tcp_cc_mss(const struct tsocket *t)
@@ -4406,7 +4457,9 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     if (!ll)
         return -1;
 #ifdef ETHERNET
-    if (wolfIP_is_loopback_if(tx_if)) {
+    if (TSOCKET_IS_V6(t)) {
+        /* Resolved through Neighbor Discovery at the point of transmit. */
+    } else if (wolfIP_is_loopback_if(tx_if)) {
         if (t->local_ip == IPADDR_ANY || t->remote_ip == IPADDR_ANY)
             return -1;
         memcpy(t->nexthop_mac, ll->mac, 6);
@@ -4427,6 +4480,10 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
 
     tcp->ack = ee32(t->sock.tcp.ack);
     tcp->win = ee16(tcp_adv_win(t, 1));
+#if WOLFIP_IPV6
+    if (t->peer_is_v6)
+        return tcp6_send_seg(t->S, t, tcp, frame_len);
+#endif
     ip_output_add_header(t, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
             t->local_ip, t->remote_ip,
             (uint16_t)(frame_len - ETH_HEADER_LEN));
@@ -5242,6 +5299,10 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
     frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + opt_len + 1;
 
     tx_if = wolfIP_socket_if_idx(t);
+#if WOLFIP_IPV6
+    if (t->peer_is_v6)
+        return (tcp6_send_seg(t->S, t, probe, frame_len) == 0) ? 0 : -1;
+#endif
 #ifdef ETHERNET
     nexthop = wolfIP_select_nexthop_ex(t->S, &tx_if, t->remote_ip);
     if (wolfIP_is_loopback_if(tx_if)) {
@@ -5345,12 +5406,16 @@ static inline uint32_t tcp_seq_inc(uint32_t seq, uint32_t n)
 }
 
 /* Add a segment to the rx buffer for the application to consume */
-static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
+/* `seg_len` is the payload length, passed in rather than derived from the
+ * IP header: for an IPv6 segment this struct is a view onto the TCP header
+ * alone and its `ip` member overlaps the IPv6 header, so ip.len is not the
+ * segment's. tcp_input_flow() has already computed it from the flow. */
+static void tcp_recv_len(struct tsocket *t, struct wolfIP_tcp_seg *seg,
+                         uint32_t seg_len)
 {
     /* RFC 9293 3.1: mask the reserved nibble before deriving header length so a
      * peer that sets reserved bits cannot shift our payload pointer/length. */
     uint32_t hdr_len = tcp_data_offset_bytes(seg->hlen);
-    uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + hdr_len);
     uint32_t seq = ee32(seg->seq);
     const uint8_t *payload = (uint8_t *)seg->ip.data + hdr_len;
     if ((t->sock.tcp.state != TCP_ESTABLISHED) &&
@@ -6254,7 +6319,8 @@ static int tcp_window_update_ok(const struct tsocket *t,
 }
 
 /* Receive an ack */
-static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
+static void tcp_ack_len(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+                        uint32_t transport_len)
 {
     uint32_t ack = ee32(tcp->ack);
     uint32_t fin_acked = tcp_seq_inc(t->sock.tcp.last, 1);
@@ -6426,8 +6492,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     }
     {
         struct pkt_desc *fresh_desc = NULL;
-        uint32_t ack_ip_len = ee16(tcp->ip.len);
-        uint32_t ack_hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
+        uint32_t ack_ip_len = transport_len;
+        uint32_t ack_hdr_len = tcp_data_offset_bytes(tcp->hlen);
         uint32_t ack_frame_len = 0;
         /* Reclaim descriptors the peer has already accounted for: ACKED
          * data and zero-length (pure-ACK) descriptors, which carry no
@@ -6502,8 +6568,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
          * receive window counts as a duplicate ACK, so data-bearing
          * segments and window updates must not inflate the count or
          * trigger fast retransmit. */
-        uint32_t ip_len = ee16(tcp->ip.len);
-        uint32_t hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
+        uint32_t ip_len = transport_len;
+        uint32_t hdr_len = tcp_data_offset_bytes(tcp->hlen);
         /* RFC 5681 s2: a duplicate ACK equals the greatest ACK
          * received. A forward ACK is not a duplicate even when the
          * marking loop counted zero descriptors (retransmit-marked or
@@ -6553,13 +6619,14 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 }
 
 static int tcp_listen_ack_matches_child_socket(struct wolfIP *S,
-        const struct tsocket *listener, const struct wolfIP_tcp_seg *tcp)
+        const struct tsocket *listener, const struct wolfIP_tcp_seg *tcp,
+        const struct ip_flow *flow)
 {
     int i;
     uint16_t local_port = ee16(tcp->dst_port);
     uint16_t remote_port = ee16(tcp->src_port);
-    ip4 local_ip = ee32(tcp->ip.dst);
-    ip4 remote_ip = ee32(tcp->ip.src);
+    ip4 local_ip = flow->dst;
+    ip4 remote_ip = flow->src;
 
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         const struct tsocket *t = &S->tcpsockets[i];
@@ -6579,8 +6646,169 @@ static int tcp_listen_ack_matches_child_socket(struct wolfIP *S,
 }
 
 /* Preselect socket, parse options, manage handshakes, pass to application */
+/* The eight places in the TCP state machine that care which addresses a
+ * segment carried. Factored out so the machine itself stays one copy: each
+ * asks a question about the socket and the flow, and the answer is family
+ * specific but the question is not.
+ *
+ * A socket only ever matches a flow of its own family. A dual-stack socket
+ * that has not yet chosen one (peer_is_v6 clear, no IPv4 peer either) is
+ * matched by the IPv4 rules, because that is what an unbound or wildcard
+ * socket has always been. */
+/* Does the flow come from the socket's connected peer? */
+static int tsocket_flow_peer_matches(const struct tsocket *t,
+                                     const struct ip_flow *flow)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        if (!TSOCKET_IS_V6(t))
+            return 0;
+        return (ip6_cmp(&t->remote_ip6, &flow->src6) == 0) ? 1 : 0;
+    }
+    if (TSOCKET_IS_V6(t))
+        return 0;
+#endif
+    return (t->remote_ip == flow->src) ? 1 : 0;
+}
+
+/* Is the flow's destination the socket's own address, or is the socket not
+ * pinned to one? */
+static int tsocket_flow_local_matches(const struct tsocket *t,
+                                      const struct ip_flow *flow)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        if (!TSOCKET_IS_V6(t))
+            return 0;
+        return (ip6_is_unspecified(&t->local_ip6) ||
+                (ip6_cmp(&t->local_ip6, &flow->dst6) == 0)) ? 1 : 0;
+    }
+    if (TSOCKET_IS_V6(t))
+        return 0;
+#endif
+    return ((t->local_ip == IPADDR_ANY) || (t->local_ip == flow->dst)) ? 1 : 0;
+}
+
+/* Exact identity, for the duplicate-connection check: not "is it acceptable"
+ * but "is it the same local address". */
+static int tsocket_flow_local_is(const struct tsocket *t,
+                                 const struct ip_flow *flow)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        if (!TSOCKET_IS_V6(t))
+            return 0;
+        return (ip6_cmp(&t->local_ip6, &flow->dst6) == 0) ? 1 : 0;
+    }
+    if (TSOCKET_IS_V6(t))
+        return 0;
+#endif
+    return (t->local_ip == flow->dst) ? 1 : 0;
+}
+
+/* Does the address the application bound to admit this flow? A wildcard
+ * bind admits anything addressed to us; a specific bind admits only its own
+ * address. An AF_INET socket never admits an IPv6 flow. */
+static int tsocket_flow_bound_matches(const struct tsocket *t,
+                                      const struct ip_flow *flow)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        if (t->domain != AF_INET6)
+            return 0;
+        return (ip6_is_unspecified(&t->bound_local_ip6) ||
+                (ip6_cmp(&t->bound_local_ip6, &flow->dst6) == 0)) ? 1 : 0;
+    }
+    /* An IPv6-only socket takes no IPv4 traffic, mapped or otherwise. */
+    if ((t->domain == AF_INET6) && t->v6only)
+        return 0;
+#endif
+    return ((t->bound_local_ip == IPADDR_ANY) ||
+            (t->bound_local_ip == flow->dst)) ? 1 : 0;
+}
+
+/* A listening socket is about to accept this flow: is its destination an
+ * address of ours, and on which interface? */
+static int tsocket_flow_accept_local(struct wolfIP *S, struct tsocket *t,
+                                     const struct ip_flow *flow,
+                                     unsigned int *if_idx, int *found)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        *if_idx = wolfIP_if_for_local_ip6(S, t->if_idx, &flow->dst6, found);
+        if (*found) {
+            ip6_copy(&t->local_ip6, &flow->dst6);
+            t->peer_is_v6 = 1;
+        }
+        return 1;
+    }
+#endif
+    *if_idx = wolfIP_if_for_local_ip(S, flow->dst, found);
+    if (*found)
+        t->local_ip = flow->dst;
+    return 1;
+}
+
+/* Record the flow's source as this socket's peer. */
+static void tsocket_flow_adopt_peer(struct tsocket *t,
+                                    const struct ip_flow *flow)
+{
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        ip6_copy(&t->remote_ip6, &flow->src6);
+        t->peer_is_v6 = 1;
+        return;
+    }
+#endif
+    t->remote_ip = flow->src;
+}
+
+/* The IPv4 entry point. Keeps the original four-argument shape, because
+ * the addresses are right there in the segment and every existing caller
+ * has one; tcp_input_flow() is what the IPv6 path uses. */
 static void tcp_input(struct wolfIP *S, unsigned int if_idx,
-                      struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
+                      struct wolfIP_tcp_seg *tcp, uint32_t frame_len);
+
+/* Fill a flow from an IPv4 segment, which is what every existing caller
+ * has. */
+static void ip_flow_from_v4(struct ip_flow *flow,
+                            const struct wolfIP_ip_packet *ip)
+{
+    memset(flow, 0, sizeof(*flow));
+    flow->is_v6 = 0;
+    flow->ttl = ip->ttl;
+    flow->hdr_len = IP_HEADER_LEN;
+    flow->src = ee32(ip->src);
+    flow->dst = ee32(ip->dst);
+    flow->transport_len = (ee16(ip->len) >= IP_HEADER_LEN) ?
+            (uint32_t)(ee16(ip->len) - IP_HEADER_LEN) : 0;
+}
+
+/* The IPv4 entries. Both derive the length that the IPv6 callers pass in
+ * explicitly from the header an IPv4 segment carries, so every existing
+ * caller keeps the shape it had. */
+static void tcp_recv(struct tsocket *t, struct wolfIP_tcp_seg *seg)
+{
+    uint32_t hdr_len = tcp_data_offset_bytes(seg->hlen);
+    uint32_t ip_len = ee16(seg->ip.len);
+
+    if (ip_len < (IP_HEADER_LEN + hdr_len))
+        return;
+    tcp_recv_len(t, seg, ip_len - (IP_HEADER_LEN + hdr_len));
+}
+
+static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
+{
+    uint16_t ip_len = ee16(tcp->ip.len);
+
+    tcp_ack_len(t, tcp,
+                (ip_len >= IP_HEADER_LEN) ?
+                    (uint32_t)(ip_len - IP_HEADER_LEN) : 0u);
+}
+
+static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
+                           struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
+                           const struct ip_flow *flow)
 {
     int i;
     int matched = 0;
@@ -6589,8 +6817,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
     if (frame_len < sizeof(struct wolfIP_tcp_seg))
         return;
 
-    /* validate frame length matches declared IP length before checksum */
-    {
+    if (!flow->is_v6) {
+        /* validate frame length matches declared IP length before checksum */
         uint16_t ip_len = ee16(tcp->ip.len);
         if (frame_len < (uint32_t)(ETH_HEADER_LEN + ip_len))
             return;
@@ -6598,22 +6826,25 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         /* validate ip.len covers at least the IP header before subtracting */
         if (ip_len < IP_HEADER_LEN)
             return;
-    }
 
-    /* validate TCP checksum per RFC 793 */
-    {
-        union transport_pseudo_header ph;
-        ph.ph.src = tcp->ip.src;
-        ph.ph.dst = tcp->ip.dst;
-        ph.ph.zero = 0;
-        ph.ph.proto = 0x06; /* TCP */
-        ph.ph.len = ee16(ee16(tcp->ip.len) - IP_HEADER_LEN);
-        if (transport_verify_checksum(&ph, (void *)&tcp->src_port) != 0)
-            return;
+        /* validate TCP checksum per RFC 793 */
+        {
+            union transport_pseudo_header ph;
+            ph.ph.src = tcp->ip.src;
+            ph.ph.dst = tcp->ip.dst;
+            ph.ph.zero = 0;
+            ph.ph.proto = 0x06; /* TCP */
+            ph.ph.len = ee16(ee16(tcp->ip.len) - IP_HEADER_LEN);
+            if (transport_verify_checksum(&ph, (void *)&tcp->src_port) != 0)
+                return;
+        }
     }
+    /* The IPv6 caller has already checked its own length and checksum: the
+     * pseudo-header differs, and it has to be done before the segment is
+     * re-pointed for the shared code below. */
 
     if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len,
-                          IP_HEADER_LEN) != 0)
+                          flow->hdr_len) != 0)
         return;
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         uint32_t tcplen;
@@ -6628,17 +6859,17 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         if (t->src_port == ee16(tcp->dst_port)) {
             /* TCP segment sanity checks (the ip.len vs frame_len bound is
              * already enforced by the prologue above). */
-            iplen = ee16(tcp->ip.len);
+            iplen = flow->transport_len + flow->hdr_len;
             if (t->sock.tcp.state > TCP_LISTEN) {
                 if (t->dst_port != ee16(tcp->src_port)) {
                     /* Not the right socket */
                     continue;
                 }
-                if (t->remote_ip != ee32(tcp->ip.src)) {
+                if (!tsocket_flow_peer_matches(t, flow)) {
                     /* Not the right peer */
                     continue;
                 }
-                if (t->local_ip != IPADDR_ANY && t->local_ip != ee32(tcp->ip.dst)) {
+                if (!tsocket_flow_local_matches(t, flow)) {
                     /* Not the right local endpoint */
                     continue;
                 }
@@ -6655,29 +6886,29 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                  * 0.0.0.0 bind leaves local_ip set to the interface/primary
                  * address as a default source. */
                 if (t->bound_local_ip != IPADDR_ANY &&
-                        t->bound_local_ip != ee32(tcp->ip.dst)) {
+                        !tsocket_flow_bound_matches(t, flow)) {
                     /* Not the right local endpoint */
                     continue;
                 }
             }
             t->if_idx = (uint8_t)if_idx;
-            t->last_pkt_ttl = tcp->ip.ttl;
+            t->last_pkt_ttl = flow->ttl;
             matched = 1;
             /* Validate minimum TCP header length (data offset). */
             if (tcp_data_offset_bytes(tcp->hlen) < TCP_HEADER_LEN) {
                 return; /* malformed: TCP header below minimum length */
             }
             /* Validate TCP header length fits in IP payload */
-            if (iplen < (uint32_t)(IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen))) {
+            if (iplen < (uint32_t)(flow->hdr_len + tcp_data_offset_bytes(tcp->hlen))) {
                 return; /* malformed: TCP header exceeds IP length */
             }
-            tcplen = iplen - (IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen));
+            tcplen = iplen - (flow->hdr_len + tcp_data_offset_bytes(tcp->hlen));
             if (t->sock.tcp.state == TCP_LISTEN) {
                 /* RFC 9293 3.10.7.2: reject ACK-bearing segments before SYN handling. */
                 if (tcp->flags & TCP_FLAG_RST)
                     continue;
                 if (tcp->flags & TCP_FLAG_ACK) {
-                    if (!tcp_listen_ack_matches_child_socket(S, t, tcp))
+                    if (!tcp_listen_ack_matches_child_socket(S, t, tcp, flow))
                         tcp_send_reset_reply(S, if_idx, tcp);
                     continue;
                 }
@@ -6823,14 +7054,14 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
             /* Check if SYN */
             if (tcp->flags & TCP_FLAG_SYN) {
                 if (t->sock.tcp.state == TCP_LISTEN) {
-                    ip4 syn_dst = ee32(tcp->ip.dst);
+                    ip4 syn_dst = flow->dst;
                     int dst_match = 0;
-                    unsigned int dst_if;
+                    unsigned int dst_if = 0;
                     int dup_found = 0;
 
-                    if (syn_dst == IPADDR_ANY)
+                    if (!flow->is_v6 && (syn_dst == IPADDR_ANY))
                         continue;
-                    if (t->bound_local_ip != IPADDR_ANY && t->bound_local_ip != syn_dst)
+                    if (!tsocket_flow_bound_matches(t, flow))
                         continue;
 
                     /* Reject SYNs that match an already-active connection
@@ -6845,8 +7076,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                             continue;
                         if (tk->src_port == t->src_port &&
                             tk->dst_port == ee16(tcp->src_port) &&
-                            tk->remote_ip == ee32(tcp->ip.src) &&
-                            tk->local_ip == syn_dst) {
+                            tsocket_flow_peer_matches(tk, flow) &&
+                            tsocket_flow_local_is(tk, flow)) {
                             dup_found = 1;
                             break;
                         }
@@ -6854,18 +7085,18 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     if (dup_found)
                         continue;
 
-                    dst_if = wolfIP_if_for_local_ip(S, syn_dst, &dst_match);
+                    if (!tsocket_flow_accept_local(S, t, flow, &dst_if, &dst_match))
+                        continue;
                     if (!dst_match)
                         continue;
 
-                    t->local_ip = syn_dst;
                     t->if_idx = (uint8_t)dst_if;
                     t->sock.tcp.state = TCP_SYN_RCVD;
                     t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->sock.tcp.seq = wolfIP_getrandom();
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
                     t->dst_port = ee16(tcp->src_port);
-                    t->remote_ip = ee32(tcp->ip.src);
+                    tsocket_flow_adopt_peer(t, flow);
                     t->events |= CB_EVENT_READABLE; /* Keep flag until application calls accept */
                     tcp_process_ts(t, tcp, frame_len);
                     tcp_send_syn(t, TCP_FLAG_SYN | TCP_FLAG_ACK);
@@ -6962,7 +7193,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     if (tx_has_writable_space(t))
                         t->events |= CB_EVENT_WRITABLE;
                     if (tcplen > 0)
-                        tcp_recv(t, tcp);
+                        {
+                            if (flow->is_v6)
+                                tcp_recv_len(t, tcp, tcplen);
+                            else
+                                tcp_recv(t, tcp);
+                        }
                     /* RFC 9293 section 3.10.7.4: process FIN if present in the
                      * same segment that completed the handshake. */
                     if (tcp->flags & TCP_FLAG_FIN) {
@@ -7022,7 +7258,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         tcp_send_ack(t);
                         continue;
                     }
-                    tcp_ack(t, tcp);
+                    if (flow->is_v6)
+                        tcp_ack_len(t, tcp, flow->transport_len);
+                    else
+                        tcp_ack(t, tcp);
                     /* tcp_ack may have closed the socket via close_socket();
                      * skip timestamp processing if socket was destroyed. */
                     if (t->sock.tcp.state != TCP_CLOSED)
@@ -7066,7 +7305,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
 
-                tcp_ack(t, tcp);
+                if (flow->is_v6)
+                    tcp_ack_len(t, tcp, flow->transport_len);
+                else
+                    tcp_ack(t, tcp);
                 if (t->sock.tcp.state == TCP_CLOSED)
                     continue;
                 tcp_process_ts(t, tcp, frame_len);
@@ -7074,7 +7316,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     if ((t->sock.tcp.state == TCP_LAST_ACK) || (t->sock.tcp.state == TCP_CLOSING) ||
                         (t->sock.tcp.state == TCP_CLOSED))
                         return;
-                    tcp_recv(t, tcp);
+                    {
+                            if (flow->is_v6)
+                                tcp_recv_len(t, tcp, tcplen);
+                            else
+                                tcp_recv(t, tcp);
+                        }
                 }
                 if (tcp->flags & TCP_FLAG_FIN) {
                     uint32_t seq = ee32(tcp->seq);
@@ -7123,17 +7370,44 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         }
     }
     if (!matched) {
-        ip4 dst = ee32(tcp->ip.dst);
-        int dst_match = 0;
+#if WOLFIP_IPV6
+        if (flow->is_v6) {
+            /* A segment to a port nobody holds is answered with a reset, the
+             * same rule as IPv4. The reply is only owed when the destination
+             * really is ours: answering anything else would make the stack a
+             * reflector. */
+            int dst_match = 0;
 
-        if (dst != IPADDR_ANY &&
-                !wolfIP_ip_is_broadcast(S, dst) &&
-                !wolfIP_ip_is_multicast(dst)) {
-            (void)wolfIP_if_for_local_ip(S, dst, &dst_match);
-            if (dst_match)
-                tcp_send_reset_reply(S, if_idx, tcp);
+            (void)wolfIP_if_for_local_ip6(S, if_idx, &flow->dst6, &dst_match);
+            if (dst_match && !ip6_is_multicast(&flow->dst6))
+                tcp6_send_reset_reply(S, if_idx, tcp, flow);
+            return;
+        }
+#endif
+        {
+            ip4 dst = flow->dst;
+            int dst_match = 0;
+
+            if (dst != IPADDR_ANY &&
+                    !wolfIP_ip_is_broadcast(S, dst) &&
+                    !wolfIP_ip_is_multicast(dst)) {
+                (void)wolfIP_if_for_local_ip(S, dst, &dst_match);
+                if (dst_match)
+                    tcp_send_reset_reply(S, if_idx, tcp);
+            }
         }
     }
+}
+
+static void tcp_input(struct wolfIP *S, unsigned int if_idx,
+                      struct wolfIP_tcp_seg *tcp, uint32_t frame_len)
+{
+    struct ip_flow flow;
+
+    if (frame_len < sizeof(struct wolfIP_tcp_seg))
+        return;
+    ip_flow_from_v4(&flow, &tcp->ip);
+    tcp_input_flow(S, if_idx, tcp, frame_len, &flow);
 }
 
 static void tcp_rto_cb(void *arg)
@@ -8235,19 +8509,27 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
             return -WOLFIP_EINVAL;
         if (ip6_addr_is_wire_v6(&dst6)) {
-            if (!IS_SOCKET_UDP(sockfd))
-                return -WOLFIP_EINVAL; /* TCP over IPv6 not wired up yet */
-            if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
-                return -WOLFIP_EINVAL;
             if (dport == 0)
                 return -WOLFIP_EINVAL;
-            if (udp6_prepare_tx(s, ts, &dst6) != 0)
+            if (ip6_is_multicast(&dst6))
                 return -WOLFIP_EINVAL;
-            ts->peer_is_v6 = 1;
-            ip6_copy(&ts->remote_ip6, &dst6);
-            ts->dst_port = dport;
-            ts->sock.udp.connected = 1;
-            return 0;
+            if (IS_SOCKET_UDP(sockfd)) {
+                if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
+                    return -WOLFIP_EINVAL;
+                if (udp6_prepare_tx(s, ts, &dst6) != 0)
+                    return -WOLFIP_EINVAL;
+                ts->peer_is_v6 = 1;
+                ip6_copy(&ts->remote_ip6, &dst6);
+                ts->dst_port = dport;
+                ts->sock.udp.connected = 1;
+                return 0;
+            }
+            if (IS_SOCKET_TCP(sockfd)) {
+                if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
+                    return -WOLFIP_EINVAL;
+                return tcp6_connect(s, ts, &dst6, dport);
+            }
+            return -WOLFIP_EINVAL;
         }
         memset(&sin4, 0, sizeof(sin4));
         sin4.sin_family = AF_INET;
@@ -8473,8 +8755,8 @@ static void abort_accept_clone(struct tsocket *ts)
 int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts;
-    struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
     struct tsocket *newts;
+    socklen_t caller_len;
 
     if ((addr) && (!(addrlen) || (*addrlen < sizeof(struct wolfIP_sockaddr_in))))
         return -WOLFIP_EINVAL;
@@ -8488,6 +8770,11 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
     if (sock_fd_stale(s, sockfd))
         return -WOLFIP_EBADF;
 
+    /* The caller's buffer size is kept, because *addrlen is overwritten
+     * below with what was actually written and the family-aware reporting
+     * still has to check it will fit. An AF_INET6 listener reports a
+     * sockaddr_in6, which is larger than the IPv4 answer written here. */
+    caller_len = addrlen ? *addrlen : 0;
     if (addrlen)
         *addrlen = sizeof(struct wolfIP_sockaddr_in);
 
@@ -8578,10 +8865,23 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 newts->events |= CB_EVENT_READABLE;
             if (tx_has_writable_space(newts))
                 newts->events |= CB_EVENT_WRITABLE;
-            if (sin) {
-                sin->sin_family = AF_INET;
-                sin->sin_port = ee16(newts->dst_port);
-                sin->sin_addr.s_addr = ee32(newts->remote_ip);
+            if (addr) {
+                /* Reported in the accepted socket's family, as in the
+                 * SYN_RCVD path below. */
+                if (tsocket_getname(newts, addr, &caller_len, 1) != 0) {
+                    close_socket(newts);
+                    tcp_listener_revert_to_listen(ts);
+                    return -WOLFIP_EINVAL;
+                }
+            }
+            if (addrlen) {
+#if WOLFIP_IPV6
+                *addrlen = (newts->domain == AF_INET6) ?
+                        (socklen_t)sizeof(struct wolfIP_sockaddr_in6) :
+                        (socklen_t)sizeof(struct wolfIP_sockaddr_in);
+#else
+                *addrlen = sizeof(struct wolfIP_sockaddr_in);
+#endif
             }
             tcp_listener_revert_to_listen(ts);
             if (wolfIP_filter_notify_socket_event(
@@ -8608,6 +8908,21 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             newts->bound_local_ip = (ts->bound_local_ip != IPADDR_ANY) ? ts->bound_local_ip : ts->local_ip;
             newts->if_idx = ts->if_idx;
             newts->remote_ip = ts->remote_ip;
+#if WOLFIP_IPV6
+            /* The accepted socket inherits the listener's family, and for an
+             * IPv6 connection the addresses the SYN arrived with, which the
+             * listener recorded when it moved to SYN_RCVD. Without this the
+             * clone would have no peer address and its first segment would
+             * go nowhere. */
+            newts->domain = ts->domain;
+            newts->v6only = ts->v6only;
+            newts->peer_is_v6 = ts->peer_is_v6;
+            ip6_copy(&newts->local_ip6, &ts->local_ip6);
+            ip6_copy(&newts->remote_ip6, &ts->remote_ip6);
+            ip6_copy(&newts->bound_local_ip6,
+                     ip6_is_unspecified(&ts->bound_local_ip6) ?
+                         &ts->local_ip6 : &ts->bound_local_ip6);
+#endif
             newts->src_port = ts->src_port;
             newts->dst_port = ts->dst_port;
             newts->sock.tcp.ack = ts->sock.tcp.ack;
@@ -8647,6 +8962,24 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             if (tcp_ctrl_rto_start(newts, s->last_tick) < 0) {
                 close_socket(newts);
                 return -WOLFIP_EAGAIN;
+            }
+            if (addr) {
+                /* Reported in the accepted socket's family, so an AF_INET6
+                 * listener hands back a sockaddr_in6 - including
+                 * ::ffff:a.b.c.d for an IPv4 peer. */
+                if (tsocket_getname(newts, addr, &caller_len, 1) != 0) {
+                    close_socket(newts);
+                    return -WOLFIP_EINVAL;
+                }
+            }
+            if (addrlen) {
+#if WOLFIP_IPV6
+                *addrlen = (newts->domain == AF_INET6) ?
+                        (socklen_t)sizeof(struct wolfIP_sockaddr_in6) :
+                        (socklen_t)sizeof(struct wolfIP_sockaddr_in);
+#else
+                *addrlen = sizeof(struct wolfIP_sockaddr_in);
+#endif
             }
             /* The accepted connection owns the handshake now (its SYN-ACK
              * lives in the clone's TX FIFO). Revert the listener to the
@@ -14298,6 +14631,9 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
             }
 
 #ifdef ETHERNET
+            /* IPv6 resolves its next hop through Neighbor Discovery at the
+             * point of transmit below, not here. */
+            if (!TSOCKET_IS_V6(ts))
             {
                 ip4 nexthop = wolfIP_select_nexthop_ex(s, &tx_if, ts->remote_ip);
                 if (wolfIP_is_loopback_if(tx_if)) {
@@ -14347,6 +14683,28 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                          * the queued data). */
                         tcp->seq = ee32(tcp_first_unsent_seq(ts));
                     }
+#if WOLFIP_IPV6
+                    if (ts->peer_is_v6) {
+                        /* The segment is queued in the IPv4 shape and
+                         * promoted on the way out, so that one set of
+                         * builders serves both families; see
+                         * tcp6_promote(). The filter callbacks below take a
+                         * struct wolfIP_ip_packet and are IPv4-only, so
+                         * they are not consulted here - an IPv6 filter
+                         * surface is its own piece of work and inventing
+                         * one by passing a v4 pointer at a v6 packet would
+                         * be worse than not having it. */
+                        send_ret = tcp6_send_seg(s, ts, tcp, desc->len);
+                        if (send_ret == -WOLFIP_EAGAIN) {
+                            if (tx_has_writable_space(ts))
+                                ts->events |= CB_EVENT_WRITABLE;
+                            break;
+                        }
+                        if (send_ret < 0)
+                            break;
+                        goto tcp_seg_sent;
+                    }
+#endif
                     ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
                 ts->local_ip, ts->remote_ip, size);
 #ifdef ETHERNET
@@ -14397,6 +14755,9 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     }
                     if (send_ret < 0)
                         break;
+#if WOLFIP_IPV6
+tcp_seg_sent:
+#endif
                     desc->flags |= PKT_FLAG_SENT;
                     desc->flags &= ~PKT_FLAG_RETRANS;
                     if (is_retrans)

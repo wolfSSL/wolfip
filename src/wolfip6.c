@@ -38,6 +38,9 @@
 /* ---------------------------------------------------------------------- */
 
 #define IP6_HEADER_LEN 40
+#if IP6_HEADER_LEN != IP6_HEADER_LEN_PUB
+#error "IP6_HEADER_LEN and IP6_HEADER_LEN_PUB disagree"
+#endif
 #define IP6_VERSION 6
 #define IP6_HOP_LIMIT_DEFAULT 64
 /* RFC 8200 section 5: every IPv6 link must carry 1280 octets, and a node
@@ -345,6 +348,11 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
                         struct wolfIP_ip6_packet *pkt, uint32_t len);
 static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
                           struct wolfIP_udp6_datagram *udp, uint32_t frame_len);
+static void tcp6_input(struct wolfIP *s, unsigned int if_idx,
+                       struct wolfIP_tcp6_seg *seg, uint32_t frame_len);
+static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
+                           struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
+                           const struct ip_flow *flow);
 
 /* Validate an inbound IPv6 packet.
  *
@@ -425,6 +433,8 @@ static int ip6_recv(struct wolfIP *s, unsigned int if_idx,
         icmp6_input(s, if_idx, pkt, len);
     else if (pkt->next_hdr == IP6_NEXTHDR_UDP)
         udp6_try_recv(s, if_idx, (struct wolfIP_udp6_datagram *)pkt, len);
+    else if (pkt->next_hdr == IP6_NEXTHDR_TCP)
+        tcp6_input(s, if_idx, (struct wolfIP_tcp6_seg *)pkt, len);
     return IP6_ACCEPTED;
 }
 
@@ -1797,6 +1807,226 @@ static int udp6_recvfrom(struct wolfIP *s, struct tsocket *t, void *buf,
     if (fifo_peek(&t->sock.udp.rxbuf) == NULL)
         t->events &= ~CB_EVENT_READABLE;
     return (int)seg_len;
+}
+
+/* ---------------------------------------------------------------------- */
+/* TCP over IPv6                                                          */
+/* ---------------------------------------------------------------------- */
+
+/* The TCP transmit builders all construct an IPv4-shaped frame - Ethernet
+ * header, 20 bytes of room for the IP header, then the segment - and leave
+ * the IP header to be filled at send time. Rather than a second set of
+ * builders differing only in an offset, the segment is moved 20 bytes later
+ * here and an IPv6 header written in front of it.
+ *
+ * `staging` is the caller's buffer because the queued frame has no spare
+ * room: the FIFO slot was sized for the IPv4 layout. Returns the length of
+ * the promoted frame, or 0 if it would not fit. */
+static uint32_t tcp6_promote(const struct tsocket *t, const void *v4frame,
+                             uint32_t frame_len, uint8_t *staging,
+                             uint32_t staging_len)
+{
+    uint32_t seg_len;
+    uint32_t out_len;
+
+    if (frame_len < (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN))
+        return 0;
+    seg_len = frame_len - (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN);
+    out_len = (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + seg_len;
+    if (out_len > staging_len)
+        return 0;
+    memset(staging, 0, ETH_HEADER_LEN + IP6_HEADER_LEN);
+    memcpy(staging + ETH_HEADER_LEN + IP6_HEADER_LEN,
+           (const uint8_t *)v4frame + ETH_HEADER_LEN + IP_HEADER_LEN, seg_len);
+    (void)t;
+    return out_len;
+}
+
+/* Promote, address, resolve and transmit one TCP segment over IPv6.
+ * Returns 0 on success, -WOLFIP_EAGAIN while address resolution is still in
+ * flight so the caller holds the segment, or -1 on a hard failure. */
+static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
+                         const void *v4frame, uint32_t frame_len)
+{
+    uint8_t staging[LINK_MTU];
+    struct wolfIP_tcp6_seg *out;
+    unsigned int tx_if;
+    uint32_t out_len;
+    uint8_t mac[6];
+
+    out_len = tcp6_promote(t, v4frame, frame_len, staging, sizeof(staging));
+    if (out_len == 0)
+        return -1;
+    out = (struct wolfIP_tcp6_seg *)staging;
+    if (ip6_output_add_header(s, t->if_idx, &out->ip6, &t->local_ip6,
+                              &t->remote_ip6, IP6_NEXTHDR_TCP,
+                              (uint16_t)(out_len - ETH_HEADER_LEN -
+                                         IP6_HEADER_LEN),
+                              0, NULL) != 0)
+        return -1;
+    tx_if = ip6_route_for_dest(s, &t->remote_ip6);
+    if (nd6_resolve(s, &tx_if, &t->remote_ip6, mac) != 0)
+        return -WOLFIP_EAGAIN;
+    t->if_idx = (uint8_t)tx_if;
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(s, tx_if))
+        eth_output_add_header(s, tx_if, mac, &out->ip6.eth, ETH_TYPE_IPV6);
+#endif
+    if (wolfIP_ll_send_frame(s, tx_if, staging, out_len) < 0)
+        return -WOLFIP_EAGAIN;
+    return 0;
+}
+
+/* Reset in reply to a segment matching no socket. Built from the incoming
+ * segment rather than from a socket, since by definition there is none, so
+ * it takes the addresses from the flow and swaps them. */
+static void tcp6_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
+                                  const struct wolfIP_tcp_seg *in,
+                                  const struct ip_flow *flow)
+{
+    uint8_t staging[ETH_HEADER_LEN + IP6_HEADER_LEN + TCP_HEADER_LEN];
+    struct wolfIP_tcp6_seg *out = (struct wolfIP_tcp6_seg *)staging;
+    uint32_t tcp_hlen;
+    uint32_t seg_ack;
+    uint8_t mac[6];
+    unsigned int tx_if = if_idx;
+
+    /* RFC 4443 in spirit and RFC 9293 outright: never answer a reset with a
+     * reset, or two nodes sustain the exchange forever. */
+    if (in->flags & TCP_FLAG_RST)
+        return;
+    tcp_hlen = tcp_data_offset_bytes(in->hlen);
+    if (tcp_hlen < TCP_HEADER_LEN)
+        return;
+    if (flow->transport_len < tcp_hlen)
+        return;
+
+    memset(staging, 0, sizeof(staging));
+    out->src_port = in->dst_port;
+    out->dst_port = in->src_port;
+    out->hlen = (uint8_t)(TCP_HEADER_LEN << 2);
+    if (in->flags & TCP_FLAG_ACK) {
+        out->seq = in->ack;
+        out->flags = TCP_FLAG_RST;
+    } else {
+        seg_ack = ee32(in->seq);
+        seg_ack = tcp_seq_inc(seg_ack,
+                              (uint32_t)(flow->transport_len - tcp_hlen));
+        if (in->flags & TCP_FLAG_SYN)
+            seg_ack = tcp_seq_inc(seg_ack, 1);
+        if (in->flags & TCP_FLAG_FIN)
+            seg_ack = tcp_seq_inc(seg_ack, 1);
+        out->ack = ee32(seg_ack);
+        out->flags = TCP_FLAG_RST | TCP_FLAG_ACK;
+    }
+    /* Source and destination swap: the reply comes from the address that
+     * was addressed. */
+    if (ip6_output_add_header(s, if_idx, &out->ip6, &flow->dst6, &flow->src6,
+                              IP6_NEXTHDR_TCP, TCP_HEADER_LEN, 0, NULL) != 0)
+        return;
+    if (nd6_resolve(s, &tx_if, &flow->src6, mac) != 0)
+        return; /* unresolved: the reset is not worth queueing */
+#ifdef ETHERNET
+    if (!wolfIP_ll_is_non_ethernet(s, tx_if))
+        eth_output_add_header(s, tx_if, mac, &out->ip6.eth, ETH_TYPE_IPV6);
+#endif
+    (void)wolfIP_ll_send_frame(s, tx_if, staging, sizeof(staging));
+}
+
+/* Active open to an IPv6 peer. The IPv4 arm of wolfIP_sock_connect() with
+ * the address handling replaced: same state transition, same ephemeral port
+ * rule, same SYN. Local state is resolved into locals and only committed
+ * once it has validated, so a failure cannot leave the socket stuck in
+ * SYN_SENT with no SYN queued and no timer - the same care the IPv4 arm
+ * takes for the same reason. */
+static int tcp6_connect(struct wolfIP *s, struct tsocket *t, const ip6 *dst,
+                        uint16_t dport)
+{
+    unsigned int if_idx;
+    ip6 src;
+
+    if (t->sock.tcp.state == TCP_ESTABLISHED)
+        return 0;
+    if (t->sock.tcp.state == TCP_SYN_SENT)
+        return -WOLFIP_EAGAIN;
+    if (t->sock.tcp.state != TCP_CLOSED)
+        return -WOLFIP_EINVAL;
+
+    if (!ip6_is_unspecified(&t->bound_local_ip6)) {
+        int match = 0;
+
+        if_idx = wolfIP_if_for_local_ip6(s, t->if_idx, &t->bound_local_ip6,
+                                         &match);
+        if (!match)
+            return -WOLFIP_EINVAL;
+        ip6_copy(&src, &t->bound_local_ip6);
+    } else {
+        if_idx = ip6_route_for_dest(s, dst);
+        if (ip6_select_source(s, if_idx, dst, &src) != 0)
+            return -WOLFIP_EINVAL;
+    }
+
+    t->peer_is_v6 = 1;
+    t->if_idx = (uint8_t)if_idx;
+    ip6_copy(&t->local_ip6, &src);
+    ip6_copy(&t->remote_ip6, dst);
+    t->sock.tcp.state = TCP_SYN_SENT;
+    if (!t->src_port)
+        t->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
+    if (t->src_port < 1024)
+        t->src_port = (uint16_t)(t->src_port + 1024);
+    t->dst_port = dport;
+    t->sock.tcp.seq = wolfIP_getrandom();
+    t->sock.tcp.snd_una = t->sock.tcp.seq;
+    if (tcp_send_syn(t, TCP_FLAG_SYN) < 0) {
+        t->sock.tcp.state = TCP_CLOSED;
+        return -1;
+    }
+    t->sock.tcp.ctrl_rto_retries = 0;
+    tcp_ctrl_rto_start(t, s->last_tick);
+    return -WOLFIP_EAGAIN; /* in progress, as the IPv4 arm reports it */
+}
+
+/* Ingress for TCP over IPv6.
+ *
+ * The length and checksum rules are the IPv6 ones and are applied here;
+ * everything after that is the shared state machine, reached by pointing a
+ * v4-shaped segment pointer at the TCP header. That pointer's `ip` member
+ * overlaps the tail of the IPv6 header and is never read: tcp_input() takes
+ * its addresses from the flow, which is the whole reason the flow exists. */
+static void tcp6_input(struct wolfIP *s, unsigned int if_idx,
+                       struct wolfIP_tcp6_seg *seg, uint32_t frame_len)
+{
+    struct ip_flow flow;
+    struct wolfIP_tcp_seg *aliased;
+    uint32_t payload_len;
+
+    if (frame_len < sizeof(struct wolfIP_tcp6_seg))
+        return;
+    payload_len = ee16(seg->ip6.payload_len);
+    if (payload_len < TCP_HEADER_LEN)
+        return;
+    if (frame_len < (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + payload_len)
+        return;
+    if (ip6_verify_transport_checksum(&seg->ip6) != 0)
+        return;
+
+    memset(&flow, 0, sizeof(flow));
+    flow.is_v6 = 1;
+    flow.ttl = seg->ip6.hop_limit;
+    flow.hdr_len = IP6_HEADER_LEN;
+    flow.transport_len = payload_len;
+    ip6_hdr_get_src(&seg->ip6, &flow.src6);
+    ip6_hdr_get_dst(&seg->ip6, &flow.dst6);
+    /* A multicast destination is never a TCP endpoint. */
+    if (ip6_is_multicast(&flow.dst6))
+        return;
+
+    aliased = (struct wolfIP_tcp_seg *)((uint8_t *)seg +
+                                        (IP6_HEADER_LEN - IP_HEADER_LEN));
+    tcp_input_flow(s, if_idx, aliased,
+                   frame_len - (uint32_t)(IP6_HEADER_LEN - IP_HEADER_LEN),
+                   &flow);
 }
 
 /* ---------------------------------------------------------------------- */

@@ -1381,6 +1381,15 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_udp_unresolved_neighbour_holds_the_datagram);
     tcase_add_test(tc_proto, test_sock6_udp_bad_checksum_is_dropped);
 
+    /* TCP over IPv6. */
+    tcase_add_test(tc_proto, test_sock6_tcp_connect_completes_the_handshake);
+    tcase_add_test(tc_proto, test_sock6_tcp_carries_data_both_ways);
+    tcase_add_test(tc_proto, test_sock6_tcp_listener_accepts_an_ipv6_connection);
+    tcase_add_test(tc_proto, test_sock6_tcp_mss_accounts_for_the_40_byte_header);
+    tcase_add_test(tc_proto, test_sock6_tcp_segment_to_a_dead_port_is_reset);
+    tcase_add_test(tc_proto, test_sock6_tcp_bad_checksum_is_dropped);
+    tcase_add_test(tc_proto, test_sock6_tcp_af_inet_listener_ignores_ipv6);
+
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
 #if WOLFIP_IPV6_HAVE_ICMP6
