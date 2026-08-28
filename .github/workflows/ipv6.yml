@@ -32,6 +32,15 @@ jobs:
           make unit-ipv6
           ./build/test/unit
 
+      # The interface identifier override is a compile-time option, so both
+      # of its states are exercised: the run above covers the calls
+      # reporting -ENOSYS with it off, this covers the override itself.
+      - name: Unit tests with the IID override enabled
+        run: |
+          make clean
+          make unit-ipv6-iid
+          ./build/test/unit
+
       - name: Unit tests with IPv6 enabled (ASan)
         run: |
           make clean
@@ -128,6 +137,16 @@ jobs:
           make clean
           make build/test-ipv6-ping
           sudo ./build/test-ipv6-ping --selftest
+
+      # The same exchange over a point-to-point tun device: no Ethernet
+      # header, no link-layer address, so the ingress demux is the version
+      # nibble alone and the interface identifier is supplied rather than
+      # derived from a MAC. Both scopes are pinged, because the link-local
+      # one is the one that depends on the identifier being what we set.
+      - name: ICMPv6 echo end to end over a point-to-point link
+        run: |
+          make build/test-ipv6-ptp
+          sudo ./build/test-ipv6-ptp --selftest
 
       - name: SLAAC end to end (advertisement injected by the test)
         run: |

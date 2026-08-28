@@ -920,7 +920,13 @@ static void nd6_send_ns(struct wolfIP *s, unsigned int if_idx,
     ip6 dst;
     uint8_t mac[6];
     uint16_t payload_len = 24; /* type,code,csum,reserved + target */
-    int with_slla = !ip6_is_unspecified(src);
+    /* RFC 4861 section 4.6.1: the option carries "the link-layer address of
+     * the sender", so it is meaningless on a link that has none, and RFC
+     * 4861 section 4.3 forbids it when the source is unspecified - the
+     * duplicate address detection case, where there is no address to
+     * advertise yet. */
+    int with_slla = !ip6_is_unspecified(src) &&
+            !wolfIP_ll_is_non_ethernet(s, if_idx);
 
     if (!ll)
         return;
@@ -966,11 +972,19 @@ static void nd6_send_na(struct wolfIP *s, unsigned int if_idx,
     na->flags = flags;
     memcpy(na->target, target->addr, 16);
     /* The Target Link-Layer Address option is what actually answers the
-     * question the solicitation asked. */
-    opt = (struct nd6_opt_lla *)na->options;
-    opt->type = ND6_OPT_TLLA;
-    opt->len = 1;
-    memcpy(opt->mac, ll->mac, 6);
+     * question the solicitation asked - unless the link has no link-layer
+     * addresses, where there was no question: the peer is reached by the
+     * link itself and address resolution is not performed at all (RFC 4861
+     * section 3). The advertisement is still worth sending, because it is
+     * also what fails somebody else's duplicate address detection. */
+    if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+        opt = (struct nd6_opt_lla *)na->options;
+        opt->type = ND6_OPT_TLLA;
+        opt->len = 1;
+        memcpy(opt->mac, ll->mac, 6);
+    } else {
+        payload_len = 24;
+    }
 
     ip6_output_add_header(s, if_idx, &na->ip6, src, dst, IP6_NEXTHDR_ICMPV6,
                           payload_len, ND6_HOP_LIMIT, dst_mac);
@@ -1016,7 +1030,7 @@ static void nd6_send_rs(struct wolfIP *s, unsigned int if_idx)
     memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN + 16);
     rs->type = ICMP6_ROUTER_SOLICIT;
     rs->code = 0;
-    if (have_src) {
+    if (have_src && !wolfIP_ll_is_non_ethernet(s, if_idx)) {
         opt = (struct nd6_opt_lla *)rs->options;
         opt->type = ND6_OPT_SLLA;
         opt->len = 1;
@@ -1096,6 +1110,73 @@ static void nd6_dad_start(struct wolfIP *s, struct wolfIP_ifaddr_slot *slot)
     /* Send the first solicitation on the next tick, so that a caller adding
      * an address mid-poll does not transmit from inside its own call. */
     slot->dad_due = s->last_tick;
+}
+
+/* The interface identifier for an interface: the low 64 bits of every IPv6
+ * address formed on it, both the link-local one and anything SLAAC derives
+ * from an advertised prefix. Those must share an identifier, which is why it
+ * is chosen once and cached rather than recomputed per address.
+ *
+ * Three sources, in order:
+ *
+ * 1. An identifier the application supplied through wolfIP_ipv6_set_iid().
+ *    That is where an RFC 7217 opaque identifier, or one restored from
+ *    storage, comes from - see WOLFIP_IPV6_IID_OVERRIDE.
+ * 2. A modified EUI-64 from the interface MAC (RFC 4862 section 5.3), on a
+ *    link that has a link-layer address.
+ * 3. A random draw, which is what a point-to-point link gets. RFC 4862
+ *    requires an identifier unique on the link and says nothing about where
+ *    it comes from; with one peer on the link, 64 random bits collide with
+ *    probability that duplicate address detection then catches anyway.
+ *
+ * The 'u' bit is cleared on a generated identifier: it is not derived from a
+ * universal IEEE identifier and must not claim to be (RFC 7217 section 5).
+ * Reserved identifiers are redrawn (RFC 5453). */
+static void nd6_iface_iid(struct wolfIP *s, unsigned int if_idx, ip6 *iid)
+{
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+    uint8_t *cached = s->nd6.iid[if_idx];
+    unsigned int tries;
+
+    if (s->nd6.iid_valid[if_idx]) {
+        ip6_iid_from_bytes(iid, cached);
+        return;
+    }
+
+    if ((ll != NULL) && !ll->non_ethernet) {
+        ip6_iid_from_mac(iid, ll->mac);
+        memcpy(cached, &iid->addr[8], 8);
+        s->nd6.iid_valid[if_idx] = 1;
+        return;
+    }
+
+    for (tries = 0; tries < 8u; tries++) {
+        uint32_t hi = wolfIP_getrandom();
+        uint32_t lo = wolfIP_getrandom();
+
+        cached[0] = (uint8_t)((hi >> 24) & 0xFFu);
+        cached[1] = (uint8_t)((hi >> 16) & 0xFFu);
+        cached[2] = (uint8_t)((hi >> 8) & 0xFFu);
+        cached[3] = (uint8_t)(hi & 0xFFu);
+        cached[4] = (uint8_t)((lo >> 24) & 0xFFu);
+        cached[5] = (uint8_t)((lo >> 16) & 0xFFu);
+        cached[6] = (uint8_t)((lo >> 8) & 0xFFu);
+        cached[7] = (uint8_t)(lo & 0xFFu);
+        cached[0] &= (uint8_t)~0x02u;
+        if (!ip6_iid_is_reserved(cached))
+            break;
+    }
+    if (ip6_iid_is_reserved(cached)) {
+        /* Eight reserved draws in a row means the generator is stuck or
+         * absent, not bad luck. Anything outside the reserved ranges beats
+         * honouring the draw; duplicate address detection is what decides
+         * whether the result is usable on this link. */
+        memset(cached, 0, 8);
+        cached[6] = 0xACu;
+        cached[7] = (uint8_t)(if_idx + 1u);
+    }
+    ip6_iid_from_bytes(iid, cached);
+    s->nd6.iid_valid[if_idx] = 1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1321,21 +1402,33 @@ static void nd6_recv_ns(struct wolfIP *s, unsigned int if_idx,
 
     /* RFC 4861 section 7.2.3: record the sender so the advertisement has
      * somewhere to go and the reverse direction is already resolved. */
-    opt = nd6_find_option(ns->options, payload_len - 24u, ND6_OPT_SLLA);
-    if (opt != NULL) {
-        const struct nd6_opt_lla *lla = (const struct nd6_opt_lla *)opt;
-
-        if (lla->len != 1u)
-            return;
-        /* RFC 2464 section 6: on Ethernet the SLLA is the sender's link-layer
-         * address. A disagreement would redirect both our reply and cache
-         * entry to an uninvolved host. */
-        if (memcmp(lla->mac, pkt->eth.src, 6) != 0)
-            return;
-        nd6_store_neighbor(s, if_idx, &src, lla->mac, ND6_STALE, 0);
-        memcpy(reply_mac, lla->mac, 6);
+    if (wolfIP_ll_is_non_ethernet(s, if_idx)) {
+        /* A link with no link-layer addresses. The solicitation cannot
+         * carry a meaningful Source Link-Layer Address option and there is
+         * no frame header to cross-check one against, so any option present
+         * is ignored rather than treated as a mismatch - the sender is
+         * wrong, but the solicitation is still a solicitation. The reply
+         * goes back over the link itself, so the cache entry records
+         * reachability with no address (RFC 4861 section 3). */
+        memset(reply_mac, 0, sizeof(reply_mac));
+        nd6_store_neighbor(s, if_idx, &src, reply_mac, ND6_STALE, 0);
     } else {
-        memcpy(reply_mac, pkt->eth.src, 6);
+        opt = nd6_find_option(ns->options, payload_len - 24u, ND6_OPT_SLLA);
+        if (opt != NULL) {
+            const struct nd6_opt_lla *lla = (const struct nd6_opt_lla *)opt;
+
+            if (lla->len != 1u)
+                return;
+            /* RFC 2464 section 6: on Ethernet the SLLA is the sender's
+             * link-layer address. A disagreement would redirect both our
+             * reply and cache entry to an uninvolved host. */
+            if (memcmp(lla->mac, pkt->eth.src, 6) != 0)
+                return;
+            nd6_store_neighbor(s, if_idx, &src, lla->mac, ND6_STALE, 0);
+            memcpy(reply_mac, lla->mac, 6);
+        } else {
+            memcpy(reply_mac, pkt->eth.src, 6);
+        }
     }
     ip6_copy(&reply_dst, &src);
     nd6_send_na(s, if_idx, &target, &target, &reply_dst, reply_mac, flags);
@@ -1412,8 +1505,14 @@ static void nd6_recv_na(struct wolfIP *s, unsigned int if_idx,
             memcpy(n->mac, lla->mac, 6);
         }
     } else if (n->state == ND6_INCOMPLETE) {
-        /* No link-layer address and none known: nothing has been learned. */
-        return;
+        /* No Target Link-Layer Address option. Where the link has
+         * link-layer addresses that means nothing was learned and the entry
+         * stays unresolved. Where it does not, there was never anything to
+         * learn - reaching the peer is what the link does - so the
+         * advertisement on its own completes the entry (RFC 4861 s3). */
+        if (!wolfIP_ll_is_non_ethernet(s, if_idx))
+            return;
+        memset(n->mac, 0, sizeof(n->mac));
     }
 
     if (na->flags & ND6_NA_SOLICITED)
@@ -1498,7 +1597,7 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
                     ip6 formed;
 
                     if (ll != NULL) {
-                        ip6_iid_from_mac(&iid, ll->mac);
+                        nd6_iface_iid(s, if_idx, &iid);
                         ip6_make_addr(&formed, &prefix, 64, &iid);
                         /* Adding it is a no-op when it is already there, so
                          * a repeated advertisement does not restart DAD. */
@@ -1756,7 +1855,7 @@ int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
      * duplicate address detection before it may be used. */
     if (atoip6("fe80::", &prefix) != 0)
         return -WOLFIP_EINVAL;
-    ip6_iid_from_mac(&iid, ll->mac);
+    nd6_iface_iid(s, if_idx, &iid);
     ip6_make_addr(&link_local, &prefix, 64, &iid);
 
     slot = nd6_slot_for(s, if_idx, &link_local);
@@ -1838,6 +1937,51 @@ int wolfIP_ipv6_addr_add(struct wolfIP *s, unsigned int if_idx,
      * included. */
     nd6_dad_start(s, slot);
     return 0;
+}
+
+int wolfIP_ipv6_set_iid(struct wolfIP *s, unsigned int if_idx,
+                        const uint8_t *iid)
+{
+#if WOLFIP_IPV6_IID_OVERRIDE
+    if (!s || !iid || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    /* RFC 5453: these must never be assigned to an interface. Refusing here
+     * rather than silently substituting one keeps the caller's generator
+     * honest - an RFC 7217 implementation is required to redraw on a hit,
+     * and would otherwise never learn that it had to. */
+    if (ip6_iid_is_reserved(iid))
+        return -WOLFIP_EINVAL;
+    memcpy(s->nd6.iid[if_idx], iid, 8);
+    s->nd6.iid_valid[if_idx] = 1;
+    return 0;
+#else
+    (void)s;
+    (void)if_idx;
+    (void)iid;
+    return -WOLFIP_ENOSYS;
+#endif
+}
+
+int wolfIP_ipv6_get_iid(struct wolfIP *s, unsigned int if_idx, uint8_t *iid)
+{
+#if WOLFIP_IPV6_IID_OVERRIDE
+    ip6 tmp;
+
+    if (!s || !iid || (if_idx >= WOLFIP_MAX_INTERFACES))
+        return -WOLFIP_EINVAL;
+    /* Answers even before the first address is formed, by choosing the
+     * identifier now: an application that wants to persist a generated one
+     * should not have to wait for duplicate address detection, and the
+     * choice is cached, so what is read back is what will be used. */
+    nd6_iface_iid(s, if_idx, &tmp);
+    memcpy(iid, &tmp.addr[8], 8);
+    return 0;
+#else
+    (void)s;
+    (void)if_idx;
+    (void)iid;
+    return -WOLFIP_ENOSYS;
+#endif
 }
 
 int wolfIP_nd6_neighbor_add(struct wolfIP *s, unsigned int if_idx,

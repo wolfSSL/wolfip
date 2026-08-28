@@ -663,6 +663,37 @@ int wolfIP_ipv6_addr_add(struct wolfIP *s, unsigned int if_idx,
  * shared timer heap. */
 int wolfIP_ipv6_stop(struct wolfIP *s, unsigned int if_idx);
 
+/* Interface identifier control, for links that have no link-layer address
+ * to derive one from - a point-to-point tun/utun, most of all.
+ *
+ * The default needs no configuration: wolfIP draws a random identifier and
+ * lets duplicate address detection confirm it. That is correct but not
+ * stable, so every boot brings a new address. These two calls exist for
+ * applications that need it stable.
+ *
+ * `iid` is the 8 octets of the identifier, in network order. The same one is
+ * used for the link-local address and for anything SLAAC forms from an
+ * advertised prefix, so set it before wolfIP_ipv6_start(): an identifier
+ * installed afterwards does not renumber addresses already formed.
+ *
+ * wolfIP_ipv6_get_iid() reads back the identifier in force, choosing one if
+ * that has not happened yet, which is how an application persists a
+ * generated identifier for the next boot. Reserved identifiers (RFC 5453)
+ * are rejected by set_iid() rather than corrected.
+ *
+ * Where the value comes from is deliberately the application's business.
+ * RFC 8064 recommends the RFC 7217 construction,
+ * F(prefix, interface, network, DAD_counter, secret), which needs a keyed
+ * hash and a secret in stable storage - neither of which belongs in the
+ * stack. A value restored from flash serves equally well.
+ *
+ * Both return 0 on success, -WOLFIP_EINVAL on a bad argument or a reserved
+ * identifier, and -WOLFIP_ENOSYS unless the build sets
+ * WOLFIP_IPV6_IID_OVERRIDE. */
+int wolfIP_ipv6_set_iid(struct wolfIP *s, unsigned int if_idx,
+                        const uint8_t *iid);
+int wolfIP_ipv6_get_iid(struct wolfIP *s, unsigned int if_idx, uint8_t *iid);
+
 /* Install a static neighbour cache entry. Useful before Router
  * Advertisements have been seen, and for talking to a peer that does not
  * answer solicitations. */

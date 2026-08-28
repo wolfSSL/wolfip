@@ -1689,6 +1689,17 @@ struct wolfIP {
         uint64_t rs_due[WOLFIP_MAX_INTERFACES];   /* next router solicitation */
         uint8_t rs_left[WOLFIP_MAX_INTERFACES];   /* solicitations remaining */
         uint8_t started[WOLFIP_MAX_INTERFACES];   /* wolfIP_ipv6_start() called */
+        /* Interface identifier, low 64 bits of every address formed on the
+         * interface. Cached because the link-local address and any address
+         * SLAAC forms from an advertised prefix must share it, and because
+         * the default source is a random draw that must not differ between
+         * the two. `iid_valid` doubles as "has one been chosen yet": zero
+         * until the first address is formed. Populated from
+         * wolfIP_ipv6_set_iid() when the application supplies one, from the
+         * MAC on a link that has one, and from wolfIP_getrandom()
+         * otherwise. */
+        uint8_t iid[WOLFIP_MAX_INTERFACES][8];
+        uint8_t iid_valid[WOLFIP_MAX_INTERFACES];
         uint32_t tick_timer;
     } nd6;
 #endif
@@ -12844,8 +12855,26 @@ static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uin
     if (!ll)
         return;
     if (ll->non_ethernet) {
-        struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)buf;
-        ip_recv(s, if_idx, ip, len);
+        /* No link header and so no ethertype: the version nibble of the
+         * packet itself is the only demux there is. The stack still keeps
+         * ETH_HEADER_LEN of headroom on such an interface - poll_devices()
+         * zeroes it and hands the driver the offset buffer - so the packet
+         * starts where the Ethernet payload would, and both receive paths
+         * below can be reached unchanged. */
+        if (len <= (uint32_t)ETH_HEADER_LEN)
+            return;
+        switch (((const uint8_t *)buf)[ETH_HEADER_LEN] >> 4) {
+        case 4:
+            ip_recv(s, if_idx, (struct wolfIP_ip_packet *)buf, len);
+            break;
+#if WOLFIP_IPV6
+        case 6:
+            (void)ip6_recv(s, if_idx, (struct wolfIP_ip6_packet *)buf, len);
+            break;
+#endif
+        default:
+            break; /* not IP: nothing on this link can carry it */
+        }
         return;
     }
     if (len < (uint32_t)ETH_HEADER_LEN)

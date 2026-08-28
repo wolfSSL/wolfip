@@ -423,6 +423,60 @@ static inline void ip6_iid_from_mac(ip6 *iid, const uint8_t *mac)
     iid->addr[15] = mac[5];
 }
 
+/* Build an interface identifier from 8 raw octets, for a link that has no
+ * link-layer address to derive one from. The identifier occupies the low 64
+ * bits; the high 64 are zeroed, so the result is ready for
+ * ip6_make_addr(). */
+static inline void ip6_iid_from_bytes(ip6 *iid, const uint8_t *raw)
+{
+    int i;
+
+    for (i = 0; i < 8; i++)
+        iid->addr[i] = 0;
+    for (i = 0; i < 8; i++)
+        iid->addr[8 + i] = raw[i];
+}
+
+/* Reserved interface identifiers (RFC 5453), which must not be assigned:
+ *
+ *   0000:0000:0000:0000                       Subnet-Router anycast (2.6.1)
+ *   0200:5EFF:FE00:0000-0200:5EFF:FE00:FFFF   IANA Ethernet block
+ *   FDFF:FFFF:FFFF:FF80-FDFF:FFFF:FFFF:FFFF   reserved subnet anycast
+ *
+ * A generated identifier has to be checked against these and regenerated on
+ * a hit. The odds are negligible and the check is a handful of comparisons,
+ * which is the wrong ratio to argue about. `raw` is the 8 identifier octets
+ * in network order. */
+static inline int ip6_iid_is_reserved(const uint8_t *raw)
+{
+    static const uint8_t iana_eth[6] = {0x02, 0x00, 0x5E, 0xFF, 0xFE, 0x00};
+    int i;
+    int zero = 1;
+    int iana = 1;
+
+    for (i = 0; i < 8; i++) {
+        if (raw[i] != 0) {
+            zero = 0;
+            break;
+        }
+    }
+    if (zero)
+        return 1;
+    for (i = 0; i < 6; i++) {
+        if (raw[i] != iana_eth[i]) {
+            iana = 0;
+            break;
+        }
+    }
+    if (iana)
+        return 1;
+    if ((raw[0] == 0xFD) && (raw[1] == 0xFF) && (raw[2] == 0xFF) &&
+            (raw[3] == 0xFF) && (raw[4] == 0xFF) && (raw[5] == 0xFF) &&
+            (raw[6] == 0xFF) && (raw[7] >= 0x80))
+        return 1;
+    return 0;
+}
+
 /* ---------------------------------------------------------------------- */
 /* Text conversion                                                        */
 /* ---------------------------------------------------------------------- */

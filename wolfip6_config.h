@@ -155,10 +155,41 @@
 #endif
 
 #if WOLFIP_IPV6 && !defined(ETHERNET)
-/* Neighbor Discovery replaces ARP and is defined over link layers with
- * addresses. A non-Ethernet (raw IP) build has no link-layer address to
- * resolve, so only statically configured IPv6 peers would work. */
+/* This is about the *build*, not about any one interface. Without ETHERNET
+ * the stack has no link layer at all: no frame headroom, no demux, no
+ * neighbour cache to key on. That is a different shape of stack, and the
+ * IPv6 code is written against the Ethernet-shaped one.
+ *
+ * A point-to-point link is not this case and is supported. It is a runtime
+ * property of an interface (ll->non_ethernet), set by drivers such as
+ * linux_tun.c and utun_darwin.c, in a build that has ETHERNET: the stack
+ * still reserves the link header and still runs the demux, and the driver
+ * simply never sees those bytes. See WOLFIP_IPV6_IID_OVERRIDE below for
+ * what such a link needs that Ethernet does not. */
 #error "WOLFIP_IPV6 currently requires ETHERNET"
+#endif
+
+/* Interface identifier override for links without a link-layer address.
+ *
+ * RFC 4862 section 5.3 forms the interface identifier from the link-layer
+ * address, which a point-to-point link does not have. wolfIP's default
+ * there is a random identifier verified by duplicate address detection:
+ * correct, needs no configuration, and unique on a link with one peer with
+ * near-certainty - but a different one after every reboot.
+ *
+ * Enabling this compiles in wolfIP_ipv6_set_iid()/get_iid(), so an
+ * application can supply the identifier instead. What it supplies is its
+ * own business: an RFC 7217 semantically opaque identifier
+ * F(prefix, interface, network, DAD_counter, secret) is the form RFC 8064
+ * recommends, but a value read back from a previous boot with get_iid() and
+ * stored in flash does just as well. Deliberately not computed here: the
+ * pseudo-random function and the secret that keys it belong to the
+ * application, and stable storage is not something this stack has.
+ *
+ * Off by default. The generated identifier is correct on its own, and this
+ * costs a little state per interface plus the API surface. */
+#ifndef WOLFIP_IPV6_IID_OVERRIDE
+#define WOLFIP_IPV6_IID_OVERRIDE 0
 #endif
 
 /* Per-feature switches for IPv6 functionality that is not implemented yet.

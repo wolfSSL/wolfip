@@ -926,6 +926,30 @@ ipv6-dad-test: build/test-ipv6-slaac
 	@echo "[RUN] $< --dad-collision"
 	@sudo ./build/test-ipv6-slaac --dad-collision
 
+# Same, over a point-to-point tun device: no Ethernet header, no link-layer
+# address, and the interface identifier generated or supplied rather than
+# derived from a MAC. Builds the override in, so the address the host is
+# told to ping is known before the stack forms it.
+build/ipv6/wolfip-ptp.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (ipv6 ptp)"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -DWOLFIP_IPV6_IID_OVERRIDE=1 -c $< -o $@
+
+build/test/test_ipv6_ptp.o: src/test/test_ipv6_ptp.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -DWOLFIP_IPV6_IID_OVERRIDE=1 -c $< -o $@
+
+build/test-ipv6-ptp: build/ipv6/wolfip-ptp.o build/test/test_ipv6_ptp.o build/port/posix/linux_tun.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-ptp-test
+ipv6-ptp-test: build/test-ipv6-ptp
+	@echo "[RUN] $< --selftest (requires root)"
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-ptp-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-ipv6-ptp --selftest
+
 .PHONY: ipv6-ping-test
 ipv6-ping-test: build/test-ipv6-ping
 	@echo "[RUN] $< --selftest (requires root)"
@@ -1054,6 +1078,7 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_ipv6_recv.c \
 	src/test/unit/unit_tests_ipv6_icmp.c \
 	src/test/unit/unit_tests_ipv6_nd.c \
+	src/test/unit/unit_tests_ipv6_ptp.c \
 	src/test/unit/unit_tests_ipv6_pending.c
 
 unit: build/test/unit
@@ -1092,6 +1117,16 @@ UNIT_IPV6_CFLAGS:=-DWOLFIP_IPV6=1 -DWOLFIP_IF_MULTICONF=1
 
 unit-ipv6: CFLAGS+=$(UNIT_IPV6_CFLAGS)
 unit-ipv6: clean-unit unit
+
+# The interface identifier override is a compile-time option, so both states
+# of it are tested: unit-ipv6 above covers the calls reporting -ENOSYS with it
+# off, this covers the override itself.
+unit-ipv6-iid: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IPV6_IID_OVERRIDE=1
+unit-ipv6-iid: clean-unit unit
+
+unit-ipv6-iid-asan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IPV6_IID_OVERRIDE=1 -fsanitize=address
+unit-ipv6-iid-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-ipv6-iid-asan: clean-unit build/test/unit
 
 unit-ipv6-asan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=address
 unit-ipv6-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
@@ -1430,6 +1465,7 @@ clean-test-wolfguard-interop:
 
 .PHONY: clean all static cppcheck cov autocov autocov-multicast cov-multicast unit-multicast unit-vlan cov-vlan autocov-vlan unit-asan unit-ubsan unit-leaksan clean-unit \
         unit-ipv6 unit-ipv6-asan unit-ipv6-ubsan unit-ipv6-leaksan cov-ipv6 autocov-ipv6 \
+        unit-ipv6-iid unit-ipv6-iid-asan \
         unit-multiconf unit-multiconf-asan \
         unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \

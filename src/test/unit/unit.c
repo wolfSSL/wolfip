@@ -45,6 +45,7 @@
 #include "unit_tests_ipv6_recv.c"
 #include "unit_tests_ipv6_icmp.c"
 #include "unit_tests_ipv6_nd.c"
+#include "unit_tests_ipv6_ptp.c"
 #include "unit_tests_ipv6_pending.c"
 
 Suite *wolf_suite(void)
@@ -1329,6 +1330,29 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_stop_drops_a_tentative_address);
     tcase_add_test(tc_proto, test_nd_restarts_after_being_stopped);
     tcase_add_test(tc_proto, test_nd_stop_rejects_invalid_arguments);
+
+    /* IPv6 over a point-to-point link (ll->non_ethernet). */
+    tcase_add_test(tc_proto, test_ptp_reserved_iids_are_recognised);
+    tcase_add_test(tc_proto, test_ptp_link_local_is_not_derived_from_the_null_mac);
+    tcase_add_test(tc_proto, test_ptp_generated_iid_has_u_bit_clear_and_is_assignable);
+    tcase_add_test(tc_proto, test_ptp_generated_iid_comes_from_the_random_source);
+    tcase_add_test(tc_proto, test_ptp_stuck_random_source_does_not_yield_a_reserved_iid);
+    tcase_add_test(tc_proto, test_ptp_slaac_address_shares_the_link_local_iid);
+#if WOLFIP_IPV6_IID_OVERRIDE
+    tcase_add_test(tc_proto, test_ptp_iid_override_is_used_for_the_link_local_address);
+    tcase_add_test(tc_proto, test_ptp_get_iid_reads_back_what_will_be_used);
+    tcase_add_test(tc_proto, test_ptp_restored_iid_reproduces_the_previous_address);
+    tcase_add_test(tc_proto, test_ptp_iid_override_refuses_reserved_identifiers);
+#else
+    tcase_add_test(tc_proto, test_ptp_iid_override_reports_not_implemented);
+#endif
+    tcase_add_test(tc_proto, test_ptp_icmp6_echo_request_is_answered);
+    tcase_add_test(tc_proto, test_ptp_ipv4_still_reaches_the_v4_path);
+    tcase_add_test(tc_proto, test_ptp_non_ip_version_nibble_is_dropped);
+    tcase_add_test(tc_proto, test_ptp_router_solicitation_carries_no_source_lla);
+    tcase_add_test(tc_proto, test_ptp_dad_still_detects_a_duplicate);
+    tcase_add_test(tc_proto, test_ptp_solicitation_is_answered_without_a_target_lla);
+    tcase_add_test(tc_proto, test_ptp_solicitation_with_a_stray_source_lla_is_still_answered);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
