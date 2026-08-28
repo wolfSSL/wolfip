@@ -1822,10 +1822,14 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
         if (!udp6_socket_accepts(t, &dst))
             continue;
         /* As on the IPv4 side, only a connected socket filters by peer;
-         * an unconnected one must take datagrams from any source. */
+         * an unconnected one must take datagrams from any source. A
+         * connected socket whose peer is IPv4 has no IPv6 peer to compare
+         * against, and "no peer to compare" is not "any peer will do" - it
+         * takes no IPv6 datagram at all. */
         peer_match = (t->sock.udp.connected == 0) ||
-                ((t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
-                 (!t->peer_is_v6 || ip6_is_unspecified(&t->remote_ip6) ||
+                (t->peer_is_v6 &&
+                 (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
+                 (ip6_is_unspecified(&t->remote_ip6) ||
                   (ip6_cmp(&t->remote_ip6, &src) == 0)));
         if (!peer_match)
             continue;

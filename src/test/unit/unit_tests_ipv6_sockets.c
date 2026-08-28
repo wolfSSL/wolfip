@@ -2291,4 +2291,44 @@ START_TEST(test_sock6_reconnect_to_mapped_peer_clears_ipv6_state)
 }
 END_TEST
 
+/* A connected socket filters by peer. One connected to an IPv4 peer has no
+ * IPv6 peer to compare against, so it must reject IPv6 datagrams outright
+ * rather than treating "no IPv6 peer" as "any IPv6 peer". */
+START_TEST(test_sock6_socket_connected_to_v4_peer_rejects_ipv6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 mapped;
+    ip6 local;
+    uint16_t sport;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    ip6_set_v4mapped(&mapped, atoip4("192.168.10.1"));
+    memset(&dst, 0, sizeof(dst));
+    dst.sin6_family = AF_INET6;
+    dst.sin6_port = ee16(9600);
+    memcpy(&dst.sin6_addr, mapped.addr, 16);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), 0);
+    /* The ephemeral source port is assigned on the first send, not by
+     * connect(), so send once to give the socket an identity to match. */
+    ck_assert_int_eq(wolfIP_sock_send(&s, fd, "q", 1, 0), 1);
+    sport = s.udpsockets[SOCKET_UNMARK(fd)].src_port;
+    ck_assert_uint_ne(sport, 0);
+
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_udp(&s, S6_PEER, &local, 9600, sport, "no", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */
