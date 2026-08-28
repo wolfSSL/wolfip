@@ -38,8 +38,16 @@
 /* ---------------------------------------------------------------------- */
 
 #define IP6_HEADER_LEN 40
+/* Guarded on the macro being defined at all, not just on its value: this
+ * file is #included into src/wolfip.c and never compiled alone, but static
+ * analysers do parse it alone, and an undefined macro in #if evaluates to 0
+ * and would trip the check. wolfip.c cannot compile without
+ * IP6_HEADER_LEN_PUB, so nothing is lost by skipping the comparison when it
+ * is absent. */
+#ifdef IP6_HEADER_LEN_PUB
 #if IP6_HEADER_LEN != IP6_HEADER_LEN_PUB
 #error "IP6_HEADER_LEN and IP6_HEADER_LEN_PUB disagree"
+#endif
 #endif
 #define IP6_VERSION 6
 #define IP6_HOP_LIMIT_DEFAULT 64
