@@ -189,6 +189,7 @@ int custom_rand_gen_block(unsigned char* output, unsigned int sz);
 /* Memory optimization - reduced for embedded */
 #define WOLFSSH_SMALL_STACK
 #define DEFAULT_WINDOW_SZ (4 * 1024)   /* Reduced from 16KB to 4KB */
+#define DEFAULT_MAX_PACKET_SZ DEFAULT_WINDOW_SZ
 #define DEFAULT_HIGHWATER_MARK ((DEFAULT_WINDOW_SZ * 3) / 4)
 #define MAX_PACKET_SZ (DEFAULT_WINDOW_SZ + 256)
 
