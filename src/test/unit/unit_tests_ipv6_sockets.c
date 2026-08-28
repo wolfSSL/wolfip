@@ -1835,4 +1835,170 @@ START_TEST(test_icmp6_af_inet_icmp_socket_never_receives_icmpv6)
 }
 END_TEST
 
+
+/* =========================================================================
+ * 7. Dual stack: v4-mapped addresses on an AF_INET6 socket
+ * ========================================================================= */
+
+/* The framing is decided by the destination, not by the socket domain: a
+ * v4-mapped destination goes out as a 20-byte IPv4 header, not a 40-byte
+ * IPv6 one. The pending requirement calls this the central correctness risk
+ * of the dual-stack design, and it is - the two differ only in a header the
+ * application never sees. */
+START_TEST(test_sock6_v4_mapped_destination_is_framed_as_ipv4)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_ip_packet *sent;
+    uint8_t staging[LINK_MTU];
+    const uint8_t peer_mac[6] = {0x02, 0xDD, 0, 0, 0, 1};
+    uint64_t now = 0;
+    ip6 mapped;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    /* The IPv4 peer has to be resolvable, or the datagram waits for ARP. */
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, NULL, NULL),
+                     -WOLFIP_EINVAL);
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, atoip4("192.168.10.1"),
+                       (uint8_t *)peer_mac);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    ip6_set_v4mapped(&mapped, atoip4("192.168.10.1"));
+    memset(&dst, 0, sizeof(dst));
+    dst.sin6_family = AF_INET6;
+    dst.sin6_port = ee16(9100);
+    memcpy(&dst.sin6_addr, mapped.addr, 16);
+
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "v4", 2, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 2);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* An IPv4 frame: 20-byte header, IPv4 ethertype, IPv4 addresses. */
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                                 UDP_HEADER_LEN + 2));
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    sent = (struct wolfIP_ip_packet *)staging;
+    ck_assert_uint_eq(ee16(sent->eth.type), ETH_TYPE_IP);
+    ck_assert_uint_eq(sent->ver_ihl >> 4, 4);
+    ck_assert_uint_eq(ee32(sent->dst), atoip4("192.168.10.1"));
+}
+END_TEST
+
+/* The same socket reports that peer back as ::ffff:a.b.c.d, because an
+ * AF_INET6 application parses one address type. A sockaddr_in here would be
+ * read as a sockaddr_in6 whose family and port lined up and whose address
+ * did not. */
+START_TEST(test_sock6_v4_mapped_peer_is_reported_as_mapped)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)frame;
+    struct wolfIP_ll_dev *ll;
+    union transport_pseudo_header ph;
+    uint8_t buf[32];
+    uint64_t now = 0;
+    ip6 reported;
+    uint16_t udp_len = UDP_HEADER_LEN + 3;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    /* The dual-stack wildcard: :: binds the IPv4 wildcard too. */
+    sock6_addr(&bind_addr, NULL, 9200);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(udp->ip.eth.dst, ll->mac, 6);
+    udp->ip.eth.type = ee16(ETH_TYPE_IP);
+    udp->ip.ver_ihl = 0x45;
+    udp->ip.len = ee16(IP_HEADER_LEN + udp_len);
+    udp->ip.ttl = 64;
+    udp->ip.proto = WI_IPPROTO_UDP;
+    udp->ip.src = ee32(atoip4("192.168.10.1"));
+    udp->ip.dst = ee32(atoip4("192.168.10.2"));
+    iphdr_set_checksum(&udp->ip);
+    udp->src_port = ee16(6100);
+    udp->dst_port = ee16(9200);
+    udp->len = ee16(udp_len);
+    udp->csum = 0;
+    memcpy(udp->data, "abc", 3);
+    ph.ph.src = udp->ip.src;
+    ph.ph.dst = udp->ip.dst;
+    ph.ph.zero = 0;
+    ph.ph.proto = WI_IPPROTO_UDP;
+    ph.ph.len = udp->len;
+    udp->csum = ee16(transport_checksum(&ph, &udp->src_port));
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN) + udp_len);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          &fromlen), 3);
+    ck_assert_int_eq(memcmp(buf, "abc", 3), 0);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+    ck_assert_uint_eq(fromlen, sizeof(struct wolfIP_sockaddr_in6));
+    ck_assert_uint_eq(ee16(from.sin6_port), 6100);
+    memcpy(reported.addr, &from.sin6_addr, 16);
+    ck_assert_int_eq(ip6_is_v4mapped(&reported), 1);
+    ck_assert_uint_eq(ip6_get_v4mapped(&reported), atoip4("192.168.10.1"));
+}
+END_TEST
+
+/* IPV6_V6ONLY means what it says: a v4-mapped destination is refused, not
+ * quietly sent as IPv4. */
+START_TEST(test_sock6_v6only_socket_rejects_a_v4_mapped_destination)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    uint64_t now = 0;
+    ip6 mapped;
+    int fd;
+    int on = 1;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, fd, WOLFIP_SOL_IPV6,
+                                            WOLFIP_IPV6_V6ONLY, &on,
+                                            sizeof(on)), 0);
+
+    ip6_set_v4mapped(&mapped, atoip4("192.168.10.1"));
+    memset(&dst, 0, sizeof(dst));
+    dst.sin6_family = AF_INET6;
+    dst.sin6_port = ee16(9300);
+    memcpy(&dst.sin6_addr, mapped.addr, 16);
+
+    ck_assert_int_lt(wolfIP_sock_sendto(&s, fd, "no", 2, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 0);
+    ck_assert_int_lt(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), 0);
+
+    /* A real IPv6 destination is of course still fine. */
+    sock6_addr(&dst, S6_PEER, 9300);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "ok", 2, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 2);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

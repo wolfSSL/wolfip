@@ -1403,6 +1403,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp6_socket_receives_errors_regardless_of_identifier);
     tcase_add_test(tc_proto, test_icmp6_af_inet_icmp_socket_never_receives_icmpv6);
 
+    /* Dual stack: v4-mapped addresses on an AF_INET6 socket. */
+    tcase_add_test(tc_proto, test_sock6_v4_mapped_destination_is_framed_as_ipv4);
+    tcase_add_test(tc_proto, test_sock6_v4_mapped_peer_is_reported_as_mapped);
+    tcase_add_test(tc_proto, test_sock6_v6only_socket_rejects_a_v4_mapped_destination);
+
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
 #if WOLFIP_IPV6_HAVE_FORWARDING
@@ -1435,17 +1440,6 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ip6_extension_header_chain_length_is_capped);
     tcase_add_test(tc_proto, test_ip6_extension_header_with_zero_length_is_rejected);
     tcase_add_test(tc_proto, test_ip6_routing_header_type_zero_is_still_rejected);
-#endif
-#if WOLFIP_IPV6_HAVE_SOCKETS
-    tcase_add_test(tc_proto, test_socket_af_inet6_stream_and_dgram_are_created);
-    tcase_add_test(tc_proto, test_socket_bind_and_getsockname_roundtrip_ipv6);
-    tcase_add_test(tc_proto, test_socket_v4_mapped_destination_is_framed_as_ipv4);
-    tcase_add_test(tc_proto, test_socket_v4_mapped_peer_is_reported_as_mapped_address);
-    tcase_add_test(tc_proto, test_socket_ipv6_only_option_is_honoured_not_silently_accepted);
-    tcase_add_test(tc_proto, test_socket_ipv6_only_socket_rejects_v4_mapped_destination);
-    tcase_add_test(tc_proto, test_socket_tcp_mss_accounts_for_the_40_byte_header);
-    tcase_add_test(tc_proto, test_socket_udp_oversize_datagram_is_refused);
-    tcase_add_test(tc_proto, test_socket_ipv4_and_ipv6_sockets_coexist_on_one_port);
 #endif
 #endif /* WOLFIP_IPV6 */
 

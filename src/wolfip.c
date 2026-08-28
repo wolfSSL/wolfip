@@ -9163,6 +9163,13 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                     ts->remote_ip = ip6_is_v4mapped(&dst6) ?
                             ip6_get_v4mapped(&dst6) : IPADDR_ANY;
                     ts->dst_port = dport;
+                    /* The IPv4 body below re-reads the destination from
+                     * `sin`, which here points at a sockaddr_in6: its port
+                     * and address live at different offsets, so letting it
+                     * re-parse would overwrite what was just decoded with
+                     * whatever those bytes happen to be. The destination is
+                     * already settled, so drop the pointer. */
+                    sin = NULL;
                 }
             }
             if (ts->peer_is_v6)
@@ -9640,7 +9647,14 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             return -WOLFIP_EINVAL;
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -WOLFIP_EINVAL;
-        if (addrlen) *addrlen = sizeof(struct wolfIP_sockaddr_in);
+#if WOLFIP_IPV6
+        /* *addrlen is settled by the reporting code below, which knows the
+         * socket's family; an AF_INET6 socket writes a larger address. */
+        if (addrlen && (ts->domain != AF_INET6))
+#else
+        if (addrlen)
+#endif
+            *addrlen = sizeof(struct wolfIP_sockaddr_in);
         if (fifo_len(&ts->sock.udp.rxbuf) == 0)
             return -WOLFIP_EAGAIN;
         desc = fifo_peek(&ts->sock.udp.rxbuf);
@@ -9656,6 +9670,27 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             if (src_ip != ts->local_ip)
                 ts->remote_ip = src_ip;
         }
+#if WOLFIP_IPV6
+        if (src_addr && (ts->domain == AF_INET6)) {
+            /* A dual-stack socket that received over IPv4 still reports a
+             * sockaddr_in6, with the peer as ::ffff:a.b.c.d (RFC 3493
+             * s3.7): an AF_INET6 application parses one address type, and
+             * handing it a sockaddr_in here would be read as a
+             * sockaddr_in6 whose family and port happened to line up and
+             * whose address did not. */
+            socklen_t want = sizeof(struct wolfIP_sockaddr_in6);
+            ip6 mapped;
+
+            if (addrlen && (*addrlen < want))
+                return -WOLFIP_EINVAL;
+            ip6_set_v4mapped(&mapped, ee32(udp->ip.src));
+            if (sock_addr_from_ip6(src_addr, &want, &mapped,
+                                   ee16(udp->src_port), ts->if_idx) != 0)
+                return -WOLFIP_EINVAL;
+            if (addrlen)
+                *addrlen = want;
+        } else
+#endif
         if (sin) {
             sin->sin_family = AF_INET;
             sin->sin_port = udp->src_port;

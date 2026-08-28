@@ -271,75 +271,11 @@ END_TEST
 /* =========================================================================
  * Sockets and dual stack
  * ========================================================================= */
-#if WOLFIP_IPV6_HAVE_SOCKETS
-
-START_TEST(test_socket_af_inet6_stream_and_dgram_are_created)
-{
-    ck_abort_msg("pending: AF_INET6 socket creation");
-}
-END_TEST
-
-START_TEST(test_socket_bind_and_getsockname_roundtrip_ipv6)
-{
-    ck_abort_msg("pending: AF_INET6 bind");
-}
-END_TEST
-
-START_TEST(test_socket_v4_mapped_destination_is_framed_as_ipv4)
-{
-    /* The family that decides framing is that of the destination address,
-     * not the socket domain: a v4-mapped destination on an AF_INET6 socket
-     * must go out as a 20-byte IPv4 header, not a 40-byte IPv6 one. This is
-     * the central correctness risk of the dual-stack design. */
-    ck_abort_msg("pending: v4-mapped framing");
-}
-END_TEST
-
-START_TEST(test_socket_v4_mapped_peer_is_reported_as_mapped_address)
-{
-    /* An IPv4 peer arriving on a dual-stack AF_INET6 socket is reported as
-     * ::ffff:a.b.c.d by recvfrom and getpeername. */
-    ck_abort_msg("pending: v4-mapped peer reporting");
-}
-END_TEST
-
-START_TEST(test_socket_ipv6_only_option_is_honoured_not_silently_accepted)
-{
-    /* setsockopt and getsockopt currently return 0 for unknown options, so
-     * IPV6_V6ONLY would appear to work whatever the stack actually does.
-     * The option must be genuinely stored and reported. */
-    ck_abort_msg("pending: IPV6_V6ONLY");
-}
-END_TEST
-
-START_TEST(test_socket_ipv6_only_socket_rejects_v4_mapped_destination)
-{
-    ck_abort_msg("pending: IPV6_V6ONLY enforcement");
-}
-END_TEST
-
-START_TEST(test_socket_tcp_mss_accounts_for_the_40_byte_header)
-{
-    /* The IPv6 header is 20 bytes larger than IPv4, so the MSS derived
-     * from the same link MTU must be 20 bytes smaller. */
-    ck_abort_msg("pending: IPv6 TCP MSS");
-}
-END_TEST
-
-START_TEST(test_socket_udp_oversize_datagram_is_refused)
-{
-    /* No fragmentation: a datagram larger than the path MTU less headers
-     * must be refused at sendto rather than silently truncated. */
-    ck_abort_msg("pending: IPv6 UDP size limit");
-}
-END_TEST
-
-START_TEST(test_socket_ipv4_and_ipv6_sockets_coexist_on_one_port)
-{
-    ck_abort_msg("pending: dual-stack port sharing");
-}
-END_TEST
-
-#endif /* WOLFIP_IPV6_HAVE_SOCKETS */
+/* The socket layer is implemented. Creation, bind and the reported names,
+ * IPV6_V6ONLY and its enforcement, v4-mapped framing and peer reporting,
+ * dual-stack port sharing, the TCP MSS accounting for the larger header and
+ * the UDP size limit all have real tests in unit_tests_ipv6_sockets.c, and
+ * the OS ports have their own in test_ipv6_bsd.c and
+ * test_freertos_ipv6.c. */
 
 #endif /* WOLFIP_IPV6 */

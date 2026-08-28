@@ -116,6 +116,16 @@ jobs:
           make clean
           make autocov-ipv6-check
 
+      # AF_INET6 through the OS port layers, which is the API an application
+      # actually calls. The POSIX shim is mostly a pass-through, so what
+      # these cover is the part that is not - getaddrinfo(), which builds
+      # the sockaddr itself - plus the family reaching the stack unmangled.
+      - name: AF_INET6 through the POSIX BSD socket port
+        run: make ipv6-bsd-test
+
+      - name: AF_INET6 through the FreeRTOS BSD socket port
+        run: make freertos-ipv6-test
+
       # End-to-end against the Linux stack over a TAP device. Needs root for
       # the device, and captures to a pcap so a CI failure can be opened in
       # wireshark from the artifacts.

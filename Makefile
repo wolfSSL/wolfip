@@ -209,6 +209,7 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-freertos-close-last-ack \
 	build/test-freertos-bsd-semantics \
 	build/test-freertos-bsd-semantics-2khz \
+	build/test-freertos-ipv6 \
 	build/test-posix-errno \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
@@ -967,6 +968,23 @@ ipv6-ptp-test: build/test-ipv6-ptp
 	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-ptp-test needs to run as root (sudo)"; exit 1; }
 	@sudo ./build/test-ipv6-ptp --selftest
 
+# AF_INET6 through the POSIX BSD socket port. test_ipv6_bsd.c #includes
+# bsd_socket.c, so the shim is compiled with the same IPv6 configuration as
+# the wolfip object it links against.
+build/test/test_ipv6_bsd.o: src/test/test_ipv6_bsd.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test-ipv6-bsd: build/ipv6/wolfip.o build/test/test_ipv6_bsd.o $(NETDEV_OBJ) $(WOLFIP_TFTP_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-bsd-test
+ipv6-bsd-test: build/test-ipv6-bsd
+	@echo "[RUN] $<"
+	@./build/test-ipv6-bsd
+
 .PHONY: ipv6-ping-test
 ipv6-ping-test: build/test-ipv6-ping
 	@echo "[RUN] $< --selftest (requires root)"
@@ -1030,6 +1048,18 @@ build/test-freertos-bsd-semantics-2khz: src/test/test_freertos_bsd_semantics.c s
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) -Isrc/test/freertos_mocks -DconfigTICK_RATE_HZ=2000u $(CFLAGS) -o $@ src/test/test_freertos_bsd_semantics.c $(LDFLAGS)
+
+# AF_INET6 through the same FreeRTOS shim, with its own mocks: the close()
+# mock next door is a scripted one-shot for a LAST_ACK regression.
+build/test-freertos-ipv6: src/test/test_freertos_ipv6.c src/port/freeRTOS/bsd_socket.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -DWOLFIP_IPV6=1 -o $@ src/test/test_freertos_ipv6.c $(LDFLAGS)
+
+.PHONY: freertos-ipv6-test
+freertos-ipv6-test: build/test-freertos-ipv6
+	@echo "[RUN] $<"
+	@./build/test-freertos-ipv6
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true
