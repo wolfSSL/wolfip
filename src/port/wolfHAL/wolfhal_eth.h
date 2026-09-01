@@ -34,7 +34,7 @@
  * @code
  * #include "wolfip.h"
  * #include "wolfhal_eth.h"
- * #include "board.h"
+ * #include "wolfHAL_board.h"
  *
  * int main(void)
  * {

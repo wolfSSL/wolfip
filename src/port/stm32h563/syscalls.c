@@ -26,7 +26,7 @@
 #include <time.h>
 #ifdef ENABLE_WOLFHAL
 #include <wolfHAL/uart/uart.h>
-#include "board.h"   /* g_whalUart for _write -> UART */
+#include "wolfHAL_board.h"   /* g_whalUart for _write -> UART */
 #endif
 
 extern uint32_t _ebss;

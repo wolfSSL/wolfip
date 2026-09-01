@@ -25,7 +25,7 @@
 #include "config.h"
 #include "wolfip.h"
 #ifdef ENABLE_WOLFHAL
-#include "board.h"
+#include "wolfHAL_board.h"
 #include "wolfhal_eth.h"
 #include <wolfHAL/uart/uart.h>
 #include <wolfHAL/rng/rng.h>
