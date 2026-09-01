@@ -31,10 +31,11 @@ flow used by `TZEN=1`, and the wolfHAL SysTick driver owns the SysTick
 handler that FreeRTOS also needs.
 
 `ENABLE_WOLFHAL=1` selects `boards/stm32h563zi_nucleo/` (its own
-`startup.c`/`ivt.c`/`syscalls.c`/`linker.ld` plus `board.c`/`board.h`/`board.mk`),
-pulls the wolfHAL STM32H5 driver TUs from the `lib/wolfHAL` submodule
-(`WOLFHAL_ROOT ?= lib/wolfHAL`), and compiles the port's `main.c` against
-wolfHAL drivers instead of the hand-rolled bare-metal ones.
+`startup.c`/`ivt.c`/`syscalls.c`/`linker.ld` plus
+`wolfHAL_board.c`/`wolfHAL_board.h`/`board.mk`), pulls the wolfHAL STM32H5
+driver TUs from the `lib/wolfHAL` submodule (`WOLFHAL_ROOT ?= lib/wolfHAL`), and
+compiles the port's `main.c` against wolfHAL drivers instead of the hand-rolled
+bare-metal ones.
 
 Initialize the submodule once with
 
@@ -67,9 +68,9 @@ int ret = wolfhal_eth_init(wolfIP_getdev(ipstack), &ctx);
 
 ## What a board must provide
 
-The bridge needs the hardware already brought up. A board's `board.c`
-(see `src/port/stm32h563/boards/stm32h563zi_nucleo/board.c`) must, before
-`wolfhal_eth_init` is called:
+The bridge needs the hardware already brought up. A board's `wolfHAL_board.c`
+(see `src/port/stm32h563/boards/stm32h563zi_nucleo/wolfHAL_board.c`) must,
+before `wolfhal_eth_init` is called:
 
 - Initialize clocks and GPIO, then call `whal_Eth_Init` / `whal_EthPhy_Init`
   (typically from `board_init()`).

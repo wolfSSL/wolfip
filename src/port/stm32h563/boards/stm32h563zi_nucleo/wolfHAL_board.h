@@ -1,4 +1,4 @@
-/* board.h
+/* wolfHAL_board.h
  *
  * Copyright (C) 2024-2026 wolfSSL Inc.
  *
@@ -21,8 +21,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
-#ifndef BOARD_H
-#define BOARD_H
+#ifndef WOLFHAL_BOARD_H
+#define WOLFHAL_BOARD_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -139,7 +139,7 @@ enum {
     }, \
 }
 
-/* ETH descriptor rings + buffer pool — defined in board.c, captured by the
+/* ETH descriptor rings + buffer pool — defined in wolfHAL_board.c, captured by the
  * ETH device's cfg below (expanded in the eth driver code). */
 #define BOARD_ETH_TX_DESC_COUNT 3
 #define BOARD_ETH_RX_DESC_COUNT 4
@@ -196,4 +196,4 @@ whal_Error board_init(void);
 whal_Error board_deinit(void);
 uint64_t board_get_tick(void);
 
-#endif /* BOARD_H */
+#endif /* WOLFHAL_BOARD_H */

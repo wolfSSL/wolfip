@@ -43,7 +43,7 @@
 #include "dot1x_certs.h"
 
 #ifdef ENABLE_WOLFHAL
-#include "board.h"
+#include "wolfHAL_board.h"
 #endif
 
 #define DOT1X_EAPOL_ETHERTYPE 0x888EU

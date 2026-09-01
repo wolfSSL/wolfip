@@ -1,4 +1,4 @@
-/* board.c
+/* wolfHAL_board.c
  *
  * Copyright (C) 2024-2026 wolfSSL Inc.
  *
@@ -24,7 +24,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "board.h"
+#include "wolfHAL_board.h"
 #include <wolfHAL/platform/st/stm32h563xx.h>
 #include <wolfHAL/eth_phy/lan8742a_eth_phy.h>
 
@@ -68,7 +68,8 @@ static const whal_Stm32h5_Rcc_PeriphClk g_ethClocks[] = {
 #define ETH_CLOCK_COUNT (sizeof(g_ethClocks) / sizeof(g_ethClocks[0]))
 
 /* Ethernet descriptor rings + buffer pool. Referenced by the ETH singleton's
- * cfg (WHAL_CFG_STM32H5_ETH_DEV in board.h), so these must be global. */
+ * cfg (WHAL_CFG_STM32H5_ETH_DEV in wolfHAL_board.h), so these must be
+ * global. */
 whal_Stm32h5_Eth_TxDesc ethTxDescs[BOARD_ETH_TX_DESC_COUNT]
     __attribute__((aligned(16)));
 whal_Stm32h5_Eth_RxDesc ethRxDescs[BOARD_ETH_RX_DESC_COUNT]
