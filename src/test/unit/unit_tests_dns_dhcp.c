@@ -6898,8 +6898,8 @@ START_TEST(test_dns_callback_truncated_response_aborts_query)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dns_server = 0x0A000001U;
-    s.dns_query_type = DNS_QUERY_TYPE_A;
-    s.dns_id = 0x1234;
+    arm_dns_query(&s, 0x1234, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
     s.dns_lookup_cb = test_dns_lookup_cb;
     dns_lookup_calls = 0;
     dns_lookup_ip = 0;
@@ -6922,7 +6922,7 @@ START_TEST(test_dns_callback_truncated_response_aborts_query)
     response[pos++] = 0xC0;
     response[pos++] = (uint8_t)sizeof(struct dns_header);
     rr = (struct dns_rr *)(response + pos);
-    rr->type = ee16(DNS_A);
+    rr->type = ee16(28);              /* AAAA: unusable for this A query */
     rr->class = ee16(1);
     rr->ttl = ee32(60);
     rr->rdlength = ee16(4);

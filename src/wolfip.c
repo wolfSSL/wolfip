@@ -11245,10 +11245,6 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
          * reply parsed; requiring RD as well silently drops such responses
          * and lets the outstanding query time out and retransmit. */
         if ((flags & DNS_FLAGS_RESPONSE) != 0) {
-            if ((flags & DNS_TC) != 0) {
-                dns_abort_query(s);
-                return;
-            }
             /* RFC 1035 s4.1.1: RCODE != 0 is an error; abort query. */
             if ((flags & DNS_RCODE_MASK) != 0) {
                 dns_abort_query(s);
@@ -11313,6 +11309,11 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 }
                 pos += rdlen;
             }
+            /* RFC 1035 s6.2: truncation drops whole records from the tail, so
+             * the answers above were usable; a retry would only be truncated
+             * again, so give up once none of them matched. */
+            if ((flags & DNS_TC) != 0)
+                dns_abort_query(s);
         }
     }
 }
