@@ -109,10 +109,39 @@ START_TEST(test_dhcp_schedule_lease_timer_renew_gt_lease_clamped)
     /* renew_s > lease_s → clamp renew to lease/2 */
     dhcp_schedule_lease_timer(&s, 100U, 200U, 0U);
 
-    /* renew_s should be 50 (100/2), rebind_s = 87 (100*7/8) */
-    ck_assert_uint_eq(s.dhcp_renew_at,  50000U);
-    ck_assert_uint_eq(s.dhcp_rebind_at, 87000U);
+    /* renew_s should be 50 (100/2), rebind_s = 87 (100*7/8), each +/- 3 s of fuzz */
+    ck_assert_uint_ge(s.dhcp_renew_at,  47000U);
+    ck_assert_uint_le(s.dhcp_renew_at,  53000U);
+    ck_assert_uint_ge(s.dhcp_rebind_at, 84000U);
+    ck_assert_uint_le(s.dhcp_rebind_at, 90000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 100000U);
+}
+END_TEST
+
+/* RFC 2131 §4.4.5: default T1/T2 are fuzzed, so identical leases do not renew in lockstep */
+START_TEST(test_dhcp_schedule_lease_timer_defaults_fuzzed)
+{
+    struct wolfIP s;
+    uint64_t renew_first;
+    uint64_t rebind_first;
+
+    wolfIP_init(&s);
+    s.last_tick = 0U;
+
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 1U;
+    dhcp_schedule_lease_timer(&s, 1000U, 0U, 0U);
+    renew_first = s.dhcp_renew_at;
+    rebind_first = s.dhcp_rebind_at;
+
+    test_rand_override_value = 987654321U;
+    dhcp_schedule_lease_timer(&s, 1000U, 0U, 0U);
+    test_rand_override_enabled = 0;
+
+    ck_assert_uint_ne(s.dhcp_renew_at, renew_first);
+    ck_assert_uint_ne(s.dhcp_rebind_at, rebind_first);
+    ck_assert_uint_lt(s.dhcp_renew_at, s.dhcp_rebind_at);
+    ck_assert_uint_lt(s.dhcp_rebind_at, s.dhcp_lease_expires);
 }
 END_TEST
 
@@ -127,9 +156,11 @@ START_TEST(test_dhcp_schedule_lease_timer_rebind_lt_renew_fixed)
      * both are replaced by the client defaults, not coerced to equality. */
     dhcp_schedule_lease_timer(&s, 100U, 80U, 20U);
 
-    /* T1 = 100/2 = 50, T2 = 100*7/8 = 87 */
-    ck_assert_uint_eq(s.dhcp_renew_at,  50000U);
-    ck_assert_uint_eq(s.dhcp_rebind_at, 87000U);
+    /* T1 = 100/2 = 50, T2 = 100*7/8 = 87, each +/- 3 s of fuzz */
+    ck_assert_uint_ge(s.dhcp_renew_at,  47000U);
+    ck_assert_uint_le(s.dhcp_renew_at,  53000U);
+    ck_assert_uint_ge(s.dhcp_rebind_at, 84000U);
+    ck_assert_uint_le(s.dhcp_rebind_at, 90000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 100000U);
 }
 END_TEST
@@ -145,8 +176,10 @@ START_TEST(test_dhcp_schedule_lease_timer_t1_t2_equal_lease_resets_defaults)
      * defaults must replace them (T1 = 50%, T2 = 87.5%). */
     dhcp_schedule_lease_timer(&s, 3600U, 3600U, 3600U);
 
-    ck_assert_uint_eq(s.dhcp_renew_at,  1800U * 1000U);
-    ck_assert_uint_eq(s.dhcp_rebind_at, 3150U * 1000U);
+    ck_assert_uint_ge(s.dhcp_renew_at,  1688U * 1000U);
+    ck_assert_uint_le(s.dhcp_renew_at,  1912U * 1000U);
+    ck_assert_uint_ge(s.dhcp_rebind_at, 3038U * 1000U);
+    ck_assert_uint_le(s.dhcp_rebind_at, 3262U * 1000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 3600U * 1000U);
 }
 END_TEST
@@ -162,8 +195,9 @@ START_TEST(test_dhcp_schedule_lease_timer_rebind_gt_lease_clamped)
      * to (lease*7)/8 = 87, then 87 > renew_s(50) OK, 87 <= lease_s(100) OK */
     dhcp_schedule_lease_timer(&s, 100U, 50U, 150U);
 
-    /* rebind_s (150) > lease_s (100): reset to (100*7)/8 = 87 */
-    ck_assert_uint_eq(s.dhcp_rebind_at, 87000U);
+    /* rebind_s (150) > lease_s (100): reset to (100*7)/8 = 87, +/- 3 s of fuzz */
+    ck_assert_uint_ge(s.dhcp_rebind_at, 84000U);
+    ck_assert_uint_le(s.dhcp_rebind_at, 90000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 100000U);
 }
 END_TEST

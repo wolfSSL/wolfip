@@ -1441,6 +1441,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_null_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_renew_gt_lease_clamped);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_lt_renew_fixed);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_defaults_fuzzed);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_gt_lease_clamped);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_explicit_t1_t2);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_t1_t2_equal_lease_resets_defaults);

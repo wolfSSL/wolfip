@@ -8665,8 +8665,15 @@ static void dhcp_schedule_lease_timer(struct wolfIP *s,
      * of the lease) instead of being coerced into T1 == T2 or T2 == lease. */
     if (renew_s == 0U || rebind_s == 0U ||
         renew_s >= lease_s || rebind_s >= lease_s || rebind_s <= renew_s) {
+        /* RFC 2131 4.4.5: the defaults carry random fuzz so that clients
+         * booted together do not all reacquire at the same instant. */
+        uint32_t fuzz = lease_s / 32U;
         renew_s  = lease_s / 2U;
         rebind_s = (uint32_t)(((uint64_t)lease_s * 7U) / 8U);
+        if (fuzz > 0U) {
+            renew_s  = renew_s - fuzz + (wolfIP_getrandom() % (2U * fuzz + 1U));
+            rebind_s = rebind_s - fuzz + (wolfIP_getrandom() % (2U * fuzz + 1U));
+        }
     }
     if (renew_s == 0U)
         renew_s = 1U;

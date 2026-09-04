@@ -229,7 +229,7 @@ START_TEST(test_dhcp_parse_offer_and_ack)
     ck_assert_uint_eq(primary->gw, router_ip);
     ck_assert_uint_eq(s.dns_server, dns_ip);
     ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
-    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), 61000U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
 }
 END_TEST
 
@@ -243,8 +243,10 @@ START_TEST(test_dhcp_schedule_lease_timer_defaults_t1_t2)
     dhcp_schedule_lease_timer(&s, 120U, 0, 0);
 
     ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
-    ck_assert_uint_eq(s.dhcp_renew_at, 61000U);
-    ck_assert_uint_eq(s.dhcp_rebind_at, 106000U);
+    ck_assert_uint_ge(s.dhcp_renew_at, 58000U);
+    ck_assert_uint_le(s.dhcp_renew_at, 64000U);
+    ck_assert_uint_ge(s.dhcp_rebind_at, 103000U);
+    ck_assert_uint_le(s.dhcp_rebind_at, 109000U);
     ck_assert_uint_eq(s.dhcp_lease_expires, 121000U);
     ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
 }
