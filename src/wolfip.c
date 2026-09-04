@@ -8165,6 +8165,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         {
             ip4 prev_ip = ts->local_ip;
             uint16_t prev_port = ts->src_port;
+            uint8_t prev_if_idx = ts->if_idx;
             uint16_t new_port = ee16(sin->sin_port);
             ts->if_idx = (uint8_t)if_idx;
             if (bind_ip != IPADDR_ANY)
@@ -8181,6 +8182,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             if (bind_port_in_use(s->tcpsockets, MAX_TCPSOCKETS, ts,
                                  ts->local_ip, new_port)) {
                 ts->local_ip = prev_ip;
+                ts->if_idx = prev_if_idx;
                 return -1;
             }
             if (wolfIP_filter_notify_socket_event(
@@ -8188,6 +8190,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip, new_port, IPADDR_ANY, 0) != 0) {
                 ts->local_ip = prev_ip;
                 ts->src_port = prev_port;
+                ts->if_idx = prev_if_idx;
                 return -1;
             }
             ts->src_port = new_port;
@@ -8205,6 +8208,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         {
             ip4 prev_ip = ts->local_ip;
             uint16_t prev_port = ts->src_port;
+            uint8_t prev_if_idx = ts->if_idx;
             uint16_t new_port = ee16(sin->sin_port);
             ts->if_idx = (uint8_t)if_idx;
             if (bind_ip != IPADDR_ANY)
@@ -8221,6 +8225,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             if (bind_port_in_use(s->udpsockets, MAX_UDPSOCKETS, ts,
                                  ts->local_ip, new_port)) {
                 ts->local_ip = prev_ip;
+                ts->if_idx = prev_if_idx;
                 return -1;
             }
             /* Commit src_port only after the filter approves the bind (as the
@@ -8233,6 +8238,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip, new_port, IPADDR_ANY, 0) != 0) {
                 ts->local_ip = prev_ip;
                 ts->src_port = prev_port;
+                ts->if_idx = prev_if_idx;
                 return -1;
             }
             ts->src_port = new_port;
@@ -8250,6 +8256,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         {
             ip4 prev_ip = ts->local_ip;
             uint16_t prev_id = ts->src_port;
+            uint8_t prev_if_idx = ts->if_idx;
             uint16_t new_id = ee16(sin->sin_port);
             ts->if_idx = (uint8_t)if_idx;
             if (bind_ip != IPADDR_ANY)
@@ -8264,6 +8271,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             if (bind_port_in_use(s->icmpsockets, MAX_ICMPSOCKETS, ts,
                                  ts->local_ip, new_id)) {
                 ts->local_ip = prev_ip;
+                ts->if_idx = prev_if_idx;
                 return -1;
             }
             /* Commit the echo id only after the filter approves (see the UDP
@@ -8273,6 +8281,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip, new_id, IPADDR_ANY, 0) != 0) {
                 ts->local_ip = prev_ip;
                 ts->src_port = prev_id;
+                ts->if_idx = prev_if_idx;
                 return -1;
             }
             ts->src_port = new_id;

@@ -1680,6 +1680,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_wolfip_packetsocket_from_fd_negative_fd);
 #endif /* WOLFIP_PACKET_SOCKETS */
     tcase_add_test(tc_core, test_bind_port_in_use_different_ips_no_collision);
+    tcase_add_test(tc_core, test_bind_tcp_rejected_preserves_if_idx);
+    tcase_add_test(tc_core, test_bind_udp_rejected_preserves_if_idx);
+    tcase_add_test(tc_core, test_bind_icmp_rejected_preserves_if_idx);
     tcase_add_test(tc_core, test_tcp_ctrl_rto_start_no_timer_does_not_set_active);
     tcase_add_test(tc_core, test_tcp_ctrl_rto_start_rearm_failure_clears_active);
 

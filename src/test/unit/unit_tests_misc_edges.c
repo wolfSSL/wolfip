@@ -1289,3 +1289,101 @@ START_TEST(test_bind_port_in_use_different_ips_no_collision)
     ck_assert_int_eq(ret, 0);
 }
 END_TEST
+
+/* =====================================================================
+ * wolfIP_sock_bind -- a rejected TCP bind leaves if_idx unchanged
+ * ===================================================================== */
+START_TEST(test_bind_tcp_rejected_preserves_if_idx)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    struct tsocket *ts;
+    int fd1;
+    int fd2;
+
+    setup_stack_with_two_ifaces(&s, 0x0a000001U, 0x0a000101U);
+    fd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    fd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5000);
+    sin.sin_addr.s_addr = ee32(0x0a000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    sin.sin_port = ee16(6000);
+    sin.sin_addr.s_addr = ee32(0x0a000101U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd2, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), -1);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd1)];
+    ck_assert_uint_eq(ts->local_ip, 0x0a000001U);
+    ck_assert_uint_eq(ts->src_port, 5000);
+    ck_assert_uint_eq(ts->if_idx, (uint8_t)TEST_PRIMARY_IF);
+}
+END_TEST
+
+/* =====================================================================
+ * wolfIP_sock_bind -- a rejected UDP bind leaves if_idx unchanged
+ * ===================================================================== */
+START_TEST(test_bind_udp_rejected_preserves_if_idx)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    struct tsocket *ts;
+    int fd1;
+    int fd2;
+
+    setup_stack_with_two_ifaces(&s, 0x0a000001U, 0x0a000101U);
+    fd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    fd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7000);
+    sin.sin_addr.s_addr = ee32(0x0a000132U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                         sizeof(sin)), 0);
+    sin.sin_port = ee16(5000);
+    sin.sin_addr.s_addr = ee32(0x0a000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd2, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), -1);
+    ts = &s.udpsockets[SOCKET_UNMARK(fd1)];
+    ck_assert_uint_eq(ts->local_ip, 0x0a000101U);
+    ck_assert_uint_eq(ts->src_port, 0);
+    ck_assert_uint_eq(ts->if_idx, (uint8_t)TEST_SECOND_IF);
+}
+END_TEST
+
+/* =====================================================================
+ * wolfIP_sock_bind -- a rejected ICMP bind leaves if_idx unchanged
+ * ===================================================================== */
+START_TEST(test_bind_icmp_rejected_preserves_if_idx)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    struct tsocket *ts;
+    int fd1;
+    int fd2;
+
+    setup_stack_with_two_ifaces(&s, 0x0a000001U, 0x0a000101U);
+    fd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    fd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0a000132U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                         sizeof(sin)), 0);
+    sin.sin_port = ee16(4242);
+    sin.sin_addr.s_addr = ee32(0x0a000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd2, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), -1);
+    ts = &s.icmpsockets[SOCKET_UNMARK(fd1)];
+    ck_assert_uint_eq(ts->local_ip, 0x0a000101U);
+    ck_assert_uint_eq(ts->src_port, 0);
+    ck_assert_uint_eq(ts->if_idx, (uint8_t)TEST_SECOND_IF);
+}
+END_TEST
