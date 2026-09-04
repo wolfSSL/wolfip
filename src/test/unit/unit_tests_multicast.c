@@ -98,6 +98,36 @@ START_TEST(test_multicast_join_and_drop_reports)
 }
 END_TEST
 
+/* RFC 3376 §5.1: the unsolicited join report is repeated once after a short delay */
+START_TEST(test_multicast_join_report_repeated)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    ip4 group = 0xE901020BU;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+
+    last_frame_sent_size = 0;
+    wolfIP_poll(&s, 1001);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+    ck_assert_uint_eq(get_be32(last_igmp_payload() + 12), group);
+
+    last_frame_sent_size = 0;
+    wolfIP_poll(&s, 5000);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
 START_TEST(test_multicast_join_validation_and_shared_refs)
 {
     struct wolfIP s;
@@ -322,6 +352,8 @@ START_TEST(test_multicast_igmp_query_flood_coalesced)
     put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
     fix_ip_checksum(ip);
 
+    wolfIP_poll(&s, 1001);
+
     /* Feed a burst of identical queries without polling. None may be answered
      * synchronously from the receive path; the report is deferred to a timer. */
     last_frame_sent_count = 0;
@@ -332,7 +364,7 @@ START_TEST(test_multicast_igmp_query_flood_coalesced)
     /* Poll past the 10 s window: the whole burst collapses to exactly one
      * deferred Current-State Report (mode IS_EXCLUDE). */
     last_frame_sent_size = 0;
-    wolfIP_poll(&s, 10001);
+    wolfIP_poll(&s, 11001);
     ck_assert_uint_eq(last_frame_sent_count, 1);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
@@ -423,6 +455,7 @@ START_TEST(test_multicast_igmp_query_spoofed_dropped)
             m_idx = (int)i;
     }
     ck_assert_int_gt(m_idx, -1);
+    wolfIP_poll(&s, 1001);
 
     /* (1) Otherwise-valid general query but with TTL != 1 -> dropped: no
      * synchronous frame and no deferred report armed. Polling past the Max

@@ -120,6 +120,7 @@ struct wolfIP_icmp_packet;
 #define IGMPV3_QUERY_MIN_LEN 12
 #define IGMPV3_REPORT_HEADER_LEN 8
 #define IGMPV3_GROUP_RECORD_BASE_LEN 8
+#define IGMP_UNSOLICITED_REPORT_MS 1000U
 #define IP_OPTION_ROUTER_ALERT_LEN 4
 #define ARP_HEADER_LEN 28
 
@@ -836,6 +837,10 @@ struct wolfIP_mcast_membership {
      * NO_TIMER when none is scheduled); S is the owning stack, needed because
      * the timer callback only receives this membership as its argument. */
     uint32_t tmr_report;
+    /* RFC 3376 §5.1: the unsolicited report sent on join is repeated once
+     * after a random delay; tmr_unsol is that pending repeat, kept apart from
+     * tmr_report so a join does not suppress a query response. */
+    uint32_t tmr_unsol;
     struct wolfIP *S;
 };
 #endif
@@ -4674,6 +4679,18 @@ static void igmp_report_timer_cb(void *arg)
     (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
 }
 
+static void igmp_unsolicited_timer_cb(void *arg)
+{
+    struct wolfIP_mcast_membership *m = (struct wolfIP_mcast_membership *)arg;
+
+    if (!m)
+        return;
+    m->tmr_unsol = NO_TIMER;
+    if (!m->S || m->refs == 0)
+        return;
+    (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
+}
+
 static void igmp_input(struct wolfIP *s, unsigned int if_idx,
                        struct wolfIP_ip_packet *ip, uint32_t frame_len)
 {
@@ -7489,6 +7506,7 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
                 m->group = group;
                 m->if_idx = (uint8_t)if_idx;
                 m->tmr_report = NO_TIMER;
+                m->tmr_unsol = NO_TIMER;
                 m->S = s;
                 break;
             }
@@ -7499,10 +7517,17 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
 
     ts->sock.udp.mcast[i].group = group;
     ts->sock.udp.mcast[i].if_idx = (uint8_t)if_idx;
-    if (m->refs == 0)
-        (void)igmp_send_report(s, if_idx, group, IGMPV3_REC_MODE_IS_EXCLUDE);
     if (m->refs != 0xff)
         m->refs++;
+    if (m->refs == 1) {
+        struct wolfIP_timer tmr = {0};
+        (void)igmp_send_report(s, if_idx, group, IGMPV3_REC_MODE_IS_EXCLUDE);
+        tmr.expires = s->last_tick +
+                (wolfIP_getrandom() % IGMP_UNSOLICITED_REPORT_MS) + 1U;
+        tmr.arg = m;
+        tmr.cb = igmp_unsolicited_timer_cb;
+        m->tmr_unsol = timers_binheap_insert(&s->timers, tmr);
+    }
     return 0;
 }
 
@@ -7532,6 +7557,8 @@ static int udp_mcast_drop(struct wolfIP *s, struct tsocket *ts, ip4 group,
              * else its timer would fire into a freed membership. */
             if (m->tmr_report != NO_TIMER)
                 timer_binheap_cancel(&s->timers, m->tmr_report);
+            if (m->tmr_unsol != NO_TIMER)
+                timer_binheap_cancel(&s->timers, m->tmr_unsol);
             (void)igmp_send_report(s, if_idx, group,
                                    IGMPV3_REC_CHANGE_TO_INCLUDE);
             memset(m, 0, sizeof(*m));

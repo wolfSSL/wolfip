@@ -291,6 +291,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_no_icmp_unreachable_for_multicast_dst);
 #ifdef IP_MULTICAST
     tcase_add_test(tc_utils, test_multicast_join_and_drop_reports);
+    tcase_add_test(tc_utils, test_multicast_join_report_repeated);
     tcase_add_test(tc_utils, test_multicast_join_validation_and_shared_refs);
     tcase_add_test(tc_utils, test_multicast_udp_receive_requires_join);
     tcase_add_test(tc_utils, test_multicast_udp_send_mac_ttl_loop_and_options);
