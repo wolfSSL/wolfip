@@ -999,6 +999,54 @@ START_TEST(test_tcp_input_fin_wait_1_ack_beyond_snd_nxt_no_transition)
 }
 END_TEST
 
+/* An out-of-window segment must not update the peer receive window */
+START_TEST(test_tcp_input_out_of_window_keeps_peer_rwnd)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 9020, rport = 40021;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    ts->sock.tcp.peer_rwnd = 200000U;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100000, 200, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 200000U);
+}
+END_TEST
+
+/* A stale ACK below SND.UNA must not update the peer receive window */
+START_TEST(test_tcp_input_stale_ack_keeps_peer_rwnd)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 9021, rport = 40022;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    ts->sock.tcp.snd_una = 250;
+    ts->sock.tcp.seq = 300;
+    ts->sock.tcp.peer_rwnd = 200000U;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 220, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 200000U);
+}
+END_TEST
+
 /* ESTABLISHED FIN with non-matching seq (out-of-order) does not advance state */
 START_TEST(test_tcp_input_established_fin_ooo_no_close_wait)
 {

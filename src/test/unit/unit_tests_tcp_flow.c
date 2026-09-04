@@ -2717,6 +2717,7 @@ START_TEST(test_tcp_input_peer_rwnd_growth_sets_writable)
     ackseg.dst_port = ee16(ts->src_port);
     ackseg.hlen = TCP_HEADER_LEN << 2;
     ackseg.flags = TCP_FLAG_ACK;
+    ackseg.seq = ee32(ts->sock.tcp.ack);
     ackseg.ack = ee32(ts->sock.tcp.snd_una);
     ackseg.win = ee16(8);
     fix_tcp_checksums(&ackseg);

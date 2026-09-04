@@ -5227,6 +5227,20 @@ static int tcp_ack_acceptable(const struct tsocket *t, uint32_t ack)
     return tcp_seq_leq(ack, max_ack);
 }
 
+/* Check whether the segment is entitled to update the peer receive window */
+static int tcp_window_update_ok(const struct tsocket *t,
+        const struct wolfIP_tcp_seg *tcp, uint32_t tcplen)
+{
+    uint32_t seg_ack = ee32(tcp->ack);
+
+    if (t->sock.tcp.state <= TCP_SYN_RCVD)
+        return 1;
+    if (!(tcp->flags & TCP_FLAG_ACK) || !tcp_segment_acceptable(t, tcp, tcplen))
+        return 0;
+    return tcp_seq_leq(t->sock.tcp.snd_una, seg_ack) &&
+            tcp_ack_acceptable(t, seg_ack);
+}
+
 /* Receive an ack */
 static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
 {
@@ -5627,7 +5641,8 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         (t->sock.tcp.sack_offer && po.sack_permitted) ? 1 : 0;
                 }
             }
-            if (!(tcp->flags & TCP_FLAG_RST)) {
+            if (!(tcp->flags & TCP_FLAG_RST) &&
+                    tcp_window_update_ok(t, tcp, tcplen)) {
                 uint32_t prev_peer_rwnd = t->sock.tcp.peer_rwnd;
                 uint16_t raw_win = ee16(tcp->win);
                 uint8_t ws_shift =
