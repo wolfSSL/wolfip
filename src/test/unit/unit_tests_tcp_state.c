@@ -911,6 +911,94 @@ START_TEST(test_tcp_input_established_no_ack_dropped)
 }
 END_TEST
 
+/* ESTABLISHED ACK above SND.NXT leaves the retransmit queue untouched */
+START_TEST(test_tcp_input_established_ack_beyond_snd_nxt_keeps_txqueue)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct pkt_desc *desc;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 9010, rport = 40011;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    ts->sock.tcp.snd_una = 200;
+    ts->sock.tcp.seq = 300;
+    ts->sock.tcp.bytes_in_flight = 100;
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    segbuf.seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 100);
+    segbuf.seg.hlen = TCP_HEADER_LEN << 2;
+    segbuf.seg.seq = ee32(200);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 500, TCP_FLAG_ACK);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
+/* ESTABLISHED ACK above SND.NXT is answered with a challenge ACK */
+START_TEST(test_tcp_input_established_ack_beyond_snd_nxt_sends_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 9011, rport = 40012;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    ts->sock.tcp.snd_una = 300;
+    ts->sock.tcp.seq = 300;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 500, TCP_FLAG_ACK);
+
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.tcp.txbuf));
+}
+END_TEST
+
+/* FIN_WAIT_1 does not reach FIN_WAIT_2 on an ACK above SND.NXT */
+START_TEST(test_tcp_input_fin_wait_1_ack_beyond_snd_nxt_no_transition)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 9012, rport = 40013;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->sock.tcp.snd_una = 300;
+    ts->sock.tcp.seq = 300;
+    ts->sock.tcp.last = 300;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 500, TCP_FLAG_ACK);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+}
+END_TEST
+
 /* ESTABLISHED FIN with non-matching seq (out-of-order) does not advance state */
 START_TEST(test_tcp_input_established_fin_ooo_no_close_wait)
 {

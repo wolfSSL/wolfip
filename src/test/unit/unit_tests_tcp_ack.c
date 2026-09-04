@@ -285,6 +285,8 @@ START_TEST(test_tcp_input_fin_wait_2_ack_with_payload_receives)
     ck_assert_ptr_nonnull(ts);
     ts->sock.tcp.state = TCP_FIN_WAIT_2;
     ts->sock.tcp.ack = 50;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.snd_una = 10;
     ts->src_port = 1234;
     ts->dst_port = 2222;
     ts->local_ip = 0x0A000001U;
@@ -3944,6 +3946,7 @@ START_TEST(test_tcp_last_ack_closes_socket)
     ts->S = &s;
     ts->sock.tcp.state = TCP_LAST_ACK;
     ts->sock.tcp.last = 9;
+    ts->sock.tcp.seq = 9;
     ts->local_ip = local_ip;
     ts->remote_ip = remote_ip;
     ts->src_port = local_port;
@@ -3995,6 +3998,7 @@ START_TEST(test_tcp_last_ack_closes_socket_delivers_closed_event)
     ts->S = &s;
     ts->sock.tcp.state = TCP_LAST_ACK;
     ts->sock.tcp.last = 9;
+    ts->sock.tcp.seq = 9;
     ts->local_ip = local_ip;
     ts->remote_ip = remote_ip;
     ts->src_port = local_port;
@@ -4105,7 +4109,9 @@ START_TEST(test_tcp_last_ack_partial_ack_keeps_socket_and_timer)
     ts->proto = WI_IPPROTO_TCP;
     ts->S = &s;
     ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.snd_una = 9;
     ts->sock.tcp.last = 9;
+    ts->sock.tcp.seq = 9;
     ts->local_ip = local_ip;
     ts->remote_ip = remote_ip;
     ts->src_port = local_port;

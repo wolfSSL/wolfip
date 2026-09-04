@@ -3368,7 +3368,7 @@ START_TEST(test_tcp_input_syn_rcvd_high_seq_data_held_ooo)
     dataseg->dst_port = ee16(ts->src_port);
     dataseg->src_port = ee16(ts->dst_port);
     dataseg->seq = ee32(rcv_nxt);
-    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->ack = ee32(ts->sock.tcp.snd_una);
     dataseg->hlen = TCP_HEADER_LEN << 2;
     dataseg->flags = TCP_FLAG_ACK;
     memcpy(dataseg->data, "0123456789", 10);
@@ -3456,7 +3456,7 @@ START_TEST(test_tcp_input_syn_rcvd_fin_above_hole_deferred)
     dataseg->dst_port = ee16(ts->src_port);
     dataseg->src_port = ee16(ts->dst_port);
     dataseg->seq = ee32(rcv_nxt);
-    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->ack = ee32(ts->sock.tcp.snd_una);
     dataseg->hlen = TCP_HEADER_LEN << 2;
     dataseg->flags = TCP_FLAG_ACK;
     memcpy(dataseg->data, "0123456789", 10);
@@ -3482,7 +3482,7 @@ START_TEST(test_tcp_input_syn_rcvd_fin_above_hole_deferred)
     dataseg->dst_port = ee16(ts->src_port);
     dataseg->src_port = ee16(ts->dst_port);
     dataseg->seq = ee32(rcv_nxt + 10);
-    dataseg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    dataseg->ack = ee32(ts->sock.tcp.snd_una);
     dataseg->hlen = TCP_HEADER_LEN << 2;
     dataseg->flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
     memcpy(dataseg->data, "ABCDEFGH", 8);
@@ -3667,7 +3667,7 @@ START_TEST(test_tcp_input_paws_upper_half_tsval_flows)
     seg->src_port = ee16(52798);
     seg->dst_port = ee16(1234);
     seg->seq = ee32(rcv_nxt);
-    seg->ack = ee32(tcp_seq_inc(ts->sock.tcp.snd_una, 1));
+    seg->ack = ee32(ts->sock.tcp.snd_una);
     seg->hlen = (TCP_HEADER_LEN + TCP_OPTIONS_LEN) << 2;
     seg->flags = TCP_FLAG_ACK;
     opt->opt = TCP_OPTION_TS;
@@ -5869,7 +5869,7 @@ START_TEST(test_tcp_fin_in_close_wait_does_not_advance_ack)
     fin->dst_port = ee16(lsn->src_port);
     fin->src_port = ee16(lsn->dst_port);
     fin->seq = ee32(rcv_nxt);
-    fin->ack = ee32(tcp_seq_inc(lsn->sock.tcp.snd_una, 1));
+    fin->ack = ee32(lsn->sock.tcp.snd_una);
     fin->hlen = TCP_HEADER_LEN << 2;
     fin->flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
     fix_tcp_checksums(fin);

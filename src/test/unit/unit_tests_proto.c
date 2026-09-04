@@ -280,6 +280,8 @@ START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
     ts->local_ip = 0x0A000001U;
     ts->remote_ip = 0x0A000002U;
     ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.snd_una = 100;
 
     memset(buf, 0, sizeof(buf));
     seg->ip.ver_ihl = 0x45;
