@@ -22,7 +22,7 @@
  */
 
 #include "wolfhal_eth.h"
-#include "board.h"
+#include "wolfHAL_board.h"
 #include <string.h>
 
 #ifndef WOLFHAL_ETH_LINK_TIMEOUT_MS

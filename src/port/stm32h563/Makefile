@@ -160,10 +160,10 @@ CFLAGS += -I$(WOLFHAL_ROOT) -I$(BOARD_DIR) -I$(ROOT)/src/port/wolfHAL
 LDSCRIPT := $(BOARD_DIR)/linker.ld
 
 # The board dir carries its own wolfHAL-specific startup/ivt/syscalls; the
-# bare-metal stm32_eth.c driver is replaced by board.c (BSP bringup) plus the
+# bare-metal stm32_eth.c driver is replaced by wolfHAL_board.c (BSP bringup) plus the
 # generic wolfhal_eth.c bridge.
 SRCS := $(BOARD_DIR)/startup.c $(BOARD_DIR)/ivt.c syscalls.c
-SRCS += main.c $(BOARD_DIR)/board.c $(ROOT)/src/port/wolfHAL/wolfhal_eth.c
+SRCS += main.c $(BOARD_DIR)/wolfHAL_board.c $(ROOT)/src/port/wolfHAL/wolfhal_eth.c
 SRCS += $(ROOT)/src/wolfip.c
 
 # wolfHAL driver selection (WHAL_CFG_* defines) + wolfHAL driver TUs.
