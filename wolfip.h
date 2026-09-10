@@ -631,4 +631,15 @@ static inline void iptoa(ip4 ip, char *buf)
     #endif /* WOLFIP_ESP */
 #endif /* WOLFSSL_WOLFIP */
 
+#ifdef WOLFCERT_WOLFIP
+    #include <wolfcert/types.h>
+
+    /* Fill in a caller-owned WolfCertTransport over wolfIP sockets; returns
+     * the context for wolfCert_Cleanup_wolfIP(), or NULL on failure.
+     * `now_ms` is the clock the application already feeds wolfIP_poll(). */
+    void *wolfCert_Init_wolfIP(WolfCertTransport *t, struct wolfIP *stack,
+                               uint64_t (*now_ms)(void));
+    void wolfCert_Cleanup_wolfIP(void *context);
+#endif /* WOLFCERT_WOLFIP */
+
 #endif /* !WOLFIP_H */
