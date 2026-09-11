@@ -2596,5 +2596,65 @@ START_TEST(test_sock6_tcp_listener_revert_clears_the_ipv6_peer)
 }
 END_TEST
 
+/* An address buffer with no length to go with it is caller error, and the
+ * IPv4 arm has always rejected it. The IPv6 dispatch used to run first, so
+ * the same call reached udp6_recvfrom()/icmp6_recvfrom(), whose own size
+ * check is skipped when addrlen is NULL - a 28-byte sockaddr_in6 written
+ * into a buffer of unknown size. */
+START_TEST(test_sock6_recvfrom_rejects_an_address_with_no_length)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 local;
+    int udp_fd;
+    int icmp_fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+
+    udp_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(udp_fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 9800);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    sock6_deliver_udp(&s, S6_PEER, &local, 6400, 9800, "v6", 2);
+
+    memset(&from, 0, sizeof(from));
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          NULL), -WOLFIP_EINVAL);
+    /* Nothing was written, and the datagram is still there to be read
+     * properly. */
+    ck_assert_uint_eq(from.sin6_family, 0);
+    fromlen = sizeof(from);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          &fromlen), 2);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+
+    /* The ICMPv6 arm dispatches the same way and needs the same guard. */
+    icmp_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                                 WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(icmp_fd, 0);
+    sock6_deliver_icmp6_msg(&s, &local, &local, 100, 0);
+
+    memset(&from, 0, sizeof(from));
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          NULL), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(from.sin6_family, 0);
+    fromlen = sizeof(from);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, icmp_fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          &fromlen), 0);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+}
+END_TEST
 
 #endif /* WOLFIP_IPV6 */

@@ -9703,6 +9703,13 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
+        /* An address buffer with no size to go with it is rejected before
+         * anything is written into it. This has to precede the IPv6 dispatch
+         * below: udp6_recvfrom()/icmp6_recvfrom() size their check off
+         * *addrlen, so with addrlen NULL they would copy a 28-byte
+         * sockaddr_in6 into a buffer of unknown size. */
+        if (src_addr && !addrlen)
+            return -WOLFIP_EINVAL;
 #if WOLFIP_IPV6
         /* Dispatch on the family of the datagram at the head of the queue,
          * before the IPv4 arm below rewrites *addrlen: the whole packet is
@@ -9716,8 +9723,6 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 return udp6_recvfrom(s, ts, buf, len, src_addr, addrlen);
         }
 #endif
-        if (sin && !addrlen)
-            return -WOLFIP_EINVAL;
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -WOLFIP_EINVAL;
 #if WOLFIP_IPV6
@@ -9782,6 +9787,13 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
+        /* An address buffer with no size to go with it is rejected before
+         * anything is written into it. This has to precede the IPv6 dispatch
+         * below: udp6_recvfrom()/icmp6_recvfrom() size their check off
+         * *addrlen, so with addrlen NULL they would copy a 28-byte
+         * sockaddr_in6 into a buffer of unknown size. */
+        if (src_addr && !addrlen)
+            return -WOLFIP_EINVAL;
 #if WOLFIP_IPV6
         /* Dispatched before the IPv4 arm rewrites *addrlen, and on the
          * family of the queued message rather than on the socket, for the
@@ -9794,8 +9806,6 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 return icmp6_recvfrom(s, ts, buf, len, src_addr, addrlen);
         }
 #endif
-        if (sin && !addrlen)
-            return -WOLFIP_EINVAL;
         if (sin && *addrlen < sizeof(struct wolfIP_sockaddr_in))
             return -WOLFIP_EINVAL;
         if (addrlen)
