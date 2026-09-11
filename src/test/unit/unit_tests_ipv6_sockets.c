@@ -2466,6 +2466,135 @@ START_TEST(test_sock6_tcp_listener_resets_stray_ack_from_another_peer)
 }
 END_TEST
 
+/* An incoming IPv6 SYN records the peer on the listening socket itself.
+ * Reverting that socket to LISTEN has to undo it: the family belongs to the
+ * connection, not to the listener, and a dual-stack listener left flagged
+ * IPv6 framed the next connection's SYN-ACK as IPv6 and aimed it at the
+ * previous peer. */
+START_TEST(test_sock6_tcp_listener_revert_clears_the_ipv6_peer)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    struct wolfIP_tcp_seg *seg4;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t frame[LINK_MTU];
+    uint8_t staging[LINK_MTU];
+    struct wolfIP_tcp_seg *syn4 = (struct wolfIP_tcp_seg *)frame;
+    union transport_pseudo_header ph;
+    struct wolfIP_ll_dev *ll;
+    const struct tsocket *listener;
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    int listen_fd;
+    int conn_fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+
+    /* A wildcard AF_INET6 bind, so the listener is dual-stack. */
+    listen_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    sock6_addr(&bind_addr, NULL, 8201);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    sock6_deliver_tcp(&s, &peer, &local, 41200, 8201, 0x5000, 0,
+                      TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    conn_fd = wolfIP_sock_accept(&s, listen_fd,
+                                 (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_ge(conn_fd, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* accept() hands the connection to the child and reverts the listener:
+     * no peer of any family may survive that. */
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_fd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(listener->peer_is_v6, 0);
+    ck_assert_int_eq(ip6_is_unspecified(&listener->remote_ip6), 1);
+    ck_assert_uint_eq(listener->remote_ip, 0);
+
+    /* The consequence that matters: an IPv4 connection to the same
+     * dual-stack listener is answered over IPv4. */
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(syn4->ip.eth.dst, ll->mac, 6);
+    memset(syn4->ip.eth.src, 0x22, 6);
+    syn4->ip.eth.type = ee16(ETH_TYPE_IP);
+    syn4->ip.ver_ihl = 0x45;
+    syn4->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    syn4->ip.ttl = 64;
+    syn4->ip.proto = WI_IPPROTO_TCP;
+    syn4->ip.src = ee32(atoip4("192.168.10.1"));
+    syn4->ip.dst = ee32(atoip4("192.168.10.2"));
+    iphdr_set_checksum(&syn4->ip);
+    syn4->src_port = ee16(41201);
+    syn4->dst_port = ee16(8201);
+    syn4->seq = ee32(0x6000);
+    syn4->ack = 0;
+    syn4->hlen = (uint8_t)(TCP_HEADER_LEN << 2);
+    syn4->flags = TCP_FLAG_SYN;
+    syn4->win = ee16(8192);
+    syn4->csum = 0;
+    ph.ph.src = syn4->ip.src;
+    ph.ph.dst = syn4->ip.dst;
+    ph.ph.zero = 0;
+    ph.ph.proto = WI_IPPROTO_TCP;
+    ph.ph.len = ee16(TCP_HEADER_LEN);
+    syn4->csum = ee16(transport_checksum(&ph, &syn4->src_port));
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* The SYN-ACK waits on ARP for the IPv4 peer: answer it, then let the
+     * queued segment go out so the frame under test is the SYN-ACK itself. */
+    {
+        uint8_t arp_frame[sizeof(struct arp_packet)];
+        struct arp_packet *arp = (struct arp_packet *)arp_frame;
+        const uint8_t v4_mac[6] = {0x02, 0xEE, 0x00, 0x00, 0x00, 0x04};
+
+        memset(arp_frame, 0, sizeof(arp_frame));
+        memcpy(arp->eth.dst, ll->mac, 6);
+        memcpy(arp->eth.src, v4_mac, 6);
+        arp->eth.type = ee16(ETH_TYPE_ARP);
+        arp->htype = ee16(1);
+        arp->ptype = ee16(0x0800);
+        arp->hlen = 6;
+        arp->plen = 4;
+        arp->opcode = ee16(ARP_REPLY);
+        memcpy(arp->sma, v4_mac, 6);
+        arp->sip = ee32(atoip4("192.168.10.1"));
+        memcpy(arp->tma, ll->mac, 6);
+        arp->tip = ee32(atoip4("192.168.10.2"));
+        mock_link_capture_reset();
+        wolfIP_recv_ex(&s, TEST_PRIMARY_IF, arp_frame, sizeof(arp_frame));
+        now += 100;
+        wolfIP_poll(&s, now);
+    }
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    seg = (struct wolfIP_tcp6_seg *)staging;
+    ck_assert_uint_eq(ee16(seg->ip6.eth.type), ETH_TYPE_IP);
+    seg4 = (struct wolfIP_tcp_seg *)staging;
+    ck_assert_uint_eq(seg4->ip.proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(seg4->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
+                      TCP_FLAG_SYN | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(seg4->ip.dst), atoip4("192.168.10.1"));
+}
+END_TEST
 
 
 #endif /* WOLFIP_IPV6 */

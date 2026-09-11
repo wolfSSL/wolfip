@@ -5092,6 +5092,17 @@ static void tcp_listener_revert_to_listen(struct tsocket *t)
     t->remote_ip = 0;
     t->dst_port = 0;
     t->events = 0;
+#if WOLFIP_IPV6
+    /* The family is a property of the connection, not of the listener: an
+     * incoming IPv6 SYN sets peer_is_v6 and remote_ip6 on the listener
+     * itself, and leaving them set here made a dual-stack AF_INET6 listener
+     * frame the *next* connection's SYN-ACK as IPv6 and send it to the
+     * previous peer. Drop the peer outright and put the local address back
+     * to what the application bound, exactly as the IPv4 half does below. */
+    t->peer_is_v6 = 0;
+    ip6_set_unspecified(&t->remote_ip6);
+    ip6_copy(&t->local_ip6, &t->bound_local_ip6);
+#endif
     if (t->bound_local_ip != IPADDR_ANY) {
         int bound_match = 0;
         unsigned int bound_if = wolfIP_if_for_local_ip(
