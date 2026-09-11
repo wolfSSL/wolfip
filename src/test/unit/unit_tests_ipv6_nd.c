@@ -1681,6 +1681,54 @@ START_TEST(test_nd_clock_rollback_does_not_strand_discovery)
 }
 END_TEST
 
+/* RFC 4862 section 5.5.3 (e) applies to an address already formed from the
+ * prefix whatever the advertised Valid Lifetime, zero included - and the
+ * two-hour rule there is what keeps a zero from deleting it outright. The
+ * autoconfiguration arm used to be skipped entirely on a zero, so the
+ * address kept whatever lifetimes it had. */
+START_TEST(test_nd_slaac_zero_valid_lifetime_still_updates_the_address)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ifaddr_info info;
+    uint64_t now = 1000;
+    unsigned int i;
+    unsigned int n;
+    uint32_t valid_after = 0xFFFFFFFFu;
+    ip6 prefix;
+    ip6 iid;
+    ip6 formed;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 86400u, 86400u, 4);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::", &prefix), 0);
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&formed, &prefix, 64, &iid);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+
+    /* Valid Lifetime zero. The prefix leaves the on-link list at once (RFC
+     * 4861 section 6.3.4), and the address is cut to the two-hour floor
+     * rather than left on its full day. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 0u, 0u, 4);
+    n = wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6);
+    for (i = 0; i < n; i++) {
+        if (wolfIP_ifaddr_get(&s, TEST_PRIMARY_IF, AF_INET6, i, &info) != 0)
+            continue;
+        if (ip6_cmp(&info.v6, &formed) == 0)
+            valid_after = info.valid_lifetime;
+    }
+    ck_assert_uint_eq(valid_after, 2u * 60u * 60u);
+}
+END_TEST
 
 
 

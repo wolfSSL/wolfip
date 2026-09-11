@@ -2948,8 +2948,7 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
                  * there is what stops a zero from deleting it outright - so
                  * a zero must still reach nd6_slaac_apply_lifetimes()
                  * rather than skip the arm entirely. */
-                if ((po->flags & ND6_PREFIX_AUTO) && (po->prefix_len == 64u) &&
-                        (valid != 0)) {
+                if ((po->flags & ND6_PREFIX_AUTO) && (po->prefix_len == 64u)) {
                     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
                     ip6 iid;
                     ip6 formed;
@@ -2963,7 +2962,7 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
                         /* Adding it is a no-op when it is already there, so
                          * a repeated advertisement does not restart DAD. */
                         slot = nd6_slot_for(s, if_idx, &formed);
-                        if (slot == NULL) {
+                        if ((slot == NULL) && (valid != 0)) {
                             if (wolfIP_ifaddr_add6(s, if_idx, &formed, 64) == 0) {
                                 slot = nd6_slot_for(s, if_idx, &formed);
                                 is_new = 1;
