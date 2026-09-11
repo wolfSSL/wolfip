@@ -1440,6 +1440,46 @@ END_TEST
 
 
 
+/* RFC 4861 section 7.2.5: IsRouter follows the Router flag in both
+ * directions, and a node that stops being a router leaves the Default
+ * Router List. The flag used only ever to be set. */
+START_TEST(test_nd_advertisement_can_revoke_router_status)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 router;
+    ip6 offlink;
+    ip6 nexthop;
+    ip6 ourll;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    nd_send_ra(&s, "fe80::1", 1800, "2001:db8:1:2::", 64,
+               ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 7200, 255);
+    nd_advance(&s, &now, 1500);
+
+    ck_assert_int_eq(atoip6("fe80::1", &router), 0);
+    ck_assert_int_eq(atoip6("2001:db8:99::1", &offlink), 0);
+    ck_assert_int_eq(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
+    ck_assert_int_eq(ip6_cmp(&nexthop, &router), 0);
+
+    /* The same node advertises itself with the Router flag clear. */
+    nd_our_link_local(&s, &ourll);
+    nd_send_na(&s, &router, &ourll, &router,
+               ND6_NA_SOLICITED | ND6_NA_OVERRIDE, nd_router_mac, 255,
+               nd_router_mac);
+    nd_advance(&s, &now, 200);
+
+    /* It is no longer the default route: an off-link destination has no
+     * next hop any more. */
+    ck_assert_int_ne(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
+}
+END_TEST
 
 
 #endif /* WOLFIP_IPV6 */

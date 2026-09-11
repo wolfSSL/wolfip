@@ -1435,6 +1435,23 @@ static void nd6_router_store(struct wolfIP *s, unsigned int if_idx,
     }
 }
 
+/* Forget a default router. RFC 4861 section 7.2.5: a node that learns a
+ * router is no longer one must remove it from the Default Router List. */
+static void nd6_router_forget(struct wolfIP *s, unsigned int if_idx,
+                              const ip6 *addr)
+{
+    unsigned int i;
+
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        struct nd6_router *r = &s->nd6.routers[i];
+
+        if (!r->used)
+            continue;
+        if ((r->if_idx == (uint8_t)if_idx) && (ip6_cmp(&r->addr, addr) == 0))
+            r->used = 0;
+    }
+}
+
 /* Is this destination on-link, according to the prefix list? */
 static int nd6_is_onlink(struct wolfIP *s, unsigned int if_idx,
                          const ip6 *dst)
@@ -2764,8 +2781,13 @@ static void nd6_recv_na(struct wolfIP *s, unsigned int if_idx,
      * false the node must also leave the Default Router List - otherwise
      * traffic keeps being handed to a host that has just disclaimed the
      * job. */
-    if (na->flags & ND6_NA_ROUTER)
+    if (na->flags & ND6_NA_ROUTER) {
         n->is_router = 1;
+    } else {
+        if (n->is_router)
+            nd6_router_forget(s, if_idx, &target);
+        n->is_router = 0;
+    }
 }
 
 /* Router Advertisement (RFC 4861 section 6.3.4). Minimal on purpose: the

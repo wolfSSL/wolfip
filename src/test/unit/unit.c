@@ -1335,6 +1335,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_stop_drops_a_tentative_address);
     tcase_add_test(tc_proto, test_nd_restarts_after_being_stopped);
     tcase_add_test(tc_proto, test_nd_stop_rejects_invalid_arguments);
+    tcase_add_test(tc_proto, test_nd_advertisement_can_revoke_router_status);
 
     /* IPv6 over a point-to-point link (ll->non_ethernet). */
     tcase_add_test(tc_proto, test_ptp_reserved_iids_are_recognised);
