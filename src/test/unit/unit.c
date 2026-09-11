@@ -1341,6 +1341,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_advertisement_can_revoke_router_status);
     tcase_add_test(tc_proto, test_nd_clock_rollback_does_not_strand_discovery);
     tcase_add_test(tc_proto, test_nd_slaac_zero_valid_lifetime_still_updates_the_address);
+    tcase_add_test(tc_proto, test_nd_slaac_zero_preferred_lifetime_deprecates_at_once);
     tcase_add_test(tc_proto, test_nd_ipv6_refuses_a_link_below_the_minimum_mtu);
     tcase_add_test(tc_proto, test_nd_ipv6_address_limit_is_enforced);
 

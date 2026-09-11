@@ -3230,8 +3230,7 @@ static void nd6_tick_cb(void *arg)
             slot->used = 0;
             continue;
         }
-        if ((slot->info.preferred_lifetime != 0) &&
-                (slot->info.state == WOLFIP_IFADDR_PREFERRED)) {
+        if (slot->info.state == WOLFIP_IFADDR_PREFERRED) {
             uint64_t pref = (uint64_t)slot->info.preferred_lifetime * 1000u;
 
             if ((s->last_tick - slot->lifetime_ts) >= pref)

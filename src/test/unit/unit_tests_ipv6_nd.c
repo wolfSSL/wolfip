@@ -1730,6 +1730,46 @@ START_TEST(test_nd_slaac_zero_valid_lifetime_still_updates_the_address)
 }
 END_TEST
 
+/* A router deprecates an address by re-advertising its prefix with a
+ * preferred lifetime of zero. Reading that zero as "unlimited" - which it is
+ * on an address the application added by hand - left the address preferred
+ * until its valid lifetime ran out instead. */
+START_TEST(test_nd_slaac_zero_preferred_lifetime_deprecates_at_once)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    uint64_t now = 1000;
+    ip6 prefix;
+    ip6 iid;
+    ip6 formed;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 86400u, 86400u, 4);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::", &prefix), 0);
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&formed, &prefix, 64, &iid);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+
+    /* Still valid for a day, but no longer preferred. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 86400u, 0u, 4);
+    nd_advance(&s, &now, 300);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_DEPRECATED);
+
+    /* Deprecated is not gone: it stays usable for a connection already on
+     * it, and only source selection avoids it. */
+    nd_advance(&s, &now, 2000);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_DEPRECATED);
+}
+END_TEST
 
 
 /* RFC 8200 section 5: IPv6 needs a link MTU of at least 1280 octets, or
