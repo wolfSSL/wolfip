@@ -13552,12 +13552,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
              * the primary, and scanning only ipconf[] sent traffic
              * addressed to an alias into the forwarding path instead of
              * delivering it. */
-            for (i = 0; i < s->if_count; i++) {
-                struct ipconf *conf = &s->ipconf[i];
-                if (!conf || conf->ip == IPADDR_ANY)
-                    continue;
-                if (conf->ip == dest) { is_local = 1; break; }
-            }
+            is_local = wolfIP_ifaddr_is_local4(s, dest, NULL);
         }
         if (!is_local) {
             ip4 src = ee32(ip->src);
@@ -13590,13 +13585,8 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
              * strict-RPF loop below skips the ingress interface (i == if_idx),
              * so its own address would otherwise pass; check every address of
              * ours here explicitly, aliases included. */
-            if (!rpf_drop) {
-                for (i = 0; i < s->if_count; i++) {
-                    struct ipconf *conf = &s->ipconf[i];
-                    if (!conf || conf->ip == IPADDR_ANY)
-                        continue;
-                    if (conf->ip == src) { rpf_drop = 1; break; }
-                }
+            if (!rpf_drop && wolfIP_ifaddr_is_local4(s, src, NULL)) {
+                rpf_drop = 1;
             }
             /* Strict RPF: a source that belongs to some other configured
              * interface's local subnet must not arrive on this one. */

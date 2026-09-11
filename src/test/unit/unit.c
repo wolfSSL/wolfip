@@ -1185,6 +1185,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ifaddr_v6_duplicate_is_rejected_and_removal_works);
     tcase_add_test(tc_utils, test_ifaddr_v6_link_local_address_is_scoped_per_interface);
     tcase_add_test(tc_utils, test_ifaddr_v6_and_v4_share_the_per_interface_budget);
+    tcase_add_test(tc_utils, test_ifaddr_alias_destination_is_delivered_not_forwarded);
+    tcase_add_test(tc_utils, test_ifaddr_alias_source_is_rejected_as_spoofed);
 #endif
 
     /* IPv6 addressing (wolfip6.h). Not gated on WOLFIP_IPV6: the header holds

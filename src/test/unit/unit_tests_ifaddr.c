@@ -726,6 +726,92 @@ START_TEST(test_ifaddr_v6_and_v4_share_the_per_interface_budget)
 }
 END_TEST
 
+/* An IPv4 alias is as local as the interface primary. With forwarding on,
+ * ip_recv() used to decide locality by scanning the ipconf primaries alone,
+ * so a datagram addressed to an alias was not recognised as ours and went
+ * down the forwarding path instead of being delivered. */
+START_TEST(test_ifaddr_alias_destination_is_delivered_not_forwarded)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[32];
+    int fd;
 
+    ifaddr_setup(&s);
+    /* IFA_IP_B is an alias on the same interface as the primary IFA_IP_A. */
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7400);
+    sin.sin_addr.s_addr = ee32(IFA_IP_B);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A0A0A09U, IFA_IP_B,
+                      6000, 7400, (const uint8_t *)"al", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 2);
+}
+END_TEST
+
+/* The mirror image on the source side: a source address equal to one of our
+ * own can only be forged, and the exact-local check that says so scanned
+ * only the primaries, so an alias was a free identity to spoof. */
+START_TEST(test_ifaddr_alias_source_is_rejected_as_spoofed)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t buf[32];
+    int fd;
+
+    ifaddr_setup(&s);
+    /* The alias sits on a subnet of its own, away from either interface's
+     * primary. Strict RPF compares the source against the primary subnets,
+     * so a source drawn from one of those would be dropped there and never
+     * reach the exact-local check this test is about. */
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_ALIAS_FAR,
+                                        24), 0);
+    /* A second interface, so the datagram below is not for us and takes the
+     * forwarding path where the check lives. */
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, IFA_IP_C, IFA_MASK, 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(7401);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+
+    /* Aimed across the box, at a host on the other interface's subnet, so
+     * that a datagram which survives the checks is really forwarded and
+     * says so on the wire. */
+    mock_link_capture_reset();
+    wolfIP_poll(&s, 10000);
+    recv_udp_datagram(&s, TEST_SECOND_IF, 0x08080808U, 0x0A0A0A40U,
+                      6000, 7401, (const uint8_t *)"ok", 2);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+
+    /* The same datagram claiming to be our own alias can only be forged -
+     * we originate such packets, we never receive them - so it is dropped
+     * and nothing leaves the box. The clock moves on first, so the silence
+     * below is the check talking and not the ARP rate limit. */
+    mock_link_capture_reset();
+    wolfIP_poll(&s, 120000);
+    mock_link_capture_reset();
+    recv_udp_datagram(&s, TEST_SECOND_IF, IFA_ALIAS_FAR, 0x0A0A0A40U,
+                      6000, 7401, (const uint8_t *)"sp", 2);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
 
 #endif /* WOLFIP_IPV6 */
