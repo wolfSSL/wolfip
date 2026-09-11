@@ -403,6 +403,8 @@ static void tcp6_input(struct wolfIP *s, unsigned int if_idx,
 static int ip6_select_source(struct wolfIP *s, unsigned int if_idx,
                              const ip6 *dst, ip6 *src);
 static unsigned int ip6_route_for_dest(struct wolfIP *s, const ip6 *dst);
+static unsigned int ip6_egress_for(struct wolfIP *s, const struct tsocket *t,
+                                   const ip6 *dst);
 static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
                        uint8_t *mac);
 static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
@@ -1691,7 +1693,7 @@ static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
             return -WOLFIP_EINVAL;
         ip6_copy(&src, &t->bound_local_ip6);
     } else {
-        if_idx = ip6_route_for_dest(s, &t->remote_ip6);
+        if_idx = ip6_egress_for(s, t, &t->remote_ip6);
         if (ip6_select_source(s, if_idx, &t->remote_ip6, &src) != 0)
             return -1;
     }
@@ -2165,6 +2167,41 @@ static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
  * carries it and which of our addresses to send from. Called from sendto()
  * before the datagram is built, because the source address is part of the
  * checksum and so has to be known first. Returns 0 on success. */
+/* Record the zone the caller named for a scoped destination. A zone on an
+ * unscoped (global) destination is meaningless and ignored, as is one that
+ * does not name an interface carrying IPv6 - the alternative, failing the
+ * call, would break callers that fill sockaddr_in6 wholesale and leave a
+ * stale scope_id in it. */
+static void ip6_set_zone(struct wolfIP *s, struct tsocket *t, const ip6 *dst,
+                         unsigned int scope_id)
+{
+    if (!ip6_is_link_local(dst) && !ip6_is_mcast_link_local(dst))
+        return;
+    if (scope_id == 0)
+        return;
+    if (scope_id >= WOLFIP_MAX_INTERFACES)
+        return;
+    if (wolfIP_ifaddr_count(s, scope_id, AF_INET6) == 0)
+        return;
+    t->zone6_if = (uint8_t)(scope_id + 1u);
+}
+
+/* Which interface carries this destination for this socket: the zone the
+ * application named, when the destination is one a zone applies to, and
+ * otherwise whatever routing says. */
+static unsigned int ip6_egress_for(struct wolfIP *s, const struct tsocket *t,
+                                   const ip6 *dst)
+{
+    if ((t->zone6_if != 0) &&
+            (ip6_is_link_local(dst) || ip6_is_mcast_link_local(dst))) {
+        unsigned int zone = (unsigned int)(t->zone6_if - 1u);
+
+        if (wolfIP_ifaddr_count(s, zone, AF_INET6) > 0)
+            return zone;
+    }
+    return ip6_route_for_dest(s, dst);
+}
+
 static int udp6_prepare_tx(struct wolfIP *s, struct tsocket *t, const ip6 *dst)
 {
     unsigned int if_idx;
@@ -2181,7 +2218,7 @@ static int udp6_prepare_tx(struct wolfIP *s, struct tsocket *t, const ip6 *dst)
             return -1;
         ip6_copy(&src, &t->bound_local_ip6);
     } else {
-        if_idx = ip6_route_for_dest(s, dst);
+        if_idx = ip6_egress_for(s, t, dst);
         if (ip6_select_source(s, if_idx, dst, &src) != 0)
             return -1; /* no usable source address yet */
     }
@@ -2218,10 +2255,13 @@ static uint32_t udp6_max_payload(struct wolfIP *s, unsigned int if_idx)
  * AF_INET6 socket sees one address type; sock_addr_is_v6() below is what
  * distinguishes the two afterwards. Returns 0 on success. */
 static int sock_addr_to_ip6(const struct wolfIP_sockaddr *addr,
-                            socklen_t addrlen, ip6 *out, uint16_t *port)
+                            socklen_t addrlen, ip6 *out, uint16_t *port,
+                            unsigned int *scope_id)
 {
     if (!addr || !out)
         return -WOLFIP_EINVAL;
+    if (scope_id)
+        *scope_id = 0;
     if (addr->sa_family == AF_INET6) {
         const struct wolfIP_sockaddr_in6 *sin6 =
             (const struct wolfIP_sockaddr_in6 *)addr;
@@ -2231,6 +2271,8 @@ static int sock_addr_to_ip6(const struct wolfIP_sockaddr *addr,
         memcpy(out->addr, &sin6->sin6_addr, 16);
         if (port)
             *port = ee16(sin6->sin6_port);
+        if (scope_id)
+            *scope_id = sin6->sin6_scope_id;
         return 0;
     }
     if (addr->sa_family == AF_INET) {
@@ -2363,7 +2405,7 @@ static int flush_datagram6_one(struct wolfIP *s, struct tsocket *t,
     ip6_hdr_get_dst(pkt, &dst);
     /* Route for this descriptor's destination rather than the socket's
      * current one: a sendto() to another peer may have moved it since. */
-    *tx_if = ip6_route_for_dest(s, &dst);
+    *tx_if = ip6_egress_for(s, t, &dst);
     {
         int rc = nd6_resolve(s, tx_if, &dst, mac);
 
@@ -2492,7 +2534,7 @@ static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
                                          IP6_HEADER_LEN),
                               0, NULL) != 0)
         return -1;
-    tx_if = ip6_route_for_dest(s, &t->remote_ip6);
+    tx_if = ip6_egress_for(s, t, &t->remote_ip6);
     if (nd6_resolve(s, &tx_if, &t->remote_ip6, mac) != 0)
         return -WOLFIP_EAGAIN;
     t->if_idx = (uint8_t)tx_if;
@@ -2589,7 +2631,7 @@ static int tcp6_connect(struct wolfIP *s, struct tsocket *t, const ip6 *dst,
             return -WOLFIP_EINVAL;
         ip6_copy(&src, &t->bound_local_ip6);
     } else {
-        if_idx = ip6_route_for_dest(s, dst);
+        if_idx = ip6_egress_for(s, t, dst);
         if (ip6_select_source(s, if_idx, dst, &src) != 0)
             return -WOLFIP_EINVAL;
     }

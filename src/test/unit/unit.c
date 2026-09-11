@@ -1440,6 +1440,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_link_local_bind_ignores_another_interface);
     tcase_add_test(tc_proto, test_sock6_tcp_receive_does_not_reach_the_ipv4_filter);
     tcase_add_test(tc_proto, test_sock6_bind_refuses_a_port_already_auto_assigned);
+    tcase_add_test(tc_proto, test_sock6_sendto_honours_the_destination_scope);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */

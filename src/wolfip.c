@@ -1392,6 +1392,12 @@ struct tsocket {
      * a substitute, because a dual-stack socket that reserved an IPv4 port
      * sets it later on its first IPv6 send. */
     uint8_t bound_v6;
+    /* The zone the application named for a scoped destination, as the
+     * interface index plus one; zero means it named none. A link-local
+     * address identifies a peer only together with its link (RFC 4007
+     * section 6), so without this a connect() or sendto() to fe80::1%eth1
+     * would go out over whichever interface routing happened to pick. */
+    uint8_t zone6_if;
 #endif
     uint8_t tos; /* outgoing IPv4 TOS/DS field (setsockopt WOLFIP_IP_TOS) */
     uint8_t recv_ttl;
@@ -8628,12 +8634,17 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         struct wolfIP_sockaddr_in sin4;
         ip6 dst6;
         uint16_t dport = 0;
+        unsigned int scope6 = 0;
 
         ts = wolfIP_socket_from_fd(s, sockfd);
         if (!ts || (ts->domain != AF_INET6))
             return -WOLFIP_EINVAL;
-        if (sock_addr_to_ip6(addr, addrlen, &dst6, &dport) != 0)
+        if (sock_addr_to_ip6(addr, addrlen, &dst6, &dport, &scope6) != 0)
             return -WOLFIP_EINVAL;
+        /* Recorded before any routing decision: a scoped destination is
+         * reached over the link the caller named, not the first one that
+         * happens to carry IPv6. */
+        ip6_set_zone(s, ts, &dst6, scope6);
         if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
             return -WOLFIP_EINVAL;
         if (ip6_addr_is_wire_v6(&dst6)) {
@@ -9286,11 +9297,15 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             uint16_t dport = 0;
 
             if (dest_addr) {
-                if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, &dport) != 0)
+                unsigned int scope6 = 0;
+
+                if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, &dport,
+                                     &scope6) != 0)
                     return -1;
                 if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
                     return -1;
                 if (ip6_addr_is_wire_v6(&dst6)) {
+                    ip6_set_zone(s, ts, &dst6, scope6);
                     ts->peer_is_v6 = 1;
                     ip6_copy(&ts->remote_ip6, &dst6);
                     ts->dst_port = dport;
@@ -9409,11 +9424,15 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             ip6 dst6;
 
             if (dest_addr) {
-                if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, NULL) != 0)
+                unsigned int scope6 = 0;
+
+                if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, NULL,
+                                     &scope6) != 0)
                     return -1;
                 if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
                     return -1;
                 if (ip6_addr_is_wire_v6(&dst6)) {
+                    ip6_set_zone(s, ts, &dst6, scope6);
                     ts->peer_is_v6 = 1;
                     ip6_copy(&ts->remote_ip6, &dst6);
                 } else {
@@ -11041,7 +11060,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         ip6 a;
         uint16_t port = 0;
 
-        if (sock_addr_to_ip6(addr, addrlen, &a, &port) != 0)
+        if (sock_addr_to_ip6(addr, addrlen, &a, &port, NULL) != 0)
             return -WOLFIP_EINVAL;
         ts = wolfIP_socket_from_fd(s, sockfd);
         if (!ts || (ts->domain != AF_INET6))

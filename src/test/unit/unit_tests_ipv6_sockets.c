@@ -3123,5 +3123,56 @@ START_TEST(test_sock6_bind_refuses_a_port_already_auto_assigned)
 }
 END_TEST
 
+/* A link-local destination names a peer only together with its link (RFC
+ * 4007 sections 6-7). sin6_scope_id was parsed for bind() and dropped for
+ * connect() and sendto(), so an outbound datagram to fe80::1 went out over
+ * whichever interface routing happened to pick first. */
+START_TEST(test_sock6_sendto_honours_the_destination_scope)
+{
+    const uint8_t peer_mac[6] = {0x02, 0xEE, 0x00, 0x00, 0x00, 0x07};
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    uint64_t now = 0;
+    ip6 ll_peer;
+    ip6 second_ll;
+    int fd;
+
+    sock6_setup(&s);
+    /* A second interface with IPv6 of its own, and the peer reachable only
+     * there. */
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    ck_assert_int_eq(atoip6("fe80::2222", &second_ll), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_SECOND_IF, &second_ll, 64),
+                     0);
+    sock6_ready(&s, &now);
+    {
+        unsigned int i;
+
+        for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+            if (s.ifaddr[i].used &&
+                    (s.ifaddr[i].info.family == AF_INET6))
+                s.ifaddr[i].info.state = WOLFIP_IFADDR_PREFERRED;
+        }
+    }
+    ck_assert_int_eq(atoip6("fe80::9999", &ll_peer), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_SECOND_IF, &ll_peer,
+                                             peer_mac), 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    sock6_addr(&dst, "fe80::9999", 7300);
+    dst.sin6_scope_id = TEST_SECOND_IF;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "zz", 2, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 2);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* The zone decided the egress interface, not the routing table's first
+     * IPv6-capable guess. */
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(fd)].if_idx, TEST_SECOND_IF);
+}
+END_TEST
 
 #endif /* WOLFIP_IPV6 */
