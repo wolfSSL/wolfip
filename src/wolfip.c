@@ -6649,32 +6649,6 @@ static void tcp_ack_len(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
 
 }
 
-static int tcp_listen_ack_matches_child_socket(struct wolfIP *S,
-        const struct tsocket *listener, const struct wolfIP_tcp_seg *tcp,
-        const struct ip_flow *flow)
-{
-    int i;
-    uint16_t local_port = ee16(tcp->dst_port);
-    uint16_t remote_port = ee16(tcp->src_port);
-    ip4 local_ip = flow->dst;
-    ip4 remote_ip = flow->src;
-
-    for (i = 0; i < MAX_TCPSOCKETS; i++) {
-        const struct tsocket *t = &S->tcpsockets[i];
-
-        if (t == listener || t->proto == 0 || t->S == NULL)
-            continue;
-        if (t->sock.tcp.state <= TCP_LISTEN)
-            continue;
-        if (t->src_port != local_port || t->dst_port != remote_port)
-            continue;
-        if (t->local_ip != local_ip || t->remote_ip != remote_ip)
-            continue;
-        return 1;
-    }
-
-    return 0;
-}
 
 /* Preselect socket, parse options, manage handshakes, pass to application */
 /* The eight places in the TCP state machine that care which addresses a
@@ -6735,6 +6709,38 @@ static int tsocket_flow_local_is(const struct tsocket *t,
         return 0;
 #endif
     return (t->local_ip == flow->dst) ? 1 : 0;
+}
+
+/* Is this stray ACK to a listening port already owned by one of its accepted
+ * children? If so the listener must stay quiet and let the child handle it.
+ *
+ * The address comparison goes through the flow helpers rather than reading
+ * t->local_ip/t->remote_ip directly: for an IPv6 flow those IPv4 fields are
+ * IPADDR_ANY on both the socket and the flow, so comparing them matched every
+ * IPv6 child on the port whatever its peer, and swallowed the RFC 9293 RST. */
+static int tcp_listen_ack_matches_child_socket(struct wolfIP *S,
+        const struct tsocket *listener, const struct wolfIP_tcp_seg *tcp,
+        const struct ip_flow *flow)
+{
+    int i;
+    uint16_t local_port = ee16(tcp->dst_port);
+    uint16_t remote_port = ee16(tcp->src_port);
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        const struct tsocket *t = &S->tcpsockets[i];
+
+        if (t == listener || t->proto == 0 || t->S == NULL)
+            continue;
+        if (t->sock.tcp.state <= TCP_LISTEN)
+            continue;
+        if (t->src_port != local_port || t->dst_port != remote_port)
+            continue;
+        if (!tsocket_flow_local_is(t, flow) || !tsocket_flow_peer_matches(t, flow))
+            continue;
+        return 1;
+    }
+
+    return 0;
 }
 
 /* Does the address the application bound to admit this flow? A wildcard

@@ -2374,4 +2374,98 @@ START_TEST(test_sock6_udp_multicast_destination_is_not_delivered)
 }
 END_TEST
 
+/* =========================================================================
+ * 12. Review findings
+ * ========================================================================= */
+
+/* A stray ACK to a listening port is reset (RFC 9293 3.10.7.2) unless one of
+ * the listener's own accepted children already owns that connection. The
+ * ownership test used to compare the IPv4 address fields, which for an IPv6
+ * connection are IPADDR_ANY both in the flow and on the socket: every child
+ * on the port therefore matched whatever its peer, and a stray ACK from a
+ * stranger was silently swallowed instead of reset. */
+START_TEST(test_sock6_tcp_listener_resets_stray_ack_from_another_peer)
+{
+    const uint8_t peer2_mac[6] = {0x02, 0xEE, 0x00, 0x00, 0x00, 0x02};
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 peer2;
+    ip6 local;
+    ip6 got;
+    int listen_fd;
+    int conn_fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6("2001:db8:5::a", &peer2), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &peer2,
+                                             peer2_mac), 0);
+
+    listen_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 8200);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    /* Complete a connection from S6_PEER:41100 so the listener has a child
+     * holding exactly the port pair the stray ACK below will carry. */
+    sock6_deliver_tcp(&s, &peer, &local, 41100, 8200, 0x3000, 0,
+                      TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    conn_fd = wolfIP_sock_accept(&s, listen_fd,
+                                 (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_ge(conn_fd, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(seg->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
+                      TCP_FLAG_SYN | TCP_FLAG_ACK);
+    sock6_deliver_tcp(&s, &peer, &local, 41100, 8200, 0x3001,
+                      ee32(seg->seq) + 1, TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(conn_fd)].sock.tcp.state,
+                     TCP_ESTABLISHED);
+
+    /* Same ports, different peer: nothing here owns that connection, so the
+     * listener must reset it. */
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer2, &local, 41100, 8200, 0x7000, 0x8000,
+                      TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(ee16(seg->ip6.eth.type), ETH_TYPE_IPV6);
+    ck_assert_uint_eq(seg->flags & TCP_FLAG_RST, TCP_FLAG_RST);
+    ip6_hdr_get_dst(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer2), 0);
+
+    /* The child's own peer is a different matter: that connection is owned,
+     * and the listener stays quiet. */
+    mock_link_capture_reset();
+    sock6_deliver_tcp(&s, &peer, &local, 41100, 8200, 0x3001,
+                      ee32(seg->ack), TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    if (seg != NULL)
+        ck_assert_uint_eq(seg->flags & TCP_FLAG_RST, 0);
+}
+END_TEST
+
+
+
 #endif /* WOLFIP_IPV6 */
