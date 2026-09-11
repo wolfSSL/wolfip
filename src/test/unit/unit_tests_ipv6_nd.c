@@ -1709,5 +1709,33 @@ START_TEST(test_nd_ipv6_refuses_a_link_below_the_minimum_mtu)
 }
 END_TEST
 
+/* WOLFIP_IP6_ADDR_MAX is advertised as the IPv6 addresses an interface may
+ * hold. Nothing read it, so it capped nothing. */
+START_TEST(test_nd_ipv6_address_limit_is_enforced)
+{
+    struct wolfIP s;
+    unsigned int added = 0;
+    unsigned int i;
+    ip6 a;
+
+    nd_setup(&s);
+    ck_assert_int_eq(atoip6("2001:db8:8::", &a), 0);
+    for (i = 0; i < (WOLFIP_IP6_ADDR_MAX + 2u); i++) {
+        a.addr[15] = (uint8_t)(i + 1u);
+        if (wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &a, 64) == 0)
+            added++;
+    }
+    ck_assert_uint_le(added, (unsigned int)WOLFIP_IP6_ADDR_MAX);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6),
+                      added);
+#if WOLFIP_IP6_ADDR_MAX < WOLFIP_IF_CONF_MAX
+    /* Only where the IPv6 limit is the tighter of the two does this say
+     * which one refused: at the default they are equal and the shared
+     * budget would answer for both. `make unit-ipv6-addrmax` is the build
+     * that separates them. */
+    ck_assert_uint_eq(added, (unsigned int)WOLFIP_IP6_ADDR_MAX);
+#endif
+}
+END_TEST
 
 #endif /* WOLFIP_IPV6 */

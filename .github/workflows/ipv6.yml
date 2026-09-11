@@ -41,6 +41,16 @@ jobs:
           make unit-ipv6-iid
           ./build/test/unit
 
+      # WOLFIP_IP6_ADDR_MAX equals the shared per-interface budget at its
+      # default, so nothing can tell which of the two refused an address.
+      # This build sets the IPv6 limit below the shared one, which is the
+      # only configuration where that knob is observable.
+      - name: Unit tests with a tighter IPv6 address limit
+        run: |
+          make clean
+          make unit-ipv6-addrmax
+          ./build/test/unit
+
       - name: Unit tests with IPv6 enabled (ASan)
         run: |
           make clean

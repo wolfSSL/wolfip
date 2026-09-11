@@ -8274,6 +8274,12 @@ int wolfIP_ifaddr_add6(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
                 return -WOLFIP_EINVAL;
         }
     }
+    /* WOLFIP_IP6_ADDR_MAX is the IPv6-specific per-interface limit the
+     * configuration advertises; WOLFIP_IF_CONF_MAX below is the budget both
+     * families share. Both apply, and a knob that silently did nothing was
+     * worse than either. */
+    if (wolfIP_ifaddr_count(s, if_idx, AF_INET6) >= WOLFIP_IP6_ADDR_MAX)
+        return -WOLFIP_ENOMEM;
     if (ifaddr_total(s, if_idx) >= WOLFIP_IF_CONF_MAX)
         return -WOLFIP_ENOMEM;
     slot = ifaddr_pool_alloc(s);

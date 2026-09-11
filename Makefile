@@ -1172,6 +1172,15 @@ unit-ipv6: clean-unit unit
 unit-ipv6-iid: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IPV6_IID_OVERRIDE=1
 unit-ipv6-iid: clean-unit unit
 
+# WOLFIP_IP6_ADDR_MAX is the IPv6 addresses one interface may hold. At its
+# default it equals WOLFIP_IF_CONF_MAX, the budget both families share, so a
+# test cannot tell which of the two refused an address. This target sets the
+# IPv6 limit below the shared one, which is the only configuration where the
+# knob is observable at all.
+unit-ipv6-addrmax: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IP6_ADDR_MAX=4 \
+                          -DWOLFIP_IF_CONF_MAX=6
+unit-ipv6-addrmax: clean-unit unit
+
 unit-ipv6-iid-asan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IPV6_IID_OVERRIDE=1 -fsanitize=address
 unit-ipv6-iid-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
 unit-ipv6-iid-asan: clean-unit build/test/unit

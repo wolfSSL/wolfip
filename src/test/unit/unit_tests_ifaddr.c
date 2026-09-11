@@ -719,10 +719,22 @@ START_TEST(test_ifaddr_v6_and_v4_share_the_per_interface_budget)
         if (wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &a6, 64) == 0)
             added++;
     }
-    ck_assert_uint_eq(added, WOLFIP_IF_CONF_MAX - 1u);
+    /* One IPv4 primary is already there, so the shared budget leaves
+     * WOLFIP_IF_CONF_MAX - 1 for IPv6 - unless the IPv6-specific limit is
+     * the tighter of the two, in which case that one answers first. */
+    {
+        unsigned int shared = WOLFIP_IF_CONF_MAX - 1u;
+        unsigned int expect = (WOLFIP_IP6_ADDR_MAX < shared) ?
+                (unsigned int)WOLFIP_IP6_ADDR_MAX : shared;
+
+        ck_assert_uint_eq(added, expect);
+    }
     ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), added);
-    /* And with the budget spent, a v4 alias no longer fits. */
+#if WOLFIP_IP6_ADDR_MAX >= (WOLFIP_IF_CONF_MAX - 1)
+    /* And with the shared budget spent, a v4 alias no longer fits. Only
+     * meaningful when IPv6 was what consumed it. */
     ck_assert_int_lt(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+#endif
 }
 END_TEST
 
