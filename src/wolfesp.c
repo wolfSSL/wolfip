@@ -22,6 +22,27 @@
 #if defined(WOLFIP_ESP) && !defined(WOLFESP_SRC)
 #define WOLFESP_SRC
 #include "wolfesp.h"
+/* Wipe key material.
+ *
+ * wolfSSL offers two spellings and neither is portable for a consumer of an
+ * installed library: wc_ForceZero() is a recent addition to memory.h and is
+ * absent from, for example, 5.6.6, while ForceZero() is the inline helper in
+ * wolfcrypt/src/misc.c, which a package such as libwolfssl-dev does not ship
+ * - misc.h only declares it when NO_INLINE is set. Depending on either makes
+ * the build succeed or fail according to which wolfSSL happens to be
+ * installed.
+ *
+ * The volatile pointer is what stops the compiler treating this as a dead
+ * store and removing it, which is the whole point of the wolfSSL helpers
+ * too. */
+static void wolfIP_esp_forcezero(void *mem, size_t len)
+{
+    volatile unsigned char *p = (volatile unsigned char *)mem;
+
+    while (len-- > 0)
+        *p++ = 0;
+}
+
 static WC_RNG          wc_rng;
 static volatile int    rng_inited = 0;
 /* security association static pool*/
@@ -123,8 +144,8 @@ void wolfIP_esp_sa_del_all(void)
             esp_state_save(&out_sa_list[i]);
         }
     }
-    wc_ForceZero(in_sa_list, sizeof(in_sa_list));
-    wc_ForceZero(out_sa_list, sizeof(out_sa_list));
+    wolfIP_esp_forcezero(in_sa_list, sizeof(in_sa_list));
+    wolfIP_esp_forcezero(out_sa_list, sizeof(out_sa_list));
     return;
 }
 
@@ -164,7 +185,7 @@ void wolfIP_esp_sa_del(int in, uint8_t * spi)
     sa = esp_sa_get(in, spi);
     if (sa != NULL) {
         esp_state_save(sa);
-        wc_ForceZero(sa, sizeof(*sa));
+        wolfIP_esp_forcezero(sa, sizeof(*sa));
     }
     return;
 }
@@ -259,7 +280,7 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
                                ESP_GCM_RFC4106_IV_LEN);
     if (err) {
         ESP_LOG("error: wc_RNG_GenerateBlock: %d\n", err);
-        wc_ForceZero(new_sa, sizeof(*new_sa));
+        wolfIP_esp_forcezero(new_sa, sizeof(*new_sa));
         err = -1;
     }
 
@@ -1073,7 +1094,7 @@ esp_aes_rfc4106_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4106_dec_out:
-    wc_ForceZero(nonce, sizeof(nonce));
+    wolfIP_esp_forcezero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gcm_dec);
         inited = 0;
@@ -1142,7 +1163,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4106_enc_out:
-    wc_ForceZero(nonce, sizeof(nonce));
+    wolfIP_esp_forcezero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gcm_enc);
         inited = 0;
@@ -1196,7 +1217,7 @@ esp_aes_rfc4543_dec(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4543_dec_out:
-    wc_ForceZero(nonce, sizeof(nonce));
+    wolfIP_esp_forcezero(nonce, sizeof(nonce));
     return err;
 }
 
@@ -1252,7 +1273,7 @@ esp_aes_rfc4543_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     }
 
 rfc4543_enc_out:
-    wc_ForceZero(nonce, sizeof(nonce));
+    wolfIP_esp_forcezero(nonce, sizeof(nonce));
     if (inited) {
         wc_AesFree(&gmac_enc.aes);
         inited = 0;

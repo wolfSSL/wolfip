@@ -918,6 +918,65 @@ static int wolfip_build_addrinfo(uint32_t ip, uint16_t port, const char *canon,
     return 0;
 }
 
+/* The IPv6 counterpart of wolfip_build_addrinfo(). Kept separate rather
+ * than widened, because the two produce different sockaddr types and
+ * different ai_addrlen, and a single function taking a union of both reads
+ * worse than two that each do one thing. */
+static int wolfip_build_addrinfo6(const struct in6_addr *ip6, uint16_t port,
+        const char *canon, const struct addrinfo *hints, struct addrinfo **res)
+{
+    struct addrinfo *ai = wolfip_alloc_addrinfo();
+    struct sockaddr_in6 *sa =
+        (struct sockaddr_in6 *)calloc(1, sizeof(struct sockaddr_in6));
+
+    if (!ai || !sa) {
+        free(ai);
+        free(sa);
+        return EAI_MEMORY;
+    }
+    ai->ai_family = AF_INET6;
+    ai->ai_socktype = hints ? hints->ai_socktype : 0;
+    ai->ai_protocol = hints ? hints->ai_protocol : 0;
+    ai->ai_addrlen = sizeof(struct sockaddr_in6);
+    ai->ai_flags = hints ? hints->ai_flags : 0;
+    sa->sin6_family = AF_INET6;
+    sa->sin6_port = htons(port);
+    memcpy(&sa->sin6_addr, ip6, sizeof(sa->sin6_addr));
+    ai->ai_addr = (struct sockaddr *)sa;
+    if (canon) {
+        ai->ai_canonname = strdup(canon);
+        if (!ai->ai_canonname) {
+            free(sa);
+            free(ai);
+            return EAI_MEMORY;
+        }
+    }
+    *res = ai;
+    return 0;
+}
+
+/* An IPv4 address in the ::ffff:a.b.c.d form, for AI_V4MAPPED. */
+static void wolfip_v4_to_mapped(uint32_t ip_host, struct in6_addr *out)
+{
+    uint8_t *b = (uint8_t *)out;
+
+    memset(out, 0, sizeof(*out));
+    b[10] = 0xFF;
+    b[11] = 0xFF;
+    b[12] = (uint8_t)((ip_host >> 24) & 0xFFu);
+    b[13] = (uint8_t)((ip_host >> 16) & 0xFFu);
+    b[14] = (uint8_t)((ip_host >> 8) & 0xFFu);
+    b[15] = (uint8_t)(ip_host & 0xFFu);
+}
+
+/* Which families may this call return? AF_UNSPEC means either. */
+static int wolfip_gai_family_ok(const struct addrinfo *hints, int family)
+{
+    if (!hints || hints->ai_family == AF_UNSPEC)
+        return 1;
+    return (hints->ai_family == family) ? 1 : 0;
+}
+
 static void wolfip_free_addrinfo_list(struct addrinfo *res)
 {
     while (res) {
@@ -1683,11 +1742,30 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     if (!node) {
         struct in_addr local_ip;
         uint32_t ip_host;
-        if (hints && (hints->ai_family != AF_UNSPEC) && (hints->ai_family != AF_INET))
+        if (!wolfip_gai_family_ok(hints, AF_INET) &&
+                !wolfip_gai_family_ok(hints, AF_INET6))
             return EAI_FAMILY;
         ret = wolfip_parse_service(service, &port);
         if (ret != 0)
             return ret;
+        /* An explicit AF_INET6 request gets an IPv6 answer: the wildcard
+         * for a passive open, the loopback otherwise, which is what the
+         * POSIX rule reduces to for a node with no name of its own. */
+        if (hints && (hints->ai_family == AF_INET6)) {
+            struct in6_addr any6;
+
+            memset(&any6, 0, sizeof(any6));
+            if (!(hints->ai_flags & AI_PASSIVE))
+                ((uint8_t *)&any6)[15] = 1; /* ::1 */
+            ret = wolfip_build_addrinfo6(&any6, port, NULL, hints, &ai);
+            if (ret != 0)
+                return ret;
+            ret = wolfip_register_gai_alloc(ai);
+            if (ret != 0)
+                return ret;
+            *res = ai;
+            return 0;
+        }
         if (hints && (hints->ai_flags & AI_PASSIVE)) {
             ip_host = 0; /* INADDR_ANY */
             canon[0] = '\0';
@@ -1708,8 +1786,49 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     ret = wolfip_parse_service(service, &port);
     if (ret != 0)
         return ret;
-    if (hints && (hints->ai_family != AF_UNSPEC) && (hints->ai_family != AF_INET))
+    if (!wolfip_gai_family_ok(hints, AF_INET) &&
+            !wolfip_gai_family_ok(hints, AF_INET6))
         return EAI_FAMILY;
+    {
+        struct in6_addr ipv6;
+
+        /* An IPv6 literal, which is unambiguous and needs no resolver. */
+        if (inet_pton(AF_INET6, node, &ipv6) == 1) {
+            if (!wolfip_gai_family_ok(hints, AF_INET6))
+                return EAI_FAMILY;
+            canon[0] = '\0';
+            if (hints && (hints->ai_flags & AI_CANONNAME))
+                wolfip_strlcpy(canon, node, sizeof(canon));
+            ret = wolfip_build_addrinfo6(&ipv6, port,
+                                         canon[0] ? canon : NULL, hints, &ai);
+            if (ret != 0)
+                return ret;
+            ret = wolfip_register_gai_alloc(ai);
+            if (ret != 0)
+                return ret;
+            *res = ai;
+            return 0;
+        }
+    }
+    if ((inet_pton(AF_INET, node, &ipv4) == 1) &&
+            !wolfip_gai_family_ok(hints, AF_INET)) {
+        /* An IPv4 literal asked for as AF_INET6. POSIX answers this with
+         * the mapped form when AI_V4MAPPED is set, and refuses it
+         * otherwise; guessing either way would be wrong. */
+        struct in6_addr mapped;
+
+        if (!hints || !(hints->ai_flags & AI_V4MAPPED))
+            return EAI_FAMILY;
+        wolfip_v4_to_mapped(ntohl(ipv4.s_addr), &mapped);
+        ret = wolfip_build_addrinfo6(&mapped, port, NULL, hints, &ai);
+        if (ret != 0)
+            return ret;
+        ret = wolfip_register_gai_alloc(ai);
+        if (ret != 0)
+            return ret;
+        *res = ai;
+        return 0;
+    }
     if (inet_pton(AF_INET, node, &ipv4) == 1) {
         uint32_t ip_host = ntohl(ipv4.s_addr);
         canon[0] = '\0';
@@ -1732,9 +1851,31 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     }
     {
         uint32_t ip_host;
+
         ret = wolfip_dns_forward_query(node, &ip_host);
         if (ret != 0)
             return ret;
+        if (!wolfip_gai_family_ok(hints, AF_INET)) {
+            /* The name resolved, but only to an A record: wolfIP's resolver
+             * has no AAAA support yet. AI_V4MAPPED is exactly the mechanism
+             * POSIX provides for that case, so an application that asked
+             * for it gets ::ffff:a.b.c.d and one that did not is told the
+             * name has no address of the family it wanted, rather than
+             * being handed one of the other family unannounced. */
+            struct in6_addr mapped;
+
+            if (!hints || !(hints->ai_flags & AI_V4MAPPED))
+                return EAI_NONAME;
+            wolfip_v4_to_mapped(ip_host, &mapped);
+            ret = wolfip_build_addrinfo6(&mapped, port, NULL, hints, &ai);
+            if (ret != 0)
+                return ret;
+            ret = wolfip_register_gai_alloc(ai);
+            if (ret != 0)
+                return ret;
+            *res = ai;
+            return 0;
+        }
         if (hints && (hints->ai_flags & AI_CANONNAME))
             wolfip_strlcpy(canon, node, sizeof(canon));
         else

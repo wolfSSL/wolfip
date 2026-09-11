@@ -38,6 +38,15 @@
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
+#include "unit_tests_ifaddr.c"
+#include "unit_tests_ipv6_addr.c"
+#include "unit_tests_ipv6_hdr.c"
+#include "unit_tests_ipv6_recv.c"
+#include "unit_tests_ipv6_icmp.c"
+#include "unit_tests_ipv6_nd.c"
+#include "unit_tests_ipv6_ptp.c"
+#include "unit_tests_ipv6_sockets.c"
+#include "unit_tests_ipv6_pending.c"
 
 Suite *wolf_suite(void)
 {
@@ -358,6 +367,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_getsockname_icmp_success);
     tcase_add_test(tc_utils, test_register_callback_variants);
     tcase_add_test(tc_utils, test_register_eapol_handler);
+    tcase_add_test(tc_utils, test_register_l2_handler_reports_not_implemented);
     tcase_add_test(tc_utils, test_eapol_handler_dispatch);
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_ip_not_local);
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_ip_success);
@@ -1045,6 +1055,331 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_ip_output_add_header);
     tcase_add_test(tc_utils, test_ip_output_add_header_icmp);
     tcase_add_test(tc_utils, test_regression_icmp_ip_len_below_header);
+
+    /* Per-interface address list. The first group runs in every build,
+     * including the default IPv4-only one. */
+    tcase_add_test(tc_utils, test_ifaddr_primary_is_the_ipconf_address);
+    tcase_add_test(tc_utils, test_ifaddr_unconfigured_interface_has_no_addresses);
+    tcase_add_test(tc_utils, test_ifaddr_add4_sets_the_primary_when_unconfigured);
+    tcase_add_test(tc_utils, test_ifaddr_add4_rejects_a_duplicate);
+    tcase_add_test(tc_utils, test_ifaddr_del4_clears_the_primary);
+    tcase_add_test(tc_utils, test_ifaddr_is_local4_matches_the_primary);
+    tcase_add_test(tc_utils, test_ifaddr_capacity_is_one_without_multiconf);
+    tcase_add_test(tc_utils, test_ifaddr_rejects_invalid_arguments);
+    tcase_add_test(tc_utils, test_ifaddr_v6_requires_ipv6_enabled);
+#if WOLFIP_IF_MULTICONF
+    tcase_add_test(tc_utils, test_ifaddr_multiple_ipv4_addresses_on_one_interface);
+    tcase_add_test(tc_utils, test_ifaddr_aliases_are_local_addresses);
+    tcase_add_test(tc_utils, test_ifaddr_alias_removal_leaves_the_others);
+    tcase_add_test(tc_utils, test_ifaddr_clearing_the_primary_keeps_aliases);
+    tcase_add_test(tc_utils, test_ifaddr_per_interface_capacity_is_enforced);
+    tcase_add_test(tc_utils, test_ifaddr_interfaces_do_not_share_addresses);
+    tcase_add_test(tc_utils, test_ifaddr_the_same_alias_may_not_be_added_twice);
+    tcase_add_test(tc_utils, test_ifaddr_pool_is_shared_across_interfaces);
+    tcase_add_test(tc_utils, test_ifaddr_socket_binds_to_an_alias_on_the_right_interface);
+    tcase_add_test(tc_utils, test_ifaddr_bind_to_alias_receives_only_its_own_traffic);
+    tcase_add_test(tc_utils, test_ifaddr_bind_to_primary_does_not_receive_alias_traffic);
+    tcase_add_test(tc_utils, test_ifaddr_bind_to_a_foreign_address_is_refused);
+    tcase_add_test(tc_utils, test_ifaddr_sendto_from_an_alias_uses_it_as_source);
+    tcase_add_test(tc_utils, test_ifaddr_wildcard_bind_receives_traffic_to_any_local_address);
+    tcase_add_test(tc_utils, test_ifaddr_tcp_wildcard_listener_accepts_connections_to_an_alias);
+#endif
+#if WOLFIP_IPV6
+    tcase_add_test(tc_utils, test_ifaddr_v6_addresses_are_independent_of_v4);
+    tcase_add_test(tc_utils, test_ifaddr_v6_duplicate_is_rejected_and_removal_works);
+    tcase_add_test(tc_utils, test_ifaddr_v6_link_local_address_is_scoped_per_interface);
+    tcase_add_test(tc_utils, test_ifaddr_v6_and_v4_share_the_per_interface_budget);
+    tcase_add_test(tc_utils, test_ifaddr_alias_destination_is_delivered_not_forwarded);
+    tcase_add_test(tc_utils, test_ifaddr_alias_source_is_rejected_as_spoofed);
+#endif
+
+    /* IPv6 addressing (wolfip6.h). Not gated on WOLFIP_IPV6: the header holds
+     * only inline helpers and is always included, so these run in the default
+     * build and are covered by the whole CI compiler matrix. */
+    tcase_add_test(tc_utils, test_ip6_cmp_and_copy);
+    tcase_add_test(tc_utils, test_ip6_cmp_differs_in_every_byte_position);
+    tcase_add_test(tc_utils, test_ip6_set_wellknown_addresses);
+    tcase_add_test(tc_utils, test_ip6_init_macros_match_setters);
+    tcase_add_test(tc_utils, test_ip6_is_unspecified);
+    tcase_add_test(tc_utils, test_ip6_is_loopback);
+    tcase_add_test(tc_utils, test_ip6_is_multicast);
+    tcase_add_test(tc_utils, test_ip6_is_link_local_covers_whole_fe80_10);
+    tcase_add_test(tc_utils, test_ip6_is_ula_covers_whole_fc00_7);
+    tcase_add_test(tc_utils, test_ip6_is_global_covers_whole_2000_3);
+    tcase_add_test(tc_utils, test_ip6_multicast_flags_and_scope);
+    tcase_add_test(tc_utils, test_ip6_is_all_nodes_and_all_routers);
+    tcase_add_test(tc_utils, test_ip6_v4mapped_roundtrip);
+    tcase_add_test(tc_utils, test_ip6_v4mapped_boundaries);
+    tcase_add_test(tc_utils, test_ip6_v4compat_excludes_any_and_loopback);
+    tcase_add_test(tc_utils, test_ip6_prefix_cmp_byte_aligned);
+    tcase_add_test(tc_utils, test_ip6_prefix_cmp_non_byte_aligned);
+    tcase_add_test(tc_utils, test_ip6_prefix_cmp_zero_and_clamped);
+    tcase_add_test(tc_utils, test_ip6_prefix_mask);
+    tcase_add_test(tc_utils, test_ip6_prefix_mask_every_length_is_consistent);
+    tcase_add_test(tc_utils, test_ip6_prefix_mask_clears_a_set_host_part);
+    tcase_add_test(tc_utils, test_ip6_make_addr_from_prefix_and_iid);
+    tcase_add_test(tc_utils, test_ip6_make_addr_non_byte_aligned_prefix);
+    tcase_add_test(tc_utils, test_ip6_solicited_node_from_target);
+    tcase_add_test(tc_utils, test_ip6_solicited_node_depends_only_on_low_24_bits);
+    tcase_add_test(tc_utils, test_ip6_is_solicited_node_rejects_near_misses);
+    tcase_add_test(tc_utils, test_ip6_mcast_to_eth_mapping);
+    tcase_add_test(tc_utils, test_ip6_iid_from_mac_eui64);
+    tcase_add_test(tc_utils, test_ip6_iid_from_mac_inverts_ul_bit_both_ways);
+    tcase_add_test(tc_utils, test_ip6_parse_canonical_forms);
+    tcase_add_test(tc_utils, test_ip6_parse_normalises_noncanonical_input);
+    tcase_add_test(tc_utils, test_ip6_parse_embedded_ipv4);
+    tcase_add_test(tc_utils, test_ip6_parse_gap_at_every_position);
+    tcase_add_test(tc_utils, test_ip6_parse_accepts_single_group_gap_but_writes_it_out);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_malformed);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_gap_that_elides_nothing);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_bad_ipv4_tail);
+    tcase_add_test(tc_utils, test_ip6_parse_rejects_null_arguments);
+    tcase_add_test(tc_utils, test_ip6_parse_leaves_output_untouched_on_failure);
+    tcase_add_test(tc_utils, test_ip6toa_compresses_longest_zero_run);
+    tcase_add_test(tc_utils, test_ip6toa_compresses_leftmost_run_on_tie);
+    tcase_add_test(tc_utils, test_ip6toa_does_not_compress_single_zero_group);
+    tcase_add_test(tc_utils, test_ip6toa_run_at_start_and_end);
+    tcase_add_test(tc_utils, test_ip6toa_handles_null_arguments);
+    tcase_add_test(tc_utils, test_ip6toa_never_exceeds_addrstrlen);
+    tcase_add_test(tc_utils, test_ip6_text_roundtrip_is_stable);
+    tcase_add_test(tc_utils, test_ip6_text_roundtrip_exhaustive_single_bit);
+    tcase_add_test(tc_utils, test_ip6_api_is_linkable_without_ipv6);
+
+#if WOLFIP_IPV6
+    /* IPv6 header layout, checksum and encapsulation. Needs the IPv6 stack
+     * compiled in, so these only run under `make unit-ipv6`. */
+    tcase_add_test(tc_proto, test_ip6_header_wire_layout);
+    tcase_add_test(tc_proto, test_ip6_transport_wire_layout);
+    tcase_add_test(tc_proto, test_ip6_pseudo_header_is_40_bytes);
+    tcase_add_test(tc_proto, test_ip6_hdr_version_traffic_class_flow_label);
+    tcase_add_test(tc_proto, test_ip6_hdr_first_word_byte_order);
+    tcase_add_test(tc_proto, test_ip6_hdr_address_accessors_roundtrip);
+    tcase_add_test(tc_proto, test_transport6_checksum_self_verifies);
+    tcase_add_test(tc_proto, test_transport6_checksum_detects_every_single_bit_flip);
+    tcase_add_test(tc_proto, test_transport6_checksum_covers_the_pseudo_header);
+    tcase_add_test(tc_proto, test_transport6_checksum_handles_odd_length_payload);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_fills_the_header);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_defaults_hop_limit);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_udp_zero_checksum_becomes_ffff);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_icmp6_checksum_uses_pseudo_header);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_tcp_checksum);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_rejects_null_arguments);
+    tcase_add_test(tc_proto, test_ip6_output_add_header_without_mac_leaves_ethernet_alone);
+
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_upper_layer_protocols);
+    tcase_add_test(tc_proto, test_ip6_recv_tolerates_ethernet_padding);
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_hop_limit_zero);
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_unspecified_source);
+    tcase_add_test(tc_proto, test_ip6_recv_accepts_all_scopes_as_destination);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_short_frame);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_wrong_version);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_truncated_payload);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_multicast_source);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_unspecified_destination);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_loopback_on_the_wire);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_v4mapped_on_the_wire);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_v4compat_on_the_wire);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_every_extension_header);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_unknown_next_header);
+    tcase_add_test(tc_proto, test_ip6_recv_rejects_short_upper_layer_header);
+    tcase_add_test(tc_proto, test_ip6_recv_checks_structure_before_addresses);
+    tcase_add_test(tc_proto, test_eth_is_ipv6_multicast_mac);
+    tcase_add_test(tc_proto, test_ip6_demux_accepts_unicast_and_multicast_frames);
+    tcase_add_test(tc_proto, test_ip6_demux_ignores_frames_for_other_hosts);
+    tcase_add_test(tc_proto, test_ip6_demux_survives_a_truncated_frame);
+    tcase_add_test(tc_proto, test_ip6_ethertype_does_not_disturb_ipv4_or_arp);
+    tcase_add_test(tc_proto, test_icmp6_echo_request_is_answered);
+    tcase_add_test(tc_proto, test_icmp6_echo_request_with_no_payload_is_answered);
+    tcase_add_test(tc_proto, test_icmp6_echo_to_link_local_is_answered_from_it);
+    tcase_add_test(tc_proto, test_icmp6_echo_with_bad_checksum_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_with_nonzero_code_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_to_an_address_that_is_not_ours_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_from_unspecified_source_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_echo_to_tentative_address_is_ignored);
+    tcase_add_test(tc_proto, test_icmp6_link_local_address_is_not_local_on_another_interface);
+    tcase_add_test(tc_proto, test_icmp6_echo_reply_does_not_generate_another_reply);
+    tcase_add_test(tc_proto, test_icmp6_unhandled_types_are_ignored_without_replying);
+    tcase_add_test(tc_proto, test_icmp6_truncated_echo_is_ignored);
+    tcase_add_test(tc_proto, test_nd_join_forms_link_local_and_probes_it);
+    tcase_add_test(tc_proto, test_nd_join_completes_and_solicits_routers);
+    tcase_add_test(tc_proto, test_nd_na_resolves_an_incomplete_entry);
+    tcase_add_test(tc_proto, test_nd_na_without_target_lla_resolves_nothing);
+    tcase_add_test(tc_proto, test_nd_na_without_override_may_not_replace_a_known_mac);
+    tcase_add_test(tc_proto, test_nd_messages_with_wrong_hop_limit_are_refused);
+    tcase_add_test(tc_proto, test_nd_na_from_unspecified_source_is_refused);
+    tcase_add_test(tc_proto, test_nd_na_for_a_foreign_destination_is_refused);
+    tcase_add_test(tc_proto, test_nd_solicitation_for_our_address_is_answered);
+    tcase_add_test(tc_proto, test_nd_solicitation_for_a_foreign_address_is_ignored);
+    tcase_add_test(tc_proto, test_nd_solicitation_to_a_foreign_destination_is_ignored);
+    tcase_add_test(tc_proto, test_nd_solicitation_with_spoofed_slla_is_ignored);
+    tcase_add_test(tc_proto, test_dad_succeeds_when_nobody_answers);
+    tcase_add_test(tc_proto, test_dad_fails_when_a_neighbour_advertises_the_address);
+    tcase_add_test(tc_proto, test_dad_fails_on_a_simultaneous_probe_from_another_node);
+    tcase_add_test(tc_proto, test_dad_ignores_malformed_neighbor_solicitations);
+    tcase_add_test(tc_proto, test_dad_tentative_address_is_not_defended);
+    tcase_add_test(tc_proto, test_ra_assigns_a_global_address_and_a_default_router);
+    tcase_add_test(tc_proto, test_ra_from_a_non_link_local_source_is_ignored);
+    tcase_add_test(tc_proto, test_ra_with_wrong_hop_limit_is_ignored);
+    tcase_add_test(tc_proto, test_ra_ignores_a_link_local_prefix_option);
+    tcase_add_test(tc_proto, test_ra_prefix_that_is_not_64_bits_forms_no_address);
+    tcase_add_test(tc_proto, test_ra_with_zero_router_lifetime_is_not_a_default_route);
+    tcase_add_test(tc_proto, test_ra_with_a_zero_length_option_terminates);
+    tcase_add_test(tc_proto, test_ra_for_a_foreign_destination_is_ignored);
+    tcase_add_test(tc_proto, test_ra_ignores_oversized_prefix_information_option);
+    tcase_add_test(tc_proto, test_ra_ignores_prefix_with_preferred_lifetime_above_valid);
+    tcase_add_test(tc_proto, test_ra_zero_valid_lifetime_withdraws_prefix_immediately);
+    tcase_add_test(tc_proto, test_nd_static_neighbor_rejects_non_wire_addresses);
+    tcase_add_test(tc_proto, test_ula_is_verified_by_dad_and_then_usable);
+    tcase_add_test(tc_proto, test_ula_is_defended_and_survives_a_router_advertisement);
+    tcase_add_test(tc_proto, test_ula_duplicate_is_rejected);
+    tcase_add_test(tc_proto, test_nd_uses_one_timer_slot_for_the_whole_stack);
+    tcase_add_test(tc_proto, test_nd_timer_quiesces_when_periodic_work_is_finished);
+    tcase_add_test(tc_proto, test_nd_recovers_when_the_timer_heap_is_full);
+    tcase_add_test(tc_proto, test_nd_stop_releases_the_timer_slot);
+    tcase_add_test(tc_proto, test_nd_stop_drops_a_tentative_address);
+    tcase_add_test(tc_proto, test_nd_restarts_after_being_stopped);
+    tcase_add_test(tc_proto, test_nd_stop_rejects_invalid_arguments);
+    tcase_add_test(tc_proto, test_nd_slaac_address_deprecates_then_expires);
+    tcase_add_test(tc_proto, test_nd_slaac_readvertisement_refreshes_the_address);
+    tcase_add_test(tc_proto, test_nd_slaac_short_lifetime_cannot_cut_below_two_hours);
+    tcase_add_test(tc_proto, test_nd_advertisement_can_revoke_router_status);
+    tcase_add_test(tc_proto, test_nd_clock_rollback_does_not_strand_discovery);
+    tcase_add_test(tc_proto, test_nd_slaac_zero_valid_lifetime_still_updates_the_address);
+    tcase_add_test(tc_proto, test_nd_slaac_zero_preferred_lifetime_deprecates_at_once);
+    tcase_add_test(tc_proto, test_nd_resolution_gives_up_and_releases_the_queue);
+    tcase_add_test(tc_proto, test_nd_ipv6_refuses_a_link_below_the_minimum_mtu);
+    tcase_add_test(tc_proto, test_nd_ipv6_address_limit_is_enforced);
+
+    /* IPv6 over a point-to-point link (ll->non_ethernet). */
+    tcase_add_test(tc_proto, test_ptp_reserved_iids_are_recognised);
+    tcase_add_test(tc_proto, test_ptp_link_local_is_not_derived_from_the_null_mac);
+    tcase_add_test(tc_proto, test_ptp_generated_iid_has_u_bit_clear_and_is_assignable);
+    tcase_add_test(tc_proto, test_ptp_generated_iid_comes_from_the_random_source);
+    tcase_add_test(tc_proto, test_ptp_stuck_random_source_does_not_yield_a_reserved_iid);
+    tcase_add_test(tc_proto, test_ptp_slaac_address_shares_the_link_local_iid);
+#if WOLFIP_IPV6_IID_OVERRIDE
+    tcase_add_test(tc_proto, test_ptp_iid_override_is_used_for_the_link_local_address);
+    tcase_add_test(tc_proto, test_ptp_get_iid_reads_back_what_will_be_used);
+    tcase_add_test(tc_proto, test_ptp_restored_iid_reproduces_the_previous_address);
+    tcase_add_test(tc_proto, test_ptp_iid_override_refuses_reserved_identifiers);
+#else
+    tcase_add_test(tc_proto, test_ptp_iid_override_reports_not_implemented);
+#endif
+    tcase_add_test(tc_proto, test_ptp_icmp6_echo_request_is_answered);
+    tcase_add_test(tc_proto, test_ptp_ipv4_still_reaches_the_v4_path);
+    tcase_add_test(tc_proto, test_ptp_non_ip_version_nibble_is_dropped);
+    tcase_add_test(tc_proto, test_ptp_router_solicitation_carries_no_source_lla);
+    tcase_add_test(tc_proto, test_ptp_dad_still_detects_a_duplicate);
+    tcase_add_test(tc_proto, test_ptp_solicitation_is_answered_without_a_target_lla);
+    tcase_add_test(tc_proto, test_ptp_solicitation_with_a_stray_source_lla_is_still_answered);
+
+    /* AF_INET6 socket surface: creation, bind, names, IPV6_V6ONLY. */
+    tcase_add_test(tc_proto, test_sock6_stream_and_dgram_are_created);
+    tcase_add_test(tc_proto, test_sock6_icmpv6_socket_requires_the_icmpv6_protocol);
+    tcase_add_test(tc_proto, test_sock6_bind_and_getsockname_roundtrip);
+    tcase_add_test(tc_proto, test_sock6_bind_to_a_foreign_address_is_refused);
+    tcase_add_test(tc_proto, test_sock6_wildcard_bind_reports_the_unspecified_address);
+    tcase_add_test(tc_proto, test_sock6_v4_mapped_bind_is_reported_as_mapped);
+    tcase_add_test(tc_proto, test_sock6_af_inet_socket_still_reports_sockaddr_in);
+    tcase_add_test(tc_proto, test_sock6_ipv4_and_ipv6_sockets_coexist_on_one_port);
+    tcase_add_test(tc_proto, test_sock6_duplicate_ipv6_bind_is_refused);
+    tcase_add_test(tc_proto, test_sock6_v6only_is_stored_and_reported);
+    tcase_add_test(tc_proto, test_sock6_v6only_is_refused_where_it_has_no_meaning);
+    tcase_add_test(tc_proto, test_sock6_v6only_socket_rejects_a_v4_mapped_bind);
+
+    /* UDP over IPv6. */
+    tcase_add_test(tc_proto, test_sock6_udp_sendto_emits_an_ipv6_datagram);
+    tcase_add_test(tc_proto, test_sock6_udp_recvfrom_reports_an_ipv6_peer);
+    tcase_add_test(tc_proto, test_sock6_udp_unmatched_datagram_is_not_delivered);
+    tcase_add_test(tc_proto, test_sock6_udp_wildcard_bind_receives_any_local_address);
+    tcase_add_test(tc_proto, test_sock6_udp_af_inet_socket_never_receives_ipv6);
+    tcase_add_test(tc_proto, test_sock6_udp_connected_socket_filters_by_peer);
+    tcase_add_test(tc_proto, test_sock6_udp_oversize_datagram_is_refused);
+    tcase_add_test(tc_proto, test_sock6_udp_unresolved_neighbour_holds_the_datagram);
+    tcase_add_test(tc_proto, test_sock6_udp_bad_checksum_is_dropped);
+
+    /* TCP over IPv6. */
+    tcase_add_test(tc_proto, test_sock6_tcp_connect_completes_the_handshake);
+    tcase_add_test(tc_proto, test_sock6_tcp_carries_data_both_ways);
+    tcase_add_test(tc_proto, test_sock6_tcp_listener_accepts_an_ipv6_connection);
+    tcase_add_test(tc_proto, test_sock6_tcp_mss_accounts_for_the_40_byte_header);
+    tcase_add_test(tc_proto, test_sock6_tcp_segment_to_a_dead_port_is_reset);
+    tcase_add_test(tc_proto, test_sock6_tcp_bad_checksum_is_dropped);
+    tcase_add_test(tc_proto, test_sock6_tcp_af_inet_listener_ignores_ipv6);
+
+    /* ICMPv6: error messages (RFC 4443) and sockets. */
+    tcase_add_test(tc_proto, test_icmp6_udp_port_unreachable);
+    tcase_add_test(tc_proto, test_icmp6_parameter_problem_points_at_the_bad_octet);
+    tcase_add_test(tc_proto, test_icmp6_error_is_not_sent_in_response_to_an_error);
+    tcase_add_test(tc_proto, test_icmp6_error_suppression_rules);
+    tcase_add_test(tc_proto, test_icmp6_error_quotes_as_much_as_fits_in_min_mtu);
+    tcase_add_test(tc_proto, test_icmp6_packet_too_big_and_time_exceeded_wire_format);
+    tcase_add_test(tc_proto, test_icmp6_unknown_types_follow_the_error_split);
+    tcase_add_test(tc_proto, test_icmp6_socket_echo_roundtrip);
+    tcase_add_test(tc_proto, test_icmp6_socket_filters_on_the_echo_identifier);
+    tcase_add_test(tc_proto, test_icmp6_socket_receives_errors_regardless_of_identifier);
+    tcase_add_test(tc_proto, test_icmp6_af_inet_icmp_socket_never_receives_icmpv6);
+
+    /* Dual stack: v4-mapped addresses on an AF_INET6 socket. */
+    tcase_add_test(tc_proto, test_sock6_v4_mapped_destination_is_framed_as_ipv4);
+    tcase_add_test(tc_proto, test_sock6_v4_mapped_peer_is_reported_as_mapped);
+    tcase_add_test(tc_proto, test_sock6_v6only_socket_rejects_a_v4_mapped_destination);
+
+    /* Family confusion on paths shared with IPv4. */
+    tcase_add_test(tc_proto, test_sock6_tcp_listener_reset_is_framed_as_ipv6);
+    tcase_add_test(tc_proto, test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6);
+    tcase_add_test(tc_proto, test_sock6_v6only_wildcard_receives_no_ipv4);
+    tcase_add_test(tc_proto, test_icmp6_socket_never_receives_icmpv4);
+
+    /* Stale family state when a dual-stack socket changes peer. */
+    tcase_add_test(tc_proto, test_sock6_reconnect_to_mapped_peer_clears_ipv6_state);
+    tcase_add_test(tc_proto, test_sock6_socket_connected_to_v4_peer_rejects_ipv6);
+    tcase_add_test(tc_proto, test_sock6_udp_multicast_destination_is_not_delivered);
+    tcase_add_test(tc_proto, test_sock6_tcp_listener_resets_stray_ack_from_another_peer);
+    tcase_add_test(tc_proto, test_sock6_tcp_listener_revert_clears_the_ipv6_peer);
+    tcase_add_test(tc_proto, test_sock6_recvfrom_rejects_an_address_with_no_length);
+    tcase_add_test(tc_proto, test_sock6_udp_length_past_the_payload_is_dropped);
+    tcase_add_test(tc_proto, test_sock6_auto_source_port_avoids_one_in_use);
+    tcase_add_test(tc_proto, test_sock6_specific_listener_ignores_another_local_address);
+    tcase_add_test(tc_proto, test_sock6_link_local_bind_ignores_another_interface);
+    tcase_add_test(tc_proto, test_sock6_tcp_receive_does_not_reach_the_ipv4_filter);
+    tcase_add_test(tc_proto, test_sock6_bind_refuses_a_port_already_auto_assigned);
+    tcase_add_test(tc_proto, test_sock6_sendto_honours_the_destination_scope);
+
+    /* Requirement-derived tests for IPv6 features not implemented yet.
+     * Each block switches on with its feature macro. */
+#if WOLFIP_IPV6_HAVE_FORWARDING
+    tcase_add_test(tc_proto, test_icmp6_time_exceeded_on_hop_limit_zero_when_forwarding);
+#endif
+#if WOLFIP_IPV6_HAVE_ND6
+    tcase_add_test(tc_proto, test_nd6_cache_state_machine_transitions);
+    tcase_add_test(tc_proto, test_nd6_cache_eviction_when_full);
+    tcase_add_test(tc_proto, test_nd6_queues_one_packet_per_pending_resolution);
+    tcase_add_test(tc_proto, test_nd6_prefix_option_with_length_over_128_is_ignored);
+#endif
+#if WOLFIP_IPV6_HAVE_SLAAC
+    tcase_add_test(tc_proto, test_slaac_preferred_lifetime_expiry_deprecates_address);
+    tcase_add_test(tc_proto, test_slaac_valid_lifetime_expiry_removes_address);
+    tcase_add_test(tc_proto, test_slaac_lifetime_extension_is_bounded);
+    tcase_add_test(tc_proto, test_slaac_respects_the_address_table_limit);
+#endif
+#if WOLFIP_IPV6_HAVE_DHCP6
+    tcase_add_test(tc_proto, test_dhcp6_solicit_goes_to_all_dhcp_servers_multicast);
+    tcase_add_test(tc_proto, test_dhcp6_solicit_carries_client_id_and_ia_na);
+    tcase_add_test(tc_proto, test_dhcp6_advertise_with_mismatched_transaction_id_is_ignored);
+    tcase_add_test(tc_proto, test_dhcp6_reply_assigns_the_offered_address);
+    tcase_add_test(tc_proto, test_dhcp6_retransmission_uses_exponential_backoff);
+    tcase_add_test(tc_proto, test_dhcp6_renew_at_t1_and_rebind_at_t2);
+    tcase_add_test(tc_proto, test_dhcp6_option_longer_than_the_message_is_rejected);
+    tcase_add_test(tc_proto, test_dhcp6_message_larger_than_buffer_is_rejected);
+#endif
+#if WOLFIP_IPV6_HAVE_EXTHDR
+    tcase_add_test(tc_proto, test_ip6_walks_hop_by_hop_and_destination_options);
+    tcase_add_test(tc_proto, test_ip6_extension_header_chain_length_is_capped);
+    tcase_add_test(tc_proto, test_ip6_extension_header_with_zero_length_is_rejected);
+    tcase_add_test(tc_proto, test_ip6_routing_header_type_zero_is_still_rejected);
+#endif
+#endif /* WOLFIP_IPV6 */
 
     tcase_add_test(tc_wolfssl, test_wolfssl_io_ctx_registers_callbacks);
     tcase_add_test(tc_wolfssl, test_wolfssl_io_setio_success);
@@ -1773,8 +2108,24 @@ Suite *wolf_suite(void)
 int main(void)
 {
     int n_fail = 0;
+
+    /* The build configuration this binary was compiled with. Printed because
+     * the suite is compiled from one source but the resulting test set
+     * depends on these, and a platform computing them differently shows up
+     * only as a differing check count. */
+
     Suite *s;
     SRunner *sr;
+
+    printf("wolfIP unit config: WOLFIP_IPV6=%d WOLFIP_IF_MULTICONF=%d "
+           "WOLFIP_IF_CONF_MAX=%d WOLFIP_MAX_INTERFACES=%d "
+           "WOLFIP_ENABLE_LOOPBACK=%d WOLFIP_ENABLE_FORWARDING=%d "
+           "AF_INET=%d AF_INET6=%d\n",
+           (int)WOLFIP_IPV6, (int)WOLFIP_IF_MULTICONF,
+           (int)WOLFIP_IF_CONF_MAX, (int)WOLFIP_MAX_INTERFACES,
+           (int)WOLFIP_ENABLE_LOOPBACK, (int)WOLFIP_ENABLE_FORWARDING,
+           (int)AF_INET, (int)AF_INET6);
+    fflush(stdout);
 
     s = wolf_suite();
     sr = srunner_create(s);

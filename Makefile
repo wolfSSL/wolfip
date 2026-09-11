@@ -207,6 +207,7 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-http-headers \
 	build/test-http-close-notify \
 	build/test-freertos-close-last-ack \
+	build/test-freertos-ipv6 \
 	build/test-posix-errno \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
@@ -875,6 +876,119 @@ build/test/wolfip_forwarding.o: src/wolfip.c
 	@$(CC) $(CFLAGS) -DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1 -c $< -o $@
 
 build/test/test_ttl_expired.o: CFLAGS+=-DWOLFIP_MAX_INTERFACES=2 -DWOLFIP_ENABLE_FORWARDING=1
+# A consumer of the IPv4-only library calling the IPv6 entry points, which
+# wolfip.h declares whatever the build. Linking is most of the test: the unit
+# binary #includes src/wolfip.c and so cannot catch a missing definition.
+build/test/test_ipv6_api_link.o: src/test/test_ipv6_api_link.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+build/test-ipv6-api-link: build/wolfip.o build/test/test_ipv6_api_link.o $(NETDEV_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-api-link-test
+ipv6-api-link-test: build/test-ipv6-api-link
+	@echo "[RUN] $<"
+	@./build/test-ipv6-api-link
+
+# IPv6 end-to-end ping test. Needs its own wolfip object because
+# WOLFIP_IPV6 has to reach wolfip.h, which is included before config.h.
+build/ipv6/wolfip.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (ipv6)"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test/test_ipv6_ping.o: src/test/test_ipv6_ping.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test-ipv6-ping: build/ipv6/wolfip.o build/test/test_ipv6_ping.o $(NETDEV_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+build/test/test_ipv6_slaac.o: src/test/test_ipv6_slaac.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test-ipv6-slaac: build/ipv6/wolfip.o build/test/test_ipv6_slaac.o $(NETDEV_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+# SLAAC end to end, with the Router Advertisement injected by the test.
+.PHONY: ipv6-slaac-test
+ipv6-slaac-test: build/test-ipv6-slaac
+	@echo "[RUN] $< --selftest (requires root)"
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-slaac-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-ipv6-slaac --selftest
+
+# Same, but the advertisement comes from radvd, which is what proves
+# interoperability with a real router implementation rather than with a
+# frame this repository wrote itself.
+.PHONY: ipv6-slaac-radvd-test
+ipv6-slaac-radvd-test: build/test-ipv6-slaac
+	@command -v radvd >/dev/null 2>&1 || { echo "radvd is not installed"; exit 1; }
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-slaac-radvd-test needs to run as root (sudo)"; exit 1; }
+	@echo "[RUN] $< with radvd"
+	@sudo ./build/test-ipv6-slaac --selftest --with-radvd
+
+# Duplicate address detection against a host that claims the address first.
+.PHONY: ipv6-dad-test
+ipv6-dad-test: build/test-ipv6-slaac
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-dad-test needs to run as root (sudo)"; exit 1; }
+	@echo "[RUN] $< --dad-collision"
+	@sudo ./build/test-ipv6-slaac --dad-collision
+
+# Same, over a point-to-point tun device: no Ethernet header, no link-layer
+# address, and the interface identifier generated or supplied rather than
+# derived from a MAC. Builds the override in, so the address the host is
+# told to ping is known before the stack forms it.
+build/ipv6/wolfip-ptp.o: src/wolfip.c
+	@mkdir -p `dirname $@` || true
+	@echo "[CC] $< (ipv6 ptp)"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -DWOLFIP_IPV6_IID_OVERRIDE=1 -c $< -o $@
+
+build/test/test_ipv6_ptp.o: src/test/test_ipv6_ptp.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -DWOLFIP_IPV6_IID_OVERRIDE=1 -c $< -o $@
+
+build/test-ipv6-ptp: build/ipv6/wolfip-ptp.o build/test/test_ipv6_ptp.o build/port/posix/linux_tun.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-ptp-test
+ipv6-ptp-test: build/test-ipv6-ptp
+	@echo "[RUN] $< --selftest (requires root)"
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-ptp-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-ipv6-ptp --selftest
+
+# AF_INET6 through the POSIX BSD socket port. test_ipv6_bsd.c #includes
+# bsd_socket.c, so the shim is compiled with the same IPv6 configuration as
+# the wolfip object it links against.
+build/test/test_ipv6_bsd.o: src/test/test_ipv6_bsd.c
+	@mkdir -p build/test || true
+	@echo "[CC] $<"
+	@$(CC) $(CFLAGS) -DWOLFIP_IPV6=1 -c $< -o $@
+
+build/test-ipv6-bsd: build/ipv6/wolfip.o build/test/test_ipv6_bsd.o $(NETDEV_OBJ) $(WOLFIP_TFTP_OBJ)
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
+
+.PHONY: ipv6-bsd-test
+ipv6-bsd-test: build/test-ipv6-bsd
+	@echo "[RUN] $<"
+	@./build/test-ipv6-bsd
+
+.PHONY: ipv6-ping-test
+ipv6-ping-test: build/test-ipv6-ping
+	@echo "[RUN] $< --selftest (requires root)"
+	@sudo -n true >/dev/null 2>&1 || { echo "ipv6-ping-test needs to run as root (sudo)"; exit 1; }
+	@sudo ./build/test-ipv6-ping --selftest
+
 build/test-ttl-expired: build/test/test_ttl_expired.o build/test/wolfip_forwarding.o $(WOLFIP_TFTP_OBJ)
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(BEGIN_GROUP) $(^) $(LDFLAGS) $(END_GROUP)
@@ -921,6 +1035,18 @@ build/test-freertos-close-last-ack: src/test/test_freertos_close_last_ack.c src/
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -o $@ src/test/test_freertos_close_last_ack.c $(LDFLAGS)
+
+# AF_INET6 through the same FreeRTOS shim, with its own mocks: the close()
+# mock next door is a scripted one-shot for a LAST_ACK regression.
+build/test-freertos-ipv6: src/test/test_freertos_ipv6.c src/port/freeRTOS/bsd_socket.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -DWOLFIP_IPV6=1 -o $@ src/test/test_freertos_ipv6.c $(LDFLAGS)
+
+.PHONY: freertos-ipv6-test
+freertos-ipv6-test: build/test-freertos-ipv6
+	@echo "[RUN] $<"
+	@./build/test-freertos-ipv6
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true
@@ -978,7 +1104,16 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_arp_regression.c \
 	src/test/unit/unit_tests_dns_edges.c \
 	src/test/unit/unit_tests_misc_edges.c \
-	src/test/unit/unit_tests_vlan.c
+	src/test/unit/unit_tests_vlan.c \
+	src/test/unit/unit_tests_ifaddr.c \
+	src/test/unit/unit_tests_ipv6_addr.c \
+	src/test/unit/unit_tests_ipv6_hdr.c \
+	src/test/unit/unit_tests_ipv6_recv.c \
+	src/test/unit/unit_tests_ipv6_icmp.c \
+	src/test/unit/unit_tests_ipv6_nd.c \
+	src/test/unit/unit_tests_ipv6_ptp.c \
+	src/test/unit/unit_tests_ipv6_sockets.c \
+	src/test/unit/unit_tests_ipv6_pending.c
 
 unit: build/test/unit
 
@@ -994,6 +1129,85 @@ unit-multicast: clean-unit unit
 
 unit-vlan: CFLAGS+=-DWOLFIP_VLAN=1 -DWOLFIP_MAX_INTERFACES=6
 unit-vlan: clean-unit unit
+
+# Multiple addresses per interface without IPv6: IPv4 aliasing uses the same
+# machinery, so the feature is useful and must be tested on its own.
+unit-multiconf: CFLAGS+=-DWOLFIP_IF_MULTICONF=1
+unit-multiconf: clean-unit unit
+
+unit-multiconf-asan: CFLAGS+=-DWOLFIP_IF_MULTICONF=1 -fsanitize=address
+unit-multiconf-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-multiconf-asan: clean-unit build/test/unit
+
+# IPv6. WOLFIP_IPV6 must be passed on the command line rather than set only in
+# config.h: wolfip.c includes wolfip.h *before* config.h, so a macro that
+# affects the public header is not visible there otherwise. WOLFIP_VLAN has the
+# same constraint.
+#
+# Note the IPv6 *addressing* tests (unit_tests_ipv6_addr.c) are not gated and
+# run in the plain `make unit` build; this target adds the tests that need the
+# IPv6 stack itself compiled in.
+UNIT_IPV6_CFLAGS:=-DWOLFIP_IPV6=1 -DWOLFIP_IF_MULTICONF=1
+
+unit-ipv6: CFLAGS+=$(UNIT_IPV6_CFLAGS)
+unit-ipv6: clean-unit unit
+
+# The interface identifier override is a compile-time option, so both states
+# of it are tested: unit-ipv6 above covers the calls reporting -ENOSYS with it
+# off, this covers the override itself.
+unit-ipv6-iid: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IPV6_IID_OVERRIDE=1
+unit-ipv6-iid: clean-unit unit
+
+# WOLFIP_IP6_ADDR_MAX is the IPv6 addresses one interface may hold. At its
+# default it equals WOLFIP_IF_CONF_MAX, the budget both families share, so a
+# test cannot tell which of the two refused an address. This target sets the
+# IPv6 limit below the shared one, which is the only configuration where the
+# knob is observable at all.
+unit-ipv6-addrmax: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IP6_ADDR_MAX=4 \
+                          -DWOLFIP_IF_CONF_MAX=6
+unit-ipv6-addrmax: clean-unit unit
+
+unit-ipv6-iid-asan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -DWOLFIP_IPV6_IID_OVERRIDE=1 -fsanitize=address
+unit-ipv6-iid-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-ipv6-iid-asan: clean-unit build/test/unit
+
+unit-ipv6-asan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=address
+unit-ipv6-asan: LDFLAGS+=-fsanitize=address $(UNIT_LIBS)
+unit-ipv6-asan: clean-unit build/test/unit
+
+unit-ipv6-ubsan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=undefined -fno-sanitize-recover=all
+unit-ipv6-ubsan: LDFLAGS+=-fsanitize=undefined $(UNIT_LIBS)
+unit-ipv6-ubsan: clean-unit build/test/unit
+
+unit-ipv6-leaksan: CFLAGS+=$(UNIT_IPV6_CFLAGS) -fsanitize=leak
+unit-ipv6-leaksan: LDFLAGS+=-fsanitize=leak $(UNIT_LIBS)
+unit-ipv6-leaksan: clean-unit build/test/unit
+
+# Report how much requirement-derived IPv6 test material is still switched off.
+# The pending tests are guarded by named WOLFIP_IPV6_HAVE_* macros rather than
+# "#if 0" precisely so that this count is possible.
+IPV6_PENDING_SRC:=src/test/unit/unit_tests_ipv6_pending.c
+# The defaults live in wolfip6_config.h; config.h only ever holds an override,
+# and being #ifndef-guarded the override is the one that wins. Reporting on
+# config.h alone would call every feature pending whatever the defaults say.
+IPV6_CONFIG_SRC:=wolfip6_config.h
+
+.PHONY: unit-ipv6-pending-count
+unit-ipv6-pending-count:
+	@total=`grep -c '^START_TEST' $(IPV6_PENDING_SRC) 2>/dev/null || echo 0`; \
+	echo "[IPv6] $$total requirement test(s) written and awaiting implementation"; \
+	for m in EXTHDR ICMP6 ND6 SLAAC DHCP6 SOCKETS FORWARDING; do \
+		src=$(IPV6_CONFIG_SRC); \
+		if grep -q "define WOLFIP_IPV6_HAVE_$$m " config.h 2>/dev/null; then \
+			src=config.h; \
+		fi; \
+		if grep -q "define WOLFIP_IPV6_HAVE_$$m 1" $$src 2>/dev/null; then \
+			state=enabled; \
+		else \
+			state=pending; \
+		fi; \
+		echo "         WOLFIP_IPV6_HAVE_$$m: $$state ($$src)"; \
+	done
 
 ESP_UNIT_CHECK_CFLAGS := $(CHECK_PKG_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
@@ -1059,6 +1273,8 @@ COV_MCAST_UNIT:=$(COV_DIR)/unit-multicast
 COV_MCAST_UNIT_O:=$(COV_DIR)/unit-multicast.o
 COV_VLAN_UNIT:=$(COV_DIR)/unit-vlan
 COV_VLAN_UNIT_O:=$(COV_DIR)/unit-vlan.o
+COV_IPV6_UNIT:=$(COV_DIR)/unit-ipv6
+COV_IPV6_UNIT_O:=$(COV_DIR)/unit-ipv6.o
 
 $(COV_UNIT_O): $(UNIT_TEST_SRCS)
 	@mkdir -p $(COV_DIR)
@@ -1169,6 +1385,55 @@ autocov-vlan: unit-vlan $(COV_VLAN_UNIT)
 		--merge-mode-functions=merge-use-line-min \
 		--html-details -o build/coverage/vlan.html
 
+$(COV_IPV6_UNIT_O): $(UNIT_TEST_SRCS)
+	@mkdir -p $(COV_DIR)
+	@echo "[CC] unit.c (ipv6 coverage)"
+	@$(CC) $(UNIT_CFLAGS) $(CFLAGS) $(UNIT_IPV6_CFLAGS) --coverage -c src/test/unit/unit.c -o $(COV_IPV6_UNIT_O)
+
+$(COV_IPV6_UNIT): LDFLAGS+=--coverage $(UNIT_LIBS)
+$(COV_IPV6_UNIT): $(COV_IPV6_UNIT_O)
+	@echo "[LD] $@"
+	@$(CC) $(COV_IPV6_UNIT_O) -o $(COV_IPV6_UNIT) $(UNIT_LDFLAGS) $(LDFLAGS)
+
+# Informational only. The 100%-function-coverage gate applies to src/wolfip.c
+# in the default build; IPv6 code is still growing and carries deliberate
+# stubs, so it is reported but not enforced.
+cov-ipv6: unit-ipv6 $(COV_IPV6_UNIT)
+	@echo "[RUN] unit ipv6 (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_IPV6_UNIT)
+	@echo "[COV] gcovr ipv6 html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/ipv6.html
+	@$(OPEN_CMD) build/coverage/ipv6.html
+
+# Enforced gate: every function in the IPv6 sources must be reached by the
+# unit tests. Same rule the default build applies to src/wolfip.c.
+.PHONY: autocov-ipv6-check
+autocov-ipv6-check: autocov-ipv6
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
+		--merge-mode-functions=merge-use-line-min \
+		--json -o build/coverage/ipv6.json
+	@python3 tools/scripts/ipv6-func-coverage.py build/coverage/ipv6.json
+
+autocov-ipv6: unit-ipv6 $(COV_IPV6_UNIT)
+	@echo "[RUN] unit ipv6 (coverage)"
+	@rm -f $(COV_DIR)/*.gcda
+	@$(COV_IPV6_UNIT)
+	@echo "[COV] gcovr ipv6 html"
+	@mkdir -p build/coverage
+	@gcovr -r . --exclude "src/test/unit/.*" \
+		--gcov-ignore-errors=no_working_dir_found \
+		--gcov-ignore-parse-errors=all \
+		--merge-mode-functions=merge-use-line-min \
+		--html-details -o build/coverage/ipv6.html
+
 # Install dynamic library to re-link linux applications
 #
 install:
@@ -1253,6 +1518,9 @@ clean-test-wolfguard-interop:
 	@rm -f build/test/test-wolfguard-interop build/test/test_wolfguard_interop.o build/test/linux_tun.o
 
 .PHONY: clean all static cppcheck cov autocov autocov-multicast cov-multicast unit-multicast unit-vlan cov-vlan autocov-vlan unit-asan unit-ubsan unit-leaksan clean-unit \
+        unit-ipv6 unit-ipv6-asan unit-ipv6-ubsan unit-ipv6-leaksan cov-ipv6 autocov-ipv6 \
+        unit-ipv6-iid unit-ipv6-iid-asan \
+        unit-multiconf unit-multiconf-asan \
         unit-esp-asan unit-esp-ubsan unit-esp-leaksan clean-unit-esp \
         unit-wolfguard unit-wolfguard-asan unit-wolfguard-ubsan clean-unit-wolfguard \
         test-wolfguard-loopback test-wolfguard-loopback-asan test-wolfguard-loopback-ubsan \
