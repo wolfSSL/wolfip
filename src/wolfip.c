@@ -6998,8 +6998,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                  * leaves the IPv4 field at IPADDR_ANY by design, so a
                  * listener bound to one IPv6 address matched non-SYN
                  * segments addressed to any of ours. */
-                if (t->bound_local_ip != IPADDR_ANY &&
-                        !tsocket_flow_bound_matches(t, flow)) {
+                if (!tsocket_flow_bound_matches(t, flow)) {
                     /* Not the right local endpoint */
                     continue;
                 }

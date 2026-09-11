@@ -2764,6 +2764,57 @@ START_TEST(test_sock6_udp_length_past_the_payload_is_dropped)
 END_TEST
 
 
+/* A listener bound to one IPv6 address must not answer for another. The
+ * check was gated on the IPv4 bound_local_ip, which sock_bind6() leaves at
+ * IPADDR_ANY by design, so it was skipped entirely for an IPv6 listener and
+ * a non-SYN segment for any of our addresses matched. */
+START_TEST(test_sock6_specific_listener_ignores_another_local_address)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct tsocket *listener;
+    uint64_t now = 0;
+    ip6 bound;
+    ip6 other;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    /* A second address of ours on the same interface. */
+    ck_assert_int_eq(atoip6(S6_TEST_OTHER, &other), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &other, 64), 0);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &bound), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 8300);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, fd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    /* A bare ACK to the listening port, but addressed to the address the
+     * listener did not bind. It is not this listener's business: its
+     * bookkeeping must be left alone. */
+    listener->last_pkt_ttl = 0;
+    sock6_deliver_tcp(&s, &peer, &other, 42000, 8300, 0x1000, 0x2000,
+                      TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_uint_eq(listener->last_pkt_ttl, 0);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+
+    /* The same segment to the bound address does reach it. */
+    sock6_deliver_tcp(&s, &peer, &bound, 42000, 8300, 0x1000, 0x2000,
+                      TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_uint_ne(listener->last_pkt_ttl, 0);
+}
+END_TEST
 
 
 #endif /* WOLFIP_IPV6 */
