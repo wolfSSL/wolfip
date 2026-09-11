@@ -1481,5 +1481,72 @@ START_TEST(test_nd_advertisement_can_revoke_router_status)
 }
 END_TEST
 
+/* Neighbor Discovery keeps deadlines and timestamps outside the timer heap,
+ * so the clock-rollback rebase in wolfIP_poll() has to reach them too.
+ * Without that, a restarted tick source left duplicate address detection
+ * waiting on a deadline it would never reach, while the unsigned `now - ts`
+ * ages underflowed and expired the neighbour, prefix and router tables at
+ * once. */
+START_TEST(test_nd_clock_rollback_does_not_strand_discovery)
+{
+    struct wolfIP s;
+    uint64_t now = 4000000000ull;
+    ip6 router;
+    ip6 offlink;
+    ip6 nexthop;
+    ip6 ll6;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_our_link_local(&s, &ll6);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+
+    nd_send_ra(&s, "fe80::1", 1800, "2001:db8:1:2::", 64,
+               ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 7200, 255);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(atoip6("fe80::1", &router), 0);
+    ck_assert_int_eq(atoip6("2001:db8:99::1", &offlink), 0);
+    ck_assert_int_eq(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
+
+    /* The tick source restarts from near zero. */
+    now = 1000;
+    wolfIP_poll(&s, now);
+    nd_advance(&s, &now, 1000);
+
+    /* The router, its prefix and the address formed from it all survive. */
+    ck_assert_int_eq(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
+    ck_assert_int_eq(ip6_cmp(&nexthop, &router), 0);
+    ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+
+    /* And discovery still runs in the new domain: a fresh address added
+     * after the rollback completes duplicate address detection. */
+    {
+        ip6 extra;
+
+        ck_assert_int_eq(atoip6("2001:db8:1:2::55", &extra), 0);
+        ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &extra, 64),
+                         0);
+        {
+            struct wolfIP_ifaddr_slot *slot = NULL;
+            unsigned int k;
+
+            for (k = 0; k < WOLFIP_IFADDR_MAX; k++) {
+                if (s.ifaddr[k].used &&
+                        (s.ifaddr[k].info.family == AF_INET6) &&
+                        (ip6_cmp(&s.ifaddr[k].info.v6, &extra) == 0))
+                    slot = &s.ifaddr[k];
+            }
+            ck_assert_ptr_nonnull(slot);
+            nd6_dad_start(&s, slot);
+        }
+        nd_advance(&s, &now, 1500);
+        ck_assert_int_eq(nd_addr_state(&s, &extra), WOLFIP_IFADDR_PREFERRED);
+    }
+}
+END_TEST
 
 #endif /* WOLFIP_IPV6 */

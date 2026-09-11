@@ -3032,6 +3032,55 @@ static int nd6_has_work(struct wolfIP *s)
 /* Called from wolfIP_poll(). Arms the tick whenever there is work and no
  * timer running - which is both the normal wake-up after an idle period and
  * the recovery path when an earlier insert failed on a full heap. */
+/* Move every Neighbor Discovery deadline and timestamp into the current tick
+ * domain after a rollback (see wolfIP_poll). The timer heap, DHCP deadlines
+ * and the ARP rate limit are rebased there; ND6 keeps its own absolute
+ * values outside the heap and needs the same treatment, or DAD and Router
+ * Solicitation stall on deadlines the restarted clock never reaches, while
+ * the unsigned `now - ts` ages underflow and expire the whole neighbour,
+ * prefix and router state at once.
+ *
+ * Deadlines are rebased; timestamps are simply re-anchored to `now`. How old
+ * an entry is cannot be known across a discontinuity, and treating it as
+ * freshly seen keeps it for one more bounded lifetime instead of discarding
+ * it - the same conservative choice the ARP rate limit makes. */
+static void nd6_rebase_ticks(struct wolfIP *s, uint64_t now)
+{
+    unsigned int i;
+
+    if (!s)
+        return;
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        struct wolfIP_ifaddr_slot *slot = &s->ifaddr[i];
+
+        if (!slot->used || (slot->info.family != AF_INET6))
+            continue;
+        if (slot->dad_due != 0)
+            slot->dad_due = tick_rebase(slot->dad_due, now);
+        /* The lifetime anchor is a timestamp, re-anchored like the rest. */
+        slot->lifetime_ts = now;
+    }
+    for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
+        if (s->nd6.rs_due[i] != 0)
+            s->nd6.rs_due[i] = tick_rebase(s->nd6.rs_due[i], now);
+    }
+    for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {
+        if (s->nd6.neighbors[i].state != 0)
+            s->nd6.neighbors[i].ts = now;
+    }
+    for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+        if (s->nd6.prefixes[i].used)
+            s->nd6.prefixes[i].ts = now;
+    }
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        if (s->nd6.routers[i].used)
+            s->nd6.routers[i].ts = now;
+    }
+    /* The tick this pass is armed against is gone with the old domain. */
+    if (s->nd6.tick_timer != NO_TIMER)
+        s->nd6.tick_timer = NO_TIMER;
+}
+
 static void nd6_poll(struct wolfIP *s)
 {
     if (s->nd6.tick_timer != NO_TIMER)

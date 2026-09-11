@@ -15355,6 +15355,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
          * (or fire on this poll if already due) instead of stalling until
          * the restarted clock lapses the old absolute expiries. */
         timers_heap_rebase(&s->timers, now);
+#if WOLFIP_IPV6
+        /* Neighbor Discovery keeps deadlines and timestamps of its own,
+         * outside the timer heap. */
+        nd6_rebase_ticks(s, now);
+#endif
         if (s->dhcp_renew_at != 0)
             s->dhcp_renew_at = tick_rebase(s->dhcp_renew_at, now);
         if (s->dhcp_rebind_at != 0)
