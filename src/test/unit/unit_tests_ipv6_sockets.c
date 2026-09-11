@@ -3017,4 +3017,7 @@ START_TEST(test_sock6_link_local_bind_ignores_another_interface)
 }
 END_TEST
 
+
+
+
 #endif /* WOLFIP_IPV6 */

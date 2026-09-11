@@ -1266,8 +1266,9 @@ static void nd6_dad_failed(struct wolfIP *s, struct wolfIP_ifaddr_slot *slot)
 /* Two hours, the constant RFC 4862 section 5.5.3 (e) is written around. */
 #define ND6_SLAAC_TWO_HOURS_MS (2u * 60u * 60u * 1000u)
 
-/* Remaining valid lifetime of a SLAAC address, in milliseconds. Only called
- * for an address whose valid lifetime is finite. */
+/* Remaining valid lifetime of a SLAAC address, in milliseconds. A stored
+ * lifetime of zero is expired, not unlimited: on an autoconfigured address
+ * the zero RFC 4862 talks about is a real deadline. */
 static uint64_t nd6_slaac_valid_remaining_ms(struct wolfIP *s,
                                              const struct wolfIP_ifaddr_slot *slot)
 {
@@ -1296,11 +1297,6 @@ static void nd6_slaac_apply_lifetimes(struct wolfIP *s,
     slot->info.preferred_lifetime = preferred;
     if (is_new) {
         slot->info.valid_lifetime = valid;
-        slot->lifetime_ts = s->last_tick;
-        return;
-    }
-    if (slot->info.valid_lifetime == 0) {
-        /* Already unlimited; an advertisement cannot take that away. */
         slot->lifetime_ts = s->last_tick;
         return;
     }
@@ -2139,8 +2135,9 @@ static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
         nd6_store_neighbor(s, *tx_if, &nexthop, NULL, ND6_INCOMPLETE, 0);
         nd6_send_ns(s, *tx_if, &nexthop, &src);
         nd6_arm_tick(s);
-    } else if ((s->last_tick - s->nd6.neighbors[idx].ts) >=
-               ND6_RETRANS_TIMER_MS) {
+        return -1;
+    }
+    if ((s->last_tick - s->nd6.neighbors[idx].ts) >= ND6_RETRANS_TIMER_MS) {
         s->nd6.neighbors[idx].ts = s->last_tick;
         s->nd6.neighbors[idx].probes++;
         nd6_send_ns(s, *tx_if, &nexthop, &src);
@@ -2186,8 +2183,11 @@ static uint32_t udp6_max_payload(struct wolfIP *s, unsigned int if_idx)
 {
     uint32_t mtu = wolfIP_ip_mtu(s, if_idx);
 
-    if (mtu < IP6_MIN_MTU)
-        mtu = IP6_MIN_MTU;
+    /* No rounding up to IP6_MIN_MTU. Claiming 1280 on a link that cannot
+     * carry it made sendto() accept a datagram wolfIP_ll_send_frame() then
+     * refused, leaving it stuck at the head of the queue. IPv6 is not
+     * started on such a link at all (wolfIP_ipv6_start), so the real MTU
+     * here is already at least IP6_MIN_MTU. */
     if (mtu <= (uint32_t)(IP6_HEADER_LEN + UDP_HEADER_LEN))
         return 0;
     return mtu - IP6_HEADER_LEN - UDP_HEADER_LEN;
@@ -2941,6 +2941,13 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
                                  valid, preferred);
                 /* RFC 4862 section 5.5.3 (d): only a prefix of exactly 64
                  * bits leaves room for a 64-bit interface identifier. */
+                /* RFC 4862 section 5.5.3 (d) only forms a *new* address
+                 * when the valid lifetime is non-zero. An address already
+                 * formed from this prefix is a section 5.5.3 (e) case
+                 * whatever the advertised lifetime, and the two-hour rule
+                 * there is what stops a zero from deleting it outright - so
+                 * a zero must still reach nd6_slaac_apply_lifetimes()
+                 * rather than skip the arm entirely. */
                 if ((po->flags & ND6_PREFIX_AUTO) && (po->prefix_len == 64u) &&
                         (valid != 0)) {
                     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
@@ -3215,11 +3222,14 @@ static void nd6_tick_cb(void *arg)
             continue;
         if (slot->info.state == WOLFIP_IFADDR_TENTATIVE)
             continue;
-        if (slot->info.valid_lifetime != 0) {
-            if (nd6_slaac_valid_remaining_ms(s, slot) == 0) {
-                slot->used = 0;
-                continue;
-            }
+        /* Zero is not "unlimited" on an autoconfigured address the way it
+         * is on one the application added: RFC 4862 gives a zero lifetime
+         * its literal meaning, expired now. A router deprecates an address
+         * exactly this way, by re-advertising the prefix with a preferred
+         * lifetime of zero. */
+        if (nd6_slaac_valid_remaining_ms(s, slot) == 0) {
+            slot->used = 0;
+            continue;
         }
         if ((slot->info.preferred_lifetime != 0) &&
                 (slot->info.state == WOLFIP_IFADDR_PREFERRED)) {
@@ -3303,6 +3313,14 @@ int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
         return -WOLFIP_EINVAL;
     ll = wolfIP_ll_at(s, if_idx);
     if (!ll)
+        return -WOLFIP_EINVAL;
+
+    /* RFC 8200 section 5: IPv6 requires a link MTU of at least 1280 octets,
+     * and a link that cannot manage it must provide fragmentation and
+     * reassembly below IPv6 - which this stack does not. Refusing here is
+     * the honest answer; the alternative was to pretend the link was wider
+     * than it is and have every full-size datagram rejected by the driver. */
+    if (wolfIP_ip_mtu(s, if_idx) < IP6_MIN_MTU)
         return -WOLFIP_EINVAL;
 
     /* RFC 4862 section 5.3: the link-local address is formed from fe80::/64

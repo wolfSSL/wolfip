@@ -1681,4 +1681,33 @@ START_TEST(test_nd_clock_rollback_does_not_strand_discovery)
 }
 END_TEST
 
+
+
+
+/* RFC 8200 section 5: IPv6 needs a link MTU of at least 1280 octets, or
+ * fragmentation below IPv6, which this stack does not provide. Rounding a
+ * smaller MTU up to 1280 made sendto() accept datagrams the driver then
+ * refused, leaving them stuck at the head of the queue. */
+START_TEST(test_nd_ipv6_refuses_a_link_below_the_minimum_mtu)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+
+    /* 600 octets of link MTU cannot carry IPv6 at all. */
+    ck_assert_int_eq(wolfIP_mtu_set(&s, TEST_PRIMARY_IF, 600), 0);
+    ck_assert_int_lt(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 0);
+
+    /* Raised to something a link may legally offer, it starts. */
+    ck_assert_int_eq(wolfIP_mtu_set(&s, TEST_PRIMARY_IF,
+                                    1280 + ETH_HEADER_LEN), 0);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_uint_gt(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 0);
+}
+END_TEST
+
+
 #endif /* WOLFIP_IPV6 */
