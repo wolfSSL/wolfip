@@ -2809,6 +2809,15 @@ static void nd6_arm_tick(struct wolfIP *s)
 {
     struct wolfIP_timer tmr;
 
+    /* Before the first wolfIP_poll() the tick domain is unknown: last_tick
+     * is still zero while the application's clock may start anywhere, and
+     * tick_expired() compares in 32 bits, so a deadline anchored at zero can
+     * sit weeks ahead of the first real tick and never fire. Leave the tick
+     * unarmed; nd6_poll() runs at the top of every poll and arms it there,
+     * once last_tick is a value the tick source actually produced. */
+    if (!s->tick_valid)
+        return;
+
     if (s->nd6.tick_timer != NO_TIMER)
         timer_binheap_cancel(&s->timers, s->nd6.tick_timer);
     memset(&tmr, 0, sizeof(tmr));
