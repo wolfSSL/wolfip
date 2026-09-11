@@ -6952,8 +6952,20 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
      * pseudo-header differs, and it has to be done before the segment is
      * re-pointed for the shared code below. */
 
-    if (wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp, frame_len,
-                          flow->hdr_len) != 0)
+    /* IPv4 only. The IPv6 caller hands this code a segment pointer aliased
+     * 20 bytes into the frame so the shared state machine can read the TCP
+     * header through a struct wolfIP_tcp_seg; its `ip` member then overlays
+     * the IPv6 addresses, and the header length in the flow is measured
+     * from the real frame, not from the alias. Notifying the filter here
+     * would hand it fabricated IPv4 addresses and read the ports 20 bytes
+     * past the TCP header - or skip the dispatch outright on a minimal
+     * frame, whose length fails the guard. The transmit path already
+     * declines for the same reason: an IPv6 filter surface is its own piece
+     * of work, and inventing one by pointing IPv4 metadata at a v6 packet
+     * would be worse than not having it. */
+    if (!flow->is_v6 &&
+            wolfIP_filter_notify_tcp(WOLFIP_FILT_RECEIVING, S, if_idx, tcp,
+                                     frame_len, flow->hdr_len) != 0)
         return;
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         uint32_t tcplen;

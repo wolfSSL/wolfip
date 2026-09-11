@@ -3017,6 +3017,68 @@ START_TEST(test_sock6_link_local_bind_ignores_another_interface)
 }
 END_TEST
 
+/* The packet filter's metadata is IPv4-shaped, and the IPv6 receive path
+ * hands the shared TCP code a segment pointer aliased 20 bytes into the
+ * frame. Notifying the filter from there read the ports 20 bytes past the
+ * TCP header and presented the IPv6 addresses as an IPv4 header - or, on a
+ * minimal frame, silently skipped the dispatch because the length guard
+ * failed. The transmit path already declines for the same reason. */
+START_TEST(test_sock6_tcp_receive_does_not_reach_the_ipv4_filter)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint64_t now = 0;
+    ip6 local;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 8500);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, fd, 1), 0);
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_RECEIVING));
+
+    /* A segment long enough that the length guard inside the filter helper
+     * passes. A minimal one is a weaker case: the guard fails on the short
+     * aliased length and the dispatch is skipped, which hides the defect
+     * rather than showing it. */
+    {
+        uint8_t payload[40];
+
+        memset(payload, 0x5A, sizeof(payload));
+        sock6_deliver_tcp(&s, &peer, &local, 44000, 8500, 0x1000, 0,
+                          TCP_FLAG_SYN, payload, sizeof(payload));
+    }
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* The link-layer notification still fires - an Ethernet frame is one
+     * whatever it carries - but nothing presented fabricated IPv4/TCP
+     * metadata for the IPv6 segment inside it. */
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_uint_eq(filter_last_event.meta.ip_proto,
+                      WOLFIP_FILTER_PROTO_ETH);
+
+    /* The handshake still ran: declining to filter is not declining to
+     * receive. */
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_SYN_RCVD);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+}
+END_TEST
 
 
 
