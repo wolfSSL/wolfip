@@ -639,6 +639,68 @@ static unsigned int wolfIP_if_for_local_ip6(struct wolfIP *s,
     return 0;
 }
 
+/* Is this source port (or ICMPv6 Echo identifier) already taken by another
+ * socket framing as IPv6 on the same local address?
+ *
+ * Wider than bind_port_in_use6(), deliberately: that answers "may this bind
+ * be accepted", so it only considers sockets that did bind. An automatic
+ * allocation has to avoid a port some other socket took automatically too,
+ * and such a socket has no bind to show for it - only a local address and a
+ * source port. */
+static int port_in_use6(const struct tsocket *arr, int n,
+                        const struct tsocket *self, const ip6 *local,
+                        uint16_t port)
+{
+    int i;
+
+    if (port == 0)
+        return 0;
+    for (i = 0; i < n; i++) {
+        const struct tsocket *tk = &arr[i];
+
+        if (tk == self)
+            continue;
+        if (tk->src_port != port)
+            continue;
+        if (!TSOCKET_IS_V6(tk) && !tk->bound_v6)
+            continue;
+        /* Either side unspecified is a wildcard and collides with anything
+         * on the port, as in the IPv4 test. */
+        if (!ip6_is_unspecified(&tk->local_ip6) && !ip6_is_unspecified(local) &&
+                (ip6_cmp(&tk->local_ip6, local) != 0))
+            continue;
+        return 1;
+    }
+    return 0;
+}
+
+/* The IPv6 twin of port_alloc_random(): pick at random, then walk forward to
+ * the first free value. Returns 0 when the range is exhausted, which the
+ * caller reports rather than handing out a port already in use. */
+static uint16_t port_alloc_random6(const struct tsocket *arr, int n,
+                                   const struct tsocket *self,
+                                   const ip6 *local, uint16_t min_port)
+{
+    uint16_t port;
+    uint16_t scanned;
+    uint16_t range;
+
+    range = (uint16_t)(0x10000 - min_port);
+    port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
+    if (port < min_port)
+        port = (uint16_t)(min_port + (port % range));
+    scanned = 0;
+    do {
+        if (!port_in_use6(arr, n, self, local, port))
+            return port;
+        port++;
+        if (port < min_port)
+            port = min_port;
+        scanned++;
+    } while (scanned < range);
+    return 0;
+}
+
 static void nd6_input(struct wolfIP *s, unsigned int if_idx,
                       struct wolfIP_ip6_packet *pkt, uint32_t payload_len);
 
@@ -1656,12 +1718,14 @@ static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
      * the application's value through unchecked let two sockets claim one
      * identifier and take each other's replies. */
     if (icmp->type == ICMP6_ECHO_REQUEST) {
-        if (t->src_port == 0)
-            t->src_port = icmp6_echo_id(icmp);
-        else {
-            icmp->data[0] = (uint8_t)((t->src_port >> 8) & 0xFFu);
-            icmp->data[1] = (uint8_t)(t->src_port & 0xFFu);
+        if (t->src_port == 0) {
+            t->src_port = port_alloc_random6(s->icmpsockets, MAX_ICMPSOCKETS,
+                                             t, &t->local_ip6, 1);
+            if (t->src_port == 0)
+                return -WOLFIP_EAGAIN;
         }
+        icmp->data[0] = (uint8_t)((t->src_port >> 8) & 0xFFu);
+        icmp->data[1] = (uint8_t)(t->src_port & 0xFFu);
     }
     if (ip6_output_add_header(s, t->if_idx, &icmp->ip6, &t->local_ip6,
                               &t->remote_ip6, IP6_NEXTHDR_ICMPV6,
@@ -2233,9 +2297,10 @@ static int udp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
     if (t->src_port == 0) {
         /* Probe for a free port rather than trusting one draw, as the IPv4
          * path does: a collision would match one flow to two sockets. */
-        t->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
-        if (t->src_port < 1024)
-            t->src_port = (uint16_t)(t->src_port + 1024);
+        t->src_port = port_alloc_random6(s->udpsockets, MAX_UDPSOCKETS, t,
+                                         &t->local_ip6, 1024);
+        if (t->src_port == 0)
+            return -WOLFIP_EAGAIN;
     }
     if (udp6_prepare_tx(s, t, &t->remote_ip6) != 0)
         return -1;
@@ -2512,8 +2577,17 @@ static int tcp6_connect(struct wolfIP *s, struct tsocket *t, const ip6 *dst,
     ip6_copy(&t->local_ip6, &src);
     ip6_copy(&t->remote_ip6, dst);
     t->sock.tcp.state = TCP_SYN_SENT;
-    if (!t->src_port)
-        t->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
+    if (!t->src_port) {
+        /* Probed, not drawn once: a repeated ephemeral port would give two
+         * connections the same local endpoint. Same rule as the IPv4
+         * connect() path. */
+        t->src_port = port_alloc_random6(s->tcpsockets, MAX_TCPSOCKETS, t,
+                                         &t->local_ip6, 1024);
+        if (t->src_port == 0) {
+            t->sock.tcp.state = TCP_CLOSED;
+            return -WOLFIP_EAGAIN;
+        }
+    }
     if (t->src_port < 1024)
         t->src_port = (uint16_t)(t->src_port + 1024);
     t->dst_port = dport;

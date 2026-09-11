@@ -1730,6 +1730,7 @@ START_TEST(test_icmp6_socket_echo_roundtrip)
     uint8_t req[12];
     uint8_t buf[64];
     uint64_t now = 0;
+    uint16_t sock_id;
     ip6 local;
     ip6 peer;
     ip6 got;
@@ -1769,11 +1770,27 @@ START_TEST(test_icmp6_socket_echo_roundtrip)
     ck_assert_uint_ne(sent->csum, 0);
     ip6_hdr_get_dst(&sent->ip6, &got);
     ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
-    /* The socket adopted the identifier it sent. */
-    ck_assert_uint_eq(s.icmpsockets[SOCKET_UNMARK(fd)].src_port, 0xBEEF);
+    /* The identifier belongs to the socket, not to the application: an
+     * unclaimed socket is given a free one and it is stamped into the
+     * request, whatever the application wrote there. Same as the IPv4 ICMP
+     * socket, which calls icmp_set_echo_id() unconditionally - and what
+     * makes the identifier usable for demultiplexing replies at all. */
+    sock_id = s.icmpsockets[SOCKET_UNMARK(fd)].src_port;
+    ck_assert_uint_ne(sock_id, 0);
+    ck_assert_uint_eq((unsigned)((sent->data[0] << 8) | sent->data[1]),
+                      sock_id);
 
-    /* Answer it. */
-    sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY, 0xBEEF, 1);
+    /* A reply carrying the identifier the application asked for, which the
+     * socket does not own, is not this socket's. */
+    if (sock_id != 0xBEEF) {
+        sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY,
+                                 0xBEEF, 1);
+        ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0,
+                                              NULL, NULL), -WOLFIP_EAGAIN);
+    }
+
+    /* Answer it with the identifier that went out. */
+    sock6_deliver_icmp6_echo(&s, &peer, &local, ICMP6_ECHO_REPLY, sock_id, 1);
     ck_assert_int_gt(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0,
                                           (struct wolfIP_sockaddr *)&from,
                                           &fromlen), 0);
@@ -2763,6 +2780,92 @@ START_TEST(test_sock6_udp_length_past_the_payload_is_dropped)
 }
 END_TEST
 
+/* An automatic source port has to avoid the ports already in use, the way
+ * the IPv4 allocator does: one unchecked draw can hand two sockets the same
+ * local endpoint and match one flow to both. */
+START_TEST(test_sock6_auto_source_port_avoids_one_in_use)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint64_t now = 0;
+    uint16_t taken;
+    ip6 local;
+    int held;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+
+    held = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(held, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 20000);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, held,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    taken = s.udpsockets[SOCKET_UNMARK(held)].src_port;
+    ck_assert_uint_eq(taken, 20000);
+
+    /* The predicate the allocator is built on: it sees the bound socket... */
+    ck_assert_int_eq(port_in_use6(s.udpsockets, MAX_UDPSOCKETS, NULL, &local,
+                                  taken), 1);
+    ck_assert_int_eq(port_in_use6(s.udpsockets, MAX_UDPSOCKETS, NULL, &local,
+                                  (uint16_t)(taken + 1)), 0);
+
+    /* ...and an automatically allocated one, which never bound and so is
+     * invisible to the bind-time check. */
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    {
+        struct wolfIP_sockaddr_in6 dst;
+
+        sock6_addr(&dst, S6_PEER, 7000);
+        ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "x", 1, 0,
+                                            (struct wolfIP_sockaddr *)&dst,
+                                            sizeof(dst)), 1);
+    }
+    {
+        uint16_t got = s.udpsockets[SOCKET_UNMARK(fd)].src_port;
+
+        ck_assert_uint_ne(got, 0);
+        ck_assert_uint_ne(got, taken);
+        ck_assert_int_eq(port_in_use6(s.udpsockets, MAX_UDPSOCKETS, NULL,
+                                      &local, got), 1);
+        /* Whatever the draw, the allocator never returns a port in use. */
+        ck_assert_int_eq(port_in_use6(s.udpsockets, MAX_UDPSOCKETS,
+                                      &s.udpsockets[SOCKET_UNMARK(fd)],
+                                      &local, got), 0);
+    }
+
+    /* Two ICMPv6 sockets get distinct Echo identifiers for the same reason:
+     * the identifier is what demultiplexes replies. */
+    {
+        struct wolfIP_sockaddr_in6 dst;
+        uint8_t req[12];
+        int a;
+        int b;
+
+        memset(req, 0, sizeof(req));
+        req[0] = ICMP6_ECHO_REQUEST;
+        sock6_addr(&dst, S6_PEER, 0);
+        a = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                               WI_IPPROTO_ICMPV6);
+        b = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                               WI_IPPROTO_ICMPV6);
+        ck_assert_int_ge(a, 0);
+        ck_assert_int_ge(b, 0);
+        ck_assert_int_eq(wolfIP_sock_sendto(&s, a, req, sizeof(req), 0,
+                                            (struct wolfIP_sockaddr *)&dst,
+                                            sizeof(dst)), (int)sizeof(req));
+        ck_assert_int_eq(wolfIP_sock_sendto(&s, b, req, sizeof(req), 0,
+                                            (struct wolfIP_sockaddr *)&dst,
+                                            sizeof(dst)), (int)sizeof(req));
+        ck_assert_uint_ne(s.icmpsockets[SOCKET_UNMARK(a)].src_port, 0);
+        ck_assert_uint_ne(s.icmpsockets[SOCKET_UNMARK(a)].src_port,
+                          s.icmpsockets[SOCKET_UNMARK(b)].src_port);
+    }
+}
+END_TEST
 
 /* A listener bound to one IPv6 address must not answer for another. The
  * check was gated on the IPv4 bound_local_ip, which sock_bind6() leaves at

@@ -1427,6 +1427,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_tcp_listener_revert_clears_the_ipv6_peer);
     tcase_add_test(tc_proto, test_sock6_recvfrom_rejects_an_address_with_no_length);
     tcase_add_test(tc_proto, test_sock6_udp_length_past_the_payload_is_dropped);
+    tcase_add_test(tc_proto, test_sock6_auto_source_port_avoids_one_in_use);
     tcase_add_test(tc_proto, test_sock6_specific_listener_ignores_another_local_address);
     tcase_add_test(tc_proto, test_sock6_link_local_bind_ignores_another_interface);
 
