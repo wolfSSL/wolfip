@@ -2816,5 +2816,102 @@ START_TEST(test_sock6_specific_listener_ignores_another_local_address)
 }
 END_TEST
 
+/* A link-local address identifies an endpoint only together with the link it
+ * is on (RFC 4007 section 6), and the same one may legitimately exist on
+ * another interface. TCP and the ICMPv6 socket used to match the address
+ * alone, so a socket scoped to one interface answered traffic that arrived
+ * on another. UDP already applied the ingress check; this pins all three. */
+START_TEST(test_sock6_link_local_bind_ignores_another_interface)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_ll_dev *ll2;
+    struct tsocket *listener;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    ip6 ll6;
+    ip6 peer;
+    int tcp_fd;
+    int udp_fd;
+    int icmp_fd;
+
+    sock6_setup(&s);
+    /* The same link-local address on both interfaces, which wolfIP allows
+     * precisely because the zone tells them apart. */
+    ck_assert_int_eq(atoip6("fe80::1234", &ll6), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &ll6, 64), 0);
+    ll2 = wolfIP_getdev_ex(&s, TEST_SECOND_IF);
+    ck_assert_ptr_nonnull(ll2);
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_SECOND_IF, &ll6, 64), 0);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    /* All three sockets bind that address, which scopes them to the
+     * interface it was found on: the primary. */
+    sock6_addr(&bind_addr, "fe80::1234", 8400);
+    /* The zone is not optional for a link-local bind: it is what says which
+     * of the two identical addresses is meant (RFC 4007 section 6). */
+    bind_addr.sin6_scope_id = TEST_PRIMARY_IF;
+    tcp_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(tcp_fd, 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, tcp_fd, 1), 0);
+    listener = &s.tcpsockets[SOCKET_UNMARK(tcp_fd)];
+    ck_assert_uint_eq(listener->if_idx, TEST_PRIMARY_IF);
+
+    udp_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(udp_fd, 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+
+    icmp_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                                 WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(icmp_fd, 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, icmp_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_uint_eq(s.icmpsockets[SOCKET_UNMARK(icmp_fd)].if_idx,
+                      TEST_PRIMARY_IF);
+
+    /* A SYN for that address arriving on the *other* interface is not for
+     * this listener: the zones differ. */
+    sock6_deliver_tcp_on(&s, TEST_SECOND_IF, &peer, &ll6, 43000, 8400,
+                         0x1000, 0, TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+
+    /* Same for a datagram... */
+    sock6_deliver_udp_on(&s, TEST_SECOND_IF, S6_PEER, &ll6, 6600, 8400,
+                         "no", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_fd, buf, sizeof(buf), 0,
+                                          NULL, NULL), -WOLFIP_EAGAIN);
+
+    /* ...and for an ICMPv6 message. */
+    sock6_deliver_icmp6_msg_on(&s, TEST_SECOND_IF, &peer, &ll6, 100, 0);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, icmp_fd, buf, sizeof(buf), 0,
+                                          NULL, NULL), -WOLFIP_EAGAIN);
+
+    /* On the interface they are actually scoped to, all three arrive. */
+    sock6_deliver_tcp_on(&s, TEST_PRIMARY_IF, &peer, &ll6, 43000, 8400,
+                         0x1000, 0, TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    sock6_deliver_udp_on(&s, TEST_PRIMARY_IF, S6_PEER, &ll6, 6600, 8400,
+                         "yes", 3);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, udp_fd, buf, sizeof(buf), 0,
+                                          NULL, NULL), 3);
+
+    sock6_deliver_icmp6_msg_on(&s, TEST_PRIMARY_IF, &peer, &ll6, 100, 0);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, icmp_fd, buf, sizeof(buf), 0,
+                                          NULL, NULL), 0);
+}
+END_TEST
 
 #endif /* WOLFIP_IPV6 */

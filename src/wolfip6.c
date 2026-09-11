@@ -1579,6 +1579,12 @@ static void icmp6_try_recv(struct wolfIP *s, unsigned int if_idx,
             continue;
         if (t->domain != AF_INET6)
             continue;
+        /* A socket bound to a link-local address is scoped to that link and
+         * does not take another's traffic for the same address (RFC 4007
+         * section 6). An unbound socket carries no zone. */
+        if (t->bound_v6 && ip6_is_link_local(&t->bound_local_ip6) &&
+                (t->if_idx != (uint8_t)if_idx))
+            continue;
         if (!ip6_is_unspecified(&t->bound_local_ip6) &&
                 (ip6_cmp(&t->bound_local_ip6, &dst) != 0))
             continue;
@@ -1869,7 +1875,13 @@ static int udp6_socket_accepts(const struct tsocket *t, unsigned int if_idx,
 {
     if (t->domain != AF_INET6)
         return 0;
-    (void)if_idx;
+    /* A link-local address names an endpoint only together with its link,
+     * and the same one may sit on several interfaces (RFC 4007 section 6).
+     * A socket bound to one is scoped to the interface that bind resolved
+     * to; a wildcard bind carries no zone and is unaffected. */
+    if (t->bound_v6 && ip6_is_link_local(&t->bound_local_ip6) &&
+            (t->if_idx != (uint8_t)if_idx))
+        return 0;
     if (ip6_is_unspecified(&t->bound_local_ip6))
         return 1;
     return (ip6_cmp(&t->bound_local_ip6, dst) == 0) ? 1 : 0;

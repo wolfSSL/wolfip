@@ -6708,8 +6708,12 @@ static int tsocket_flow_zone_matches(const struct tsocket *t,
 {
     if (!flow->is_v6)
         return 1;
-    (void)t;
-    return 1;
+    /* Only a socket actually bound to a link-local address carries a zone.
+     * A wildcard bind is not scoped to anything and takes traffic on any
+     * interface, as it does in either family. */
+    if (!t->bound_v6 || !ip6_is_link_local(&t->bound_local_ip6))
+        return 1;
+    return (t->if_idx == flow->if_idx) ? 1 : 0;
 }
 #endif
 

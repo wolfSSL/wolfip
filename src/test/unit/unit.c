@@ -1427,6 +1427,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_recvfrom_rejects_an_address_with_no_length);
     tcase_add_test(tc_proto, test_sock6_udp_length_past_the_payload_is_dropped);
     tcase_add_test(tc_proto, test_sock6_specific_listener_ignores_another_local_address);
+    tcase_add_test(tc_proto, test_sock6_link_local_bind_ignores_another_interface);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */
