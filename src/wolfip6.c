@@ -3200,6 +3200,36 @@ static void nd6_tick_cb(void *arg)
         }
     }
 
+    /* SLAAC address lifetimes (RFC 4862 sections 5.5.4 and 5.5.3). A zero
+     * lifetime here means unlimited, which is what a manually added address
+     * carries, so only autoconfigured addresses age. An address whose
+     * preferred lifetime has run out is deprecated - still usable for an
+     * established connection, no longer chosen as a source - and one whose
+     * valid lifetime has run out stops being ours at all. */
+    for (i = 0; i < WOLFIP_IFADDR_MAX; i++) {
+        struct wolfIP_ifaddr_slot *slot = &s->ifaddr[i];
+
+        if (!slot->used || (slot->info.family != AF_INET6))
+            continue;
+        if (!(slot->info.flags & WOLFIP_IFADDR_FLAG_SLAAC))
+            continue;
+        if (slot->info.state == WOLFIP_IFADDR_TENTATIVE)
+            continue;
+        if (slot->info.valid_lifetime != 0) {
+            if (nd6_slaac_valid_remaining_ms(s, slot) == 0) {
+                slot->used = 0;
+                continue;
+            }
+        }
+        if ((slot->info.preferred_lifetime != 0) &&
+                (slot->info.state == WOLFIP_IFADDR_PREFERRED)) {
+            uint64_t pref = (uint64_t)slot->info.preferred_lifetime * 1000u;
+
+            if ((s->last_tick - slot->lifetime_ts) >= pref)
+                slot->info.state = WOLFIP_IFADDR_DEPRECATED;
+        }
+    }
+
     /* Router solicitation, once the link-local address is usable. */
     for (i = 0; i < WOLFIP_MAX_INTERFACES; i++) {
         if (!s->nd6.started[i] || (s->nd6.rs_left[i] == 0))

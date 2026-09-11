@@ -1437,8 +1437,140 @@ END_TEST
  * Review findings
  * ========================================================================= */
 
+/* A SLAAC address is not permanent. RFC 4862 section 5.5.4: at the end of
+ * the preferred lifetime it is deprecated - still usable for a connection
+ * already using it, no longer chosen as a source - and at the end of the
+ * valid lifetime it stops being ours. The lifetimes used to be recorded on
+ * the prefix alone, so a formed address stayed preferred for ever. */
+START_TEST(test_nd_slaac_address_deprecates_then_expires)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    uint64_t now = 1000;
+    ip6 prefix;
+    ip6 iid;
+    ip6 formed;
 
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
 
+    /* Preferred for 2s, valid for 5s. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 5u, 2u, 4);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::", &prefix), 0);
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&formed, &prefix, 64, &iid);
+
+    nd_advance(&s, &now, 1200);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+
+    /* Past the preferred lifetime: deprecated, but still one of ours. */
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_DEPRECATED);
+
+    /* Past the valid lifetime: gone. The link-local address is untouched -
+     * it carries no lifetime and must not age. */
+    nd_advance(&s, &now, 3000);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), -1);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 1);
+}
+END_TEST
+
+/* A router that keeps advertising the prefix keeps the address alive. */
+START_TEST(test_nd_slaac_readvertisement_refreshes_the_address)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    uint64_t now = 1000;
+    ip6 prefix;
+    ip6 iid;
+    ip6 formed;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 4u, 4u, 4);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::", &prefix), 0);
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&formed, &prefix, 64, &iid);
+    nd_advance(&s, &now, 1200);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+
+    /* Re-advertised before it runs out, twice over what would have been its
+     * expiry had the first advertisement been the last word. */
+    nd_advance(&s, &now, 3000);
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 4u, 4u, 4);
+    nd_advance(&s, &now, 3000);
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 4u, 4u, 4);
+    nd_advance(&s, &now, 1000);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+}
+END_TEST
+
+/* RFC 4862 section 5.5.3 (e): an unauthenticated advertisement may raise a
+ * valid lifetime freely, but may not cut it below two hours. Without that
+ * floor a single forged Router Advertisement carrying a one-second lifetime
+ * would delete a working address. */
+START_TEST(test_nd_slaac_short_lifetime_cannot_cut_below_two_hours)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    struct wolfIP_ifaddr_info info;
+    uint64_t now = 1000;
+    unsigned int i;
+    unsigned int n;
+    uint32_t valid_after = 0;
+    ip6 prefix;
+    ip6 iid;
+    ip6 formed;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    /* A full day of valid lifetime, well above the two-hour floor. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 86400u, 86400u, 4);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::", &prefix), 0);
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&formed, &prefix, 64, &iid);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+
+    /* Now a hostile one-second lifetime. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 1u, 1u, 4);
+
+    n = wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6);
+    for (i = 0; i < n; i++) {
+        if (wolfIP_ifaddr_get(&s, TEST_PRIMARY_IF, AF_INET6, i, &info) != 0)
+            continue;
+        if (ip6_cmp(&info.v6, &formed) == 0)
+            valid_after = info.valid_lifetime;
+    }
+    /* Floored at two hours, not cut to one second. */
+    ck_assert_uint_eq(valid_after, 2u * 60u * 60u);
+
+    /* And the address is still there well past the second it asked for. */
+    nd_advance(&s, &now, 4000);
+    ck_assert_int_ne(nd_addr_state(&s, &formed), -1);
+}
+END_TEST
 
 /* RFC 4861 section 7.2.5: IsRouter follows the Router flag in both
  * directions, and a node that stops being a router leaves the Default
