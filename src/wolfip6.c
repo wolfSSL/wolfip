@@ -1201,6 +1201,67 @@ static void nd6_dad_failed(struct wolfIP *s, struct wolfIP_ifaddr_slot *slot)
     slot->used = 0;
 }
 
+/* Two hours, the constant RFC 4862 section 5.5.3 (e) is written around. */
+#define ND6_SLAAC_TWO_HOURS_MS (2u * 60u * 60u * 1000u)
+
+/* Remaining valid lifetime of a SLAAC address, in milliseconds. Only called
+ * for an address whose valid lifetime is finite. */
+static uint64_t nd6_slaac_valid_remaining_ms(struct wolfIP *s,
+                                             const struct wolfIP_ifaddr_slot *slot)
+{
+    uint64_t total = (uint64_t)slot->info.valid_lifetime * 1000u;
+    uint64_t elapsed = (s->last_tick > slot->lifetime_ts) ?
+                       (s->last_tick - slot->lifetime_ts) : 0u;
+
+    return (total > elapsed) ? (total - elapsed) : 0u;
+}
+
+/* Apply a Prefix Information option's lifetimes to an address formed from
+ * it (RFC 4862 section 5.5.3 (e)).
+ *
+ * The preferred lifetime is simply reset. The valid lifetime is not: taking
+ * it at face value would let one forged advertisement with a short lifetime
+ * delete a working address. The rule is that it may always be raised, and
+ * may only be lowered to no less than two hours, unless the advertisement is
+ * authenticated - which nothing here is, so the two-hour floor always
+ * applies. */
+static void nd6_slaac_apply_lifetimes(struct wolfIP *s,
+                                      struct wolfIP_ifaddr_slot *slot,
+                                      uint32_t valid, uint32_t preferred,
+                                      int is_new)
+{
+    slot->info.flags |= WOLFIP_IFADDR_FLAG_SLAAC;
+    slot->info.preferred_lifetime = preferred;
+    if (is_new) {
+        slot->info.valid_lifetime = valid;
+        slot->lifetime_ts = s->last_tick;
+        return;
+    }
+    if (slot->info.valid_lifetime == 0) {
+        /* Already unlimited; an advertisement cannot take that away. */
+        slot->lifetime_ts = s->last_tick;
+        return;
+    }
+    {
+        uint64_t remaining = nd6_slaac_valid_remaining_ms(s, slot);
+        uint64_t advertised = (uint64_t)valid * 1000u;
+
+        if ((advertised > ND6_SLAAC_TWO_HOURS_MS) ||
+                (advertised > remaining)) {
+            slot->info.valid_lifetime = valid;
+        } else if (remaining <= ND6_SLAAC_TWO_HOURS_MS) {
+            /* Ignore the advertised value and let the address run out its
+             * remaining time: re-anchoring would extend it. */
+            slot->info.valid_lifetime =
+                (uint32_t)((remaining + 999u) / 1000u);
+        } else {
+            slot->info.valid_lifetime =
+                (uint32_t)(ND6_SLAAC_TWO_HOURS_MS / 1000u);
+        }
+    }
+    slot->lifetime_ts = s->last_tick;
+}
+
 /* Start duplicate address detection on a tentative address. */
 static void nd6_dad_start(struct wolfIP *s, struct wolfIP_ifaddr_slot *slot)
 {
@@ -1470,11 +1531,11 @@ static void icmp6_try_recv(struct wolfIP *s, unsigned int if_idx,
 {
     int is_echo_reply = (icmp->type == ICMP6_ECHO_REPLY);
     uint16_t echo_id = 0;
+    int dst_is_local = 0;
     ip6 src;
     ip6 dst;
     int i;
 
-    (void)if_idx;
     if (frame_len < sizeof(struct wolfIP_icmp6_packet))
         return;
     if (is_echo_reply) {
@@ -1484,6 +1545,15 @@ static void icmp6_try_recv(struct wolfIP *s, unsigned int if_idx,
     }
     ip6_hdr_get_src(&icmp->ip6, &src);
     ip6_hdr_get_dst(&icmp->ip6, &dst);
+
+    /* Addressed to one of our addresses on the interface it arrived over.
+     * The zone is part of the identity of a link-local address (RFC 4007
+     * section 6), so matching the address alone let a socket bound to
+     * fe80::x on one interface take messages for the identical address on
+     * another. */
+    (void)wolfIP_if_for_local_ip6(s, if_idx, &dst, &dst_is_local);
+    if (!dst_is_local)
+        return;
 
     for (i = 0; i < MAX_ICMPSOCKETS; i++) {
         struct tsocket *t = &s->icmpsockets[i];
@@ -1556,9 +1626,12 @@ static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
 
     memset(frame, 0, ETH_HEADER_LEN + IP6_HEADER_LEN);
     memcpy(&icmp->type, buf, len);
-    /* An Echo Request identifies the socket, so a socket that has not
-     * claimed an identifier adopts the one it just sent, and a socket that
-     * has keeps it - the same contract the IPv4 ICMP socket offers. */
+    /* The Echo identifier is what demultiplexes replies back to a socket, so
+     * the socket owns it rather than the application: an unclaimed socket is
+     * given a free one and every Echo Request carries it, which is the
+     * contract the IPv4 ICMP socket offers (icmp_set_echo_id there). Letting
+     * the application's value through unchecked let two sockets claim one
+     * identifier and take each other's replies. */
     if (icmp->type == ICMP6_ECHO_REQUEST) {
         if (t->src_port == 0)
             t->src_port = icmp6_echo_id(icmp);
@@ -1774,10 +1847,12 @@ static void icmp6_send_error(struct wolfIP *s, unsigned int if_idx,
  * to us, a specific bind takes only its own address. A socket bound to a
  * v4-mapped address is excluded by exactly this: its bound address is the
  * mapped one, which no IPv6 destination equals. */
-static int udp6_socket_accepts(const struct tsocket *t, const ip6 *dst)
+static int udp6_socket_accepts(const struct tsocket *t, unsigned int if_idx,
+                               const ip6 *dst)
 {
     if (t->domain != AF_INET6)
         return 0;
+    (void)if_idx;
     if (ip6_is_unspecified(&t->bound_local_ip6))
         return 1;
     return (ip6_cmp(&t->bound_local_ip6, dst) == 0) ? 1 : 0;
@@ -1799,6 +1874,14 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
      * 8200 section 8.1 forbids the zero checksum IPv4 permits. Both are
      * checked before anything reads the payload. */
     if (udp_len < UDP_HEADER_LEN)
+        return;
+    /* The frame may carry link-layer padding, so its length only bounds the
+     * datagram from above. What fixes the datagram is the IPv6 Payload
+     * Length: RFC 8200 section 8.1 makes that the Upper-Layer Packet Length
+     * the checksum covers, and with no extension headers accepted here it is
+     * the whole UDP datagram. A UDP Length larger than it would hand the
+     * application trailing bytes no checksum ever covered. */
+    if (udp_len != (uint32_t)ee16(udp->ip6.payload_len))
         return;
     if (frame_len < (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + udp_len)
         return;
@@ -1835,7 +1918,7 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
             continue;
         if (t->src_port != ee16(udp->dst_port))
             continue;
-        if (!udp6_socket_accepts(t, &dst))
+        if (!udp6_socket_accepts(t, if_idx, &dst))
             continue;
         /* As on the IPv4 side, only a connected socket filters by peer;
          * an unconnected one must take datagrams from any source. A
@@ -2119,6 +2202,8 @@ static int udp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
         return -1;
     }
     if (t->src_port == 0) {
+        /* Probe for a free port rather than trusting one draw, as the IPv4
+         * path does: a collision would match one flow to two sockets. */
         t->src_port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
         if (t->src_port < 1024)
             t->src_port = (uint16_t)(t->src_port + 1024);
@@ -2440,6 +2525,7 @@ static void tcp6_input(struct wolfIP *s, unsigned int if_idx,
 
     memset(&flow, 0, sizeof(flow));
     flow.is_v6 = 1;
+    flow.if_idx = (uint8_t)if_idx;
     flow.ttl = seg->ip6.hop_limit;
     flow.hdr_len = IP6_HEADER_LEN;
     flow.transport_len = payload_len;
@@ -2448,6 +2534,21 @@ static void tcp6_input(struct wolfIP *s, unsigned int if_idx,
     /* A multicast destination is never a TCP endpoint. */
     if (ip6_is_multicast(&flow.dst6))
         return;
+    /* The segment has to be addressed to an address of ours on the link it
+     * arrived over, the same gate udp6_try_recv() applies. The interface
+     * matters, not just the address: a link-local address identifies an
+     * endpoint only together with its zone (RFC 4007 section 6), and the
+     * same one may legitimately exist on another interface. Without this a
+     * listener bound to fe80::x on one interface answered segments for the
+     * identical address on another, and a wildcard listener answered
+     * segments not addressed to this host at all. */
+    {
+        int dst_is_local = 0;
+
+        (void)wolfIP_if_for_local_ip6(s, if_idx, &flow.dst6, &dst_is_local);
+        if (!dst_is_local)
+            return;
+    }
 
     aliased = (struct wolfIP_tcp_seg *)((uint8_t *)seg +
                                         (IP6_HEADER_LEN - IP_HEADER_LEN));
@@ -2657,6 +2758,12 @@ static void nd6_recv_na(struct wolfIP *s, unsigned int if_idx,
         n->state = ND6_STALE;
     n->probes = 0;
     n->ts = s->last_tick;
+    /* RFC 4861 section 7.2.5: IsRouter is set from the Router flag of the
+     * advertisement, in both directions. A node that stops being a router
+     * says so by clearing the flag, and when IsRouter goes from true to
+     * false the node must also leave the Default Router List - otherwise
+     * traffic keeps being handed to a host that has just disclaimed the
+     * job. */
     if (na->flags & ND6_NA_ROUTER)
         n->is_router = 1;
 }
@@ -2733,19 +2840,30 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
                     ip6 formed;
 
                     if (ll != NULL) {
+                        struct wolfIP_ifaddr_slot *slot;
+                        int is_new = 0;
+
                         nd6_iface_iid(s, if_idx, &iid);
                         ip6_make_addr(&formed, &prefix, 64, &iid);
                         /* Adding it is a no-op when it is already there, so
                          * a repeated advertisement does not restart DAD. */
-                        if (nd6_slot_for(s, if_idx, &formed) == NULL) {
+                        slot = nd6_slot_for(s, if_idx, &formed);
+                        if (slot == NULL) {
                             if (wolfIP_ifaddr_add6(s, if_idx, &formed, 64) == 0) {
-                                struct wolfIP_ifaddr_slot *slot =
-                                    nd6_slot_for(s, if_idx, &formed);
-
+                                slot = nd6_slot_for(s, if_idx, &formed);
+                                is_new = 1;
                                 if (slot != NULL)
                                     nd6_dad_start(s, slot);
                             }
                         }
+                        /* A repeated advertisement refreshes the lifetimes
+                         * rather than being ignored: that is how a router
+                         * keeps an address alive, and without it the
+                         * address would age out under a router that is
+                         * still advertising the prefix. */
+                        if (slot != NULL)
+                            nd6_slaac_apply_lifetimes(s, slot, valid,
+                                                      preferred, is_new);
                     }
                 }
             }
@@ -2847,6 +2965,11 @@ static int nd6_has_work(struct wolfIP *s)
         if (s->ifaddr[i].info.family != AF_INET6)
             continue;
         if (s->ifaddr[i].info.state == WOLFIP_IFADDR_TENTATIVE)
+            return 1;
+        /* A SLAAC address with a finite lifetime has to be aged. */
+        if ((s->ifaddr[i].info.flags & WOLFIP_IFADDR_FLAG_SLAAC) &&
+                ((s->ifaddr[i].info.valid_lifetime != 0) ||
+                 (s->ifaddr[i].info.preferred_lifetime != 0)))
             return 1;
     }
     for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {

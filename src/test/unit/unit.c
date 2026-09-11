@@ -1422,6 +1422,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_tcp_listener_resets_stray_ack_from_another_peer);
     tcase_add_test(tc_proto, test_sock6_tcp_listener_revert_clears_the_ipv6_peer);
     tcase_add_test(tc_proto, test_sock6_recvfrom_rejects_an_address_with_no_length);
+    tcase_add_test(tc_proto, test_sock6_udp_length_past_the_payload_is_dropped);
 
     /* Requirement-derived tests for IPv6 features not implemented yet.
      * Each block switches on with its feature macro. */

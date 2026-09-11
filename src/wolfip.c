@@ -1479,6 +1479,11 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
 struct ip_flow {
     uint8_t is_v6;
     uint8_t ttl;            /* hop limit, for IPv6 */
+    /* The interface the segment arrived on. Part of the flow because for a
+     * scoped IPv6 address it is part of the destination's identity: the
+     * same link-local address may sit on several interfaces and they are
+     * different endpoints (RFC 4007 section 6). */
+    uint8_t if_idx;
     uint16_t hdr_len;
     uint32_t transport_len;
     ip4 src, dst;
@@ -1743,6 +1748,11 @@ struct wolfIP {
          * info.state is WOLFIP_IFADDR_TENTATIVE (RFC 4862 section 5.4). */
         uint8_t dad_probes;   /* solicitations still to send */
         uint64_t dad_due;     /* when the next probe or the decision is due */
+        /* When info.valid_lifetime/preferred_lifetime were last set, for a
+         * SLAAC address. Both lifetimes count from here (RFC 4862 section
+         * 5.5.3); a lifetime of zero means unlimited and is never aged, so
+         * a manually added address is unaffected. */
+        uint64_t lifetime_ts;
         struct wolfIP_ifaddr_info info;
     } ifaddr[WOLFIP_IFADDR_MAX];
 #endif
@@ -6687,6 +6697,22 @@ static int tsocket_flow_peer_matches(const struct tsocket *t,
     return (t->remote_ip == flow->src) ? 1 : 0;
 }
 
+/* A socket bound to a scoped IPv6 address belongs to one link. Traffic for
+ * the identical address arriving on another interface is addressed to a
+ * different endpoint and is not this socket's (RFC 4007 section 6). Only
+ * link-local addresses are scoped here: every other unicast address is
+ * unique across the host, so there is nothing to disambiguate. */
+#if WOLFIP_IPV6
+static int tsocket_flow_zone_matches(const struct tsocket *t,
+                                     const struct ip_flow *flow)
+{
+    if (!flow->is_v6)
+        return 1;
+    (void)t;
+    return 1;
+}
+#endif
+
 /* Is the flow's destination the socket's own address, or is the socket not
  * pinned to one? */
 static int tsocket_flow_local_matches(const struct tsocket *t,
@@ -6695,6 +6721,8 @@ static int tsocket_flow_local_matches(const struct tsocket *t,
 #if WOLFIP_IPV6
     if (flow->is_v6) {
         if (!TSOCKET_IS_V6(t))
+            return 0;
+        if (!tsocket_flow_zone_matches(t, flow))
             return 0;
         return (ip6_is_unspecified(&t->local_ip6) ||
                 (ip6_cmp(&t->local_ip6, &flow->dst6) == 0)) ? 1 : 0;
@@ -6764,6 +6792,8 @@ static int tsocket_flow_bound_matches(const struct tsocket *t,
     if (flow->is_v6) {
         if (t->domain != AF_INET6)
             return 0;
+        if (!tsocket_flow_zone_matches(t, flow))
+            return 0;
         return (ip6_is_unspecified(&t->bound_local_ip6) ||
                 (ip6_cmp(&t->bound_local_ip6, &flow->dst6) == 0)) ? 1 : 0;
     }
@@ -6783,7 +6813,10 @@ static int tsocket_flow_accept_local(struct wolfIP *S, struct tsocket *t,
 {
 #if WOLFIP_IPV6
     if (flow->is_v6) {
-        *if_idx = wolfIP_if_for_local_ip6(S, t->if_idx, &flow->dst6, found);
+        /* Scoped on the interface the SYN arrived over: asking about the
+         * socket's own interface would answer "local" for a link-local
+         * address that is local somewhere else. */
+        *if_idx = wolfIP_if_for_local_ip6(S, flow->if_idx, &flow->dst6, found);
         if (*found) {
             ip6_copy(&t->local_ip6, &flow->dst6);
             t->peer_is_v6 = 1;
@@ -6842,11 +6875,12 @@ static void tcp_reset_reply_flow(struct wolfIP *S, unsigned int if_idx,
 
 /* Fill a flow from an IPv4 segment, which is what every existing caller
  * has. */
-static void ip_flow_from_v4(struct ip_flow *flow,
+static void ip_flow_from_v4(struct ip_flow *flow, unsigned int if_idx,
                             const struct wolfIP_ip_packet *ip)
 {
     memset(flow, 0, sizeof(*flow));
     flow->is_v6 = 0;
+    flow->if_idx = (uint8_t)if_idx;
     flow->ttl = ip->ttl;
     flow->hdr_len = IP_HEADER_LEN;
     flow->src = ee32(ip->src);
@@ -6955,7 +6989,15 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                  * bookkeeping and suppresses the RFC 793 unmatched RST.
                  * bound_local_ip (not local_ip) is the discriminator: a
                  * 0.0.0.0 bind leaves local_ip set to the interface/primary
-                 * address as a default source. */
+                 * address as a default source.
+                 *
+                 * tsocket_flow_bound_matches() is asked unconditionally, as
+                 * the SYN path does: it already admits a wildcard bind in
+                 * either family, and gating it on bound_local_ip alone
+                 * skipped it entirely for an IPv6 listener - sock_bind6()
+                 * leaves the IPv4 field at IPADDR_ANY by design, so a
+                 * listener bound to one IPv6 address matched non-SYN
+                 * segments addressed to any of ours. */
                 if (t->bound_local_ip != IPADDR_ANY &&
                         !tsocket_flow_bound_matches(t, flow)) {
                     /* Not the right local endpoint */
@@ -7471,7 +7513,7 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
 
     if (frame_len < sizeof(struct wolfIP_tcp_seg))
         return;
-    ip_flow_from_v4(&flow, &tcp->ip);
+    ip_flow_from_v4(&flow, if_idx, &tcp->ip);
     tcp_input_flow(S, if_idx, tcp, frame_len, &flow);
 }
 
@@ -13505,14 +13547,16 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
              * and is intentionally not forwarded. */
             is_local = 1;
         } else {
+            /* Every address of ours, not just the interface primaries: an
+             * IPv4 alias added through wolfIP_ifaddr_add4() is as local as
+             * the primary, and scanning only ipconf[] sent traffic
+             * addressed to an alias into the forwarding path instead of
+             * delivering it. */
             for (i = 0; i < s->if_count; i++) {
                 struct ipconf *conf = &s->ipconf[i];
                 if (!conf || conf->ip == IPADDR_ANY)
                     continue;
-                if (conf->ip == dest) {
-                    is_local = 1;
-                    break;
-                }
+                if (conf->ip == dest) { is_local = 1; break; }
             }
         }
         if (!is_local) {
@@ -13544,17 +13588,14 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
              * interface addresses can only be forged - the router originates
              * such packets locally, it never receives them from the wire. The
              * strict-RPF loop below skips the ingress interface (i == if_idx),
-             * so its own address would otherwise pass; check every interface's
-             * own /32 here explicitly. */
+             * so its own address would otherwise pass; check every address of
+             * ours here explicitly, aliases included. */
             if (!rpf_drop) {
                 for (i = 0; i < s->if_count; i++) {
                     struct ipconf *conf = &s->ipconf[i];
                     if (!conf || conf->ip == IPADDR_ANY)
                         continue;
-                    if (conf->ip == src) {
-                        rpf_drop = 1;
-                        break;
-                    }
+                    if (conf->ip == src) { rpf_drop = 1; break; }
                 }
             }
             /* Strict RPF: a source that belongs to some other configured

@@ -439,13 +439,14 @@ static void sock6_ready(struct wolfIP *s, uint64_t *now)
 
 /* Deliver a UDP datagram over IPv6 to the stack, built the way a peer would
  * send it: real checksum, real header, through the ingress path. */
-static void sock6_deliver_udp(struct wolfIP *s, const char *src_str,
-                              const ip6 *dst, uint16_t sport, uint16_t dport,
-                              const void *payload, uint16_t payload_len)
+static void sock6_deliver_udp_on(struct wolfIP *s, unsigned int if_idx,
+                                 const char *src_str,
+                                 const ip6 *dst, uint16_t sport, uint16_t dport,
+                                 const void *payload, uint16_t payload_len)
 {
     uint8_t frame[LINK_MTU];
     struct wolfIP_udp6_datagram *udp = (struct wolfIP_udp6_datagram *)frame;
-    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, if_idx);
     union transport6_pseudo_header ph;
     uint16_t udp_len = (uint16_t)(UDP_HEADER_LEN + payload_len);
     ip6 src;
@@ -472,8 +473,16 @@ static void sock6_deliver_udp(struct wolfIP *s, const char *src_str,
     udp->csum = ee16(transport6_checksum(&ph, &udp->src_port));
     if (udp->csum == 0)
         udp->csum = 0xFFFFu;
-    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame,
+    wolfIP_recv_ex(s, if_idx, frame,
                    (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + udp_len);
+}
+
+static void sock6_deliver_udp(struct wolfIP *s, const char *src_str,
+                              const ip6 *dst, uint16_t sport, uint16_t dport,
+                              const void *payload, uint16_t payload_len)
+{
+    sock6_deliver_udp_on(s, TEST_PRIMARY_IF, src_str, dst, sport, dport,
+                         payload, payload_len);
 }
 
 START_TEST(test_sock6_udp_sendto_emits_an_ipv6_datagram)
@@ -851,14 +860,15 @@ static struct wolfIP_tcp6_seg *sock6_last_tcp(uint8_t *staging)
 }
 
 /* Inject a TCP segment over IPv6, built the way a peer would send it. */
-static void sock6_deliver_tcp(struct wolfIP *s, const ip6 *src, const ip6 *dst,
-                              uint16_t sport, uint16_t dport, uint32_t seq,
-                              uint32_t ack, uint8_t flags,
-                              const void *payload, uint16_t payload_len)
+static void sock6_deliver_tcp_on(struct wolfIP *s, unsigned int if_idx,
+                                 const ip6 *src, const ip6 *dst,
+                                 uint16_t sport, uint16_t dport, uint32_t seq,
+                                 uint32_t ack, uint8_t flags,
+                                 const void *payload, uint16_t payload_len)
 {
     uint8_t frame[LINK_MTU];
     struct wolfIP_tcp6_seg *tcp = (struct wolfIP_tcp6_seg *)frame;
-    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, if_idx);
     union transport6_pseudo_header ph;
     uint16_t seg_len = (uint16_t)(TCP_HEADER_LEN + payload_len);
 
@@ -886,8 +896,17 @@ static void sock6_deliver_tcp(struct wolfIP *s, const ip6 *src, const ip6 *dst,
         memcpy(tcp->data, payload, payload_len);
     transport6_pseudo_header_init(&ph, src, dst, seg_len, IP6_NEXTHDR_TCP);
     tcp->csum = ee16(transport6_checksum(&ph, &tcp->src_port));
-    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame,
+    wolfIP_recv_ex(s, if_idx, frame,
                    (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + seg_len);
+}
+
+static void sock6_deliver_tcp(struct wolfIP *s, const ip6 *src, const ip6 *dst,
+                              uint16_t sport, uint16_t dport, uint32_t seq,
+                              uint32_t ack, uint8_t flags,
+                              const void *payload, uint16_t payload_len)
+{
+    sock6_deliver_tcp_on(s, TEST_PRIMARY_IF, src, dst, sport, dport, seq, ack,
+                         flags, payload, payload_len);
 }
 
 /* A full active open: connect emits a SYN over IPv6, the SYN-ACK is
@@ -1219,13 +1238,14 @@ END_TEST
 
 /* Deliver an ICMPv6 message of a given type and code, with a correct
  * checksum, through the real ingress path. */
-static void sock6_deliver_icmp6_body(struct wolfIP *s, const ip6 *src,
-                                     const ip6 *dst, const uint8_t *body,
-                                     uint16_t body_len)
+static void sock6_deliver_icmp6_body_on(struct wolfIP *s, unsigned int if_idx,
+                                        const ip6 *src,
+                                        const ip6 *dst, const uint8_t *body,
+                                        uint16_t body_len)
 {
     uint8_t frame[LINK_MTU];
     struct wolfIP_icmp6_packet *icmp = (struct wolfIP_icmp6_packet *)frame;
-    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, TEST_PRIMARY_IF);
+    struct wolfIP_ll_dev *ll = wolfIP_getdev_ex(s, if_idx);
     union transport6_pseudo_header ph;
 
     ck_assert_ptr_nonnull(ll);
@@ -1244,20 +1264,34 @@ static void sock6_deliver_icmp6_body(struct wolfIP *s, const ip6 *src,
     transport6_pseudo_header_init(&ph, src, dst, body_len,
                                   IP6_NEXTHDR_ICMPV6);
     icmp->csum = ee16(transport6_checksum(&ph, &icmp->type));
-    wolfIP_recv_ex(s, TEST_PRIMARY_IF, frame,
+    wolfIP_recv_ex(s, if_idx, frame,
                    (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + body_len);
 }
 
+static void sock6_deliver_icmp6_body(struct wolfIP *s, const ip6 *src,
+                                     const ip6 *dst, const uint8_t *body,
+                                     uint16_t body_len)
+{
+    sock6_deliver_icmp6_body_on(s, TEST_PRIMARY_IF, src, dst, body, body_len);
+}
+
 /* A bare ICMPv6 message: type, code and an empty type-specific word. */
-static void sock6_deliver_icmp6_msg(struct wolfIP *s, const ip6 *src,
-                                    const ip6 *dst, uint8_t type, uint8_t code)
+static void sock6_deliver_icmp6_msg_on(struct wolfIP *s, unsigned int if_idx,
+                                       const ip6 *src, const ip6 *dst,
+                                       uint8_t type, uint8_t code)
 {
     uint8_t body[16];
 
     memset(body, 0, sizeof(body));
     body[0] = type;
     body[1] = code;
-    sock6_deliver_icmp6_body(s, src, dst, body, sizeof(body));
+    sock6_deliver_icmp6_body_on(s, if_idx, src, dst, body, sizeof(body));
+}
+
+static void sock6_deliver_icmp6_msg(struct wolfIP *s, const ip6 *src,
+                                    const ip6 *dst, uint8_t type, uint8_t code)
+{
+    sock6_deliver_icmp6_msg_on(s, TEST_PRIMARY_IF, src, dst, type, code);
 }
 
 /* An Echo Request or Reply with a chosen identifier and sequence. */
@@ -2656,5 +2690,80 @@ START_TEST(test_sock6_recvfrom_rejects_an_address_with_no_length)
     ck_assert_uint_eq(from.sin6_family, AF_INET6);
 }
 END_TEST
+
+/* A UDP datagram whose Length field runs past the IPv6 Payload Length is
+ * not delivered. The checksum covers the Upper-Layer Packet Length, which
+ * RFC 8200 section 8.1 takes from the IPv6 header; a larger UDP Length used
+ * to pass the frame-length bound alone and hand the application trailing
+ * bytes no checksum had ever covered. */
+START_TEST(test_sock6_udp_length_past_the_payload_is_dropped)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_ll_dev *ll;
+    union transport6_pseudo_header ph;
+    uint8_t frame[LINK_MTU];
+    struct wolfIP_udp6_datagram *udp = (struct wolfIP_udp6_datagram *)frame;
+    uint8_t buf[64];
+    uint64_t now = 0;
+    uint16_t honest_len = (uint16_t)(UDP_HEADER_LEN + 2u);
+    ip6 local;
+    ip6 peer;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 9900);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    memset(frame, 0, sizeof(frame));
+    memcpy(udp->ip6.eth.dst, ll->mac, 6);
+    memset(udp->ip6.eth.src, 0x22, 6);
+    udp->ip6.eth.type = ee16(ETH_TYPE_IPV6);
+    ip6_hdr_set_vtf(&udp->ip6, 0, 0);
+    /* The IPv6 header declares two payload bytes and the checksum covers
+     * exactly those, so the sender controls a valid checksum. */
+    udp->ip6.payload_len = ee16(honest_len);
+    udp->ip6.next_hdr = IP6_NEXTHDR_UDP;
+    udp->ip6.hop_limit = 64;
+    ip6_hdr_set_src(&udp->ip6, &peer);
+    ip6_hdr_set_dst(&udp->ip6, &local);
+    udp->src_port = ee16(6500);
+    udp->dst_port = ee16(9900);
+    /* ...but the UDP header claims 40 more bytes, which sit in the frame
+     * unchecked. */
+    udp->len = ee16((uint16_t)(honest_len + 40u));
+    udp->csum = 0;
+    memcpy(udp->data, "ok", 2);
+    memset(udp->data + 2, 0x41, 40);
+    transport6_pseudo_header_init(&ph, &peer, &local, honest_len,
+                                  IP6_NEXTHDR_UDP);
+    udp->csum = ee16(transport6_checksum(&ph, &udp->src_port));
+    if (udp->csum == 0)
+        udp->csum = 0xFFFFu;
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                   (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN) + honest_len +
+                   40u);
+
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), -WOLFIP_EAGAIN);
+
+    /* The honest datagram, with the two lengths agreeing, still arrives. */
+    sock6_deliver_udp(&s, S6_PEER, &local, 6500, 9900, "ok", 2);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0, NULL,
+                                          NULL), 2);
+}
+END_TEST
+
+
+
 
 #endif /* WOLFIP_IPV6 */

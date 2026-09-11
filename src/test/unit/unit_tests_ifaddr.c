@@ -56,6 +56,7 @@
 #define IFA_IP_B 0x0A0A0A03U /* 10.10.10.3 */
 #define IFA_IP_C 0xC0A80101U /* 192.168.1.1 */
 #define IFA_MASK 0xFFFFFF00U
+#define IFA_ALIAS_FAR 0xAC100005U /* 172.16.0.5, off every primary subnet */
 
 static const uint8_t ifaddr_peer_mac[6] = {0xAA, 0xBB, 0xCC, 0x00, 0x00, 0x22};
 
@@ -724,5 +725,7 @@ START_TEST(test_ifaddr_v6_and_v4_share_the_per_interface_budget)
     ck_assert_int_lt(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
 }
 END_TEST
+
+
 
 #endif /* WOLFIP_IPV6 */
