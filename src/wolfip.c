@@ -15116,7 +15116,19 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
              * so a datagram queued before the neighbour was known is sent
              * once Neighbor Discovery answers. */
             if ((((const uint8_t *)ip)[ETH_HEADER_LEN] >> 4) == 6) {
-                if (flush_datagram6_one(s, t, desc, &tx_if) < 0)
+                int rc6 = flush_datagram6_one(s, t, desc, &tx_if);
+
+                if (rc6 == ND6_RESOLVE_UNREACHABLE) {
+                    /* Address resolution gave up (RFC 4861 section 7.2.2).
+                     * Holding the datagram would pin the head of the queue
+                     * for ever and stop every later one; drop it and carry
+                     * on, as an unreachable destination should. */
+                    fifo_pop(&t->sock.udp.txbuf);
+                    desc = fifo_peek(&t->sock.udp.txbuf);
+                    tx_drained = 1;
+                    continue;
+                }
+                if (rc6 < 0)
                     break;      /* unresolved or unroutable: hold and retry */
                 fifo_pop(&t->sock.udp.txbuf);
                 desc = fifo_peek(&t->sock.udp.txbuf);

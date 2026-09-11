@@ -245,6 +245,18 @@ static void nd_send_ra_pio_raw(struct wolfIP *s, const char *dst_str,
     nd_deliver(s, frame, &src, &dst, payload_len, 255, nd_router_mac);
 }
 
+static void sock6_addr_nd(struct wolfIP_sockaddr_in6 *sin6, const char *addr,
+                          uint16_t port)
+{
+    ip6 a;
+
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_port = ee16(port);
+    ck_assert_int_eq(atoip6(addr, &a), 0);
+    memcpy(&sin6->sin6_addr, a.addr, 16);
+}
+
 static void nd_setup(struct wolfIP *s)
 {
     wolfIP_init(s);
@@ -1771,6 +1783,61 @@ START_TEST(test_nd_slaac_zero_preferred_lifetime_deprecates_at_once)
 }
 END_TEST
 
+/* RFC 4861 section 7.2.2: after MAX_MULTICAST_SOLICIT unanswered
+ * solicitations, address resolution has failed. Every retransmission used to
+ * refresh the entry's timestamp, so the ageing pass could never time out an
+ * entry a sender kept asking about: the undeliverable datagram held the head
+ * of the transmit queue and nothing behind it ever left. */
+START_TEST(test_nd_resolution_gives_up_and_releases_the_queue)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    const uint8_t reachable_mac[6] = {0x02, 0xDD, 0x00, 0x00, 0x00, 0x01};
+    uint64_t now = 1000;
+    ip6 addr;
+    ip6 silent;
+    ip6 reachable;
+    int fd;
+    int i;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    ck_assert_int_eq(atoip6("2001:db8:7::1", &addr), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add6(&s, TEST_PRIMARY_IF, &addr, 64), 0);
+    nd_advance(&s, &now, 2000);
+
+    ck_assert_int_eq(atoip6("2001:db8:7::dead", &silent), 0);
+    ck_assert_int_eq(atoip6("2001:db8:7::99", &reachable), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &reachable,
+                                             reachable_mac), 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    /* One datagram to a neighbour that will never answer, then one to a
+     * neighbour that is already resolved. */
+    sock6_addr_nd(&dst, "2001:db8:7::dead", 7100);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "x", 1, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 1);
+    sock6_addr_nd(&dst, "2001:db8:7::99", 7101);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "y", 1, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 1);
+
+    /* Long enough for the solicitations to run out. */
+    for (i = 0; i < 10; i++)
+        nd_advance(&s, &now, ND6_RETRANS_TIMER_MS);
+
+    /* The undeliverable datagram was retired and the one behind it went
+     * out, rather than both being stuck for ever. */
+    ck_assert_uint_eq(fifo_len(&s.udpsockets[SOCKET_UNMARK(fd)].sock.udp.txbuf),
+                      0);
+    /* And the entry that never answered is no longer in the cache. */
+    ck_assert_int_lt(nd6_neighbor_index(&s, TEST_PRIMARY_IF, &silent), 0);
+}
+END_TEST
 
 /* RFC 8200 section 5: IPv6 needs a link MTU of at least 1280 octets, or
  * fragmentation below IPv6, which this stack does not provide. Rounding a

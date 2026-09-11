@@ -846,6 +846,10 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
 #define ND6_REACHABLE_TIME_MS      30000U
 #define ND6_DELAY_FIRST_PROBE_MS    5000U
 #define ND6_MAX_MULTICAST_SOLICIT      3U
+/* nd6_resolve() results. Zero is success (mac filled in); the two failures
+ * are told apart because only one of them is worth waiting for. */
+#define ND6_RESOLVE_PENDING     (-1)
+#define ND6_RESOLVE_UNREACHABLE (-2)
 #define ND6_MAX_UNICAST_SOLICIT        3U
 #define ND6_MAX_RTR_SOLICITATIONS      3U
 #define ND6_RTR_SOLICITATION_INTERVAL_MS 4000U
@@ -2124,25 +2128,37 @@ static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
         return 0;
     }
     if (nd6_select_nexthop(s, *tx_if, dst, &nexthop) != 0)
-        return -1; /* no route */
+        return ND6_RESOLVE_PENDING; /* no route */
     if (nd6_lookup(s, *tx_if, &nexthop, mac) == 0)
         return 0;
 
     if (ip6_select_source(s, *tx_if, &nexthop, &src) != 0)
-        return -1; /* nothing to solicit from yet */
+        return ND6_RESOLVE_PENDING; /* nothing to solicit from yet */
     idx = nd6_neighbor_index(s, *tx_if, &nexthop);
     if (idx < 0) {
         nd6_store_neighbor(s, *tx_if, &nexthop, NULL, ND6_INCOMPLETE, 0);
         nd6_send_ns(s, *tx_if, &nexthop, &src);
         nd6_arm_tick(s);
-        return -1;
+        return ND6_RESOLVE_PENDING;
+    }
+    if (s->nd6.neighbors[idx].state == ND6_INCOMPLETE) {
+        /* RFC 4861 section 7.2.2: after MAX_MULTICAST_SOLICIT unanswered
+         * solicitations address resolution has failed. Saying so matters
+         * because every retransmission refreshes the entry's timestamp, so
+         * the cache ageing pass can never time out an entry a sender keeps
+         * asking about - the head of the queue would hold the port for
+         * ever and no later datagram would leave. */
+        if (s->nd6.neighbors[idx].probes >= ND6_MAX_MULTICAST_SOLICIT) {
+            s->nd6.neighbors[idx].state = 0;
+            return ND6_RESOLVE_UNREACHABLE;
+        }
     }
     if ((s->last_tick - s->nd6.neighbors[idx].ts) >= ND6_RETRANS_TIMER_MS) {
         s->nd6.neighbors[idx].ts = s->last_tick;
         s->nd6.neighbors[idx].probes++;
         nd6_send_ns(s, *tx_if, &nexthop, &src);
     }
-    return -1;
+    return ND6_RESOLVE_PENDING;
 }
 
 /* Settle a datagram socket's IPv6 egress state for `dst`: which interface
@@ -2348,8 +2364,14 @@ static int flush_datagram6_one(struct wolfIP *s, struct tsocket *t,
     /* Route for this descriptor's destination rather than the socket's
      * current one: a sendto() to another peer may have moved it since. */
     *tx_if = ip6_route_for_dest(s, &dst);
-    if (nd6_resolve(s, tx_if, &dst, mac) != 0)
-        return -1;
+    {
+        int rc = nd6_resolve(s, tx_if, &dst, mac);
+
+        /* An unreachable neighbour is reported as such rather than held:
+         * the caller drops this datagram so the ones behind it can go. */
+        if (rc != 0)
+            return rc;
+    }
 #ifdef ETHERNET
     if (!wolfIP_ll_is_non_ethernet(s, *tx_if))
         eth_output_add_header(s, *tx_if, mac, &pkt->eth, ETH_TYPE_IPV6);
