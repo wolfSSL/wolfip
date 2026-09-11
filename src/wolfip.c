@@ -10921,12 +10921,21 @@ static int bind_port_in_use6(const struct tsocket *arr, int n,
             continue;
         if (tk->src_port != new_port)
             continue;
-        if (!tk->bound_v6)
+        /* A socket that never bound still occupies the port it was given
+         * automatically by connect() or sendto(): checking bound_v6 alone
+         * let an explicit bind land on top of a live connection's local
+         * endpoint. Such a socket's address is in local_ip6, the bound
+         * one's in bound_local_ip6. */
+        if (!tk->bound_v6 && !TSOCKET_IS_V6(tk))
             continue;
-        if (!ip6_is_unspecified(&tk->bound_local_ip6) &&
-                !ip6_is_unspecified(new_local) &&
-                (ip6_cmp(&tk->bound_local_ip6, new_local) != 0))
-            continue;
+        {
+            const ip6 *held = tk->bound_v6 ? &tk->bound_local_ip6
+                                           : &tk->local_ip6;
+
+            if (!ip6_is_unspecified(held) && !ip6_is_unspecified(new_local) &&
+                    (ip6_cmp(held, new_local) != 0))
+                continue;
+        }
         return 1;
     }
     return 0;

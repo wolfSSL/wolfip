@@ -3080,6 +3080,48 @@ START_TEST(test_sock6_tcp_receive_does_not_reach_the_ipv4_filter)
 }
 END_TEST
 
+/* An explicit bind must not land on a port a connected socket was already
+ * given automatically. The conflict test only looked at sockets that had
+ * themselves bound, and a socket that got its port from sendto() has no
+ * bind to show for it. */
+START_TEST(test_sock6_bind_refuses_a_port_already_auto_assigned)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    uint64_t now = 0;
+    uint16_t taken;
+    int sender;
+    int other;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+
+    sender = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(sender, 0);
+    sock6_addr(&dst, S6_PEER, 7200);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sender, "x", 1, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 1);
+    taken = s.udpsockets[SOCKET_UNMARK(sender)].src_port;
+    ck_assert_uint_ne(taken, 0);
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(sender)].bound_v6, 0);
+
+    /* That endpoint is occupied, bind or no bind. */
+    other = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(other, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, taken);
+    ck_assert_int_lt(wolfIP_sock_bind(&s, other,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+
+    /* A different port is still free. */
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, (uint16_t)(taken + 1));
+    ck_assert_int_eq(wolfIP_sock_bind(&s, other,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+}
+END_TEST
 
 
 #endif /* WOLFIP_IPV6 */
