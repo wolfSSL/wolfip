@@ -1290,6 +1290,34 @@ static void fill_timer_heap(struct wolfIP *s)
         ;
 }
 
+/* a control RTO re-arm that finds the timer heap full releases a non-listener socket */
+START_TEST(test_tcp_rto_cb_ctrl_rearm_heap_full_closes)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_RCVD;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = 0; /* budget left: the re-arm is attempted */
+    ts->sock.tcp.is_listener = 0;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    fill_timer_heap(&s);
+
+    tcp_rto_cb(ts);
+
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
 /* fin_wait_2 timeout is not marked active when the timer heap is full */
 START_TEST(test_tcp_fin_wait_2_timeout_start_heap_full_leaves_flag_clear)
 {
