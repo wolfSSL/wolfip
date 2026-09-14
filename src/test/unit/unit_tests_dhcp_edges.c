@@ -219,6 +219,38 @@ START_TEST(test_dhcp_schedule_lease_timer_explicit_t1_t2)
 }
 END_TEST
 
+/* A lease whose renewal timer could not be armed is re-armed by the poll loop once a slot frees. */
+START_TEST(test_dhcp_schedule_lease_timer_heap_full_rearmed_on_poll)
+{
+    struct wolfIP s;
+    struct wolfIP_timer t = {0};
+    uint32_t filler[MAX_TIMERS];
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_BOUND;
+
+    /* Fill the timer heap so the renewal insert fails. */
+    for (i = 0; i < MAX_TIMERS; i++) {
+        t.expires = s.last_tick + 1000U + (uint64_t)i;
+        t.arg = NULL;
+        t.cb = NULL;
+        filler[i] = (uint32_t)timers_binheap_insert(&s.timers, t);
+    }
+
+    dhcp_schedule_lease_timer(&s, 3600U, 1800U, 3150U);
+    ck_assert_int_eq(s.dhcp_timer, NO_TIMER);
+
+    timer_binheap_cancel(&s.timers, filler[0]);
+    (void)wolfIP_poll(&s, s.last_tick);
+
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
+}
+END_TEST
+
 /* -------------------------------------------------------------------------
  * dhcp_msg_type — return each message type and validate
  * ---------------------------------------------------------------------- */

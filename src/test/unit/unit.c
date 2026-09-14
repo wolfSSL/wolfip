@@ -1453,7 +1453,7 @@ Suite *wolf_suite(void)
 #ifdef IP_MULTICAST
     tcase_add_test(tc_core, test_poll_tx_udp_multicast_arp_skipped_uses_mcast_mac);
 #endif /* IP_MULTICAST */
-    /* --- unit_tests_dhcp_edges.c (52 tests) --- */
+    /* --- unit_tests_dhcp_edges.c (53 tests) --- */
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_zero_lease_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_null_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_renew_gt_lease_clamped);
@@ -1462,6 +1462,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_gt_lease_clamped);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_explicit_t1_t2);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_t1_t2_equal_lease_resets_defaults);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_heap_full_rearmed_on_poll);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_offer);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_nak);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_ack);
