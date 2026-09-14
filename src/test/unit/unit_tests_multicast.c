@@ -128,6 +128,45 @@ START_TEST(test_multicast_join_report_repeated)
 }
 END_TEST
 
+/* A join repeat report the full timer heap rejected is re-armed by the poll loop once a slot frees. */
+START_TEST(test_multicast_join_report_repeat_heap_full_rearmed_on_poll)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    struct wolfIP_timer t = {0};
+    uint32_t filler[MAX_TIMERS];
+    ip4 group = 0xE9010212U;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+
+    for (i = 0; i < MAX_TIMERS; i++) {
+        t.expires = s.last_tick + 1000000U + (uint64_t)i;
+        filler[i] = (uint32_t)timers_binheap_insert(&s.timers, t);
+    }
+
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    last_frame_sent_size = 0;
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(s.mcast[0].tmr_unsol, NO_TIMER);
+
+    timer_binheap_cancel(&s.timers, filler[0]);
+    last_frame_sent_size = 0;
+    wolfIP_poll(&s, 1);
+    wolfIP_poll(&s, 2000);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+    ck_assert_uint_eq(get_be32(last_igmp_payload() + 12), group);
+}
+END_TEST
+
 START_TEST(test_multicast_join_validation_and_shared_refs)
 {
     struct wolfIP s;
@@ -368,6 +407,64 @@ START_TEST(test_multicast_igmp_query_flood_coalesced)
     ck_assert_uint_eq(last_frame_sent_count, 1);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+}
+END_TEST
+
+/* A deferred query response the full timer heap rejected is re-armed by the poll loop once a slot frees. */
+START_TEST(test_multicast_igmp_query_report_heap_full_rearmed_on_poll)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+    struct wolfIP_timer t = {0};
+    uint32_t filler[MAX_TIMERS];
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *igmp = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    ip4 group = 0xE9010213U;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    multicast_mreq(&mreq, group, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+
+    /* Let the join repeat fire first, then fill the heap the query response needs. */
+    wolfIP_poll(&s, 1001);
+    for (i = 0; i < MAX_TIMERS; i++) {
+        t.expires = s.last_tick + 1000000U + (uint64_t)i;
+        filler[i] = (uint32_t)timers_binheap_insert(&s.timers, t);
+    }
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    put_be32(igmp + 4, group);
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+    ck_assert_uint_eq(s.mcast[0].tmr_report, NO_TIMER);
+
+    timer_binheap_cancel(&s.timers, filler[0]);
+    last_frame_sent_size = 0;
+    wolfIP_poll(&s, 1002);
+    wolfIP_poll(&s, 1100);
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    ck_assert_uint_eq(last_igmp_payload()[8], IGMPV3_REC_MODE_IS_EXCLUDE);
+    ck_assert_uint_eq(get_be32(last_igmp_payload() + 12), group);
 }
 END_TEST
 
