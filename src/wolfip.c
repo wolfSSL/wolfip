@@ -12466,6 +12466,20 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         /* The in-flight acquisition start is re-timed in the new domain
          * so elapsed-time math never compares across domains. */
         s->dhcp_start_tick = now;
+#ifdef IP_MULTICAST
+        {
+            unsigned int i;
+
+            for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+                if (s->mcast[i].report_at != 0)
+                    s->mcast[i].report_at =
+                            tick_rebase(s->mcast[i].report_at, now);
+                if (s->mcast[i].unsol_at != 0)
+                    s->mcast[i].unsol_at =
+                            tick_rebase(s->mcast[i].unsol_at, now);
+            }
+        }
+#endif
 #ifdef ETHERNET
         {
             unsigned int i;
