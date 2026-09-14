@@ -1533,6 +1533,39 @@ START_TEST(test_sock_bind_tcp_port_collision_rejected)
 }
 END_TEST
 
+/* A TCP socket explicitly bound to a port below 1024 keeps that source port
+ * across connect. */
+START_TEST(test_sock_connect_tcp_keeps_bound_low_port)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(20);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+
+    sin.sin_port = ee16(5001);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+
+    ck_assert_uint_eq(ts->src_port, 20);
+}
+END_TEST
+
 START_TEST(test_sock_bind_udp_src_port_nonzero)
 {
     struct wolfIP s;

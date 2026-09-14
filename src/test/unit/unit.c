@@ -210,6 +210,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_bind_tcp_state_not_closed);
     tcase_add_test(tc_utils, test_sock_bind_tcp_filter_blocks);
     tcase_add_test(tc_utils, test_sock_bind_tcp_port_collision_rejected);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_keeps_bound_low_port);
     tcase_add_test(tc_utils, test_sock_bind_udp_src_port_nonzero);
     tcase_add_test(tc_utils, test_udp_auto_port_skips_in_use);
     tcase_add_test(tc_utils, test_port_alloc_walks_past_long_collision_run);

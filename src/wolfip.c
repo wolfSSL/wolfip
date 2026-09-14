@@ -6816,8 +6816,6 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
                 return -WOLFIP_EAGAIN;
             }
         }
-        if (ts->src_port < 1024)
-            ts->src_port += 1024;
         ts->dst_port = ee16(sin->sin_port);
         ts->sock.tcp.seq = wolfIP_getrandom();
         ts->sock.tcp.snd_una = ts->sock.tcp.seq;
