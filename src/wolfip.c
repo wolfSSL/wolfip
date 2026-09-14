@@ -8847,16 +8847,18 @@ static void dhcp_timer_cb(void *arg);
 static void dhcp_cancel_timer(struct wolfIP *s);
 static void dhcp_deconfigure_lease(struct wolfIP *s);
 
-static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
+/* Returns -1 when the shared timer heap had no slot for the DHCP timer. */
+static int dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
 {
     struct wolfIP_timer tmr = { };
 
     if (!s)
-        return;
+        return -1;
     tmr.expires = (when > s->last_tick) ? when : (s->last_tick + 1U);
     tmr.arg = s;
     tmr.cb = dhcp_timer_cb;
     s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
+    return (s->dhcp_timer == NO_TIMER) ? -1 : 0;
 }
 
 /* Exponential-backoff retransmission delay: double the base timeout for each
@@ -9110,6 +9112,39 @@ static void dhcp_cancel_timer(struct wolfIP *s)
     s->dhcp_renew_at = 0;
     s->dhcp_rebind_at = 0;
     s->dhcp_lease_expires = 0;
+}
+
+/* Re-arms the DHCP timer from the current state's own deadline when an active client has none. */
+static void dhcp_timer_recover(struct wolfIP *s)
+{
+    if (!s || s->dhcp_state == DHCP_OFF || s->dhcp_timer != NO_TIMER)
+        return;
+    switch (s->dhcp_state) {
+        case DHCP_DISCOVER_SENT:
+            dhcp_schedule_timer_at(s, s->last_tick +
+                    dhcp_discover_retry_delay(s, DHCP_DISCOVER_TIMEOUT));
+            break;
+        case DHCP_REQUEST_SENT:
+            dhcp_schedule_retry_timer(s, 0);
+            break;
+        case DHCP_BOUND:
+            if (s->dhcp_renew_at != 0)
+                dhcp_schedule_timer_at(s, s->dhcp_renew_at);
+            break;
+        case DHCP_RENEWING:
+            dhcp_schedule_renew_rebind_retry(s, s->dhcp_rebind_at);
+            break;
+        case DHCP_REBINDING:
+            dhcp_schedule_renew_rebind_retry(s, s->dhcp_lease_expires);
+            break;
+#ifdef ETHERNET
+        case DHCP_DAD:
+            dhcp_schedule_timer_at(s, s->last_tick + DHCP_DAD_INTERVAL_MS);
+            break;
+#endif
+        default:
+            break;
+    }
 }
 
 static void dhcp_deconfigure_lease(struct wolfIP *s)
@@ -12413,6 +12448,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 
     /* Handle timers */
     handle_timers(s, now);
+    dhcp_timer_recover(s);
 
     /* Handle socket callbacks */
     handle_socket_callbacks(s);
