@@ -2877,6 +2877,59 @@ START_TEST(test_sock_accept_listener_resets_paws_state)
 }
 END_TEST
 
+/* A RST that reverts a half-open listener to LISTEN clears the aborted peer's
+ * PAWS state, so the next connection seeds a fresh TS.Recent. */
+START_TEST(test_syn_rcvd_rst_listener_resets_paws_state)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+
+    /* Connection 1: the timestamped SYN seeds the half-open listener's
+     * TS.Recent (last_ts/ts_recent_valid) and enables PAWS. */
+    inject_tcp_syn_ts(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U, 1234,
+            0x10000000U);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(listener->sock.tcp.ts_enabled, 1);
+    ck_assert_uint_eq(listener->sock.tcp.last_ts, ee32(0x10000000U));
+    ck_assert_uint_eq(listener->sock.tcp.ts_recent_valid, 1);
+
+    /* Connection 1 is aborted in-sequence: the listener goes back to LISTEN
+     * and must be at the same fresh baseline the accept() revert leaves. */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U,
+            40000, 1234, listener->sock.tcp.ack, 0, TCP_FLAG_RST);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(listener->sock.tcp.ts_enabled, 0);
+    ck_assert_uint_eq(listener->sock.tcp.ts_recent_valid, 0);
+    ck_assert_uint_eq(listener->sock.tcp.last_ts, 0U);
+
+    /* Connection 2, from a client with a lower timestamp epoch, must seed
+     * a fresh TS.Recent instead of inheriting connection 1's. */
+    inject_tcp_syn_ts(&s, TEST_PRIMARY_IF, 0x0A0000A2U, 0x0A000001U, 1234,
+            100U);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(listener->sock.tcp.ts_enabled, 1);
+    ck_assert_uint_eq(listener->sock.tcp.last_ts, ee32(100U));
+    ck_assert_uint_eq(listener->sock.tcp.ts_recent_valid, 1);
+}
+END_TEST
+
 START_TEST(test_sock_accept_no_available_socket)
 {
     struct wolfIP s;

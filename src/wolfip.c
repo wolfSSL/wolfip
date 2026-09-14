@@ -5869,16 +5869,11 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         continue;
                     if (t->sock.tcp.is_listener) {
                         /* RST on a half-open connection of a listening socket:
-                         * fall back to LISTEN to keep the server open. */
-                        t->sock.tcp.state = TCP_LISTEN;
-                        t->events &= ~CB_EVENT_READABLE;
-                        t->remote_ip = IPADDR_ANY;
-                        t->dst_port = 0;
-                        t->sock.tcp.ack = 0;
-                        /* Drop the RST'd connection's parked SYN-ACK; it must
+                         * fall back to LISTEN to keep the server open.
+                         * Drop the RST'd connection's parked SYN-ACK; it must
                          * not be retransmitted for the next connection (see
                          * the accept() revert for why). */
-                        fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
+                        tcp_listener_revert_to_listen(t);
                         continue;
                     }
                     /* An accepted (cloned) connection has no listen role: a peer

@@ -263,6 +263,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_invalid_tcp_fd);
     tcase_add_test(tc_utils, test_sock_accept_success_sets_addr);
     tcase_add_test(tc_utils, test_sock_accept_listener_resets_paws_state);
+    tcase_add_test(tc_utils, test_syn_rcvd_rst_listener_resets_paws_state);
     tcase_add_test(tc_utils, test_sock_accept_no_available_socket);
     tcase_add_test(tc_utils, test_sock_accept_no_free_socket_syn_rcvd);
     tcase_add_test(tc_utils, test_sock_accept_listen_no_connection);
