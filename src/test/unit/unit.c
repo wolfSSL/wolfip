@@ -300,6 +300,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_multicast_igmp_query_refreshes_report);
     tcase_add_test(tc_utils, test_multicast_igmp_query_flood_coalesced);
     tcase_add_test(tc_utils, test_multicast_igmp_query_report_heap_full_rearmed_on_poll);
+    tcase_add_test(tc_utils, test_multicast_igmp_query_report_rearmed_after_tick_rollback);
     tcase_add_test(tc_utils, test_multicast_igmp_query_bad_checksum_dropped);
     tcase_add_test(tc_utils, test_multicast_igmp_query_spoofed_dropped);
     tcase_add_test(tc_utils, test_multicast_join_requires_configured_ip);
