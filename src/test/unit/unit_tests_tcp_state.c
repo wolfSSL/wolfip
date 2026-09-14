@@ -709,6 +709,43 @@ START_TEST(test_tcp_input_syn_rcvd_rst_nullcb_recv_reports_eof)
 }
 END_TEST
 
+/* A RST aimed at a bound socket still in TCP_CLOSED is ignored, leaving the
+ * socket and its port reservation intact. */
+START_TEST(test_tcp_input_closed_bound_rst_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    int sd;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 8080, rport = 40000;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    sin.sin_port = ee16(lport);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 0, 0, TCP_FLAG_RST);
+
+    ck_assert_int_ne(ts->proto, 0);
+    ck_assert_uint_eq(ts->src_port, lport);
+}
+END_TEST
+
 /* Time-wait state re-ACKs any incoming segment */
 START_TEST(test_tcp_input_time_wait_sends_ack_on_any_segment)
 {
