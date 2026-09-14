@@ -841,6 +841,11 @@ struct wolfIP_mcast_membership {
      * after a random delay; tmr_unsol is that pending repeat, kept apart from
      * tmr_report so a join does not suppress a query response. */
     uint32_t tmr_unsol;
+    /* Deadline each report is owed at, or 0 when none is owed. A full timer
+     * heap leaves the deadline set with no timer behind it, and the poll loop
+     * re-arms from it once a slot frees. */
+    uint64_t report_at;
+    uint64_t unsol_at;
     struct wolfIP *S;
 };
 #endif
@@ -4817,6 +4822,18 @@ static uint32_t igmp_max_resp_ms(uint8_t code)
     return tenths * 100U;
 }
 
+/* Arms a report timer for a membership at the given deadline, returning NO_TIMER when the heap is full. */
+static uint32_t igmp_arm_report(struct wolfIP *s, struct wolfIP_mcast_membership *m,
+                                uint64_t when, void (*cb)(void *))
+{
+    struct wolfIP_timer tmr = {0};
+
+    tmr.expires = (when > s->last_tick) ? when : (s->last_tick + 1U);
+    tmr.arg = m;
+    tmr.cb = cb;
+    return (uint32_t)timers_binheap_insert(&s->timers, tmr);
+}
+
 /* Timer callback: the random response delay for a membership has elapsed, so
  * emit the deferred Current-State Report. arg is the membership; it carries a
  * back-pointer to the owning stack because the timer API passes only one arg.
@@ -4829,6 +4846,7 @@ static void igmp_report_timer_cb(void *arg)
     if (!m)
         return;
     m->tmr_report = NO_TIMER;
+    m->report_at = 0;
     if (!m->S || m->refs == 0)
         return;
     (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
@@ -4841,6 +4859,7 @@ static void igmp_unsolicited_timer_cb(void *arg)
     if (!m)
         return;
     m->tmr_unsol = NO_TIMER;
+    m->unsol_at = 0;
     if (!m->S || m->refs == 0)
         return;
     (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
@@ -4897,7 +4916,6 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
         uint32_t max_ms = igmp_max_resp_ms(igmp[1]);
 
         for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
-            struct wolfIP_timer tmr = {0};
             uint32_t delay;
 
             if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)
@@ -4906,18 +4924,39 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
                 continue;
             /* §5.2 rule 1: a query arriving while a response is already pending
              * for this membership schedules nothing further. This coalesces a
-             * query flood into a single deferred report per group. */
-            if (s->mcast[i].tmr_report != NO_TIMER)
+             * query flood into a single deferred report per group, a response
+             * still owed but not yet armed included. */
+            if (s->mcast[i].tmr_report != NO_TIMER || s->mcast[i].report_at != 0)
                 continue;
             /* Floor at 1 ms: a zero window (IGMPv1 query) still fires on the
              * next poll, and expires must stay non-zero because the timer heap
              * treats expires == 0 as a cancelled slot. */
             delay = max_ms ? (wolfIP_getrandom() % max_ms) + 1U : 1U;
-            tmr.expires = s->last_tick + delay;
-            tmr.arg = &s->mcast[i];
-            tmr.cb = igmp_report_timer_cb;
-            s->mcast[i].tmr_report = timers_binheap_insert(&s->timers, tmr);
+            s->mcast[i].report_at = s->last_tick + delay;
+            s->mcast[i].tmr_report = igmp_arm_report(s, &s->mcast[i],
+                    s->mcast[i].report_at, igmp_report_timer_cb);
         }
+    }
+}
+
+/* Re-arms the deferred query response and the join repeat report for any membership left owing one. */
+static void igmp_timer_recover(struct wolfIP *s)
+{
+    unsigned int i;
+
+    if (!s)
+        return;
+    for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+        struct wolfIP_mcast_membership *m = &s->mcast[i];
+
+        if (m->refs == 0)
+            continue;
+        if (m->report_at != 0 && m->tmr_report == NO_TIMER)
+            m->tmr_report = igmp_arm_report(s, m, m->report_at,
+                                            igmp_report_timer_cb);
+        if (m->unsol_at != 0 && m->tmr_unsol == NO_TIMER)
+            m->tmr_unsol = igmp_arm_report(s, m, m->unsol_at,
+                                           igmp_unsolicited_timer_cb);
     }
 }
 #endif
@@ -7784,6 +7823,8 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
                 m->if_idx = (uint8_t)if_idx;
                 m->tmr_report = NO_TIMER;
                 m->tmr_unsol = NO_TIMER;
+                m->report_at = 0;
+                m->unsol_at = 0;
                 m->S = s;
                 break;
             }
@@ -7797,13 +7838,11 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
     if (m->refs != 0xff)
         m->refs++;
     if (m->refs == 1) {
-        struct wolfIP_timer tmr = {0};
         (void)igmp_send_report(s, if_idx, group, IGMPV3_REC_MODE_IS_EXCLUDE);
-        tmr.expires = s->last_tick +
+        m->unsol_at = s->last_tick +
                 (wolfIP_getrandom() % IGMP_UNSOLICITED_REPORT_MS) + 1U;
-        tmr.arg = m;
-        tmr.cb = igmp_unsolicited_timer_cb;
-        m->tmr_unsol = timers_binheap_insert(&s->timers, tmr);
+        m->tmr_unsol = igmp_arm_report(s, m, m->unsol_at,
+                                       igmp_unsolicited_timer_cb);
     }
     return 0;
 }
@@ -12449,6 +12488,9 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     /* Handle timers */
     handle_timers(s, now);
     dhcp_timer_recover(s);
+#ifdef IP_MULTICAST
+    igmp_timer_recover(s);
+#endif
 
     /* Handle socket callbacks */
     handle_socket_callbacks(s);
