@@ -1308,7 +1308,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_notify_loopback_null_stack_no_crash);
 
     /* === Branch-coverage tests from fleet ===*/
-    /* --- unit_tests_tcp_state.c (69 tests) --- */
+    /* --- unit_tests_tcp_state.c (70 tests) --- */
     tcase_add_test(tc_core, test_tcp_send_reset_reply_ignores_rst_input);
     tcase_add_test(tc_core, test_tcp_send_reset_reply_ack_in_uses_ack_seq);
     tcase_add_test(tc_core, test_tcp_send_reset_reply_syn_no_ack_sets_rst_ack);
@@ -1351,6 +1351,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_fin_wait_2_timeout_start_heap_full_leaves_flag_clear);
     tcase_add_test(tc_core, test_tcp_preaccept_timeout_start_heap_full_leaves_flag_clear);
     tcase_add_test(tc_core, test_sock_connect_tcp_heap_full_does_not_pin_syn_sent);
+    tcase_add_test(tc_core, test_sock_connect_tcp_heap_full_drops_queued_syn);
     tcase_add_test(tc_core, test_tcp_ack_duplicate_zero_inflight_early_return);
     tcase_add_test(tc_core, test_tcp_ack_duplicate_ack_ne_snd_una_returns);
     tcase_add_test(tc_core, test_tcp_ack_fourth_dupack_inflates_cwnd);

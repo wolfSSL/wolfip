@@ -6910,6 +6910,7 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             return -WOLFIP_EAGAIN;
         }
         if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
+            fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
             ts->sock.tcp.state = TCP_CLOSED;
             return -WOLFIP_EAGAIN;
         }
