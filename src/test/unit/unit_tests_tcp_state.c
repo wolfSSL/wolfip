@@ -1371,6 +1371,36 @@ START_TEST(test_sock_connect_tcp_heap_full_does_not_pin_syn_sent)
 }
 END_TEST
 
+/* connect leaves no SYN queued for transmission when the control RTO cannot be armed */
+START_TEST(test_sock_connect_tcp_heap_full_drops_queued_syn)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5001);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    fill_timer_heap(&s);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.tcp.txbuf));
+}
+END_TEST
+
 /* ===================================================================
  * tcp_ack — additional missing branches
  * =================================================================== */
