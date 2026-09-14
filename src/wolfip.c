@@ -5750,11 +5750,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         struct tsocket *t = &S->tcpsockets[i];
         if (t->proto == 0 || t->S == NULL)
             continue;
-        /* A socket moved to TCP_CLOSED by the RX path with CB_EVENT_CLOSED
-         * still pending has only deferred its teardown to wolfIP_poll()
-         * Step 3 (so the close callback runs on a shallow stack). Ignore any
-         * further input for it until Step 3 delivers the event and reaps it. */
-        if (t->sock.tcp.state == TCP_CLOSED && (t->events & CB_EVENT_CLOSED))
+        /* RFC 9293 3.10.7.1: a socket in TCP_CLOSED holds no connection, so its
+         * segments are discarded and only the unmatched path below answers. */
+        if (t->sock.tcp.state == TCP_CLOSED)
             continue;
         if (t->src_port == ee16(tcp->dst_port)) {
             /* TCP segment sanity checks (the ip.len vs frame_len bound is
