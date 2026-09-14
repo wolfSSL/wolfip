@@ -127,7 +127,7 @@ static int op_connect(struct wolfIP_ll_dev *ll,
                       const uint8_t bssid[6])
 {
     (void)ll;
-    /* For WPA2/WPA3 the supplicant owns the keying material; the radio
+    /* For WPA2-PSK the supplicant owns the keying material; the radio
      * does 802.11 open auth + assoc carrying the RSN IE (open_auth = 0
      * selects the WPA2-PSK/CCMP path), then EAPOL flows through the
      * 0x888E TX/RX path for the host-run 4-way. */

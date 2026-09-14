@@ -210,6 +210,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_bind_tcp_state_not_closed);
     tcase_add_test(tc_utils, test_sock_bind_tcp_filter_blocks);
     tcase_add_test(tc_utils, test_sock_bind_tcp_port_collision_rejected);
+    tcase_add_test(tc_utils, test_sock_connect_tcp_keeps_bound_low_port);
     tcase_add_test(tc_utils, test_sock_bind_udp_src_port_nonzero);
     tcase_add_test(tc_utils, test_udp_auto_port_skips_in_use);
     tcase_add_test(tc_utils, test_port_alloc_walks_past_long_collision_run);
@@ -262,6 +263,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_invalid_tcp_fd);
     tcase_add_test(tc_utils, test_sock_accept_success_sets_addr);
     tcase_add_test(tc_utils, test_sock_accept_listener_resets_paws_state);
+    tcase_add_test(tc_utils, test_syn_rcvd_rst_listener_resets_paws_state);
     tcase_add_test(tc_utils, test_sock_accept_no_available_socket);
     tcase_add_test(tc_utils, test_sock_accept_no_free_socket_syn_rcvd);
     tcase_add_test(tc_utils, test_sock_accept_listen_no_connection);
@@ -292,11 +294,14 @@ Suite *wolf_suite(void)
 #ifdef IP_MULTICAST
     tcase_add_test(tc_utils, test_multicast_join_and_drop_reports);
     tcase_add_test(tc_utils, test_multicast_join_report_repeated);
+    tcase_add_test(tc_utils, test_multicast_join_report_repeat_heap_full_rearmed_on_poll);
     tcase_add_test(tc_utils, test_multicast_join_validation_and_shared_refs);
     tcase_add_test(tc_utils, test_multicast_udp_receive_requires_join);
     tcase_add_test(tc_utils, test_multicast_udp_send_mac_ttl_loop_and_options);
     tcase_add_test(tc_utils, test_multicast_igmp_query_refreshes_report);
     tcase_add_test(tc_utils, test_multicast_igmp_query_flood_coalesced);
+    tcase_add_test(tc_utils, test_multicast_igmp_query_report_heap_full_rearmed_on_poll);
+    tcase_add_test(tc_utils, test_multicast_igmp_query_report_rearmed_after_tick_rollback);
     tcase_add_test(tc_utils, test_multicast_igmp_query_bad_checksum_dropped);
     tcase_add_test(tc_utils, test_multicast_igmp_query_spoofed_dropped);
     tcase_add_test(tc_utils, test_multicast_join_requires_configured_ip);
@@ -1305,7 +1310,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_notify_loopback_null_stack_no_crash);
 
     /* === Branch-coverage tests from fleet ===*/
-    /* --- unit_tests_tcp_state.c (65 tests) --- */
+    /* --- unit_tests_tcp_state.c (71 tests) --- */
     tcase_add_test(tc_core, test_tcp_send_reset_reply_ignores_rst_input);
     tcase_add_test(tc_core, test_tcp_send_reset_reply_ack_in_uses_ack_seq);
     tcase_add_test(tc_core, test_tcp_send_reset_reply_syn_no_ack_sets_rst_ack);
@@ -1322,6 +1327,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_good_seq_nonlistener_closes);
     tcase_add_test(tc_core, test_tcp_input_syn_rcvd_rst_nullcb_recv_reports_eof);
+    tcase_add_test(tc_core, test_tcp_input_closed_bound_rst_ignored);
     tcase_add_test(tc_core, test_tcp_input_time_wait_sends_ack_on_any_segment);
     tcase_add_test(tc_core, test_tcp_input_last_ack_unacceptable_sends_ack);
     tcase_add_test(tc_core, test_tcp_input_last_ack_syn_sends_challenge_ack);
@@ -1344,6 +1350,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_rto_cb_fin_wait_2_wrong_state_stops_timer);
     tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_not_needed_stops);
     tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_maxretries_nonlistener_closes);
+    tcase_add_test(tc_core, test_tcp_rto_cb_ctrl_rearm_heap_full_closes);
+    tcase_add_test(tc_core, test_tcp_fin_wait_2_timeout_start_heap_full_leaves_flag_clear);
+    tcase_add_test(tc_core, test_tcp_preaccept_timeout_start_heap_full_leaves_flag_clear);
+    tcase_add_test(tc_core, test_sock_connect_tcp_heap_full_does_not_pin_syn_sent);
+    tcase_add_test(tc_core, test_sock_connect_tcp_heap_full_drops_queued_syn);
     tcase_add_test(tc_core, test_tcp_ack_duplicate_zero_inflight_early_return);
     tcase_add_test(tc_core, test_tcp_ack_duplicate_ack_ne_snd_una_returns);
     tcase_add_test(tc_core, test_tcp_ack_fourth_dupack_inflates_cwnd);
@@ -1449,7 +1460,7 @@ Suite *wolf_suite(void)
 #ifdef IP_MULTICAST
     tcase_add_test(tc_core, test_poll_tx_udp_multicast_arp_skipped_uses_mcast_mac);
 #endif /* IP_MULTICAST */
-    /* --- unit_tests_dhcp_edges.c (52 tests) --- */
+    /* --- unit_tests_dhcp_edges.c (53 tests) --- */
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_zero_lease_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_null_noop);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_renew_gt_lease_clamped);
@@ -1458,6 +1469,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_rebind_gt_lease_clamped);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_explicit_t1_t2);
     tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_t1_t2_equal_lease_resets_defaults);
+    tcase_add_test(tc_core, test_dhcp_schedule_lease_timer_heap_full_rearmed_on_poll);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_offer);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_nak);
     tcase_add_test(tc_core, test_dhcp_msg_type_returns_ack);

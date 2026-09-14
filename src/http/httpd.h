@@ -43,7 +43,7 @@ struct http_request {
     char path[HTTP_PATH_LEN];          // URL path
     char query[HTTP_QUERY_LEN];        // URL query string, if present in the target
     char headers[HTTP_HEADERS_LEN];    // HTTP headers
-    char body[HTTP_BODY_LEN];          // HTTP body (for POST requests)
+    char body[HTTP_BODY_LEN];          // HTTP body, if present in the request
     size_t body_len;
 };
 

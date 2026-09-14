@@ -841,6 +841,11 @@ struct wolfIP_mcast_membership {
      * after a random delay; tmr_unsol is that pending repeat, kept apart from
      * tmr_report so a join does not suppress a query response. */
     uint32_t tmr_unsol;
+    /* Deadline each report is owed at, or 0 when none is owed. A full timer
+     * heap leaves the deadline set with no timer behind it, and the poll loop
+     * re-arms from it once a slot frees. */
+    uint64_t report_at;
+    uint64_t unsol_at;
     struct wolfIP *S;
 };
 #endif
@@ -1355,9 +1360,10 @@ static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms);
 static void tcp_rto_cb(void *arg);
 static int tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
-static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now);
+static void tcp_ctrl_rto_give_up(struct tsocket *t);
+static int tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now);
 static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
-static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now);
+static int tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now);
 static void tcp_preaccept_timeout_stop(struct tsocket *t);
 static void tcp_listener_revert_to_listen(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
@@ -4173,12 +4179,28 @@ static int tcp_ctrl_rto_start(struct tsocket *t, uint64_t now)
     return 0;
 }
 
-static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now)
+/* Same disposal the control-RTO retry budget uses when it runs out. */
+static void tcp_ctrl_rto_give_up(struct tsocket *t)
+{
+    if (!t || t->proto != WI_IPPROTO_TCP)
+        return;
+    tcp_ctrl_rto_stop(t);
+    if (t->sock.tcp.is_listener && t->sock.tcp.state == TCP_SYN_RCVD) {
+        tcp_listener_revert_to_listen(t);
+    } else {
+        t->sock.tcp.state = TCP_CLOSED;
+        close_socket(t);
+    }
+}
+
+static int tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now)
 {
     struct wolfIP_timer tmr = {0};
 
     if (!t || t->proto != WI_IPPROTO_TCP)
-        return;
+        return 0;
+    /* Cleared up front so a failed insert cannot leave it set. */
+    t->sock.tcp.fin_wait_2_timeout_active = 0;
     if (t->sock.tcp.tmr_rto != NO_TIMER) {
         timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
         t->sock.tcp.tmr_rto = NO_TIMER;
@@ -4187,7 +4209,10 @@ static void tcp_fin_wait_2_timeout_start(struct tsocket *t, uint64_t now)
     tmr.arg = t;
     tmr.cb = tcp_rto_cb;
     t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, tmr);
+    if (t->sock.tcp.tmr_rto == NO_TIMER)
+        return -1;
     t->sock.tcp.fin_wait_2_timeout_active = 1;
+    return 0;
 }
 
 static void tcp_fin_wait_2_timeout_stop(struct tsocket *t)
@@ -4201,12 +4226,14 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t)
     t->sock.tcp.fin_wait_2_timeout_active = 0;
 }
 
-static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now)
+static int tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now)
 {
     struct wolfIP_timer tmr = {0};
 
     if (!t || t->proto != WI_IPPROTO_TCP)
-        return;
+        return 0;
+    /* Cleared up front so a failed insert cannot leave it set. */
+    t->sock.tcp.preaccept_timeout_active = 0;
     if (t->sock.tcp.tmr_rto != NO_TIMER) {
         timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
         t->sock.tcp.tmr_rto = NO_TIMER;
@@ -4215,7 +4242,10 @@ static void tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now)
     tmr.arg = t;
     tmr.cb = tcp_rto_cb;
     t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, tmr);
+    if (t->sock.tcp.tmr_rto == NO_TIMER)
+        return -1;
     t->sock.tcp.preaccept_timeout_active = 1;
+    return 0;
 }
 
 static void tcp_preaccept_timeout_stop(struct tsocket *t)
@@ -4792,6 +4822,18 @@ static uint32_t igmp_max_resp_ms(uint8_t code)
     return tenths * 100U;
 }
 
+/* Arms a report timer for a membership at the given deadline, returning NO_TIMER when the heap is full. */
+static uint32_t igmp_arm_report(struct wolfIP *s, struct wolfIP_mcast_membership *m,
+                                uint64_t when, void (*cb)(void *))
+{
+    struct wolfIP_timer tmr = {0};
+
+    tmr.expires = (when > s->last_tick) ? when : (s->last_tick + 1U);
+    tmr.arg = m;
+    tmr.cb = cb;
+    return (uint32_t)timers_binheap_insert(&s->timers, tmr);
+}
+
 /* Timer callback: the random response delay for a membership has elapsed, so
  * emit the deferred Current-State Report. arg is the membership; it carries a
  * back-pointer to the owning stack because the timer API passes only one arg.
@@ -4804,6 +4846,7 @@ static void igmp_report_timer_cb(void *arg)
     if (!m)
         return;
     m->tmr_report = NO_TIMER;
+    m->report_at = 0;
     if (!m->S || m->refs == 0)
         return;
     (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
@@ -4816,6 +4859,7 @@ static void igmp_unsolicited_timer_cb(void *arg)
     if (!m)
         return;
     m->tmr_unsol = NO_TIMER;
+    m->unsol_at = 0;
     if (!m->S || m->refs == 0)
         return;
     (void)igmp_send_report(m->S, m->if_idx, m->group, IGMPV3_REC_MODE_IS_EXCLUDE);
@@ -4872,7 +4916,6 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
         uint32_t max_ms = igmp_max_resp_ms(igmp[1]);
 
         for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
-            struct wolfIP_timer tmr = {0};
             uint32_t delay;
 
             if (s->mcast[i].refs == 0 || s->mcast[i].if_idx != if_idx)
@@ -4881,18 +4924,39 @@ static void igmp_input(struct wolfIP *s, unsigned int if_idx,
                 continue;
             /* §5.2 rule 1: a query arriving while a response is already pending
              * for this membership schedules nothing further. This coalesces a
-             * query flood into a single deferred report per group. */
-            if (s->mcast[i].tmr_report != NO_TIMER)
+             * query flood into a single deferred report per group, a response
+             * still owed but not yet armed included. */
+            if (s->mcast[i].tmr_report != NO_TIMER || s->mcast[i].report_at != 0)
                 continue;
             /* Floor at 1 ms: a zero window (IGMPv1 query) still fires on the
              * next poll, and expires must stay non-zero because the timer heap
              * treats expires == 0 as a cancelled slot. */
             delay = max_ms ? (wolfIP_getrandom() % max_ms) + 1U : 1U;
-            tmr.expires = s->last_tick + delay;
-            tmr.arg = &s->mcast[i];
-            tmr.cb = igmp_report_timer_cb;
-            s->mcast[i].tmr_report = timers_binheap_insert(&s->timers, tmr);
+            s->mcast[i].report_at = s->last_tick + delay;
+            s->mcast[i].tmr_report = igmp_arm_report(s, &s->mcast[i],
+                    s->mcast[i].report_at, igmp_report_timer_cb);
         }
+    }
+}
+
+/* Re-arms the deferred query response and the join repeat report for any membership left owing one. */
+static void igmp_timer_recover(struct wolfIP *s)
+{
+    unsigned int i;
+
+    if (!s)
+        return;
+    for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+        struct wolfIP_mcast_membership *m = &s->mcast[i];
+
+        if (m->refs == 0)
+            continue;
+        if (m->report_at != 0 && m->tmr_report == NO_TIMER)
+            m->tmr_report = igmp_arm_report(s, m, m->report_at,
+                                            igmp_report_timer_cb);
+        if (m->unsol_at != 0 && m->tmr_unsol == NO_TIMER)
+            m->tmr_unsol = igmp_arm_report(s, m, m->unsol_at,
+                                           igmp_unsolicited_timer_cb);
     }
 }
 #endif
@@ -5410,7 +5474,15 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
     if (t->sock.tcp.state == TCP_FIN_WAIT_1 && tcp_seq_leq(fin_acked, ack)) {
         t->sock.tcp.state = TCP_FIN_WAIT_2;
         tcp_ctrl_rto_stop(t);
-        tcp_fin_wait_2_timeout_start(t, t->S->last_tick);
+        if (tcp_fin_wait_2_timeout_start(t, t->S->last_tick) < 0) {
+            /* Nothing would bound the wait: close now, deferred as above. */
+            t->sock.tcp.state = TCP_CLOSED;
+            if (t->callback)
+                t->events |= CB_EVENT_CLOSED;
+            else
+                close_socket(t);
+            return;
+        }
     }
     if (t->sock.tcp.state == TCP_CLOSING && tcp_seq_leq(fin_acked, ack)) {
         t->sock.tcp.state = TCP_TIME_WAIT;
@@ -5678,11 +5750,9 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
         struct tsocket *t = &S->tcpsockets[i];
         if (t->proto == 0 || t->S == NULL)
             continue;
-        /* A socket moved to TCP_CLOSED by the RX path with CB_EVENT_CLOSED
-         * still pending has only deferred its teardown to wolfIP_poll()
-         * Step 3 (so the close callback runs on a shallow stack). Ignore any
-         * further input for it until Step 3 delivers the event and reaps it. */
-        if (t->sock.tcp.state == TCP_CLOSED && (t->events & CB_EVENT_CLOSED))
+        /* RFC 9293 3.10.7.1: a socket in TCP_CLOSED holds no connection, so its
+         * segments are discarded and only the unmatched path below answers. */
+        if (t->sock.tcp.state == TCP_CLOSED)
             continue;
         if (t->src_port == ee16(tcp->dst_port)) {
             /* TCP segment sanity checks (the ip.len vs frame_len bound is
@@ -5799,16 +5869,11 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                         continue;
                     if (t->sock.tcp.is_listener) {
                         /* RST on a half-open connection of a listening socket:
-                         * fall back to LISTEN to keep the server open. */
-                        t->sock.tcp.state = TCP_LISTEN;
-                        t->events &= ~CB_EVENT_READABLE;
-                        t->remote_ip = IPADDR_ANY;
-                        t->dst_port = 0;
-                        t->sock.tcp.ack = 0;
-                        /* Drop the RST'd connection's parked SYN-ACK; it must
+                         * fall back to LISTEN to keep the server open.
+                         * Drop the RST'd connection's parked SYN-ACK; it must
                          * not be retransmitted for the next connection (see
                          * the accept() revert for why). */
-                        fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
+                        tcp_listener_revert_to_listen(t);
                         continue;
                     }
                     /* An accepted (cloned) connection has no listen role: a peer
@@ -5923,7 +5988,10 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     tcp_process_ts(t, tcp, frame_len);
                     tcp_send_syn(t, TCP_FLAG_SYN | TCP_FLAG_ACK);
                     t->sock.tcp.ctrl_rto_retries = 0;
-                    tcp_ctrl_rto_start(t, S->last_tick);
+                    if (tcp_ctrl_rto_start(t, S->last_tick) < 0) {
+                        /* No SYN-ACK retransmit is possible: free the port. */
+                        tcp_listener_revert_to_listen(t);
+                    }
                     break;
                 } else if (t->sock.tcp.state == TCP_SYN_SENT) {
                     /* Only reached for a SYN-ACK whose ACK number was
@@ -5980,8 +6048,12 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
-                    if (t->sock.tcp.is_listener)
-                        tcp_preaccept_timeout_start(t, t->S->last_tick);
+                    if (t->sock.tcp.is_listener &&
+                            tcp_preaccept_timeout_start(t, t->S->last_tick) < 0) {
+                        /* Take the timeout's exit now rather than pin the port. */
+                        tcp_listener_revert_to_listen(t);
+                        continue;
+                    }
                     /* t->sock.tcp.ack (RCV.NXT) is left as-is: when the
                      * accepted segment begins above RCV.NXT, tcp_recv caches
                      * it as OOO and advances RCV.NXT only once the hole is
@@ -6239,12 +6311,14 @@ static void tcp_rto_cb(void *arg)
                 queued = (tcp_send_finack(ts) == 0);
                 if (queued)
                     ts->sock.tcp.ctrl_rto_retries++;
-                tcp_ctrl_rto_start(ts, ts->S->last_tick);
+                if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
+                    tcp_ctrl_rto_give_up(ts);
                 return;
             }
             if (queued)
                 ts->sock.tcp.ctrl_rto_retries++;
-            tcp_ctrl_rto_start(ts, ts->S->last_tick);
+            if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
+                tcp_ctrl_rto_give_up(ts);
             return;
         }
     }
@@ -6816,8 +6890,6 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
                 return -WOLFIP_EAGAIN;
             }
         }
-        if (ts->src_port < 1024)
-            ts->src_port += 1024;
         ts->dst_port = ee16(sin->sin_port);
         ts->sock.tcp.seq = wolfIP_getrandom();
         ts->sock.tcp.snd_una = ts->sock.tcp.seq;
@@ -6832,7 +6904,11 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             ts->sock.tcp.state = TCP_CLOSED;
             return -WOLFIP_EAGAIN;
         }
-        tcp_ctrl_rto_start(ts, s->last_tick);
+        if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
+            fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+            ts->sock.tcp.state = TCP_CLOSED;
+            return -WOLFIP_EAGAIN;
+        }
         return -WOLFIP_EAGAIN;
     }
     return -WOLFIP_EINVAL;
@@ -6981,7 +7057,10 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * SYN-ACK must repeat the original ISN. The final ACK handler
              * advances seq to ISN+1 when the connection is established. */
             newts->sock.tcp.ctrl_rto_retries = 0;
-            tcp_ctrl_rto_start(newts, s->last_tick);
+            if (tcp_ctrl_rto_start(newts, s->last_tick) < 0) {
+                close_socket(newts);
+                return -WOLFIP_EAGAIN;
+            }
             if (sin) {
                 sin->sin_family = AF_INET;
                 sin->sin_port = ee16(ts->dst_port);
@@ -7738,6 +7817,8 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
                 m->if_idx = (uint8_t)if_idx;
                 m->tmr_report = NO_TIMER;
                 m->tmr_unsol = NO_TIMER;
+                m->report_at = 0;
+                m->unsol_at = 0;
                 m->S = s;
                 break;
             }
@@ -7751,13 +7832,11 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
     if (m->refs != 0xff)
         m->refs++;
     if (m->refs == 1) {
-        struct wolfIP_timer tmr = {0};
         (void)igmp_send_report(s, if_idx, group, IGMPV3_REC_MODE_IS_EXCLUDE);
-        tmr.expires = s->last_tick +
+        m->unsol_at = s->last_tick +
                 (wolfIP_getrandom() % IGMP_UNSOLICITED_REPORT_MS) + 1U;
-        tmr.arg = m;
-        tmr.cb = igmp_unsolicited_timer_cb;
-        m->tmr_unsol = timers_binheap_insert(&s->timers, tmr);
+        m->tmr_unsol = igmp_arm_report(s, m, m->unsol_at,
+                                       igmp_unsolicited_timer_cb);
     }
     return 0;
 }
@@ -8117,9 +8196,14 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
                 return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             ts->sock.tcp.ctrl_rto_retries = 0;
-            tcp_ctrl_rto_start(ts, s->last_tick);
             ts->callback = NULL;
             ts->callback_arg = NULL;
+            if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
+                /* No FIN retransmit is possible: release the socket. */
+                ts->sock.tcp.state = TCP_CLOSED;
+                close_socket(ts);
+                return 0;
+            }
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
             ts->sock.tcp.state = TCP_CLOSED;
@@ -8135,9 +8219,13 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
                 return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_LAST_ACK;
             ts->sock.tcp.ctrl_rto_retries = 0;
-            tcp_ctrl_rto_start(ts, s->last_tick);
             ts->callback = NULL;
             ts->callback_arg = NULL;
+            if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
+                ts->sock.tcp.state = TCP_CLOSED;
+                close_socket(ts);
+                return 0;
+            }
             return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_CLOSING) {
             return -WOLFIP_EAGAIN;
@@ -8792,16 +8880,18 @@ static void dhcp_timer_cb(void *arg);
 static void dhcp_cancel_timer(struct wolfIP *s);
 static void dhcp_deconfigure_lease(struct wolfIP *s);
 
-static void dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
+/* Returns -1 when the shared timer heap had no slot for the DHCP timer. */
+static int dhcp_schedule_timer_at(struct wolfIP *s, uint64_t when)
 {
     struct wolfIP_timer tmr = { };
 
     if (!s)
-        return;
+        return -1;
     tmr.expires = (when > s->last_tick) ? when : (s->last_tick + 1U);
     tmr.arg = s;
     tmr.cb = dhcp_timer_cb;
     s->dhcp_timer = timers_binheap_insert(&s->timers, tmr);
+    return (s->dhcp_timer == NO_TIMER) ? -1 : 0;
 }
 
 /* Exponential-backoff retransmission delay: double the base timeout for each
@@ -9055,6 +9145,39 @@ static void dhcp_cancel_timer(struct wolfIP *s)
     s->dhcp_renew_at = 0;
     s->dhcp_rebind_at = 0;
     s->dhcp_lease_expires = 0;
+}
+
+/* Re-arms the DHCP timer from the current state's own deadline when an active client has none. */
+static void dhcp_timer_recover(struct wolfIP *s)
+{
+    if (!s || s->dhcp_state == DHCP_OFF || s->dhcp_timer != NO_TIMER)
+        return;
+    switch (s->dhcp_state) {
+        case DHCP_DISCOVER_SENT:
+            dhcp_schedule_timer_at(s, s->last_tick +
+                    dhcp_discover_retry_delay(s, DHCP_DISCOVER_TIMEOUT));
+            break;
+        case DHCP_REQUEST_SENT:
+            dhcp_schedule_retry_timer(s, 0);
+            break;
+        case DHCP_BOUND:
+            if (s->dhcp_renew_at != 0)
+                dhcp_schedule_timer_at(s, s->dhcp_renew_at);
+            break;
+        case DHCP_RENEWING:
+            dhcp_schedule_renew_rebind_retry(s, s->dhcp_rebind_at);
+            break;
+        case DHCP_REBINDING:
+            dhcp_schedule_renew_rebind_retry(s, s->dhcp_lease_expires);
+            break;
+#ifdef ETHERNET
+        case DHCP_DAD:
+            dhcp_schedule_timer_at(s, s->last_tick + DHCP_DAD_INTERVAL_MS);
+            break;
+#endif
+        default:
+            break;
+    }
 }
 
 static void dhcp_deconfigure_lease(struct wolfIP *s)
@@ -12338,6 +12461,20 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
         /* The in-flight acquisition start is re-timed in the new domain
          * so elapsed-time math never compares across domains. */
         s->dhcp_start_tick = now;
+#ifdef IP_MULTICAST
+        {
+            unsigned int i;
+
+            for (i = 0; i < WOLFIP_MCAST_MEMBERSHIPS; i++) {
+                if (s->mcast[i].report_at != 0)
+                    s->mcast[i].report_at =
+                            tick_rebase(s->mcast[i].report_at, now);
+                if (s->mcast[i].unsol_at != 0)
+                    s->mcast[i].unsol_at =
+                            tick_rebase(s->mcast[i].unsol_at, now);
+            }
+        }
+#endif
 #ifdef ETHERNET
         {
             unsigned int i;
@@ -12358,6 +12495,10 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 
     /* Handle timers */
     handle_timers(s, now);
+    dhcp_timer_recover(s);
+#ifdef IP_MULTICAST
+    igmp_timer_recover(s);
+#endif
 
     /* Handle socket callbacks */
     handle_socket_callbacks(s);

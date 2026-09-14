@@ -1373,7 +1373,7 @@ START_TEST(test_sock_connect_tcp_src_port_low)
     sin.sin_addr.s_addr = ee32(0x0A000002U);
 
     ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
-    ck_assert_uint_eq(ts->src_port, 1025);
+    ck_assert_uint_eq(ts->src_port, 1);
 }
 END_TEST
 
