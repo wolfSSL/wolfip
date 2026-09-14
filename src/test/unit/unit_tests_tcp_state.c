@@ -1243,6 +1243,97 @@ START_TEST(test_tcp_rto_cb_ctrl_maxretries_nonlistener_closes)
 }
 END_TEST
 
+static void fill_timer_heap(struct wolfIP *s)
+{
+    struct wolfIP_timer tmr;
+
+    memset(&tmr, 0, sizeof(tmr));
+    tmr.expires = 0x7FFFFFFFU;
+    while (timers_binheap_insert(&s->timers, tmr) != NO_TIMER)
+        ;
+}
+
+/* fin_wait_2 timeout is not marked active when the timer heap is full */
+START_TEST(test_tcp_fin_wait_2_timeout_start_heap_full_leaves_flag_clear)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_2;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    fill_timer_heap(&s);
+
+    tcp_fin_wait_2_timeout_start(ts, 0);
+
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(ts->sock.tcp.fin_wait_2_timeout_active, 0);
+}
+END_TEST
+
+/* pre-accept timeout is not marked active when the timer heap is full */
+START_TEST(test_tcp_preaccept_timeout_start_heap_full_leaves_flag_clear)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.is_listener = 1;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    fill_timer_heap(&s);
+
+    tcp_preaccept_timeout_start(ts, 0);
+
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(ts->sock.tcp.preaccept_timeout_active, 0);
+}
+END_TEST
+
+/* connect does not leave a socket in SYN_SENT when the control RTO cannot be armed */
+START_TEST(test_sock_connect_tcp_heap_full_does_not_pin_syn_sent)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5001);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    fill_timer_heap(&s);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, tcp_sd,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EAGAIN);
+
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+}
+END_TEST
+
 /* ===================================================================
  * tcp_ack — additional missing branches
  * =================================================================== */
