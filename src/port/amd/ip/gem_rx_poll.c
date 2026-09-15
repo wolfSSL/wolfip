@@ -50,10 +50,10 @@ int gem_eth_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
     if (gem_rx_next == RX_RING_LEN - 1)
         addr |= RXBUF_WRAP;
     gem_rx_ring[gem_rx_next].status = 0;
-    __asm__ volatile ("dsb" ::: "memory");
+    __asm__ volatile ("dsb sy" ::: "memory");
     gem_rx_ring[gem_rx_next].addr = addr;        /* OWN=0 -> hardware can write */
     cache_clean(&gem_rx_ring[gem_rx_next], sizeof(gem_rx_ring[gem_rx_next]));
-    __asm__ volatile ("dsb" ::: "memory");
+    __asm__ volatile ("dsb sy" ::: "memory");
 
     gem_rx_next = (gem_rx_next + 1) % RX_RING_LEN;
     return (int)copy;
