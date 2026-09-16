@@ -1325,14 +1325,14 @@ START_TEST(test_dhcp_timer_cb_default_state_noop)
     wolfIP_init(&s);
     mock_link_init(&s);
     s.dhcp_xid = 0x5678U;
-    s.dhcp_state = DHCP_OFF; /* unhandled in switch */
+    s.dhcp_state = 99; /* not a real state: default branch */
     s.dhcp_timeout_count = 0;
 
     dhcp_timer_cb(&s);
 
-    /* Timer must reset to NO_TIMER and state must stay DHCP_OFF */
+    /* Timer must reset to NO_TIMER and state must be untouched */
     ck_assert_int_eq(s.dhcp_timer, NO_TIMER);
-    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+    ck_assert_int_eq(s.dhcp_state, 99);
 }
 END_TEST
 
@@ -1716,9 +1716,15 @@ START_TEST(test_dhcp_dad_conflict_releases_and_rediscover)
 
     arp_recv(&s, TEST_PRIMARY_IF, &reply, sizeof(reply));
 
-    /* Address released, DAD aborted, back to discovery. */
+    /* Address released, DAD aborted. RFC 2131 4.4.2: the re-DISCOVER
+     * is deferred 10 s behind the DECLINE. */
     ck_assert_uint_eq(s.dhcp_dad_probes, 0U);
     ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+
+    /* The wait expires: the re-DISCOVER goes out. */
+    s.last_tick += 10000U;
+    handle_timers(&s, s.last_tick);
     ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
 }
 END_TEST
@@ -1771,8 +1777,9 @@ START_TEST(test_dhcp_dad_request_claiming_candidate_conflict)
 
     arp_recv(&s, TEST_PRIMARY_IF, &req, sizeof(req));
 
-    /* Conflict detected: DAD aborted, lease released, back to DISCOVER. */
-    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    /* Conflict detected: DAD aborted, lease released. The re-DISCOVER
+     * waits 10 s behind the DECLINE (RFC 2131 4.4.2). */
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
     ck_assert_uint_eq(s.dhcp_dad_probes, 0U);
     ck_assert_uint_eq(primary->ip, 0U);
 }
@@ -1824,8 +1831,9 @@ START_TEST(test_dhcp_dad_probe_for_candidate_conflict)
 
     arp_recv(&s, TEST_PRIMARY_IF, &req, sizeof(req));
 
-    /* Conflict detected: DAD aborted, lease released, back to DISCOVER. */
-    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    /* Conflict detected: DAD aborted, lease released. The re-DISCOVER
+     * waits 10 s behind the DECLINE (RFC 2131 4.4.2). */
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
     ck_assert_uint_eq(s.dhcp_dad_probes, 0U);
     ck_assert_uint_eq(primary->ip, 0U);
 }
@@ -1878,8 +1886,9 @@ START_TEST(test_dhcp_dad_garp_announcement_conflict)
 
     arp_recv(&s, TEST_PRIMARY_IF, &req, sizeof(req));
 
-    /* Conflict detected: DAD aborted, lease released, back to DISCOVER. */
-    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    /* Conflict detected: DAD aborted, lease released. The re-DISCOVER
+     * waits 10 s behind the DECLINE (RFC 2131 4.4.2). */
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
     ck_assert_uint_eq(s.dhcp_dad_probes, 0U);
     ck_assert_uint_eq(primary->ip, 0U);
 }

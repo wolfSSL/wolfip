@@ -995,6 +995,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_dhcp_lease_ip_sane_rejects_bad_mask_and_network_addr);
     tcase_add_test(tc_proto, test_dhcp_long_lease_renewal_checkpoint_rearm);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_reject_does_not_commit_server_id);
+    tcase_add_test(tc_proto, test_dhcp_dad_conflict_waits_10s_before_rediscover);
     tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_defaults_t1_t2);
     tcase_add_test(tc_proto, test_dhcp_schedule_lease_timer_small_lease_clamps_t1_t2);
     tcase_add_test(tc_proto, test_dhcp_parse_offer_defaults_mask_when_missing);

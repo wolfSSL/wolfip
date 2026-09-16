@@ -270,7 +270,7 @@ START_TEST(test_dhcp_long_lease_renewal_checkpoint_rearm)
     uint32_t offer_ip = 0xC0A80164U;
     uint32_t mask = 0xFFFFFF00U;
     uint32_t lease_s = 5184000U; /* 60 days: default T1 (50%) exceeds the
-                                    * timer heap's 2^31 tick horizon */
+                                  * timer heap's 2^31 tick horizon */
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -390,6 +390,77 @@ START_TEST(test_dhcp_parse_offer_reject_does_not_commit_server_id)
     ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), -1);
     ck_assert_uint_eq(s.dhcp_server_ip, 0);
     ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+}
+END_TEST
+
+START_TEST(test_dhcp_dad_conflict_waits_10s_before_rediscover)
+{
+    struct wolfIP s;
+    uint8_t frame[sizeof(struct arp_packet)];
+    struct arp_packet *arp = (struct arp_packet *)frame;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *msg;
+    struct dhcp_option *opt;
+    const uint8_t att_mac[6] = {0x66, 0x55, 0x44, 0x33, 0x22, 0x11};
+    uint32_t client_ip = 0x0A000064U;
+    uint32_t server_ip = 0x0A000001U;
+    uint64_t t0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    ck_assert_int_eq(dhcp_client_init(&s), 0);
+
+    /* The ACK offered client_ip; DAD is probing it. */
+    s.dhcp_ip = client_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_state = DHCP_DAD;
+    s.dhcp_dad_if = WOLFIP_PRIMARY_IF_IDX;
+
+    /* A foreign host claims the candidate address during DAD: an ARP
+     * request carrying the candidate as sender IP. */
+    memset(frame, 0, sizeof(frame));
+    memset(arp->eth.dst, 0xFF, 6);
+    memcpy(arp->eth.src, att_mac, 6);
+    arp->eth.type = ee16(ETH_TYPE_ARP);
+    arp->htype  = ee16(1);
+    arp->ptype  = ee16(0x0800);
+    arp->hlen   = 6;
+    arp->plen   = 4;
+    arp->opcode = ee16(ARP_REQUEST);
+    memcpy(arp->sma, att_mac, 6);
+    arp->sip = ee32(client_ip);
+    memset(arp->tma, 0xFF, 6);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+
+    /* RFC 2131 4.4.2: the DECLINE goes out immediately, but the
+     * re-DISCOVER waits 10 s so the server can stop leasing the
+     * address. */
+    t0 = s.last_tick;
+    wolfIP_poll(&s, t0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), t0 + 10000U);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    msg = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(msg->op, BOOT_REQUEST);
+    opt = (struct dhcp_option *)msg->options;
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_MSG_TYPE);
+    ck_assert_uint_eq(opt->data[0], DHCP_DECLINE);
+
+    /* The wait is not over: nothing re-enters discovery. */
+    wolfIP_poll(&s, t0 + 9999U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+
+    /* After the wait, the DISCOVER goes out. */
+    wolfIP_poll(&s, t0 + 10000U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    msg = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(msg->op, BOOT_REQUEST);
+    opt = (struct dhcp_option *)msg->options;
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_MSG_TYPE);
+    ck_assert_uint_eq(opt->data[0], DHCP_DISCOVER);
 }
 END_TEST
 

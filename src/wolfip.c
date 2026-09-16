@@ -1163,6 +1163,10 @@ static int wolfIP_filter_notify_icmp(enum wolfIP_filter_reason reason,
 /* RFC 4331 / RFC 5227: probe the address after a DHCPACK before using it. */
 #define DHCP_DAD_PROBES 3
 #define DHCP_DAD_INTERVAL_MS 1000U
+/* RFC 2131 4.4.2: after declining a conflicted address, wait 10 s
+ * before sending a new DISCOVER so the server has time to process the
+ * DECLINE and stop leasing the address. */
+#define DHCP_DECLINE_WAIT_MS 10000U
 
 enum dhcp_state {
     DHCP_OFF = 0,
@@ -9066,6 +9070,12 @@ static void dhcp_timer_cb(void *arg)
             }
             break;
 #endif
+        case DHCP_OFF:
+            /* Only the post-DECLINE wait timer arms while OFF
+             * (dhcp_dad_conflict); the NAK and lease-expiry restarts
+             * call dhcp_send_discover directly. */
+            dhcp_send_discover(s);
+            break;
         default:
             break;
     }
@@ -9923,7 +9933,9 @@ static void dhcp_dad_conflict(struct wolfIP *s)
     dhcp_deconfigure_lease(s);
     s->dhcp_state = DHCP_OFF;
     s->dhcp_timeout_count = 0;
-    dhcp_send_discover(s);
+    /* RFC 2131 4.4.2: the re-DISCOVER is deferred behind the 10 s
+     * post-DECLINE wait; the timer callback drives it. */
+    dhcp_schedule_timer_at(s, s->last_tick + DHCP_DECLINE_WAIT_MS);
 }
 #endif
 
