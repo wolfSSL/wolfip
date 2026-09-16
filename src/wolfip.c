@@ -8576,6 +8576,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
                     ts->local_ip = primary->ip;
+                else
+                    ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->icmpsockets, MAX_ICMPSOCKETS, ts,
                                  ts->local_ip, new_id)) {
