@@ -4225,6 +4225,90 @@ START_TEST(test_regression_forwarding_drops_source_route_behind_undersized_optio
 }
 END_TEST
 
+/* A malformed source-route option (LSRR/SSRR with an illegal length byte)
+ * must be reported with a Parameter Problem on the transit path, not silently
+ * dropped by the source-route policy. The source-route drop only applies to
+ * well-formed source routes; a malformed option is malformed regardless of
+ * type, so the length is validated before the type is acted on. */
+START_TEST(test_regression_forwarding_malformed_source_route_param_problem)
+{
+    static const uint8_t opt_types[] = { 0x83U, 0x89U }; /* LSRR, SSRR */
+    static const uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    static const uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    static const uint8_t next_hop_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    static const uint32_t dest_ip = 0xC0A80164U; /* 192.168.1.100 on TEST_SECOND_IF */
+    static const uint32_t src_ip = 0xC0A800AAU; /* in TEST_PRIMARY_IF subnet, passes RPF */
+    unsigned int i;
+
+    for (i = 0; i < sizeof(opt_types) / sizeof(opt_types[0]); i++) {
+        struct wolfIP s;
+        uint8_t frame_buf[ETH_HEADER_LEN + IP_HEADER_LEN + 12];
+        struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+        uint8_t *opts = frame_buf + ETH_HEADER_LEN + IP_HEADER_LEN;
+
+        wolfIP_init(&s);
+        mock_link_init(&s);
+        mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
+        wolfIP_ipconfig_set(&s, 0xC0A80001U, 0xFFFFFF00U, 0);
+        wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0);
+        s.arp.neighbors[0].ip = dest_ip;
+        s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
+        memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
+
+        memset(frame_buf, 0, sizeof(frame_buf));
+        memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+        memcpy(frame->eth.src, src_mac, 6);
+        frame->eth.type = ee16(ETH_TYPE_IP);
+        frame->ver_ihl = 0x48; /* IHL=8, 32-byte header */
+        frame->ttl = 64;
+        frame->proto = WI_IPPROTO_UDP;
+        frame->len = ee16(IP_HEADER_LEN + 12);
+        frame->src = ee32(src_ip);
+        frame->dst = ee32(dest_ip);
+
+        /* A source-route option with an illegal length byte (< 2): the type
+         * says LSRR/SSRR but the option is malformed. */
+        opts[0]  = opt_types[i]; /* LSRR or SSRR */
+        opts[1]  = 1;            /* illegal: an option is at least type + length */
+        opts[2]  = 0x00;         /* end-of-options padding */
+        opts[3]  = 0x00;
+        opts[4]  = 0x00;
+        opts[5]  = 0x00;
+        opts[6]  = 0x00;
+        opts[7]  = 0x00;
+        opts[8]  = 0x00;
+        opts[9]  = 0x00;
+        opts[10] = 0x00;
+        opts[11] = 0x00;
+        fix_ip_checksum_with_hlen(frame, (uint16_t)(IP_HEADER_LEN + 12));
+
+        memset(last_frame_sent, 0, sizeof(last_frame_sent));
+        last_frame_sent_size = 0;
+
+        wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+                       (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 12));
+
+        /* The malformed source route is reported with a Parameter Problem,
+         * not silently dropped by the source-route policy. */
+        ck_assert_uint_eq(last_frame_sent_size,
+                (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 32));
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 9], WI_IPPROTO_ICMP);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+                ICMP_PARAM_PROBLEM);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 1], 0);
+        /* Pointer: the malformed source-route type byte, offset 20 from the
+         * IP header start. */
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 4],
+                IP_HEADER_LEN);
+        /* Addressed to the datagram's source. */
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 16], (src_ip >> 24) & 0xFF);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 17], (src_ip >> 16) & 0xFF);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 18], (src_ip >> 8) & 0xFF);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 19], src_ip & 0xFF);
+    }
+}
+END_TEST
+
 START_TEST(test_regression_loopback_source_dropped_on_non_loopback_iface)
 {
     static const ip4 spoofed_loopback_sources[] = {

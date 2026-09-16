@@ -10934,8 +10934,10 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 opt++;
                 continue;
             }
-            if (type == 0x83 || type == 0x89) /* LSRR or SSRR */
-                return;
+            /* Validate the option length before acting on the type, so a
+             * malformed option (of any type, including a malformed source
+             * route) is reported with a Parameter Problem rather than
+             * silently dropped. */
             if ((opt + 1 >= opt_end || opt[1] < 2) ||
                     opt[1] > (uint8_t)(opt_end - opt)) {
                 /* Malformed option: record the offending type byte (offset
@@ -10945,6 +10947,8 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 bad_opt_off = (uint16_t)(opt - (uint8_t *)ip - ETH_HEADER_LEN);
                 break;
             }
+            if (type == 0x83 || type == 0x89) /* LSRR or SSRR, well-formed */
+                return;
             opt += opt[1];
         }
     }
