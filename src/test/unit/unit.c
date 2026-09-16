@@ -1746,6 +1746,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_delete_rejected_with_route);
 #endif
     tcase_add_test(tc_proto, test_vlan_delete_rejected_with_socket);
+    tcase_add_test(tc_proto, test_vlan_delete_rejected_with_icmp_socket);
     tcase_add_test(tc_proto, test_vlan_api_get_null_args_rejected);
     tcase_add_test(tc_proto, test_vlan_api_get_dangling_parent_pointer_rejected);
     tcase_add_test(tc_proto, test_vlan_tx_active_without_parent_rejected);

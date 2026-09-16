@@ -694,6 +694,38 @@ START_TEST(test_vlan_delete_rejected_with_socket)
 }
 END_TEST
 
+/* Regression (F-13766): the EBUSY dependency scan must also cover the
+ * ICMP socket table; an ICMP socket bound to the VLAN keeps it busy. */
+START_TEST(test_vlan_delete_rejected_with_icmp_socket)
+{
+    struct wolfIP s;
+    unsigned int sub_idx = 0;
+    int sd;
+    struct tsocket *ts;
+    int ret;
+
+    setup_vlan_stack(&s);
+
+    ret = wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx);
+    ck_assert_int_eq(ret, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(sd)];
+    ts->if_idx = (uint8_t)sub_idx;
+
+    ret = wolfIP_vlan_delete(&s, sub_idx);
+    ck_assert_int_eq(ret, -WOLFIP_EBUSY);
+
+    /* The socket survives a rejected delete (it belongs to the app). */
+    ck_assert_uint_eq(ts->if_idx, (uint8_t)sub_idx);
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ret = wolfIP_vlan_delete(&s, sub_idx);
+    ck_assert_int_eq(ret, 0);
+}
+END_TEST
+
 /* Regression: wolfIP_vlan_get used to default *parent_if_idx to 0 if the
  * parent pointer didn't match any slot in ll_dev[], silently reporting the
  * wrong parent. After the fix it must return -WOLFIP_EINVAL and leave the

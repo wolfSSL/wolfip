@@ -10692,12 +10692,24 @@ int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
                 s->udpsockets[i].if_idx == (uint8_t)if_idx)
             return -WOLFIP_EBUSY;
     }
+    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
+        if (s->icmpsockets[i].proto != 0 &&
+                s->icmpsockets[i].if_idx == (uint8_t)if_idx)
+            return -WOLFIP_EBUSY;
+    }
 #if WOLFIP_RAWSOCKETS
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         if (s->rawsockets[i].used &&
                 s->rawsockets[i].if_idx == (uint8_t)if_idx)
             return -WOLFIP_EBUSY;
     }
+#if WOLFIP_PACKET_SOCKETS
+    for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
+        if (s->packetsockets[i].used &&
+                s->packetsockets[i].if_idx == (uint8_t)if_idx)
+            return -WOLFIP_EBUSY;
+    }
+#endif
 #endif
     /* Wipe the slot so it can be reused. s->if_count is not changed to avoid
      * renumbering active sub-ifaces. */
