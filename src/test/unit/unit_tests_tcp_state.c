@@ -1429,6 +1429,49 @@ START_TEST(test_sock_connect_tcp_heap_full_drops_queued_syn)
 }
 END_TEST
 
+/* accept keeps the listener readable and raises no close event for the discarded clone when the control RTO cannot be armed */
+START_TEST(test_sock_accept_heap_full_keeps_listener_readable)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int i;
+    int callback_arg = 0;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t alen = sizeof(sin);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+                    (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    wolfIP_register_callback(&s, listen_sd, test_socket_cb, &callback_arg);
+
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+    ck_assert_uint_eq(listener->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+    fill_timer_heap(&s);
+
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd,
+                    (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EAGAIN);
+
+    ck_assert_uint_eq(listener->events & CB_EVENT_READABLE, CB_EVENT_READABLE);
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        if (&s.tcpsockets[i] != listener)
+            ck_assert_uint_eq(s.tcpsockets[i].close_notify_pending, 0);
+    }
+}
+END_TEST
+
 /* ===================================================================
  * tcp_ack — additional missing branches
  * =================================================================== */
