@@ -6976,6 +6976,16 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     return -WOLFIP_EINVAL;
 }
 
+/* Aborted accept clone: clear the listener's callback before teardown so
+ * close_socket() takes the plain path instead of deferring a
+ * CB_EVENT_CLOSED for a descriptor accept() never returned. */
+static void abort_accept_clone(struct tsocket *ts)
+{
+    ts->callback = NULL;
+    ts->callback_arg = NULL;
+    close_socket(ts);
+}
+
 int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 {
     struct tsocket *ts;
@@ -7062,7 +7072,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                     WOLFIP_FILT_ACCEPTING, s, newts,
                     newts->local_ip, newts->src_port,
                     newts->remote_ip, newts->dst_port) != 0) {
-                close_socket(newts);
+                abort_accept_clone(newts);
                 return -1;
             }
             return (newts - s->tcpsockets) | MARK_TCP_SOCKET;
@@ -7110,7 +7120,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * while we're still accepting.
              */
             if (tcp_send_syn(newts, TCP_FLAG_SYN | TCP_FLAG_ACK) < 0) {
-                close_socket(newts);
+                abort_accept_clone(newts);
                 return -WOLFIP_EAGAIN;
             }
             ts->events &= ~CB_EVENT_READABLE;
@@ -7138,7 +7148,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             if (wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_ACCEPTING, s, newts,
                     newts->local_ip, newts->src_port, newts->remote_ip, newts->dst_port) != 0) {
-                close_socket(newts);
+                abort_accept_clone(newts);
                 return -1;
             }
             return (newts - s->tcpsockets) | MARK_TCP_SOCKET;

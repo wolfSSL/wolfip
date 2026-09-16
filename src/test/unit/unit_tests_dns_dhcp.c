@@ -4393,6 +4393,7 @@ START_TEST(test_sock_accept_filtered_out)
     struct wolfIP s;
     int listen_sd;
     int new_sd;
+    int i;
     struct wolfIP_sockaddr_in sin;
     socklen_t alen = sizeof(sin);
     struct tsocket *listen_ts;
@@ -4409,12 +4410,14 @@ START_TEST(test_sock_accept_filtered_out)
     sin.sin_addr.s_addr = ee32(0x0A000001U);
     ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
     ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    wolfIP_register_callback(&s, listen_sd, test_socket_cb, NULL);
 
     filter_block_reason = WOLFIP_FILT_ACCEPTING;
     filter_block_calls = 0;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_ACCEPTING));
 
+    socket_cb_calls = 0;
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
     new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
     ck_assert_int_eq(new_sd, -1);
@@ -4422,6 +4425,15 @@ START_TEST(test_sock_accept_filtered_out)
 
     listen_ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
+    /* The aborted clone takes the plain teardown path: the listener's
+     * callback must not be deferred as a CB_EVENT_CLOSED for a
+     * descriptor accept() never returned. */
+    wolfIP_poll(&s, 1000);
+    ck_assert_int_eq(socket_cb_calls, 0);
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        ck_assert_uint_eq(s.tcpsockets[i].close_notify_pending, 0);
+    }
+    ck_assert_ptr_eq(listen_ts->callback, test_socket_cb);
 
     wolfIP_filter_set_callback(NULL, NULL);
 }
