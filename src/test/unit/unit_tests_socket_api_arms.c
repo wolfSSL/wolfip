@@ -1071,6 +1071,64 @@ START_TEST(test_raw_hdrincl_dst_override_recomputes_ip_checksum)
 }
 END_TEST
 
+/* IP_HDRINCL: the caller's IHL is untrusted. A header that declares more
+ * bytes than were supplied must be rejected before the checksum recompute
+ * iterates past the initialized buffer (F-13207). */
+START_TEST(test_raw_hdrincl_oversized_ihl_rejected)
+{
+    struct wolfIP s;
+    int sd;
+    int one = 1;
+    uint8_t ip_buf[ETH_HEADER_LEN + 60];
+    struct wolfIP_ip_packet *ip;
+    struct wolfIP_sockaddr_in sin;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+                WOLFIP_IP_HDRINCL, &one, sizeof(one)), 0);
+
+    /* Declare a 60-byte header but supply only 20. */
+    memset(ip_buf, 0, sizeof(ip_buf));
+    ip = (struct wolfIP_ip_packet *)ip_buf;
+    ip->ver_ihl = 0x4F;
+    ip->ttl = 64;
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(0x0A000002U);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000003U);
+    ret = wolfIP_sock_sendto(&s, sd,
+                              (uint8_t *)ip + ETH_HEADER_LEN,
+                              IP_HEADER_LEN,
+                              0, (const struct wolfIP_sockaddr *)&sin,
+                              sizeof(sin));
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+
+    /* Non-IPv4 version and IHL below 20 bytes are rejected the same way. */
+    ip->ver_ihl = 0x65;
+    ret = wolfIP_sock_sendto(&s, sd,
+                              (uint8_t *)ip + ETH_HEADER_LEN,
+                              IP_HEADER_LEN,
+                              0, (const struct wolfIP_sockaddr *)&sin,
+                              sizeof(sin));
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+    ip->ver_ihl = 0x41;
+    ret = wolfIP_sock_sendto(&s, sd,
+                              (uint8_t *)ip + ETH_HEADER_LEN,
+                              IP_HEADER_LEN,
+                              0, (const struct wolfIP_sockaddr *)&sin,
+                              sizeof(sin));
+    ck_assert_int_eq(ret, -WOLFIP_EINVAL);
+}
+END_TEST
+
 START_TEST(test_sock_sendto_raw_invalid_fd)
 {
     struct wolfIP s;

@@ -7465,7 +7465,16 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EINVAL;
 
         if (rs->ipheader_include) {
+            uint32_t ip_hlen;
             if (len < IP_HEADER_LEN)
+                return -WOLFIP_EINVAL;
+            /* The header is caller-supplied and its IHL is untrusted:
+             * the checksum recompute below iterates IHL*4 bytes, so the
+             * declared header length must fit in the supplied data. */
+            if (((const uint8_t *)buf)[0] >> 4 != 4)
+                return -WOLFIP_EINVAL;
+            ip_hlen = (uint32_t)(((const uint8_t *)buf)[0] & 0x0fU) << 2;
+            if (ip_hlen < IP_HEADER_LEN || ip_hlen > len)
                 return -WOLFIP_EINVAL;
 #ifdef ETHERNET
             memset(rip, 0, ETH_HEADER_LEN);
