@@ -1410,7 +1410,6 @@ START_TEST(test_poll_tcp_residual_window_gates_data_segment)
     ts->src_port = 1111;
     ts->dst_port = 2222;
     ts->sock.tcp.ack = 20;
-    ts->sock.tcp.last_ack = 0;
     ts->sock.tcp.rto = 100;
     ts->sock.tcp.cwnd = 32;
     ts->sock.tcp.peer_rwnd = 20;
@@ -1467,7 +1466,6 @@ START_TEST(test_poll_tcp_residual_window_allows_exact_fit)
     ts->src_port = 1111;
     ts->dst_port = 2222;
     ts->sock.tcp.ack = 20;
-    ts->sock.tcp.last_ack = 0;
     ts->sock.tcp.rto = 100;
     ts->sock.tcp.cwnd = 32;
     ts->sock.tcp.peer_rwnd = 20;
@@ -6066,7 +6064,6 @@ START_TEST(test_regression_loopback_pure_ack_uses_deferred_buffer_until_poll)
 
     ck_assert_int_eq(tcp_send_empty_immediate(ts, &seg,
             (uint32_t)sizeof(seg)), 0);
-    ck_assert_uint_eq(ts->sock.tcp.last_ack, ts->sock.tcp.ack);
     ck_assert_uint_eq(last_frame_sent_size, 0U);
     ck_assert_uint_eq(s.loopback_count, 1U);
     ck_assert_uint_eq(s.loopback_pending_len[s.loopback_head],

@@ -1213,7 +1213,7 @@ enum tcp_state {
 struct tcpsocket {
     enum tcp_state state;
     uint32_t last_ts, rtt, rto, cwnd, cwnd_count, ssthresh, tmr_rto, rto_backoff,
-             tmr_persist, seq, ack, last_ack, last, bytes_in_flight, snd_una,
+             tmr_persist, seq, ack, last, bytes_in_flight, snd_una,
              recovery_point;
     uint32_t srtt, rttvar;
     uint32_t last_early_rexmit_ack;
@@ -3773,7 +3773,6 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     }
 #endif
 
-    t->sock.tcp.last_ack = t->sock.tcp.ack;
     tcp->ack = ee32(t->sock.tcp.ack);
     tcp->win = ee16(tcp_adv_win(t, 1));
     ip_output_add_header(t, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
@@ -11978,8 +11977,6 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                         (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
                     struct wolfIP_timer new_tmr = {};
                     size = seg_ip_len;
-                    /* Refresh ack counter */
-                    ts->sock.tcp.last_ack = ts->sock.tcp.ack;
                     tcp->ack = ee32(ts->sock.tcp.ack);
                     tcp->win = ee16(tcp_adv_win(ts, 1));
                     ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,

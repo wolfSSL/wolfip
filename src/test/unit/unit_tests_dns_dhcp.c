@@ -4266,7 +4266,6 @@ START_TEST(test_poll_tcp_ack_only_skips_send)
     ts->src_port = 1111;
     ts->dst_port = 2222;
     ts->sock.tcp.ack = 10;
-    ts->sock.tcp.last_ack = 10;
     ts->sock.tcp.rto = 100;
     /* Ensure send window allows processing of the queued ACK-only segment. */
     ts->sock.tcp.cwnd = TCP_MSS;
@@ -4314,7 +4313,6 @@ START_TEST(test_poll_tcp_send_on_arp_hit)
     ts->src_port = 1111;
     ts->dst_port = 2222;
     ts->sock.tcp.ack = 20;
-    ts->sock.tcp.last_ack = 0;
     ts->sock.tcp.rto = 100;
     /* Ensure send window allows emitting the queued data segment. */
     ts->sock.tcp.cwnd = TCP_MSS * 4;
