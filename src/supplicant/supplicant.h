@@ -409,11 +409,15 @@ int wolfip_supplicant_get_pmkid(const struct wolfip_supplicant *s,
 
 /* Set up a PMKSA "fast reconnect": when a valid PMKSA is cached for the
  * current SSID + BSSID (from a prior AUTHENTICATED session on this context),
- * reuse the cached PMK + PMKID, skip the SAE/EAP authentication entirely,
- * include the PMKID in the (Re)Assoc RSN IE, and go straight to the 4-way
- * handshake on the next wolfip_supplicant_kick(). Call after _init() (which
- * preserves the cache) and before kick(). Returns 0 if a usable PMKSA was
- * found and armed, -1 otherwise (caller should fall back to a full auth). */
+ * reuse the cached PMK + PMKID, skip the authentication exchange, include
+ * the PMKID in the (Re)Assoc RSN IE, and go straight to the 4-way handshake
+ * on the next wolfip_supplicant_kick(). Call after _init() (which preserves
+ * the cache) and before kick(). Returns 0 if a usable PMKSA was found and
+ * armed, -1 otherwise (caller should fall back to a full auth).
+ *
+ * Note: the cached entry must carry a PMKID, which is only stored for SAE
+ * authentication; EAP/PEAP sessions do not produce one, so they never
+ * satisfy this API and always perform a full EAP authentication. */
 int wolfip_supplicant_pmksa_reconnect(struct wolfip_supplicant *s);
 
 #ifdef __cplusplus
