@@ -260,13 +260,13 @@ int wolfIP_esp_sa_new_gcm(int in, uint8_t * spi, ip4 src, ip4 dst,
     if (err) {
         ESP_LOG("error: wc_RNG_GenerateBlock: %d\n", err);
         wc_ForceZero(new_sa, sizeof(*new_sa));
-        err = -1;
+        return -1;
     }
 
     esp_state_restore(new_sa);
 
     ESP_DEBUG("info: esp_sa_new_gcm: %s\n", in == 1 ? "in" : "out");
-    return err;
+    return 0;
 }
 
 /* Check if valid hmac auth config:

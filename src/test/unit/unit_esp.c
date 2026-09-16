@@ -2412,6 +2412,80 @@ START_TEST(test_esp_state_persistence_keeps_64bit_bitmap)
 }
 END_TEST
 
+/* F-11436: the GCM constructor is the only SA constructor with a
+ * fallible step (pre-iv RNG) after the slot is filled. Its restore must
+ * run on the success path only; on the RNG failure path the SA is wiped
+ * and -1 returned, without querying the read callback with the wiped
+ * zero SPI. This test pins the success path: a GCM SA recreated with a
+ * known SPI picks up its persisted window. */
+static uint8_t  state_gcm_spi[ESP_SPI_LEN] = {0x11, 0x22, 0x33, 0x44};
+static uint32_t state_gcm_oseq   = 0;
+static uint32_t state_gcm_hi_seq = 0;
+static uint64_t state_gcm_bitmap = 0;
+static int      state_gcm_read_calls = 0;
+
+static int state_gcm_read_cb(const uint8_t *spi, uint32_t *oseq,
+                             uint32_t *hi_seq, uint64_t *bitmap)
+{
+    state_gcm_read_calls++;
+    if (memcmp(spi, state_gcm_spi, ESP_SPI_LEN) == 0) {
+        *oseq   = state_gcm_oseq;
+        *hi_seq = state_gcm_hi_seq;
+        *bitmap = state_gcm_bitmap;
+        return 0;
+    }
+    return -1; /* unknown SPI: start fresh */
+}
+
+static int state_gcm_write_cb(const uint8_t *spi, uint32_t oseq,
+                              uint32_t hi_seq, uint64_t bitmap)
+{
+    if (memcmp(spi, state_gcm_spi, ESP_SPI_LEN) == 0) {
+        state_gcm_oseq   = oseq;
+        state_gcm_hi_seq = hi_seq;
+        state_gcm_bitmap = bitmap;
+    }
+    return 0;
+}
+
+START_TEST(test_esp_state_restore_gcm)
+{
+    int ret;
+    wolfIP_esp_sa *esp_sa;
+
+    esp_setup();
+    state_gcm_oseq   = 5;
+    state_gcm_hi_seq = 40;
+    state_gcm_bitmap = (1ULL << 10) | 1ULL;
+    state_gcm_read_calls = 0;
+
+    ret = wolfIP_esp_state_set_cbs(state_gcm_write_cb, state_gcm_read_cb);
+    ck_assert_int_eq(ret, 0);
+
+    ret = wolfIP_esp_sa_new_gcm(1, (uint8_t *)state_gcm_spi,
+                                atoip4(T_SRC), atoip4(T_DST),
+                                ESP_ENC_GCM_RFC4543,
+                                (uint8_t *)k_aes256_gcm,
+                                sizeof(k_aes256_gcm));
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(state_gcm_read_calls, 1);
+    esp_sa = esp_sa_get(1, (uint8_t *)state_gcm_spi);
+    ck_assert_ptr_nonnull(esp_sa);
+    ck_assert_uint_eq(esp_sa->replay.oseq, 5U);
+    ck_assert_uint_eq(esp_sa->replay.hi_seq, 40U);
+    ck_assert_uint_eq(esp_sa->replay.bitmap, (1ULL << 10) | 1ULL);
+
+    /* The restored window rejects the duplicate (seq 30, bit 10) and
+     * accepts a new sequence (41). */
+    ck_assert_int_ne(esp_replay_check(&esp_sa->replay, 30U), 0);
+    ck_assert_int_eq(esp_replay_check(&esp_sa->replay, 41U), 0);
+
+    wolfIP_esp_sa_del_all();
+    ret = wolfIP_esp_state_set_cbs(NULL, NULL);
+    ck_assert_int_eq(ret, 0);
+}
+END_TEST
+
 START_TEST(test_esp_state_persistence_callbacks)
 {
     static uint8_t buf[LINK_MTU + 256];
@@ -2589,6 +2663,7 @@ static Suite *esp_suite(void)
     tcase_add_test(tc, test_esp_state_persistence_callbacks);
     tcase_add_test(tc, test_esp_state_restore_failed_read_keeps_fresh_state);
     tcase_add_test(tc, test_esp_state_persistence_keeps_64bit_bitmap);
+    tcase_add_test(tc, test_esp_state_restore_gcm);
     suite_add_tcase(s, tc);
 
     /* Replay window */
