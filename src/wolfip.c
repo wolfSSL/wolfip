@@ -8918,6 +8918,10 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
 #endif
         return;
     }
+    /* Router Advertisement (9) / Router Solicitation (10) are intentionally
+     * not handled: wolfIP documents a deliberate RFC 1256 deviation - no
+     * router discovery, hosts use DHCP or a static gateway. See
+     * docs/advanced_ipv4_howto.md (F-13190). */
     icmp_try_deliver_tcp_error(s, icmp);
     icmp_try_recv(s, if_idx, icmp, len);
 }
