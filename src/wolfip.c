@@ -12217,11 +12217,12 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
             tx_drained = 1;
             desc = fifo_peek(&t->sock.udp.txbuf);
         }
-        /* UDP: Draining the txbuf frees space; raise CB_EVENT_WRITABLE so a sender
-         * blocked on a full buffer (e.g. the FreeRTOS BSD shim's sendto()) is
-         * woken. The loopback path is handled separately via
+        /* UDP and ICMP sockets share this flush: draining the txbuf frees
+         * space, so raise CB_EVENT_WRITABLE for either protocol to wake a
+         * sender blocked on a full buffer (e.g. the FreeRTOS BSD shim's
+         * sendto()). The loopback path is handled separately via
          * wolfIP_notify_loopback_space_available(). */
-        if (is_udp && tx_drained && tx_has_writable_space(t))
+        if (tx_drained && tx_has_writable_space(t))
             t->events |= CB_EVENT_WRITABLE;
     }
 }

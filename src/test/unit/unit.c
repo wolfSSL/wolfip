@@ -1394,7 +1394,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sock_close_close_wait_disarms_callback);
     tcase_add_test(tc_core, test_rst_in_fin_wait_1_delivers_close_event);
     tcase_add_test(tc_core, test_last_ack_final_ack_delivers_close_event);
-    /* --- unit_tests_poll_dispatcher.c (47 tests) --- */
+    /* --- unit_tests_poll_dispatcher.c (48 tests) --- */
     tcase_add_test(tc_core, test_poll_device_poll_returns_zero_exits_loop);
     tcase_add_test(tc_core, test_poll_device_poll_returns_negative_exits_loop);
     tcase_add_test(tc_core, test_poll_device_non_ethernet_path_receives);
@@ -1427,6 +1427,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_tx_udp_filter_ip_blocks_send);
     tcase_add_test(tc_core, test_poll_tx_udp_eagain_retains_queue);
     tcase_add_test(tc_core, test_poll_tx_udp_drain_sets_writable);
+    tcase_add_test(tc_core, test_poll_tx_icmp_drain_sets_writable);
     tcase_add_test(tc_core, test_poll_tx_udp_broadcast_sets_ff_mac);
     tcase_add_test(tc_core, test_poll_tx_udp_loopback_path_no_crash);
     tcase_add_test(tc_core, test_poll_tx_icmp_sends_on_arp_hit);
