@@ -52,7 +52,7 @@ static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
     LOG("ip hdr:\n");
     LOG("+-----------------------------+\n");
     LOG("| 0x%02x | 0x%02x | 0x%02x |   %4d | (ipv, hdr_len, tos, ip_len)\n",
-        0x04, ip->ver_ihl, ip->tos, ee16(ip->len));
+        ip->ver_ihl >> 4, (ip->ver_ihl & 0x0fU) * 4, ip->tos, ee16(ip->len));
     LOG("+-----------------------------+\n");
     LOG("|    0x%04x    |    0x%04x    | (id, flags_fo)\n",
         ee16(ip->id), ee16(ip->flags_fo));
