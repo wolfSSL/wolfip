@@ -5942,6 +5942,11 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                             t->events |= CB_EVENT_WRITABLE;
                         tcp_process_ts(t, tcp, frame_len);
                         tcp_send_ack(t);
+                        /* The SYN-ACK is consumed: keep it out of the
+                         * synchronized-state branch below, which would
+                         * see its sequence as old and queue a redundant
+                         * second ACK. */
+                        continue;
                     }
                 }
             }
