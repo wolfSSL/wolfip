@@ -1679,6 +1679,69 @@ START_TEST(test_sock_getpeername_tcp_null_addr)
 }
 END_TEST
 
+START_TEST(test_sock_getpeername_udp_connected)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in peer;
+    struct wolfIP_sockaddr_in out;
+    socklen_t outlen = sizeof(out);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    memset(&peer, 0, sizeof(peer));
+    peer.sin_family = AF_INET;
+    peer.sin_port = ee16(5353);
+    peer.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, sd, (struct wolfIP_sockaddr *)&peer,
+                                         sizeof(peer)), 0);
+
+    ck_assert_int_eq(wolfIP_sock_getpeername(&s, sd, (struct wolfIP_sockaddr *)&out,
+                                              &outlen), 0);
+    ck_assert_uint_eq(out.sin_family, AF_INET);
+    ck_assert_uint_eq(ee32(out.sin_addr.s_addr), 0x0A000002U);
+    ck_assert_uint_eq(ee16(out.sin_port), 5353);
+}
+END_TEST
+
+START_TEST(test_sock_getpeername_udp_unconnected)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in out;
+    socklen_t outlen = sizeof(out);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    /* No connect(): no peer to report */
+    ck_assert_int_eq(wolfIP_sock_getpeername(&s, sd, (struct wolfIP_sockaddr *)&out,
+                                              &outlen), -1);
+}
+END_TEST
+
+START_TEST(test_sock_getpeername_udp_invalid_fd)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in out;
+    socklen_t outlen = sizeof(out);
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ck_assert_int_eq(wolfIP_sock_getpeername(&s, MARK_UDP_SOCKET | MAX_UDPSOCKETS,
+                                              (struct wolfIP_sockaddr *)&out,
+                                              &outlen), -WOLFIP_EINVAL);
+}
+END_TEST
+
 #if WOLFIP_RAWSOCKETS
 START_TEST(test_sock_getpeername_raw_success)
 {

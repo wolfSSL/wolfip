@@ -8806,6 +8806,21 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
         sin->sin_addr.s_addr = ee32(ts->remote_ip);
         return 0;
     }
+    if (IS_SOCKET_UDP(sockfd)) {
+        if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
+            return -WOLFIP_EINVAL;
+        ts = &s->udpsockets[SOCKET_UNMARK(sockfd)];
+        /* An unconnected UDP socket has no peer: connect() is what
+         * stores dst_port/remote_ip, so only report them when set. */
+        if (ts->sock.udp.connected == 0)
+            return -1;
+        if (!sin || !addrlen || *addrlen < sizeof(struct wolfIP_sockaddr_in))
+            return -1;
+        sin->sin_family = AF_INET;
+        sin->sin_port = ee16(ts->dst_port);
+        sin->sin_addr.s_addr = ee32(ts->remote_ip);
+        return 0;
+    }
 #if WOLFIP_RAWSOCKETS
     if (IS_SOCKET_RAW(sockfd)) {
         struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);

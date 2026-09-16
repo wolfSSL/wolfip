@@ -1298,6 +1298,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sock_getpeername_tcp_success);
     tcase_add_test(tc_core, test_sock_getpeername_tcp_invalid_fd);
     tcase_add_test(tc_core, test_sock_getpeername_tcp_null_addr);
+    tcase_add_test(tc_core, test_sock_getpeername_udp_connected);
+    tcase_add_test(tc_core, test_sock_getpeername_udp_unconnected);
+    tcase_add_test(tc_core, test_sock_getpeername_udp_invalid_fd);
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_sock_getpeername_raw_success);
     tcase_add_test(tc_core, test_sock_getpeername_raw_no_remote_ip);
