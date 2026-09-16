@@ -5566,7 +5566,12 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
          * trigger fast retransmit. */
         uint32_t ip_len = ee16(tcp->ip.len);
         uint32_t hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
-        if (ack != t->sock.tcp.snd_una)
+        /* RFC 5681 s2: a duplicate ACK equals the greatest ACK
+         * received. A forward ACK is not a duplicate even when the
+         * marking loop counted zero descriptors (retransmit-marked or
+         * partially covered head descriptor); a stale one is not.
+         * Both must stay out of the counter. */
+        if (ack_advanced || ack != t->sock.tcp.snd_una)
             return;
         if (inflight_pre == 0)
             return;
