@@ -8859,6 +8859,21 @@ static void dhcp_schedule_retry_timer(struct wolfIP *s, uint64_t deadline)
     dhcp_schedule_timer_at(s, next);
 }
 
+/* The timer heap compares deadlines in the tick source's 32-bit domain
+ * (see tick_expired), so a deadline more than INT32_MAX ticks ahead is
+ * misread as already due. Long DHCP deadlines stay full-width in the
+ * lease absolutes and are driven by bounded checkpoints: return the
+ * deadline when it is representable, else the farthest representable
+ * point; the timer callback re-arms the next checkpoint until the
+ * deadline itself is representable. */
+static uint64_t dhcp_bounded_at(const struct wolfIP *s, uint64_t deadline)
+{
+    if (deadline > s->last_tick &&
+        deadline - s->last_tick > (uint64_t)INT32_MAX)
+        return s->last_tick + (uint64_t)INT32_MAX;
+    return deadline;
+}
+
 /* RFC 2131 retransmission delay for RENEWING (to T2) and REBINDING (to
  * lease expiry): one-half the remaining time, floored at 60 s. Capped at
  * the remaining time so the retry never lands past the deadline - the
@@ -8882,8 +8897,8 @@ static void dhcp_schedule_renew_rebind_retry(struct wolfIP *s, uint64_t deadline
     if (!s || deadline == 0)
         return;
     remaining = (deadline > s->last_tick) ? (deadline - s->last_tick) : 0;
-    dhcp_schedule_timer_at(s,
-            s->last_tick + dhcp_renew_rebind_delay_ms(remaining));
+    dhcp_schedule_timer_at(s, dhcp_bounded_at(s,
+            s->last_tick + dhcp_renew_rebind_delay_ms(remaining)));
 }
 
 static uint16_t dhcp_elapsed_secs(const struct wolfIP *s)
@@ -8985,12 +9000,14 @@ static void dhcp_timer_cb(void *arg)
                 break;
             }
             if (s->dhcp_renew_at != 0 && s->last_tick < s->dhcp_renew_at) {
-                /* A stale timer from an earlier lease cycle fired early
-                 * (e.g. a renewal timer left pending across a lease drop
-                 * and re-DORA). The current lease's renew time is still
-                 * ahead, so its timer is the one that should drive the
-                 * renewal; stay BOUND instead of starting a spurious
-                 * RENEWING transaction. */
+                /* A timer fired before the renewal deadline: either a
+                 * bounded checkpoint for a deadline beyond the heap's
+                 * 32-bit horizon, or a stale timer from an earlier lease
+                 * cycle. Re-arm the nearest representable checkpoint so
+                 * the renewal still reaches its deadline instead of
+                 * leaving the lease timers disarmed. */
+                dhcp_schedule_timer_at(s,
+                        dhcp_bounded_at(s, s->dhcp_renew_at));
                 break;
             }
             s->dhcp_state = DHCP_RENEWING;
@@ -9242,17 +9259,27 @@ region_end:
     }
 }
 
-/* A lease address must be a usable unicast host address: not 0.0.0.0,
- * not the limited broadcast, not multicast, and not the broadcast of
- * its own subnet. */
+/* A lease address must be a usable unicast host address: not
+ * 0.0.0.0, not the limited broadcast, not multicast, on a
+ * contiguous mask, and not the network or broadcast address of
+ * its own conventional subnet. /31 (RFC 3021) and /32 leases use
+ * every address as a host address. */
 static int dhcp_lease_ip_sane(uint32_t ip, uint32_t mask)
 {
+    uint8_t prefix_len;
+
     if (ip == 0U || ip == 0xFFFFFFFFU)
         return 0;
     if (wolfIP_ip_is_multicast(ip))
         return 0;
-    if (mask != 0U && ((ip | mask) == 0xFFFFFFFFU))
+    if (wolfIP_mask_prefix_len(mask, &prefix_len) < 0)
         return 0;
+    if (prefix_len < 31U) {
+        if ((ip & ~mask) == 0U)
+            return 0;
+        if ((ip & ~mask) == ~mask)
+            return 0;
+    }
     return 1;
 }
 
