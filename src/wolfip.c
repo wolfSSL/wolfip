@@ -9290,6 +9290,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
     int saw_server_id = 0;
     int msg_type = 0;
     uint32_t ip;
+    uint32_t server_ip = 0;
     uint32_t netmask = DHCP_DEFAULT_24BIT_NETMASK;
     if (msg_len < DHCP_HEADER_LEN)
         return -1;
@@ -9324,7 +9325,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
         else if (code == DHCP_OPTION_SERVER_ID) {
             if (len < 4)
                 return -1;
-            s->dhcp_server_ip =
+            server_ip =
                 DHCP_OPT_data_to_u32((struct dhcp_option *)data);
             saw_server_id = 1;
         }
@@ -9348,6 +9349,7 @@ static int dhcp_parse_offer(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg
      * until the server's ACK confirms the lease. */
     s->dhcp_ip = ip;
     s->dhcp_offered_mask = netmask;
+    s->dhcp_server_ip = server_ip;
     dhcp_cancel_timer(s);
     s->dhcp_state = DHCP_REQUEST_SENT;
     return 0;

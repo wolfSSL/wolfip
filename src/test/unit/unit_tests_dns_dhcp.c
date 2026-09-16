@@ -352,6 +352,47 @@ START_TEST(test_dhcp_long_lease_renewal_checkpoint_rearm)
 }
 END_TEST
 
+START_TEST(test_dhcp_parse_offer_reject_does_not_commit_server_id)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    uint32_t server_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+    s.dhcp_xid = 0x1234U;
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+
+    /* OFFER with a server ID but a network-broadcast yiaddr: the parse
+     * must reject the message without committing the server identifier
+     * to the stack state. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0xC0A80100U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, server_ip);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0xFFFFFF00U);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), -1);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+}
+END_TEST
+
 START_TEST(test_dhcp_schedule_lease_timer_defaults_t1_t2)
 {
     struct wolfIP s;
