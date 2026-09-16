@@ -2503,7 +2503,14 @@ static void wolfIP_send_param_problem(struct wolfIP *s, unsigned int if_idx,
         }
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
-            if (esp_send(ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
+            struct wolfIP_ll_dev *esp_ll = ll;
+#if WOLFIP_VLAN
+            /* A VLAN sub-iface has no send function of its own; esp_send needs
+             * the physical device's send path. */
+            if (ll->vlan_active && ll->vlan_parent)
+                esp_ll = ll->vlan_parent;
+#endif
+            if (esp_send(esp_ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
                 wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
             }
         } else {
