@@ -1469,6 +1469,178 @@ START_TEST(test_ip_recv_forward_df_oversize_sends_frag_needed)
 END_TEST
 
 /* =========================================================================
+ * ip_recv: transit datagram with a malformed IP option - Parameter Problem
+ * =========================================================================
+ * RFC 1122 3.2.2.4: an option whose length runs past the end of the header
+ * must produce an ICMP Parameter Problem (type 12, code 0) with the pointer
+ * at the offending option byte; the datagram itself is not relayed.
+ */
+START_TEST(test_ip_recv_forward_bad_option_sends_param_problem)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + 24 + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+    static const uint8_t dest_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    struct wolfIP_icmp_packet *ic;
+    uint8_t *opt;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    arp_store_neighbor(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x46; /* IHL 6: 20-byte header + 4 option bytes */
+    ip->flags_fo = 0;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(24 + 8);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    /* Record Route option at offset 20 with length 100: runs past the end
+     * of the 4-byte option area. */
+    opt = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    opt[0] = 0x44;
+    opt[1] = 100;
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Only the Parameter Problem reply is transmitted; the datagram itself
+     * is not relayed. */
+    ck_assert_uint_eq(last_frame_sent_count, 1);
+    /* 14 ETH + 20 IP + 8 ICMP + 32 quoted (24 header + 8 payload). */
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 24 + 8));
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+            ICMP_PARAM_PROBLEM);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 1], 0);
+    /* Pointer: the offending option type byte, offset 20 from the IP
+     * header start. */
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 4], 20);
+    /* Reply carries DF, TTL 64, from the ingress interface to the
+     * datagram's source. */
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 6], 0x40);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 8], 64);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 12], (primary_ip >> 24) & 0xFF);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 16], (src_ip >> 24) & 0xFF);
+    /* Quoted original: version/IHL 0x46 and source address. */
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 8], 0x46);
+    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 12],
+            (src_ip >> 24) & 0xFF);
+    ic = (struct wolfIP_icmp_packet *)(last_frame_sent +
+            ETH_HEADER_LEN + IP_HEADER_LEN);
+    ck_assert_uint_eq(ic->csum, ee16(icmp_checksum(
+            (struct wolfIP_icmp_packet *)last_frame_sent,
+            (uint16_t)(8 + 24 + 8))));
+}
+END_TEST
+
+/* =========================================================================
+ * ip_recv: malformed IP option on a locally addressed datagram - silent
+ * drop
+ * =========================================================================
+ * The Parameter Problem reply is for the transit case (RFC 1122 3.2.2.4);
+ * a packet addressed to one of our own addresses is dropped without an
+ * error and not delivered locally.
+ */
+START_TEST(test_ip_recv_local_bad_option_silent_drop)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + 24 + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 src_ip       = 0x0A000002U;
+    uint8_t *opt;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x46;
+    ip->flags_fo = 0;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(24 + 8);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(primary_ip); /* addressed to us: not a transit packet */
+    opt = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    opt[0] = 0x44;
+    opt[1] = 100;
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* No ICMP of any kind; the datagram is not delivered locally either. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+/* =========================================================================
+ * ip_recv: malformed IP option on an ICMP error - suppressed
+ * =========================================================================
+ * RFC 1812 4.3.2.7: no ICMP error is originated in response to another
+ * ICMP error, even when the option is malformed.
+ */
+START_TEST(test_ip_recv_forward_bad_option_icmp_error_suppressed)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + 24 + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+    static const uint8_t dest_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t *opt;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    arp_store_neighbor(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+    last_frame_sent_size = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x46;
+    ip->flags_fo = 0;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_ICMP;
+    ip->len      = ee16(24 + 8);
+    ip->src      = ee32(src_ip);
+    ip->dst      = ee32(dest_ip);
+    opt = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    opt[0] = 0x44;
+    opt[1] = 100;
+    /* ICMP destination unreachable payload: the error-in-response-to-an-
+     * error suppression applies. */
+    frame[ETH_HEADER_LEN + 24] = ICMP_DEST_UNREACH;
+    frame[ETH_HEADER_LEN + 25] = 0;
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Suppressed: no ICMP of any kind. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+/* =========================================================================
  * ip_recv: DF-clear datagram exceeding the egress MTU - silent drop
  * =========================================================================
  * Branch: oversized but DF clear -> no Fragmentation Needed (fragmentation

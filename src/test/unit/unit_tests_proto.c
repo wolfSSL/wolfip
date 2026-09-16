@@ -4148,7 +4148,9 @@ START_TEST(test_regression_forwarding_drops_source_routed_packet)
 END_TEST
 
 /* A source route hidden behind an option with an illegal length byte (< 2) must
- * still be caught, so the packet is never relayed with its options intact. */
+ * still be caught, so the packet is never relayed with its options intact. The
+ * router answers the source with a Parameter Problem pointing at the
+ * malformed option (RFC 1122 3.2.2.4) instead of a silent drop. */
 START_TEST(test_regression_forwarding_drops_source_route_behind_undersized_option)
 {
     static const uint8_t opt_types[] = { 0x83U, 0x89U }; /* LSRR, SSRR */
@@ -4156,6 +4158,7 @@ START_TEST(test_regression_forwarding_drops_source_route_behind_undersized_optio
     static const uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
     static const uint8_t next_hop_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
     static const uint32_t dest_ip = 0xC0A80164U; /* 192.168.1.100 on TEST_SECOND_IF */
+    static const uint32_t src_ip = 0xC0A800AAU; /* in TEST_PRIMARY_IF subnet, passes RPF */
     unsigned int i;
 
     for (i = 0; i < sizeof(opt_types) / sizeof(opt_types[0]); i++) {
@@ -4181,7 +4184,7 @@ START_TEST(test_regression_forwarding_drops_source_route_behind_undersized_optio
         frame->ttl = 64;
         frame->proto = WI_IPPROTO_UDP;
         frame->len = ee16(IP_HEADER_LEN + 12);
-        frame->src = ee32(0xC0A800AAU); /* in TEST_PRIMARY_IF subnet, passes RPF */
+        frame->src = ee32(src_ip);
         frame->dst = ee32(dest_ip);
 
         opts[0]  = 0x44;          /* Timestamp */
@@ -4201,7 +4204,23 @@ START_TEST(test_regression_forwarding_drops_source_route_behind_undersized_optio
         wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
                        (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 12));
 
-        ck_assert_uint_eq(last_frame_sent_size, 0);
+        /* Never relayed: the single frame out is the Parameter Problem reply
+         * to the datagram's source, not a copy of the datagram. */
+        ck_assert_uint_eq(last_frame_sent_size,
+                (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 32));
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 9], WI_IPPROTO_ICMP);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
+                ICMP_PARAM_PROBLEM);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 1], 0);
+        /* Pointer: the malformed option type byte, offset 20 from the IP
+         * header start. */
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN + 4],
+                IP_HEADER_LEN);
+        /* Addressed to the datagram's source. */
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 16], (src_ip >> 24) & 0xFF);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 17], (src_ip >> 16) & 0xFF);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 18], (src_ip >> 8) & 0xFF);
+        ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + 19], src_ip & 0xFF);
     }
 }
 END_TEST

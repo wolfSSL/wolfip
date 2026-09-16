@@ -84,6 +84,7 @@ struct wolfIP_icmp_packet;
 #define ICMP_PROT_UNREACH 2
 #define ICMP_PORT_UNREACH 3
 #define ICMP_FRAG_NEEDED 4
+#define ICMP_PARAM_PROBLEM 12
 
 #define WI_IPPROTO_ICMP 0x01
 #define WI_IPPROTO_IGMP 0x02
@@ -819,6 +820,15 @@ struct PACKED wolfIP_icmp_dest_unreachable_packet {
     uint8_t type, code;
     uint16_t csum;
     uint8_t unused[4];
+    uint8_t orig_packet[TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX];
+};
+
+struct PACKED wolfIP_icmp_param_problem_packet {
+    struct wolfIP_ip_packet ip;
+    uint8_t type, code;
+    uint16_t csum;
+    uint8_t pointer; /* offending octet, offset from the IP header start */
+    uint8_t reserved[3];
     uint8_t orig_packet[TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX];
 };
 
@@ -2398,6 +2408,121 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
     (void)s;
     (void)if_idx;
     (void)orig;
+}
+#endif
+
+#if WOLFIP_ENABLE_FORWARDING && defined(ETHERNET)
+/* RFC 1122 3.2.2.4: a router that cannot forward a datagram because of a
+ * malformed IP option (missing or too-short option length, or an option
+ * running past the end of the header) answers the source with Parameter
+ * Problem (type 12, code 0); the pointer octet marks the offending
+ * option's type byte, offset from the IP header start. The reply goes out
+ * the interface the datagram arrived on, addressed to its source. */
+static void wolfIP_send_param_problem(struct wolfIP *s, unsigned int if_idx,
+                                      struct wolfIP_ip_packet *orig,
+                                      uint8_t pointer)
+{
+    struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
+    struct wolfIP_icmp_param_problem_packet icmp = {0};
+    struct wolfIP_icmp_packet *icmp_pkt = (struct wolfIP_icmp_packet *)&icmp;
+    uint32_t orig_ihl = (orig->ver_ihl & 0x0F) * 4;
+    uint32_t orig_total;
+    uint32_t orig_copy;
+    uint32_t icmp_data_len;
+#if !CONFIG_IPFILTER
+    (void)icmp_pkt;
+#endif
+    if (!ll)
+        return;
+#if WOLFIP_VLAN
+    /* Same interface-validity rule as wolfIP_ll_send_frame: an active VLAN
+     * sub-iface has a NULL send and delegates to its parent. */
+    if (ll->vlan_active) {
+        if (!ll->vlan_parent)
+            return;
+    } else if (!ll->send) {
+        return;
+    }
+#else
+    if (!ll->send)
+        return;
+#endif
+    if (orig_ihl < IP_HEADER_LEN)
+        orig_ihl = IP_HEADER_LEN;
+    /* RFC 1812 4.3.2.7: an ICMP error MUST NOT be originated in response to
+     * another ICMP error (type 3, 4, 5, 11, 12). A zero-payload ICMP cannot
+     * be an error, so it is never suppressed. */
+    if (orig->proto == WI_IPPROTO_ICMP && ee16(orig->len) > orig_ihl) {
+        uint8_t orig_type = *(((uint8_t *)orig) + ETH_HEADER_LEN + orig_ihl);
+        if (orig_type == ICMP_DEST_UNREACH || orig_type == ICMP_FRAG_NEEDED ||
+            orig_type == 5 /* Redirect */ || orig_type == ICMP_TTL_EXCEEDED ||
+            orig_type == ICMP_PARAM_PROBLEM)
+            return;
+    }
+    /* Quote the original header plus up to 8 payload bytes, or as much of
+     * the datagram as exists. */
+    orig_total = ee16(orig->len);
+    if (orig_total < orig_ihl)
+        orig_total = orig_ihl;
+    orig_copy = orig_ihl + 8;
+    if (orig_copy > orig_total)
+        orig_copy = orig_total;
+    if (orig_copy > TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX)
+        orig_copy = TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX;
+    icmp_data_len = 8 + orig_copy; /* ICMP header + quoted packet */
+    icmp.type = ICMP_PARAM_PROBLEM;
+    icmp.pointer = pointer;
+    /* RFC 1812 4.3.2.5: the error carries the triggering packet's TOS. */
+    icmp.ip.tos = orig->tos;
+    memcpy(icmp.orig_packet, ((uint8_t *)orig) + ETH_HEADER_LEN, orig_copy);
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                icmp_data_len));
+    icmp.ip.ver_ihl = 0x45;
+    icmp.ip.flags_fo = ee16(0x4000U);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.id = ipcounter_next(s);
+    icmp.ip.len = ee16((uint16_t)(IP_HEADER_LEN + icmp_data_len));
+    icmp.ip.src = ee32(wolfIP_ipconf_at(s, if_idx)->ip);
+    icmp.ip.dst = orig->src;
+    icmp.ip.csum = 0;
+    iphdr_set_checksum(&icmp.ip);
+    {
+        uint32_t frame_len = ETH_HEADER_LEN + IP_HEADER_LEN + icmp_data_len;
+        if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+            eth_output_add_header(s, if_idx, orig->eth.src, &icmp.ip.eth, ETH_TYPE_IP);
+        }
+        if (wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, if_idx, icmp_pkt,
+                                             frame_len, IP_HEADER_LEN) != 0)
+            return;
+        if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, if_idx, &icmp.ip, frame_len) != 0)
+            return;
+        if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+            if (wolfIP_filter_notify_eth(WOLFIP_FILT_SENDING, s, if_idx, &icmp.ip.eth, frame_len) != 0)
+                return;
+        }
+#ifdef WOLFIP_ESP
+        if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
+            if (esp_send(ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
+                wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
+            }
+        } else {
+            wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
+        }
+#else
+        wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
+#endif
+    }
+}
+#elif WOLFIP_ENABLE_FORWARDING
+static void wolfIP_send_param_problem(struct wolfIP *s, unsigned int if_idx,
+                                      struct wolfIP_ip_packet *orig,
+                                      uint8_t pointer)
+{
+    (void)s;
+    (void)if_idx;
+    (void)orig;
+    (void)pointer;
 }
 #endif
 
@@ -10676,6 +10801,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 {
     uint8_t version;
     uint32_t ip_hlen;
+    uint16_t bad_opt_off = 0; /* malformed option offset, 0 = none */
 #if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
 #endif
@@ -10760,10 +10886,15 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             }
             if (type == 0x83 || type == 0x89) /* LSRR or SSRR */
                 return;
-            if (opt + 1 >= opt_end || opt[1] < 2)
-                return;
-            if (opt[1] > (uint8_t)(opt_end - opt))
-                return;
+            if ((opt + 1 >= opt_end || opt[1] < 2) ||
+                    opt[1] > (uint8_t)(opt_end - opt)) {
+                /* Malformed option: record the offending type byte (offset
+                 * from the IP header start) so the transit path can answer
+                 * with a Parameter Problem; the packet is dropped either
+                 * way. */
+                bad_opt_off = (uint16_t)(opt - (uint8_t *)ip - ETH_HEADER_LEN);
+                break;
+            }
             opt += opt[1];
         }
     }
@@ -10891,6 +11022,16 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 uint8_t mac[6];
                 int broadcast = 0;
 
+                if (bad_opt_off != 0) {
+                    /* RFC 1122 3.2.2.4: a transit datagram with a malformed
+                     * IP option gets a Parameter Problem pointing at the
+                     * offending option byte, not a silent drop. Multicast
+                     * destinations are exempt (RFC 1812 4.3.2.4). */
+                    if (!wolfIP_ip_is_multicast(dest))
+                        wolfIP_send_param_problem(s, if_idx, ip,
+                                (uint8_t)bad_opt_off);
+                    return;
+                }
                 if (ip->ttl <= 1) {
                     wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
@@ -10960,6 +11101,8 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         }
     }
 #endif /* WOLFIP_ENABLE_FORWARDING */
+    if (bad_opt_off != 0)
+        return; /* malformed IP options: never deliver locally */
     #ifdef DEBUG_IP
     wolfIP_print_ip(ip);
     #endif /* DEBUG_IP*/
