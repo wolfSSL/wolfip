@@ -255,13 +255,12 @@ wolfIP is an endpoint stack first; the forwarding path deliberately omits IPv4
 fragmentation and reassembly. These are documented, intended deviations, not
 bugs:
 
-- **No egress fragmentation.** A forwarded datagram is handed to the egress
-  interface at its declared IP total length, with no comparison against the
-  egress IP MTU and no fragment generation. If the frame exceeds the link MTU,
-  `wolfIP_ll_send_frame()` rejects it and the datagram is **dropped silently** —
-  no ICMP Destination Unreachable (Fragmentation Needed, type 3 code 4) is
-  sent, regardless of the DF bit. Datagrams that fit the egress MTU are
-  forwarded normally.
+- **No egress fragmentation.** A forwarded datagram is never split into
+  fragments. A DF-set datagram larger than the egress IP MTU is dropped with
+  an ICMP Destination Unreachable (Fragmentation Needed, type 3 code 4)
+  carrying the egress next-hop MTU (RFC 1812 4.3.2.4); a DF-clear datagram
+  that does not fit is **dropped silently** on transmit. Datagrams that fit
+  the egress MTU are forwarded normally.
 - **No reassembly.** The IP input path drops every fragment (MF set or non-zero
   fragment offset); the stack never reassembles fragmented datagrams.
 - **Locally generated UDP.** `wolfIP_sock_sendto()` fails with `-1` when the
@@ -274,8 +273,27 @@ The practical consequence for a router build: keep every link's MTU at or
 above the largest datagram that traverses it (the usual 1500-byte Ethernet
 baseline). A higher-MTU upstream (e.g. jumbo frames) that injects datagrams
 larger than a downstream link's IP MTU will see them dropped at the egress
-with no diagnostic ICMP. If your topology cannot guarantee that, IPv4
-fragmentation is out of scope for wolfIP and a different stack is needed.
+(no Fragmentation Needed reply when the DF bit is clear). If your topology
+cannot guarantee that, IPv4 fragmentation is out of scope for wolfIP and a
+different stack is needed.
+
+### Deviations from RFC 1256: no ICMP Router Discovery
+
+wolfIP's forwarding path does not implement the router portion of ICMP
+Router Discovery (RFC 1256): it neither sends Router Advertisements
+(type 9), solicited or periodic, nor answers Router Solicitations (type 10).
+This is a documented, intended deviation, not a bug:
+
+- wolfIP hosts are configured by DHCP or static configuration; the stack has
+  no host-side router-discovery consumer that would need the router side.
+- Routing is connected-subnet plus static routes only (no dynamic protocol),
+  so there is no route information to advertise beyond what DHCP or a static
+  default gateway already provides.
+- Periodic advertisement would add per-interface timer and scheduling state
+  to the forwarding path for no in-ecosystem consumer.
+
+Hosts attached to a wolfIP router must obtain their default gateway from
+DHCP or be configured with the router's address statically.
 
 ### Wiring a router
 

@@ -5065,6 +5065,78 @@ START_TEST(test_tcp_ack_sack_early_retransmit_before_three_dupack)
 }
 END_TEST
 
+/* F-13765: a forward ACK that fully acknowledges a segment whose
+ * PKT_FLAG_SENT was cleared by the retransmit marker advances
+ * snd_una, but the marking loop counts zero descriptors, so the
+ * ack_count gate sends it into the duplicate-ACK arm. RFC 5681 s2:
+ * a duplicate ACK must not advance SND.UNA, so dup_acks must stay 0. */
+START_TEST(test_tcp_ack_forward_ack_after_retransmit_not_duplicate)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf1;
+    struct tcp_seg_buf segbuf2;
+    struct wolfIP_tcp_seg *seg1;
+    struct wolfIP_tcp_seg *seg2;
+    uint8_t ackbuf[sizeof(struct wolfIP_tcp_seg)];
+    struct wolfIP_tcp_seg *ackseg = (struct wolfIP_tcp_seg *)ackbuf;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 102;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.bytes_in_flight = 2;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf1, 0, sizeof(segbuf1));
+    seg1 = &segbuf1.seg;
+    seg1->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg1->hlen = TCP_HEADER_LEN << 2;
+    seg1->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf1, sizeof(segbuf1)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&segbuf2, 0, sizeof(segbuf2));
+    seg2 = &segbuf2.seg;
+    seg2->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg2->hlen = TCP_HEADER_LEN << 2;
+    seg2->seq = ee32(101);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2, sizeof(segbuf2)), 0);
+    desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* Drive the head segment into the retransmit state the marker
+     * leaves it in: PKT_FLAG_SENT cleared, PKT_FLAG_RETRANS set. */
+    ck_assert_int_eq(tcp_mark_unsacked_for_retransmit(ts, 100), 1);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+
+    /* Pure ACK (no data, unchanged window) that fully acknowledges
+     * the retransmitted head segment: snd_una moves 100 -> 101. */
+    memset(ackbuf, 0, sizeof(ackbuf));
+    ackseg->ack = ee32(101);
+    ackseg->hlen = TCP_HEADER_LEN << 2;
+    ackseg->flags = TCP_FLAG_ACK;
+
+    tcp_ack(ts, ackseg);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 101);
+    /* The ACK advanced snd_una, so it is not a duplicate. */
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_input_listen_syn_without_sack_disables_sack)
 {
     struct wolfIP s;

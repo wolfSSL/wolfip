@@ -1029,6 +1029,58 @@ START_TEST(test_poll_tx_udp_drain_sets_writable)
 }
 END_TEST
 
+START_TEST(test_poll_tx_icmp_drain_sets_writable)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN + 56];
+    uint8_t peer_mac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0xA3};
+    int rc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, 6);
+
+    memset(payload, 0, sizeof(payload));
+    payload[0] = ICMP_ECHO_REQUEST;
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    /* Fill the ICMP txbuf until sendto() reports the buffer full. */
+    do {
+        rc = wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin));
+    } while (rc > 0);
+    ck_assert_int_eq(rc, -WOLFIP_EAGAIN);
+    ts->if_idx = TEST_PRIMARY_IF;
+
+    /* A blocked sendto() would now be waiting for CB_EVENT_WRITABLE. */
+    ts->events = 0;
+
+    /* Poll drains the queue over the wire (mock_send succeeds). */
+    (void)wolfIP_poll(&s, 200);
+
+    /* Draining freed txbuf space, so the drain must raise CB_EVENT_WRITABLE
+     * to wake a blocked ICMP sender (F-11435). Before the fix the event was
+     * raised for UDP only and an ICMP sender blocked on a full buffer stayed
+     * blocked until some unrelated event reached the socket. */
+    ck_assert_uint_ne((unsigned)(ts->events & CB_EVENT_WRITABLE), 0U);
+}
+END_TEST
+
 START_TEST(test_poll_tx_udp_broadcast_sets_ff_mac)
 {
     struct wolfIP s;

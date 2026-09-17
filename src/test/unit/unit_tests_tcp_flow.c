@@ -661,6 +661,47 @@ START_TEST(test_tcp_input_syn_sent_synack_transitions)
 }
 END_TEST
 
+START_TEST(test_tcp_input_syn_sent_synack_queues_single_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *ack_desc;
+    struct wolfIP_tcp_seg *out;
+    int tcp_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+    wolfIP_filter_set_tcp_mask(0);
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.seq = 100;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U, 4321, 1234, 10, 101, (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    /* The consumed SYN-ACK must not fall through into the
+     * synchronized-state branch, which would see its sequence as
+     * old and queue a second, redundant ACK: exactly one ACK
+     * (the handshake completion) may be queued. */
+    ack_desc = fifo_pop(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(ack_desc);
+    out = (struct wolfIP_tcp_seg *)(ts->txmem + ack_desc->pos +
+            sizeof(*ack_desc));
+    ck_assert_uint_eq(out->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK), TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->ack), 11);
+    ck_assert_ptr_null(fifo_pop(&ts->sock.tcp.txbuf));
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_sent_synack_invalid_ack_rejected)
 {
     struct wolfIP s;

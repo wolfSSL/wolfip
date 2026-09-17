@@ -52,7 +52,7 @@ static void wolfIP_print_ip(struct wolfIP_ip_packet * ip)
     LOG("ip hdr:\n");
     LOG("+-----------------------------+\n");
     LOG("| 0x%02x | 0x%02x | 0x%02x |   %4d | (ipv, hdr_len, tos, ip_len)\n",
-        0x04, ip->ver_ihl, ip->tos, ee16(ip->len));
+        ip->ver_ihl >> 4, (ip->ver_ihl & 0x0fU) * 4, ip->tos, ee16(ip->len));
     LOG("+-----------------------------+\n");
     LOG("|    0x%04x    |    0x%04x    | (id, flags_fo)\n",
         ee16(ip->id), ee16(ip->flags_fo));
@@ -76,6 +76,9 @@ static inline int wolfip_isprint(int c)
 static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
 {
     uint16_t len = ee16(udp->len);
+    uint16_t max_len = 16;
+    size_t   i;
+    size_t   print_len = 0;
     char     payload_str[32];
     LOG("udp hdr:\n");
     LOG("+-------------------+\n");
@@ -86,18 +89,15 @@ static void wolfIP_print_udp(struct wolfIP_udp_datagram * udp)
         len, ee16(udp->csum));
     LOG("+-------------------+\n");
     memset(payload_str, '\0', sizeof(payload_str));
-    {
+    if (len > UDP_HEADER_LEN) {
         /* show first 16 printable chars of payload */
-        uint16_t max_len = 16;
-        size_t   i = 0;
-        size_t   print_len = 0;
-        if (len <= UDP_HEADER_LEN)
-            return;
-        print_len = (len - 8) < max_len ? (len  - 8): max_len;
-        memset(payload_str, '\0', sizeof(payload_str));
+        print_len = (len - UDP_HEADER_LEN) < max_len ?
+                    (len - UDP_HEADER_LEN) : max_len;
         memcpy(payload_str, udp->data, print_len);
         for (i = 0; i < print_len; i++) {
-            if (!wolfip_isprint(payload_str[i])) { payload_str[i] = '.'; }
+            if (!wolfip_isprint(payload_str[i])) {
+                payload_str[i] = '.';
+            }
         }
     }
     LOG("| %17s | (payload first 16 bytes)\n", payload_str);

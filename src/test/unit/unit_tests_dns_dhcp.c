@@ -233,6 +233,237 @@ START_TEST(test_dhcp_parse_offer_and_ack)
 }
 END_TEST
 
+START_TEST(test_dhcp_lease_ip_sane_rejects_bad_mask_and_network_addr)
+{
+    /* Usable host addresses must be accepted. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0xC0A80105U, 0xFFFFFF00U), 1);
+    /* A non-contiguous mask must be rejected: the old
+     * (ip | mask) == 0xFFFFFFFF check could not see it, and a
+     * malformed mask must not be installed on the interface. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0xC0A80105U, 0xFF00FF00U), 0);
+    /* A network address (all-zero host portion) is not a usable
+     * host on a conventional prefix. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0xC0A80100U, 0xFFFFFF00U), 0);
+    /* The subnet broadcast stays rejected. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0xC0A801FFU, 0xFFFFFF00U), 0);
+    /* /31 (RFC 3021 point-to-point): both addresses are usable
+     * host addresses; the old broadcast check rejected the second. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0x0A000000U, 0xFFFFFFFEU), 1);
+    ck_assert_int_eq(dhcp_lease_ip_sane(0x0A000001U, 0xFFFFFFFEU), 1);
+    /* /32: the address is the host; the old check rejected every
+     * /32 lease. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0x0A000007U, 0xFFFFFFFFU), 1);
+    /* The existing rejections stay: zero, limited broadcast,
+     * multicast. */
+    ck_assert_int_eq(dhcp_lease_ip_sane(0U, 0xFFFFFF00U), 0);
+    ck_assert_int_eq(dhcp_lease_ip_sane(0xFFFFFFFFU, 0xFFFFFF00U), 0);
+    ck_assert_int_eq(dhcp_lease_ip_sane(0xE0000001U, 0xFFFFFF00U), 0);
+}
+END_TEST
+
+START_TEST(test_dhcp_long_lease_renewal_checkpoint_rearm)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t offer_ip = 0xC0A80164U;
+    uint32_t mask = 0xFFFFFF00U;
+    uint32_t lease_s = 5184000U; /* 60 days: default T1 (50%) exceeds the
+                                  * timer heap's 2^31 tick horizon */
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.last_tick = 1000U;
+    s.dhcp_xid = 0x1234U;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(offer_ip);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, server_ip);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, mask);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), 0);
+
+    /* ACK with the long lease and no renew/rebind options: the client
+     * defaults give T1 = 50% of the lease, beyond the 32-bit horizon. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(offer_ip);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_ACK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, server_ip);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, mask);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_LEASE_TIME;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, lease_s);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    /* Bug precondition: T1 sits beyond the 32-bit tick horizon. */
+    ck_assert_uint_gt(s.dhcp_renew_at - s.last_tick, (uint64_t)INT32_MAX);
+
+    dhcp_test_complete_dad(&s);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    /* The heap compares deadlines in the 32-bit tick domain, so the long
+     * T1 reads as already due and fires during the final DAD poll. The
+     * callback must re-arm a bounded checkpoint instead of leaving the
+     * lease timers disarmed. */
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer),
+                      s.last_tick + (uint64_t)INT32_MAX);
+
+    /* The checkpoint re-arms itself until T1 becomes representable, then
+     * the renewal starts exactly at T1. */
+    s.last_tick = find_timer_expiry(&s, s.dhcp_timer);
+    handle_timers(&s, s.last_tick);
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), s.dhcp_renew_at);
+    s.last_tick = s.dhcp_renew_at;
+    handle_timers(&s, s.last_tick);
+    ck_assert_int_eq(s.dhcp_state, DHCP_RENEWING);
+}
+END_TEST
+
+START_TEST(test_dhcp_parse_offer_reject_does_not_commit_server_id)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    uint32_t server_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+    s.dhcp_xid = 0x1234U;
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+
+    /* OFFER with a server ID but a network-broadcast yiaddr: the parse
+     * must reject the message without committing the server identifier
+     * to the stack state. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(0xC0A80100U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, server_ip);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_SUBNET_MASK;
+    opt->len = 4;
+    DHCP_OPT_u32_to_data(opt, 0xFFFFFF00U);
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    opt->len = 0;
+    ck_assert_int_eq(dhcp_parse_offer(&s, &msg, sizeof(msg)), -1);
+    ck_assert_uint_eq(s.dhcp_server_ip, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+}
+END_TEST
+
+START_TEST(test_dhcp_dad_conflict_waits_10s_before_rediscover)
+{
+    struct wolfIP s;
+    uint8_t frame[sizeof(struct arp_packet)];
+    struct arp_packet *arp = (struct arp_packet *)frame;
+    struct wolfIP_udp_datagram *udp;
+    struct dhcp_msg *msg;
+    struct dhcp_option *opt;
+    const uint8_t att_mac[6] = {0x66, 0x55, 0x44, 0x33, 0x22, 0x11};
+    uint32_t client_ip = 0x0A000064U;
+    uint32_t server_ip = 0x0A000001U;
+    uint64_t t0;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    ck_assert_int_eq(dhcp_client_init(&s), 0);
+
+    /* The ACK offered client_ip; DAD is probing it. */
+    s.dhcp_ip = client_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_state = DHCP_DAD;
+    s.dhcp_dad_if = WOLFIP_PRIMARY_IF_IDX;
+
+    /* A foreign host claims the candidate address during DAD: an ARP
+     * request carrying the candidate as sender IP. */
+    memset(frame, 0, sizeof(frame));
+    memset(arp->eth.dst, 0xFF, 6);
+    memcpy(arp->eth.src, att_mac, 6);
+    arp->eth.type = ee16(ETH_TYPE_ARP);
+    arp->htype  = ee16(1);
+    arp->ptype  = ee16(0x0800);
+    arp->hlen   = 6;
+    arp->plen   = 4;
+    arp->opcode = ee16(ARP_REQUEST);
+    memcpy(arp->sma, att_mac, 6);
+    arp->sip = ee32(client_ip);
+    memset(arp->tma, 0xFF, 6);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+
+    /* RFC 2131 4.4.2: the DECLINE goes out immediately, but the
+     * re-DISCOVER waits 10 s so the server can stop leasing the
+     * address. */
+    t0 = s.last_tick;
+    wolfIP_poll(&s, t0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dhcp_timer), t0 + 10000U);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    msg = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(msg->op, BOOT_REQUEST);
+    opt = (struct dhcp_option *)msg->options;
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_MSG_TYPE);
+    ck_assert_uint_eq(opt->data[0], DHCP_DECLINE);
+
+    /* The wait is not over: nothing re-enters discovery. */
+    wolfIP_poll(&s, t0 + 9999U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_OFF);
+
+    /* After the wait, the DISCOVER goes out. */
+    wolfIP_poll(&s, t0 + 10000U);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    udp = (struct wolfIP_udp_datagram *)last_frame_sent;
+    msg = (struct dhcp_msg *)udp->data;
+    ck_assert_uint_eq(msg->op, BOOT_REQUEST);
+    opt = (struct dhcp_option *)msg->options;
+    ck_assert_uint_eq(opt->code, DHCP_OPTION_MSG_TYPE);
+    ck_assert_uint_eq(opt->data[0], DHCP_DISCOVER);
+}
+END_TEST
+
 START_TEST(test_dhcp_schedule_lease_timer_defaults_t1_t2)
 {
     struct wolfIP s;
@@ -4162,6 +4393,7 @@ START_TEST(test_sock_accept_filtered_out)
     struct wolfIP s;
     int listen_sd;
     int new_sd;
+    int i;
     struct wolfIP_sockaddr_in sin;
     socklen_t alen = sizeof(sin);
     struct tsocket *listen_ts;
@@ -4178,12 +4410,14 @@ START_TEST(test_sock_accept_filtered_out)
     sin.sin_addr.s_addr = ee32(0x0A000001U);
     ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
     ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    wolfIP_register_callback(&s, listen_sd, test_socket_cb, NULL);
 
     filter_block_reason = WOLFIP_FILT_ACCEPTING;
     filter_block_calls = 0;
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_ACCEPTING));
 
+    socket_cb_calls = 0;
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
     new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
     ck_assert_int_eq(new_sd, -1);
@@ -4191,6 +4425,15 @@ START_TEST(test_sock_accept_filtered_out)
 
     listen_ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
+    /* The aborted clone takes the plain teardown path: the listener's
+     * callback must not be deferred as a CB_EVENT_CLOSED for a
+     * descriptor accept() never returned. */
+    wolfIP_poll(&s, 1000);
+    ck_assert_int_eq(socket_cb_calls, 0);
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        ck_assert_uint_eq(s.tcpsockets[i].close_notify_pending, 0);
+    }
+    ck_assert_ptr_eq(listen_ts->callback, test_socket_cb);
 
     wolfIP_filter_set_callback(NULL, NULL);
 }
@@ -4266,7 +4509,6 @@ START_TEST(test_poll_tcp_ack_only_skips_send)
     ts->src_port = 1111;
     ts->dst_port = 2222;
     ts->sock.tcp.ack = 10;
-    ts->sock.tcp.last_ack = 10;
     ts->sock.tcp.rto = 100;
     /* Ensure send window allows processing of the queued ACK-only segment. */
     ts->sock.tcp.cwnd = TCP_MSS;
@@ -4314,7 +4556,6 @@ START_TEST(test_poll_tcp_send_on_arp_hit)
     ts->src_port = 1111;
     ts->dst_port = 2222;
     ts->sock.tcp.ack = 20;
-    ts->sock.tcp.last_ack = 0;
     ts->sock.tcp.rto = 100;
     /* Ensure send window allows emitting the queued data segment. */
     ts->sock.tcp.cwnd = TCP_MSS * 4;
@@ -6442,7 +6683,7 @@ END_TEST
  * any source, even after sendto() set the socket's dst_port to
  * something specific. Prior wolfIP behaviour conflated "destination
  * of last send" with "RX filter" and rejected the reply with ICMP
- * port-unreachable when the peer answered from a different port —
+ * port-unreachable when the peer answered from a different port -
  * which is exactly what RFC 1350 TFTP does on the first DATA/OACK. */
 START_TEST(test_udp_try_recv_unconnected_accepts_any_peer_port)
 {
