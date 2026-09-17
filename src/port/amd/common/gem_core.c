@@ -295,10 +295,18 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
               | NWCFG_1536RXEN
               | NWCFG_MCASTHASHEN
               | (5u << NWCFG_MDCDIV_SHIFT);
-#ifdef XILINX_AARCH64
+#if defined(XILINX_AARCH64) || defined(__aarch64__)
     /* 64-bit AMBA data width: appropriate on the AArch64 SoCs (ZynqMP /
      * Versal). The Zynq-7000 GEM is fed by a 32-bit AXI master, where this
-     * bit is inert, so it is left clear there. */
+     * bit is inert, so it is left clear there.
+     *
+     * Keyed off the compiler as well as XILINX_AARCH64 because the define
+     * is set by the board Makefiles only. A consumer that compiles these
+     * sources through its own build (wolfBoot's OBJS_EXTRA, for instance)
+     * does not read those Makefiles, and losing this bit leaves the MAC
+     * driving a 64-bit AMBA master with a 32-bit datapath: the transmitter
+     * never starts, TSR.TXGO stays asserted with zero octets sent, while
+     * receive keeps working and hides the cause. */
     GEM_NWCFG |= NWCFG_DWIDTH_64;
 #endif
 
