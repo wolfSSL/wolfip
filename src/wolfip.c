@@ -11006,9 +11006,6 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
     /* validate IP header checksum per RFC 1122 */
     if (iphdr_verify_checksum(ip) != 0)
         return;
-    /* Fragment reassembly is not implemented; drop all fragments. */
-    if ((ee16(ip->flags_fo) & 0x3FFFU) != 0U)
-        return;
     /* RFC 1122 §3.2.1.3: discard packets with non-unicast source addresses. */
     {
         ip4 src = ee32(ip->src);
@@ -11286,6 +11283,12 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
         }
     }
 #endif /* WOLFIP_ENABLE_FORWARDING */
+    /* Fragment reassembly is not implemented: only a locally addressed
+     * fragment can reach this point, since the forwarding path above relays
+     * transit fragments without reassembly (RFC 1812 5.2.6). Drop it; no
+     * partial datagram data is ever delivered. */
+    if ((ee16(ip->flags_fo) & 0x3FFFU) != 0U)
+        return;
     if (bad_opt_off != 0)
         return; /* malformed IP options: never deliver locally */
     #ifdef DEBUG_IP
