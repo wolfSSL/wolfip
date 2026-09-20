@@ -6212,3 +6212,68 @@ START_TEST(test_tcp_ctrl_rto_start_rearm_failure_clears_active)
     ck_assert_int_eq(ts->sock.tcp.ctrl_rto_active, 0);
 }
 END_TEST
+
+/* Regression: flush_tcp_tx() must not pop an unacked data descriptor when it
+ * retires a payload-less segment that is not at the FIFO tail. fifo_pop() only
+ * removes the tail; once the cursor has advanced past the tail, popping there
+ * discards the data descriptor and the payload can never be retransmitted. */
+START_TEST(test_flush_tcp_tx_pure_ack_keeps_unacked_data_desc)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct pkt_desc *data_desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data descriptor at the tail, pure ACK queued behind it. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    data_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(data_desc);
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+
+    /* Flush: sends the data (marks SENT, advances past the tail), then sends
+     * the pure ACK. Pre-fix the ACK's fifo_pop() discards data_desc. */
+    (void)wolfIP_poll(&s, 200);
+
+    /* The unacked data descriptor must survive the flush. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_ptr_eq(desc, data_desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+
+    /* Exactly two descriptors remain queued: data at the tail, the pure
+     * ACK after it, and nothing beyond (fifo_next() stops at the head). */
+    desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_ptr_ne(desc, data_desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+    desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    ck_assert_ptr_null(desc);
+}
+END_TEST

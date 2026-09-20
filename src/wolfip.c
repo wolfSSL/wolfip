@@ -12403,7 +12403,22 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                         desc->flags |= PKT_FLAG_WAS_RETRANS;
                     desc->time_sent = now;
                     if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
-                        desc = fifo_pop(&ts->sock.tcp.txbuf);
+                        if (desc == fifo_peek(&ts->sock.tcp.txbuf)) {
+                            /* Cursor at the tail: fifo_pop() removes exactly
+                             * this descriptor. */
+                            desc = fifo_pop(&ts->sock.tcp.txbuf);
+                        } else {
+                            /* fifo_pop() only removes the tail, so popping
+                             * here would discard the unacked data descriptor
+                             * at the tail. Leave the payload-less descriptor
+                             * in place with PKT_FLAG_SENT set; tcp_ack()
+                             * reclaims zero-length sent descriptors from the
+                             * tail once the data ahead of them is acked. */
+                            next_desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+                            if (next_desc == desc)
+                                break;
+                            desc = next_desc;
+                        }
                     } else {
                         uint32_t payload_len = size - (IP_HEADER_LEN + (tcp->hlen >> 2));
                         if (ts->sock.tcp.tmr_rto != NO_TIMER) {
