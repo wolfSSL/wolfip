@@ -1443,6 +1443,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_tx_tcp_filter_tcp_blocks_send);
     tcase_add_test(tc_core, test_poll_tx_tcp_send_eagain_breaks_loop);
     tcase_add_test(tc_core, test_poll_tx_tcp_zero_window_starts_persist);
+    tcase_add_test(tc_core, test_poll_tx_tcp_zero_window_probe_fires_under_fast_poll);
     tcase_add_test(tc_core, test_poll_tx_tcp_retransmit_replay);
     tcase_add_test(tc_core, test_poll_tx_tcp_loopback_path);
     tcase_add_test(tc_core, test_poll_tx_udp_sends_on_arp_hit);

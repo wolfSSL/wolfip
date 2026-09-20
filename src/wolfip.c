@@ -4555,8 +4555,12 @@ static void tcp_persist_start(struct tsocket *t, uint64_t now)
         return;
     }
     if (t->sock.tcp.tmr_persist != NO_TIMER) {
-        timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_persist);
-        t->sock.tcp.tmr_persist = NO_TIMER;
+        /* Already armed: keep the existing deadline. flush_tcp_tx() calls
+         * this on every poll while the peer window is zero; re-arming here
+         * would push the deadline past every poll cadence shorter than
+         * TCP_PERSIST_MIN_MS so the probe would never fire. Only
+         * tcp_persist_cb() re-arms, after a probe has been sent. */
+        return;
     }
     interval = tcp_persist_interval_ms(t);
     tmr.expires = now + interval;
@@ -4695,6 +4699,9 @@ static void tcp_persist_cb(void *arg)
     (void)tcp_send_zero_wnd_probe(t);
     if (t->sock.tcp.persist_backoff < 10)
         t->sock.tcp.persist_backoff++;
+    /* The timer that fired is out of the heap; drop the stale handle so
+     * tcp_persist_start() re-arms instead of seeing it as armed. */
+    t->sock.tcp.tmr_persist = NO_TIMER;
     tcp_persist_start(t, t->S->last_tick);
 }
 
