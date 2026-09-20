@@ -2998,6 +2998,7 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
 {
     int i;
     int matched = 0;
+    int dst_local = 0;
     ip4 dst_ip;
     ip4 src_ip;
 
@@ -3040,6 +3041,21 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
 
     dst_ip = ee32(udp->ip.dst);
     src_ip = ee32(udp->ip.src);
+
+    /* A host consumes only datagrams addressed to itself: one of its own
+     * interface addresses, a broadcast, a multicast, or the pre-address
+     * DHCP exchange (RFC 2131: OFFER/ACK may carry a unicast ip.dst the
+     * client does not own yet). RFC 1122 requires silently dropping
+     * everything else. Without this gate a wildcard (INADDR_ANY) bind
+     * delivers third-party traffic in non-forwarding builds, where
+     * ip_recv() compiles out its is_local check. */
+    (void)wolfIP_if_for_local_ip(s, dst_ip, &dst_local);
+    if (!dst_local && dst_ip != IPADDR_ANY &&
+            !wolfIP_ip_is_broadcast(s, dst_ip) &&
+            !wolfIP_ip_is_multicast(dst_ip) &&
+            !(ee16(udp->src_port) == DHCP_SERVER_PORT &&
+              ee16(udp->dst_port) == DHCP_CLIENT_PORT))
+        return;
 
     if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len,
                           IP_HEADER_LEN) != 0)

@@ -1013,6 +1013,47 @@ START_TEST(test_udp_wildcard_bind_receives_all_local_addrs)
 }
 END_TEST
 
+START_TEST(test_udp_wildcard_bind_drops_third_party_dst)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {1, 2, 3, 4};
+    uint8_t rxbuf[LINK_MTU];
+    int ret;
+
+    setup_stack_with_two_ifaces(&s, 0x0A000001U, 0x0A010001U);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5353);
+    sin.sin_addr.s_addr = 0U; /* INADDR_ANY */
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), 0);
+
+    /* A datagram addressed to a third-party IP is not for this host: RFC
+     * 1122 requires silent discard. Pre-fix the wildcard bind matched any
+     * destination, so an L2-adjacent attacker could inject application
+     * traffic addressed to someone else. */
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A000064U, 0xC0A80164U,
+            60000, 5353, payload, sizeof(payload));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+
+    /* The gate must not over-reject: a limited broadcast is still
+     * delivered to the wildcard bind. */
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A000064U, 0xFFFFFFFFU,
+            60002, 5353, payload, sizeof(payload));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)NULL, NULL);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+}
+END_TEST
+
 START_TEST(test_udp_sendto_respects_mtu_api)
 {
     struct wolfIP s;

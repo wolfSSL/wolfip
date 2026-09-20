@@ -6641,7 +6641,11 @@ START_TEST(test_udp_try_recv_conf_null)
     udp->dst_port = ee16(1234);
     udp->len = ee16(UDP_HEADER_LEN + 4);
     udp_try_recv(&s, TEST_PRIMARY_IF, udp, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
-    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+    /* With no configured interfaces no destination is local, so the
+     * datagram is dropped even though the socket's manually set local_ip
+     * matches the destination (RFC 1122: a host consumes only traffic
+     * addressed to its own addresses). */
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
 }
 END_TEST
 
