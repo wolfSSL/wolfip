@@ -6335,6 +6335,13 @@ START_TEST(test_tcp_ack_parked_zero_desc_keeps_rtt_sample)
     ck_assert_ptr_nonnull(desc);
     ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
 
+    /* Distinct send timestamps: the RTT sample must come from the data
+     * descriptor (100 - 90 = 10), not the parked pure ACK behind it
+     * (which would give 100 - 95 = 5). */
+    data_desc->time_sent = 90;
+    desc->time_sent = 95;
+    s.last_tick = 100;
+
     /* ACK the data. Pre-fix the drain's fifo_pop() discards the just-acked
      * data descriptor, fresh_desc ends up NULL and no RTT sample is taken;
      * post-fix the sample lands and the parked zero-length descriptor is
@@ -6349,6 +6356,7 @@ START_TEST(test_tcp_ack_parked_zero_desc_keeps_rtt_sample)
     ck_assert_uint_eq(ts->sock.tcp.snd_una, 1008);
     ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
     ck_assert_int_eq(ts->sock.tcp.rto_initialized, 1);
+    ck_assert_uint_eq(ts->sock.tcp.rtt, 10);
     ck_assert_uint_ne(ts->sock.tcp.rto, 200);
     /* The parked zero-length descriptor is reclaimed along with the ACKed
      * data: it carries no in-flight bytes, and keeping it around would

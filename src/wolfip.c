@@ -5816,7 +5816,12 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                     ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
             if ((desc->flags & PKT_FLAG_ACKED) ||
                     ((desc->flags & PKT_FLAG_SENT) && (seg_len == 0))) {
-                fresh_desc = fifo_pop(&t->sock.tcp.txbuf);
+                struct pkt_desc *popped = fifo_pop(&t->sock.tcp.txbuf);
+                /* RTT sample source: only an ACKED (data) descriptor.
+                 * A zero-length descriptor popped after it carries a
+                 * later time_sent and would underestimate the RTT. */
+                if (popped->flags & PKT_FLAG_ACKED)
+                    fresh_desc = popped;
                 desc = fifo_peek(&t->sock.tcp.txbuf);
             } else {
                 break;
