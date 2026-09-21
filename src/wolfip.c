@@ -5187,6 +5187,7 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
      * so the filter notify below must read the transport header at the
      * actual IHL, not a fixed 20-byte offset. */
     uint32_t ip_hlen = (uint32_t)(ip->ver_ihl & 0x0fU) << 2;
+    int nonfirst_frag = (ee16(ip->flags_fo) & 0x1FFFU) != 0U;
 
     if (ip_hlen < IP_HEADER_LEN)
         ip_hlen = IP_HEADER_LEN;
@@ -5196,20 +5197,27 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
         else
             eth_output_add_header(s, out_if, mac, &ip->eth, ETH_TYPE_IP);
     }
-    if (ip->proto == WI_IPPROTO_TCP)
-        drop = wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, out_if,
-                                        (struct wolfIP_tcp_seg *)ip, len,
-                                        ip_hlen);
-    else if (ip->proto == WI_IPPROTO_UDP)
-        drop = wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, out_if,
-                                        (struct wolfIP_udp_datagram *)ip, len,
-                                        ip_hlen);
-    else if (ip->proto == WI_IPPROTO_ICMP)
-        drop = wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, out_if,
-                                         (struct wolfIP_icmp_packet *)ip, len,
-                                         ip_hlen);
-    if (drop != 0)
-        return;
+    /* A non-first fragment carries no L4 header: the bytes at the ip_hlen
+     * offset are payload, so the L4 filter hooks would match on garbage
+     * (RFC 1858 policy evasion). Only the IP-level policy applies to such
+     * fragments; the first fragment (offset 0) still carries a valid L4
+     * header and is notified as usual. */
+    if (!nonfirst_frag) {
+        if (ip->proto == WI_IPPROTO_TCP)
+            drop = wolfIP_filter_notify_tcp(WOLFIP_FILT_SENDING, s, out_if,
+                                            (struct wolfIP_tcp_seg *)ip, len,
+                                            ip_hlen);
+        else if (ip->proto == WI_IPPROTO_UDP)
+            drop = wolfIP_filter_notify_udp(WOLFIP_FILT_SENDING, s, out_if,
+                                            (struct wolfIP_udp_datagram *)ip,
+                                            len, ip_hlen);
+        else if (ip->proto == WI_IPPROTO_ICMP)
+            drop = wolfIP_filter_notify_icmp(WOLFIP_FILT_SENDING, s, out_if,
+                                             (struct wolfIP_icmp_packet *)ip,
+                                             len, ip_hlen);
+        if (drop != 0)
+            return;
+    }
     if (wolfIP_filter_notify_ip(WOLFIP_FILT_SENDING, s, out_if, ip, len) != 0)
         return;
     if (!wolfIP_ll_is_non_ethernet(s, out_if)) {
@@ -11251,19 +11259,24 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             if (out_if >= 0) {
                 uint8_t mac[6];
                 int broadcast = 0;
+                /* RFC 1812 4.3.2.7: no ICMP error may be generated for a
+                 * non-first fragment (the router cannot validate what the
+                 * fragment does not carry); such drops are silent. */
+                int nonfirst_frag = (ee16(ip->flags_fo) & 0x1FFFU) != 0U;
 
                 if (bad_opt_off != 0) {
                     /* RFC 1122 3.2.2.4: a transit datagram with a malformed
                      * IP option gets a Parameter Problem pointing at the
                      * offending option byte, not a silent drop. Multicast
                      * destinations are exempt (RFC 1812 4.3.2.4). */
-                    if (!wolfIP_ip_is_multicast(dest))
+                    if (!wolfIP_ip_is_multicast(dest) && !nonfirst_frag)
                         wolfIP_send_param_problem(s, if_idx, ip,
                                 (uint8_t)bad_opt_off);
                     return;
                 }
                 if (ip->ttl <= 1) {
-                    wolfIP_send_ttl_exceeded(s, if_idx, ip);
+                    if (!nonfirst_frag)
+                        wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
                 /* A datagram larger than the egress IP MTU cannot be relayed.
@@ -11274,7 +11287,8 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 if (ee16(ip->len) >
                         (wolfIP_frame_mtu(s, (unsigned int)out_if) - ETH_HEADER_LEN) &&
                         (ee16(ip->flags_fo) & 0x4000U) != 0U) {
-                    wolfIP_send_frag_needed(s, if_idx, (unsigned int)out_if, ip);
+                    if (!nonfirst_frag)
+                        wolfIP_send_frag_needed(s, if_idx, (unsigned int)out_if, ip);
                     return;
                 }
                 if (!wolfIP_forward_prepare(s, out_if, next_hop, mac,
@@ -11333,8 +11347,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
 #endif /* WOLFIP_ENABLE_FORWARDING */
     /* Fragment reassembly is not implemented: only a locally addressed
      * fragment can reach this point, since the forwarding path above relays
-     * transit fragments without reassembly (RFC 1812 5.2.6). Drop it; no
-     * partial datagram data is ever delivered. */
+     * transit fragments without reassembly (RFC 1812 5.2.6). Drop it before
+     * L4 dispatch; raw sockets and the IP-level filter observe it as an IP
+     * datagram, which is the correct granularity for them. */
     if ((ee16(ip->flags_fo) & 0x3FFFU) != 0U)
         return;
     if (bad_opt_off != 0)
