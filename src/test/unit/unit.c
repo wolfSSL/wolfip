@@ -421,6 +421,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_allows_exact_fit);
     tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
     tcase_add_test(tc_utils, test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload);
+    tcase_add_test(tc_utils, test_tcp_persist_start_no_active_flag_when_timer_heap_full);
     tcase_add_test(tc_utils, test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs);
     tcase_add_test(tc_utils, test_tcp_has_pending_unsent_payload_ignores_zero_ip_len_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);

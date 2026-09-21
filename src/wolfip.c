@@ -4583,6 +4583,13 @@ static void tcp_persist_start(struct tsocket *t, uint64_t now)
     tmr.arg = t;
     tmr.cb = tcp_persist_cb;
     t->sock.tcp.tmr_persist = timers_binheap_insert(&t->S->timers, tmr);
+    /* Only mark persist active when the timer actually took a slot:
+     * an active flag with no timer behind it would never fire and would
+     * stall the sender on a zero-window peer until a later event cleared
+     * it (same guard as the control RTO arm). */
+    if (t->sock.tcp.tmr_persist == NO_TIMER) {
+        return;
+    }
     t->sock.tcp.persist_active = 1;
 }
 

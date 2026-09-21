@@ -1584,6 +1584,41 @@ START_TEST(test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload
 }
 END_TEST
 
+/* A persist arm that cannot take a timer slot must not leave the active
+ * flag set: with no timer behind it the probe would never fire and the
+ * sender would stall on a zero-window peer (F-14171). */
+START_TEST(test_tcp_persist_start_no_active_flag_when_timer_heap_full)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer dummy;
+    uint32_t i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    /* Fill the timer heap so the persist arm cannot take a slot. */
+    memset(&dummy, 0, sizeof(dummy));
+    for (i = 0; i < MAX_TIMERS; i++) {
+        dummy.expires = 1000000U + i;
+        ck_assert_int_ne(timers_binheap_insert(&s.timers, dummy), NO_TIMER);
+    }
+
+    tcp_persist_start(ts, 1000);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
 START_TEST(test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs)
 {
     struct wolfIP s;
