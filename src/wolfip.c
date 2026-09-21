@@ -11879,7 +11879,6 @@ static int dns_schedule_timer(struct wolfIP *s)
 {
     struct wolfIP_timer tmr = { };
     uint64_t interval = DNS_QUERY_TIMEOUT;
-    uint8_t shift;
 
     if (!s)
         return -1;
@@ -11890,11 +11889,9 @@ static int dns_schedule_timer(struct wolfIP *s)
         interval = DNS_QUERY_TIMEOUT_INITIAL +
                 (wolfIP_getrandom() % DNS_QUERY_TIMEOUT_INITIAL_JITTER);
     } else {
-        shift = s->dns_retry_count;
-        if (shift >= 64U || interval > (UINT64_MAX >> shift))
-            interval = UINT64_MAX - s->last_tick;
-        else
-            interval <<= shift;
+        /* dns_retry_count is capped at DNS_QUERY_RETRIES by its single
+         * increment site, so the shift cannot overflow. */
+        interval <<= s->dns_retry_count;
     }
     tmr.expires = s->last_tick + interval;
     tmr.arg = s;

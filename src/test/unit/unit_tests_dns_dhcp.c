@@ -3367,17 +3367,20 @@ START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
 }
 END_TEST
 
-START_TEST(test_dns_schedule_timer_caps_large_retry_shift)
+START_TEST(test_dns_schedule_timer_caps_retry_shift)
 {
     struct wolfIP s;
 
     wolfIP_init(&s);
     s.last_tick = 100U;
-    s.dns_retry_count = 64U;
+    /* The largest shift reachable: the single increment site caps the
+     * count at DNS_QUERY_RETRIES. */
+    s.dns_retry_count = DNS_QUERY_RETRIES;
 
     dns_schedule_timer(&s);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
-    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), UINT64_MAX);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer),
+            100U + (DNS_QUERY_TIMEOUT << DNS_QUERY_RETRIES));
 }
 END_TEST
 
