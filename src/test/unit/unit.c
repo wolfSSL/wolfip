@@ -38,6 +38,7 @@
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
+#include "unit_tests_forwarding.c"
 
 Suite *wolf_suite(void)
 {
@@ -1797,6 +1798,17 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_packet_socket_wildcard_gets_tagged_once);
 #endif
 #endif /* WOLFIP_VLAN */
+
+#if WOLFIP_ENABLE_FORWARDING
+    /* --- unit_tests_forwarding.c (router build) --- */
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_ttl1_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_first_frag_ttl1_sends_ttl_exceeded);
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_df_oversize_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_first_frag_df_oversize_sends_frag_needed);
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_bad_option_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_multicast_dest_bad_option_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_l4_filter_not_notified);
+#endif /* WOLFIP_ENABLE_FORWARDING */
 
     suite_add_tcase(s, tc_core);
     suite_add_tcase(s, tc_utils);
