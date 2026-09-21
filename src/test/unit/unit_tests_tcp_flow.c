@@ -6277,3 +6277,84 @@ START_TEST(test_flush_tcp_tx_pure_ack_keeps_unacked_data_desc)
     ck_assert_ptr_null(desc);
 }
 END_TEST
+
+/* Regression: the tcp_ack() zero-length drain pops the oldest descriptor,
+ * so a zero-length descriptor parked behind a just-acked data descriptor
+ * must not be popped there (that would discard the data descriptor and lose
+ * the RTT sample for the ACK). The parked descriptor stays until it becomes
+ * the oldest. */
+START_TEST(test_tcp_ack_parked_zero_desc_keeps_rtt_sample)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+    struct pkt_desc *data_desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data at the tail, pure ACK parked behind it; flush sends both. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    data_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(data_desc);
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    /* The real send path advances seq as it enqueues; the test helper does
+     * not, so mirror it here. */
+    ts->sock.tcp.seq = 1008;
+    (void)wolfIP_poll(&s, 200);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_eq(desc, data_desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+    desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+
+    /* ACK the data. Pre-fix the drain's fifo_pop() discards the just-acked
+     * data descriptor, fresh_desc ends up NULL and no RTT sample is taken;
+     * post-fix the sample lands and the parked zero-length descriptor
+     * survives. */
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(1008);
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 1008);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
+    ck_assert_int_eq(ts->sock.tcp.rto_initialized, 1);
+    ck_assert_uint_ne(ts->sock.tcp.rto, 200);
+    /* The parked zero-length descriptor is still queued, to be reclaimed
+     * when it becomes the oldest. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_ptr_ne(desc, data_desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST

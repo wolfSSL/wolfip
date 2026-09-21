@@ -5670,10 +5670,19 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
         if (seg_len == 0) {
-            /* Advance the tail and discard */
-            desc = fifo_pop(&t->sock.tcp.txbuf);
-            (void)desc;
-            desc = fifo_peek(&t->sock.tcp.txbuf);
+            if (desc == fifo_peek(&t->sock.tcp.txbuf)) {
+                /* fifo_pop() removes the oldest descriptor, which is the
+                 * cursor: discard it and resume from the new head. */
+                desc = fifo_pop(&t->sock.tcp.txbuf);
+                (void)desc;
+                desc = fifo_peek(&t->sock.tcp.txbuf);
+            } else {
+                /* A zero-length descriptor parked ahead of a newer one:
+                 * leave it in place (popping would remove the newest
+                 * descriptor, not this one) and advance the cursor. It is
+                 * reclaimed when it becomes the oldest. */
+                desc = fifo_next(&t->sock.tcp.txbuf, desc);
+            }
             continue;
         }
         if (tcp_seq_leq(ee32(seg->seq) + seg_len, ack)) {
