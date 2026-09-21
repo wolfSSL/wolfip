@@ -38,6 +38,7 @@
 #include "unit_tests_dns_edges.c"
 #include "unit_tests_misc_edges.c"
 #include "unit_tests_vlan.c"
+#include "unit_tests_forwarding.c"
 
 Suite *wolf_suite(void)
 {
@@ -163,6 +164,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_ignores_missing_link_sender);
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter);
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_sets_df);
+    tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_quotes_no_more_than_datagram);
     tcase_add_test(tc_utils, test_tcp_adv_win_clamps_and_applies_window_scale);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);
@@ -263,6 +265,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_negative_fd);
     tcase_add_test(tc_utils, test_sock_accept_invalid_tcp_fd);
     tcase_add_test(tc_utils, test_sock_accept_success_sets_addr);
+    tcase_add_test(tc_utils, test_tcp_listen_before_ipconfig_accepts_after);
     tcase_add_test(tc_utils, test_sock_accept_listener_resets_paws_state);
     tcase_add_test(tc_utils, test_syn_rcvd_rst_listener_resets_paws_state);
     tcase_add_test(tc_utils, test_sock_accept_no_available_socket);
@@ -419,6 +422,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_poll_tcp_residual_window_allows_exact_fit);
     tcase_add_test(tc_utils, test_poll_tcp_zero_window_arms_persist);
     tcase_add_test(tc_utils, test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload);
+    tcase_add_test(tc_utils, test_tcp_persist_start_no_active_flag_when_timer_heap_full);
+    tcase_add_test(tc_utils, test_tcp_ctrl_rto_stop_resets_base_rto_after_control_timeout);
     tcase_add_test(tc_utils, test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs);
     tcase_add_test(tc_utils, test_tcp_has_pending_unsent_payload_ignores_zero_ip_len_ack_only_desc);
     tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);
@@ -547,7 +552,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_opts_and_names);
     tcase_add_test(tc_utils, test_dns_send_query_errors);
     tcase_add_test(tc_utils, test_dns_schedule_timer_initial_jitter_and_cancel);
-    tcase_add_test(tc_utils, test_dns_schedule_timer_caps_large_retry_shift);
+    tcase_add_test(tc_utils, test_dns_schedule_timer_caps_retry_shift);
     tcase_add_test(tc_utils, test_dns_send_query_schedules_timeout);
     tcase_add_test(tc_utils, test_dns_send_query_timer_heap_full_aborts);
     tcase_add_test(tc_utils, test_dns_send_query_send_failure_clears_outstanding_state);
@@ -751,6 +756,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_drop_fully_acked);
     tcase_add_test(tc_utils, test_tcp_store_ooo_overlap_does_not_exhaust_cache);
     tcase_add_test(tc_utils, test_tcp_ack_sack_early_retransmit_before_three_dupack);
+    tcase_add_test(tc_utils, test_tcp_ack_reclaims_data_acked_behind_pure_ack);
     tcase_add_test(tc_utils, test_tcp_ack_forward_ack_after_retransmit_not_duplicate);
     tcase_add_test(tc_utils, test_tcp_input_listen_syn_without_sack_disables_sack);
     tcase_add_test(tc_utils, test_tcp_input_listen_syn_arms_control_rto);
@@ -768,6 +774,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_retransmits_partially_acked_segment);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_rescans_after_clearing_stale_sack);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc);
+    tcase_add_test(tc_utils, test_flush_tcp_tx_pure_ack_keeps_unacked_data_desc);
+    tcase_add_test(tc_utils, test_tcp_ack_parked_zero_desc_keeps_rtt_sample);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);
@@ -945,6 +953,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ip_recv_forward_arp_queue_and_flush);
     tcase_add_test(tc_proto, test_arp_flush_pending_ttl_expired);
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
+    tcase_add_test(tc_proto, test_ip_recv_forwarding_relays_transit_fragments);
+    tcase_add_test(tc_proto, test_ip_recv_forwarding_drops_local_fragment);
     tcase_add_test(tc_proto, test_wolfip_forwarding_ttl_expired);
     tcase_add_test(tc_proto, test_regression_forwarding_no_ttl_exceeded_for_icmp_error);
     tcase_add_test(tc_proto, test_forward_packet_ip_filter_drop);
@@ -990,6 +1000,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_udp_sendto_and_recvfrom);
     tcase_add_test(tc_proto, test_udp_sendto_unbound_socket_receives_reply);
     tcase_add_test(tc_proto, test_udp_wildcard_bind_receives_all_local_addrs);
+    tcase_add_test(tc_proto, test_udp_wildcard_bind_before_ipconfig_receives_after);
+    tcase_add_test(tc_proto, test_udp_wildcard_bind_drops_third_party_dst);
+    tcase_add_test(tc_proto, test_udp_dhcp_exchange_only_reaches_dhcp_socket);
     tcase_add_test(tc_proto, test_udp_sendto_respects_mtu_api);
     tcase_add_test(tc_proto, test_udp_recvfrom_sets_remote_ip);
     tcase_add_test(tc_proto, test_udp_recvfrom_null_src_addr_len);
@@ -1439,6 +1452,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_tx_tcp_filter_tcp_blocks_send);
     tcase_add_test(tc_core, test_poll_tx_tcp_send_eagain_breaks_loop);
     tcase_add_test(tc_core, test_poll_tx_tcp_zero_window_starts_persist);
+    tcase_add_test(tc_core, test_poll_tx_tcp_zero_window_probe_fires_under_fast_poll);
     tcase_add_test(tc_core, test_poll_tx_tcp_retransmit_replay);
     tcase_add_test(tc_core, test_poll_tx_tcp_loopback_path);
     tcase_add_test(tc_core, test_poll_tx_udp_sends_on_arp_hit);
@@ -1790,6 +1804,17 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_packet_socket_wildcard_gets_tagged_once);
 #endif
 #endif /* WOLFIP_VLAN */
+
+#if WOLFIP_ENABLE_FORWARDING
+    /* --- unit_tests_forwarding.c (router build) --- */
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_ttl1_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_first_frag_ttl1_sends_ttl_exceeded);
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_df_oversize_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_first_frag_df_oversize_sends_frag_needed);
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_bad_option_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_multicast_dest_bad_option_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_l4_filter_not_notified);
+#endif /* WOLFIP_ENABLE_FORWARDING */
 
     suite_add_tcase(s, tc_core);
     suite_add_tcase(s, tc_utils);

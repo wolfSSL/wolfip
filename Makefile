@@ -978,7 +978,8 @@ UNIT_TEST_SRCS:=src/test/unit/unit.c \
 	src/test/unit/unit_tests_arp_regression.c \
 	src/test/unit/unit_tests_dns_edges.c \
 	src/test/unit/unit_tests_misc_edges.c \
-	src/test/unit/unit_tests_vlan.c
+	src/test/unit/unit_tests_vlan.c \
+	src/test/unit/unit_tests_forwarding.c
 
 unit: build/test/unit
 

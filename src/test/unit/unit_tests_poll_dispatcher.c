@@ -792,6 +792,62 @@ START_TEST(test_poll_tx_tcp_zero_window_starts_persist)
 }
 END_TEST
 
+/* Regression: tcp_persist_start() used to cancel and re-insert the persist
+ * timer on every call, and flush_tcp_tx() calls it on every poll while the
+ * peer window is zero. With a poll cadence shorter than TCP_PERSIST_MIN_MS
+ * (the normal embedded main-loop pattern) the deadline was pushed forward
+ * before it could expire, so tcp_persist_cb() never ran and no zero-window
+ * probe was ever transmitted (RFC 9293 3.8.6.1: the probe is the only
+ * recovery when the peer's window-reopening ACK is lost). */
+START_TEST(test_poll_tx_tcp_zero_window_probe_fires_under_fast_poll)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg *probe;
+    ip4 local_ip  = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x04};
+    uint64_t now;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, 6);
+
+    ts = &s.tcpsockets[0];
+    setup_tcp_socket(&s, ts, local_ip, remote_ip, TEST_PRIMARY_IF);
+    /* Force zero peer window */
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.cwnd      = TCP_MSS;
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 4, TCP_FLAG_ACK | TCP_FLAG_PSH), 0);
+
+    mock_link_capture_reset();
+
+    /* Poll every 100 ms (10x faster than TCP_PERSIST_MIN_MS) up to and
+     * including the first persist deadline (200 + 1000 ms). */
+    for (now = 200; now <= 1200; now += 100) {
+        (void)wolfIP_poll(&s, now);
+        if (now < 1200)
+            ck_assert_uint_eq(last_frame_sent_count, 0U);
+    }
+
+    /* The probe fired: exactly one frame, the 1-byte zero-window probe
+     * retransmitting from snd_una. Pre-fix nothing was ever transmitted. */
+    ck_assert_uint_eq(last_frame_sent_count, 1U);
+    ck_assert_int_eq(ts->sock.tcp.persist_backoff, 1);
+    probe = (struct wolfIP_tcp_seg *)(last_frame_sent + ETH_HEADER_LEN +
+            IP_HEADER_LEN);
+    ck_assert_uint_eq(ee32(probe->seq), ts->sock.tcp.snd_una);
+    /* Probe re-armed with backoff: next deadline 1200 + 1000 ms. */
+    ck_assert_int_eq(ts->sock.tcp.persist_active, 1);
+}
+END_TEST
+
 START_TEST(test_poll_tx_tcp_retransmit_replay)
 {
     struct wolfIP s;

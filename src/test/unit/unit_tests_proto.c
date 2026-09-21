@@ -1584,6 +1584,71 @@ START_TEST(test_tcp_persist_start_stops_when_window_reopens_or_no_unsent_payload
 }
 END_TEST
 
+/* A persist arm that cannot take a timer slot must not leave the active
+ * flag set: with no timer behind it the probe would never fire and the
+ * sender would stall on a zero-window peer (F-14171). */
+START_TEST(test_tcp_persist_start_no_active_flag_when_timer_heap_full)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_timer dummy;
+    uint32_t i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    /* Fill the timer heap so the persist arm cannot take a slot. */
+    memset(&dummy, 0, sizeof(dummy));
+    for (i = 0; i < MAX_TIMERS; i++) {
+        dummy.expires = 1000000U + i;
+        ck_assert_int_ne(timers_binheap_insert(&s.timers, dummy), NO_TIMER);
+    }
+
+    tcp_persist_start(ts, 1000);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+    ck_assert_int_eq(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+/* RFC 6298 5.7: if a control timeout (SYN retransmit) occurred while the
+ * base RTO was below 3 s, the base must be reinitialized to 3 s when the
+ * control sequence completes (F-8566). */
+START_TEST(test_tcp_ctrl_rto_stop_resets_base_rto_after_control_timeout)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+
+    ts->sock.tcp.rto = 1000;
+    ts->sock.tcp.ctrl_rto_retries = 2;
+    tcp_ctrl_rto_stop(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 3000U);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+
+    /* Without a control timeout the base RTO is left untouched. */
+    ts->sock.tcp.rto = 1000;
+    tcp_ctrl_rto_stop(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 1000U);
+}
+END_TEST
+
 START_TEST(test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs)
 {
     struct wolfIP s;
@@ -3472,6 +3537,8 @@ START_TEST(test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter)
     last_frame_sent_size = 0;
 
     memset(orig_buf, 0, sizeof(orig_buf));
+    orig->ver_ihl = 0x45;
+    orig->len = ee16(TTL_EXCEEDED_ORIG_PACKET_SIZE_DEFAULT);
     orig->src = ee32(0x0A000002U);
 
     wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, orig);
@@ -3504,6 +3571,31 @@ START_TEST(test_wolfip_send_port_unreachable_sets_df)
     ck_assert_uint_gt(last_frame_sent_size, 0U);
     reply = (struct wolfIP_icmp_dest_unreachable_packet *)last_frame_sent;
     ck_assert_uint_eq(ee16(reply->ip.flags_fo) & 0x4000U, 0x4000U);
+}
+END_TEST
+
+START_TEST(test_wolfip_send_port_unreachable_quotes_no_more_than_datagram)
+{
+    struct wolfIP s;
+    uint8_t orig_buf[ETH_HEADER_LEN + 24];
+    struct wolfIP_ip_packet *orig = (struct wolfIP_ip_packet *)orig_buf;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    last_frame_sent_size = 0;
+
+    memset(orig_buf, 0, sizeof(orig_buf));
+    orig->ver_ihl = 0x45;
+    orig->len = ee16(24); /* 20-byte IP header + 4-byte UDP header */
+    orig->src = ee32(0x0A000002U);
+    orig->dst = ee32(0x0A000001U);
+
+    wolfIP_send_port_unreachable(&s, TEST_PRIMARY_IF, orig);
+    /* The quoted part is the 24-byte datagram, not the usual ihl + 8:
+     * the frame is ETH + 20 + 8 + 24. */
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + 24));
 }
 END_TEST
 
@@ -3861,6 +3953,129 @@ START_TEST(test_wolfip_forwarding_basic)
             expected_csum = 0xFFFF;
     }
     ck_assert_uint_eq(ee16(fwd->csum), expected_csum);
+}
+END_TEST
+
+/* Regression: a router must relay transit IP fragments without reassembly
+ * (RFC 1812 5.2.6); ip_recv used to drop every fragment ahead of the
+ * forwarding decision, so a router build relayed none of them. */
+START_TEST(test_ip_recv_forwarding_relays_transit_fragments)
+{
+    struct wolfIP s;
+    uint8_t frame_buf[64];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    struct wolfIP_ip_packet *fwd;
+    uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+    uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    uint8_t next_hop_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    uint32_t dest_ip = 0xC0A80164; /* 192.168.1.100 */
+    uint8_t initial_ttl = 64;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
+    s.arp.neighbors[0].ip = dest_ip;
+    s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
+    memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
+
+    /* First fragment: MF set, offset zero, 8 bytes of payload. */
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, src_mac, 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = initial_ttl;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + 8);
+    frame->flags_fo = ee16(0x2000U); /* MF=1, offset=0 */
+    frame->src = ee32(0xC0A800AA);
+    frame->dst = ee32(dest_ip);
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+            ETH_HEADER_LEN + IP_HEADER_LEN + 8);
+
+    /* Relayed unchanged, TTL decremented, fragment field intact. */
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8));
+    fwd = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_mem_eq(fwd->eth.dst, next_hop_mac, 6);
+    ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
+    ck_assert_uint_eq(ee16(fwd->flags_fo), 0x2000U);
+
+    /* Non-first fragment: MF clear, offset non-zero. Same path. */
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, src_mac, 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = initial_ttl;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + 8);
+    frame->flags_fo = ee16(0x0001U); /* MF=0, offset=1 (8 bytes) */
+    frame->src = ee32(0xC0A800AA);
+    frame->dst = ee32(dest_ip);
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+            ETH_HEADER_LEN + IP_HEADER_LEN + 8);
+
+    ck_assert_uint_eq(last_frame_sent_size,
+            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8));
+    fwd = (struct wolfIP_ip_packet *)last_frame_sent;
+    ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
+    ck_assert_uint_eq(ee16(fwd->flags_fo), 0x0001U);
+}
+END_TEST
+
+/* Locally addressed fragments are still dropped: reassembly is not
+ * implemented (F-1326), and the fix must not start delivering partial
+ * datagrams to local sockets. */
+START_TEST(test_ip_recv_forwarding_drops_local_fragment)
+{
+    struct wolfIP s;
+    uint8_t frame_buf[64];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    mock_link_init_idx(&s, TEST_SECOND_IF, NULL);
+    wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
+
+    memset(frame_buf, 0, sizeof(frame_buf));
+    memcpy(frame->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(frame->eth.src, src_mac, 6);
+    frame->eth.type = ee16(ETH_TYPE_IP);
+    frame->ver_ihl = 0x45;
+    frame->ttl = 64;
+    frame->proto = WI_IPPROTO_UDP;
+    frame->len = ee16(IP_HEADER_LEN + 8);
+    frame->flags_fo = ee16(0x2000U); /* MF=1, offset=0 */
+    frame->src = ee32(0xC0A800AA);
+    frame->dst = ee32(0xC0A80001); /* our own interface 0 address */
+    frame->csum = 0;
+    iphdr_set_checksum(frame);
+
+    memset(last_frame_sent, 0, sizeof(last_frame_sent));
+    last_frame_sent_size = 0;
+
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
+            ETH_HEADER_LEN + IP_HEADER_LEN + 8);
+
+    /* Dropped: neither forwarded nor delivered. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
 }
 END_TEST
 

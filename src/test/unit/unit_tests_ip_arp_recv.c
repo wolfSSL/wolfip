@@ -799,6 +799,10 @@ START_TEST(test_ip_recv_l2_group_dhcp_still_reaches_local_udp)
     ip4 dest_ip      = 0x0A000063U;   /* 10.0.0.99 — not yet ours */
 
     setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    /* The client is mid-exchange: OFFER/ACK only arrive in this window, and
+     * the udp_try_recv() gate only admits third-party addressed 67->68
+     * datagrams while DHCP is running. */
+    s.dhcp_state = DHCP_DISCOVER_SENT;
     f11438_install_rx_observer();
 
     memset(frame, 0, sizeof(frame));
@@ -1120,6 +1124,9 @@ END_TEST
 START_TEST(test_ip_recv_loopback_dst_on_non_loopback_dropped)
 {
     struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *udp_hdr = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
     struct tsocket *ts;
     ip4 local_ip  = 0x0A000001U;
     ip4 remote_ip = 0x0A000002U;
@@ -1129,16 +1136,33 @@ START_TEST(test_ip_recv_loopback_dst_on_non_loopback_dropped)
     mock_link_init(&s);
     wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
 
+    /* A wildcard socket on the destination port: the drop must happen in
+     * ip_recv, before any demux can see the datagram. */
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
     ts->src_port = 1234;
     ts->local_ip = IPADDR_ANY;
 
     /* Inject from non-loopback interface to loopback destination */
-    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, loop_dst,
-                        9999, 1234, NULL, 0);
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(remote_ip);
+    ip->dst      = ee32(loop_dst);
+    fix_ip_checksum(ip);
+    udp_hdr[0] = 0x27; udp_hdr[1] = 0x0F; /* src port 9999 */
+    udp_hdr[2] = 0x04; udp_hdr[3] = 0xD2; /* dst port 1234 */
+    udp_hdr[4] = 0x00; udp_hdr[5] = UDP_HEADER_LEN;
+    /* csum left 0: validation is skipped, the drop is upstream of it. */
 
-    /* Must be dropped — loopback addresses must not arrive on wire */
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Must be dropped - loopback addresses must not arrive on wire */
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
     ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0);
 }
@@ -1152,6 +1176,9 @@ END_TEST
 START_TEST(test_ip_recv_loopback_src_on_non_loopback_dropped)
 {
     struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *udp_hdr = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
     struct tsocket *ts;
     ip4 local_ip  = 0x0A000001U;
     ip4 loop_src  = 0x7F000002U;  /* 127.0.0.2 as source */
@@ -1165,8 +1192,24 @@ START_TEST(test_ip_recv_loopback_src_on_non_loopback_dropped)
     ts->src_port = 1234;
     ts->local_ip = IPADDR_ANY;
 
-    inject_udp_datagram(&s, TEST_PRIMARY_IF, loop_src, local_ip,
-                        9999, 1234, NULL, 0);
+    /* Loopback source, valid local destination: the symmetric source
+     * check in ip_recv must drop it. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl  = 0x45;
+    ip->ttl      = 64;
+    ip->proto    = WI_IPPROTO_UDP;
+    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
+    ip->src      = ee32(loop_src);
+    ip->dst      = ee32(local_ip);
+    fix_ip_checksum(ip);
+    udp_hdr[0] = 0x27; udp_hdr[1] = 0x0F; /* src port 9999 */
+    udp_hdr[2] = 0x04; udp_hdr[3] = 0xD2; /* dst port 1234 */
+    udp_hdr[4] = 0x00; udp_hdr[5] = UDP_HEADER_LEN;
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
 
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
 }

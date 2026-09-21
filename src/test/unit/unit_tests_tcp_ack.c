@@ -5065,6 +5065,90 @@ START_TEST(test_tcp_ack_sack_early_retransmit_before_three_dupack)
 }
 END_TEST
 
+/* A zero-length (pure-ACK) descriptor parked between two data descriptors
+ * must not strand the second: an ACK covering both marks both data
+ * descriptors ACKED, and the cleanup must reclaim all three, not stop at
+ * the parked zero-length one (which would block the marking scan, which
+ * only walks SENT descriptors, for every later segment). */
+START_TEST(test_tcp_ack_reclaims_data_acked_behind_pure_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf1;
+    struct tcp_seg_buf segbuf2;
+    struct tcp_seg_buf segbuf3;
+    struct wolfIP_tcp_seg *seg1;
+    struct wolfIP_tcp_seg *seg2;
+    struct wolfIP_tcp_seg *seg3;
+    uint8_t ackbuf[sizeof(struct wolfIP_tcp_seg)];
+    struct wolfIP_tcp_seg *ackseg = (struct wolfIP_tcp_seg *)ackbuf;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 102;
+    ts->sock.tcp.snd_una = 100;
+    ts->sock.tcp.bytes_in_flight = 2;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* data1: 1 byte at seq 100. */
+    memset(&segbuf1, 0, sizeof(segbuf1));
+    seg1 = &segbuf1.seg;
+    seg1->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg1->hlen = TCP_HEADER_LEN << 2;
+    seg1->seq = ee32(100);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf1,
+            sizeof(segbuf1)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* pure ACK: zero length at seq 101. */
+    memset(&segbuf2, 0, sizeof(segbuf2));
+    seg2 = &segbuf2.seg;
+    seg2->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg2->hlen = TCP_HEADER_LEN << 2;
+    seg2->seq = ee32(101);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf2,
+            sizeof(segbuf2)), 0);
+    desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* data2: 1 byte at seq 101. */
+    memset(&segbuf3, 0, sizeof(segbuf3));
+    seg3 = &segbuf3.seg;
+    seg3->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+    seg3->hlen = TCP_HEADER_LEN << 2;
+    seg3->seq = ee32(101);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf3,
+            sizeof(segbuf3)), 0);
+    desc = fifo_next(&ts->sock.tcp.txbuf, desc);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* One ACK covering everything: ack = 102. */
+    memset(ackbuf, 0, sizeof(ackbuf));
+    ackseg->ack = ee32(102);
+    ackseg->hlen = TCP_HEADER_LEN << 2;
+    ackseg->flags = TCP_FLAG_ACK;
+
+    tcp_ack(ts, ackseg);
+
+    /* All three descriptors reclaimed: the ACKED data2 behind the parked
+     * pure ACK included. */
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 102);
+}
+END_TEST
+
 /* F-13765: a forward ACK that fully acknowledges a segment whose
  * PKT_FLAG_SENT was cleared by the retransmit marker advances
  * snd_una, but the marking loop counts zero descriptors, so the
