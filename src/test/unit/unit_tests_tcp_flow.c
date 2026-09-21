@@ -6337,8 +6337,8 @@ START_TEST(test_tcp_ack_parked_zero_desc_keeps_rtt_sample)
 
     /* ACK the data. Pre-fix the drain's fifo_pop() discards the just-acked
      * data descriptor, fresh_desc ends up NULL and no RTT sample is taken;
-     * post-fix the sample lands and the parked zero-length descriptor
-     * survives. */
+     * post-fix the sample lands and the parked zero-length descriptor is
+     * reclaimed with it. */
     memset(&ackseg, 0, sizeof(ackseg));
     ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
     ackseg.hlen = TCP_HEADER_LEN << 2;
@@ -6350,11 +6350,9 @@ START_TEST(test_tcp_ack_parked_zero_desc_keeps_rtt_sample)
     ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
     ck_assert_int_eq(ts->sock.tcp.rto_initialized, 1);
     ck_assert_uint_ne(ts->sock.tcp.rto, 200);
-    /* The parked zero-length descriptor is still queued, to be reclaimed
-     * when it becomes the oldest. */
-    desc = fifo_peek(&ts->sock.tcp.txbuf);
-    ck_assert_ptr_nonnull(desc);
-    ck_assert_ptr_ne(desc, data_desc);
-    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+    /* The parked zero-length descriptor is reclaimed along with the ACKed
+     * data: it carries no in-flight bytes, and keeping it around would
+     * block the marking scan if ACKed data ever sat behind it. */
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
 }
 END_TEST

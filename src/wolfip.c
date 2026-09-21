@@ -5713,8 +5713,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             } else {
                 /* A zero-length descriptor parked ahead of a newer one:
                  * leave it in place (popping would remove the newest
-                 * descriptor, not this one) and advance the cursor. It is
-                 * reclaimed when it becomes the oldest. */
+                 * descriptor, not this one) and advance the cursor. The
+                 * cleanup drain below reclaims it. */
                 desc = fifo_next(&t->sock.tcp.txbuf, desc);
             }
             continue;
@@ -5796,16 +5796,31 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         }
         ack_advanced = 1;
     }
-    if (ack_count > 0) {
+    {
         struct pkt_desc *fresh_desc = NULL;
         uint32_t ack_ip_len = ee16(tcp->ip.len);
         uint32_t ack_hdr_len = IP_HEADER_LEN + tcp_data_offset_bytes(tcp->hlen);
         uint32_t ack_frame_len = 0;
-        /* This ACK ackwnowledged some data. */
+        /* Reclaim descriptors the peer has already accounted for: ACKED
+         * data and zero-length (pure-ACK) descriptors, which carry no
+         * in-flight bytes. Runs on every ACK, not only when this segment
+         * marked new descriptors: the marking scan above only walks SENT
+         * descriptors, so an ACKED descriptor parked behind a zero-length
+         * one would otherwise sit at the FIFO head forever, blocking the
+         * scan (and retransmission) for every later segment. */
         desc = fifo_peek(&t->sock.tcp.txbuf);
-        while (desc && (desc->flags & PKT_FLAG_ACKED)) {
-            fresh_desc = fifo_pop(&t->sock.tcp.txbuf);
-            desc = fifo_peek(&t->sock.tcp.txbuf);
+        while (desc) {
+            struct wolfIP_tcp_seg *seg =
+                    (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
+            uint32_t seg_len =
+                    ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            if ((desc->flags & PKT_FLAG_ACKED) ||
+                    ((desc->flags & PKT_FLAG_SENT) && (seg_len == 0))) {
+                fresh_desc = fifo_pop(&t->sock.tcp.txbuf);
+                desc = fifo_peek(&t->sock.tcp.txbuf);
+            } else {
+                break;
+            }
         }
         if (fresh_desc) {
             /* Karn rule: ignore RTT samples for retransmitted segments. */
@@ -5847,7 +5862,8 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             if (tx_has_writable_space(t))
                 t->events |= CB_EVENT_WRITABLE;
         }
-    } else {
+    }
+    if (ack_count == 0) {
         /* Duplicate ack (no advance in snd_una). RFC 5681: only a segment
          * that carries no data and repeats the previously advertised
          * receive window counts as a duplicate ACK, so data-bearing
