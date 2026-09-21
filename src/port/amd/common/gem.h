@@ -17,7 +17,8 @@
 
 /* Initialize the GEM, its clock + reset, the PHY, and populate the wolfIP
  * link-layer device. Returns:
- *   < 0          on error (negated TRM code)
+ *   < 0          on error (driver-local sentinel, not a TRM code:
+ *                -10 = no PHY responded on MDIO, -11 = gem_phy_init failed)
  *   bits [7:0]   PHY MDIO address used
  *   bit  [8]     link_up flag (1 = link is up at end of init)
  */
