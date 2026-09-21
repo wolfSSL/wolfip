@@ -164,6 +164,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_ignores_missing_link_sender);
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_non_ethernet_skips_eth_filter);
     tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_sets_df);
+    tcase_add_test(tc_utils, test_wolfip_send_port_unreachable_quotes_no_more_than_datagram);
     tcase_add_test(tc_utils, test_tcp_adv_win_clamps_and_applies_window_scale);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);

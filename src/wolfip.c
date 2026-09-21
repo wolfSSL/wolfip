@@ -2677,6 +2677,7 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
     struct wolfIP_icmp_dest_unreachable_packet icmp = {0};
     struct wolfIP_icmp_packet *icmp_pkt = (struct wolfIP_icmp_packet *)&icmp;
     uint32_t orig_ihl = (orig->ver_ihl & 0x0F) * 4;
+    uint32_t orig_total;
     uint32_t orig_copy;
     uint32_t icmp_data_len;
 #if !CONFIG_IPFILTER
@@ -2699,7 +2700,15 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
 #endif
     if (orig_ihl < IP_HEADER_LEN)
         orig_ihl = IP_HEADER_LEN;
+    /* Quote the original header plus up to 8 payload bytes, or as much of
+     * the datagram as exists (same clamp as the other ICMP error senders).
+     */
+    orig_total = ee16(orig->len);
+    if (orig_total < orig_ihl)
+        orig_total = orig_ihl;
     orig_copy = orig_ihl + 8;
+    if (orig_copy > orig_total)
+        orig_copy = orig_total;
     if (orig_copy > TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX)
         orig_copy = TTL_EXCEEDED_ORIG_PACKET_SIZE_MAX;
     icmp_data_len = 8 + orig_copy;
