@@ -1619,6 +1619,36 @@ START_TEST(test_tcp_persist_start_no_active_flag_when_timer_heap_full)
 }
 END_TEST
 
+/* RFC 6298 5.7: if a control timeout (SYN retransmit) occurred while the
+ * base RTO was below 3 s, the base must be reinitialized to 3 s when the
+ * control sequence completes (F-8566). */
+START_TEST(test_tcp_ctrl_rto_stop_resets_base_rto_after_control_timeout)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+
+    ts->sock.tcp.rto = 1000;
+    ts->sock.tcp.ctrl_rto_retries = 2;
+    tcp_ctrl_rto_stop(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 3000U);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 0);
+
+    /* Without a control timeout the base RTO is left untouched. */
+    ts->sock.tcp.rto = 1000;
+    tcp_ctrl_rto_stop(ts);
+    ck_assert_uint_eq(ts->sock.tcp.rto, 1000U);
+}
+END_TEST
+
 START_TEST(test_tcp_persist_helpers_ignore_non_tcp_and_null_inputs)
 {
     struct wolfIP s;

@@ -169,6 +169,8 @@ struct wolfIP_icmp_packet;
 #define TCP_RTO_G_MS 1U
 /* RFC 6298 §5.5: maximum timer value G; caps the backed-off RTO. */
 #define TCP_RTO_BACKOFF_MAX_MS 64000U
+/* RFC 6298 §5.7: base RTO to reinitialize after a SYN timeout. */
+#define TCP_RTO_SYN_INIT_MS 3000U
 #define TCP_PERSIST_MIN_MS 1000U
 #define TCP_PERSIST_MAX_MS 60000U
 #ifndef TCP_FIN_WAIT_2_TIMEOUT_MS
@@ -4296,6 +4298,14 @@ static void tcp_ctrl_rto_stop(struct tsocket *t)
     if (t->sock.tcp.tmr_rto != NO_TIMER) {
         timer_binheap_cancel(&t->S->timers, t->sock.tcp.tmr_rto);
         t->sock.tcp.tmr_rto = NO_TIMER;
+    }
+    /* RFC 6298 §5.7: a control timeout (e.g. SYN retransmit) while the
+     * base RTO was below 3 s means the first RTT estimate is stale; reset
+     * the base to 3 s now that the control sequence is done and data may
+     * flow. RTT sampling re-derives the RTO from there. */
+    if (t->sock.tcp.ctrl_rto_retries > 0 &&
+            t->sock.tcp.rto < TCP_RTO_SYN_INIT_MS) {
+        t->sock.tcp.rto = TCP_RTO_SYN_INIT_MS;
     }
     t->sock.tcp.ctrl_rto_active = 0;
     t->sock.tcp.ctrl_rto_retries = 0;
