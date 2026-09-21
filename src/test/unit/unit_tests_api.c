@@ -1013,6 +1013,91 @@ START_TEST(test_udp_wildcard_bind_receives_all_local_addrs)
 }
 END_TEST
 
+/* Embedded start-up order: the socket is bound before the interface has
+ * any address. The bind snapshot latches local_ip == 0; the stack must
+ * still deliver once the address arrives, not answer port-unreachable
+ * for the life of the socket. */
+START_TEST(test_udp_wildcard_bind_before_ipconfig_receives_after)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    uint8_t payload[4] = {1, 2, 3, 4};
+    uint8_t rxbuf[8];
+    ip4 local_ip = 0x0A000001U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5353);
+    sin.sin_addr.s_addr = 0U; /* INADDR_ANY */
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), 0);
+    /* No interface address existed at bind time: the snapshot is 0. */
+    ck_assert_uint_eq(s.udpsockets[SOCKET_UNMARK(sd)].local_ip, 0);
+
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A000064U, local_ip,
+            60000, 5353, payload, sizeof(payload));
+
+    memset(&from, 0, sizeof(from));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)&from, &from_len);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+    /* Delivered, not bounced with ICMP Port Unreachable. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+/* Same start-up order on the TCP side: bind + listen before the address
+ * is configured. A SYN addressed to the just-configured address must be
+ * taken by the wildcard listener and accepted. */
+START_TEST(test_tcp_listen_before_ipconfig_accepts_after)
+{
+    struct wolfIP s;
+    int listen_sd;
+    int client_sd;
+    struct tsocket *listener;
+    struct wolfIP_sockaddr_in sin;
+    socklen_t alen = sizeof(sin);
+    ip4 local_ip = 0x0A000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+            WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(8080);
+    sin.sin_addr.s_addr = 0U; /* INADDR_ANY */
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(listen_sd)].local_ip, 0);
+
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, 8080);
+    listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
+    ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
+
+    client_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin,
+            &alen);
+    ck_assert_int_gt(client_sd, 0);
+}
+END_TEST
+
 START_TEST(test_udp_wildcard_bind_drops_third_party_dst)
 {
     struct wolfIP s;

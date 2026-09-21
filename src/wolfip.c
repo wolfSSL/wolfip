@@ -3089,11 +3089,11 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
          * selected into local_ip at bind time: a wildcard (INADDR_ANY)
          * bind must receive datagrams addressed to any local address
          * (POSIX), the same rule the TCP LISTEN match applies via
-         * bound_local_ip. local_ip/if_idx stay egress-only. The
-         * t->local_ip != 0 guard keeps an unbound socket (local_ip == 0)
-         * out of the match: only the DHCP relaxation above may deliver
-         * to one. */
-        int bound_match = (t->local_ip != 0) &&
+         * bound_local_ip. local_ip/if_idx stay egress-only. Liveness is
+         * src_port != 0 (a bound slot), not local_ip != 0: a socket bound
+         * before any interface had an address snapshots local_ip == 0 and
+         * must still receive once the address arrives. */
+        int bound_match = (t->src_port != 0) &&
                 ((t->bound_local_ip == IPADDR_ANY) ||
                  (t->bound_local_ip == dst_ip));
         int addr_match;

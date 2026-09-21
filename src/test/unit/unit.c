@@ -264,6 +264,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_accept_negative_fd);
     tcase_add_test(tc_utils, test_sock_accept_invalid_tcp_fd);
     tcase_add_test(tc_utils, test_sock_accept_success_sets_addr);
+    tcase_add_test(tc_utils, test_tcp_listen_before_ipconfig_accepts_after);
     tcase_add_test(tc_utils, test_sock_accept_listener_resets_paws_state);
     tcase_add_test(tc_utils, test_syn_rcvd_rst_listener_resets_paws_state);
     tcase_add_test(tc_utils, test_sock_accept_no_available_socket);
@@ -995,6 +996,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_udp_sendto_and_recvfrom);
     tcase_add_test(tc_proto, test_udp_sendto_unbound_socket_receives_reply);
     tcase_add_test(tc_proto, test_udp_wildcard_bind_receives_all_local_addrs);
+    tcase_add_test(tc_proto, test_udp_wildcard_bind_before_ipconfig_receives_after);
     tcase_add_test(tc_proto, test_udp_wildcard_bind_drops_third_party_dst);
     tcase_add_test(tc_proto, test_udp_dhcp_exchange_only_reaches_dhcp_socket);
     tcase_add_test(tc_proto, test_udp_sendto_respects_mtu_api);
