@@ -1054,6 +1054,76 @@ START_TEST(test_udp_wildcard_bind_drops_third_party_dst)
 }
 END_TEST
 
+/* Regression for the DHCP exception in the udp_try_recv() gate: a
+ * third-party-addressed 67->68 datagram (the pre-address RFC 2131
+ * OFFER/ACK window) must reach only the DHCP client's own socket - never
+ * a plain wildcard bind on port 68 - and never at all when DHCP is off.
+ * The phases reuse the single wildcard :68 bind (the stack rejects a
+ * second wildcard bind on the same port). */
+START_TEST(test_udp_dhcp_exchange_only_reaches_dhcp_socket)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {1, 2, 3, 4};
+    uint8_t rxbuf[LINK_MTU];
+    int ret;
+    ip4 third_party = 0xC0A80164U; /* 192.168.1.100, not ours */
+
+    setup_stack_with_two_ifaces(&s, 0x0A000001U, 0x0A010001U);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(DHCP_CLIENT_PORT);
+    sin.sin_addr.s_addr = 0U;
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), 0);
+
+    /* Phase 1: a plain application socket, wildcard bound on port 68,
+     * DHCP exchanging: the third-party addressed datagram must NOT be
+     * delivered to it. */
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    s.dhcp_udp_sd = 0; /* no DHCP socket */
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A000064U, third_party,
+            DHCP_SERVER_PORT, DHCP_CLIENT_PORT, payload, sizeof(payload));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+
+    wolfIP_sock_close(&s, sd);
+
+    /* Phase 2: the same socket registered as the DHCP client socket:
+     * the legitimate pre-address exchange is delivered. */
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+            WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(DHCP_CLIENT_PORT);
+    sin.sin_addr.s_addr = 0U;
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), 0);
+    s.dhcp_udp_sd = sd;
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A000064U, third_party,
+            DHCP_SERVER_PORT, DHCP_CLIENT_PORT, payload, sizeof(payload));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)NULL, NULL);
+    ck_assert_int_eq(ret, (int)sizeof(payload));
+    ck_assert_mem_eq(rxbuf, payload, sizeof(payload));
+
+    /* Phase 3: DHCP off: the same datagram is dropped at the gate. */
+    s.dhcp_state = DHCP_OFF;
+    inject_udp_datagram(&s, TEST_PRIMARY_IF, 0x0A000064U, third_party,
+            DHCP_SERVER_PORT, DHCP_CLIENT_PORT, payload, sizeof(payload));
+    ret = wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            (struct wolfIP_sockaddr *)NULL, NULL);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
+}
+END_TEST
+
 START_TEST(test_udp_sendto_respects_mtu_api)
 {
     struct wolfIP s;

@@ -994,6 +994,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_udp_sendto_unbound_socket_receives_reply);
     tcase_add_test(tc_proto, test_udp_wildcard_bind_receives_all_local_addrs);
     tcase_add_test(tc_proto, test_udp_wildcard_bind_drops_third_party_dst);
+    tcase_add_test(tc_proto, test_udp_dhcp_exchange_only_reaches_dhcp_socket);
     tcase_add_test(tc_proto, test_udp_sendto_respects_mtu_api);
     tcase_add_test(tc_proto, test_udp_recvfrom_sets_remote_ip);
     tcase_add_test(tc_proto, test_udp_recvfrom_null_src_addr_len);

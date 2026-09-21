@@ -2999,6 +2999,8 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
     int i;
     int matched = 0;
     int dst_local = 0;
+    int dst_local_ok;
+    int dhcp_exchange;
     ip4 dst_ip;
     ip4 src_ip;
 
@@ -3050,11 +3052,16 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
      * delivers third-party traffic in non-forwarding builds, where
      * ip_recv() compiles out its is_local check. */
     (void)wolfIP_if_for_local_ip(s, dst_ip, &dst_local);
-    if (!dst_local && dst_ip != IPADDR_ANY &&
-            !wolfIP_ip_is_broadcast(s, dst_ip) &&
-            !wolfIP_ip_is_multicast(dst_ip) &&
-            !(ee16(udp->src_port) == DHCP_SERVER_PORT &&
-              ee16(udp->dst_port) == DHCP_CLIENT_PORT))
+    dst_local_ok = dst_local || dst_ip == IPADDR_ANY ||
+            wolfIP_ip_is_broadcast(s, dst_ip) ||
+            wolfIP_ip_is_multicast(dst_ip);
+    /* The DHCP exception is only valid while the client is actively
+     * exchanging (DHCP_IS_RUNNING excludes OFF and BOUND); with DHCP off a
+     * 67->68 datagram to a third-party IP is dropped like any other. */
+    dhcp_exchange = !dst_local_ok &&
+            ee16(udp->src_port) == DHCP_SERVER_PORT &&
+            ee16(udp->dst_port) == DHCP_CLIENT_PORT;
+    if (!dst_local_ok && !(dhcp_exchange && DHCP_IS_RUNNING(s)))
         return;
 
     if (wolfIP_filter_notify_udp(WOLFIP_FILT_RECEIVING, s, if_idx, udp, frame_len,
@@ -3089,9 +3096,18 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         int bound_match = (t->local_ip != 0) &&
                 ((t->bound_local_ip == IPADDR_ANY) ||
                  (t->bound_local_ip == dst_ip));
-        int addr_match =
-                (((t->local_ip == 0) && DHCP_IS_RUNNING(s) && is_dhcp) ||
-                 (bound_match && peer_match));
+        int addr_match;
+        if (dhcp_exchange) {
+            /* A third-party-addressed 67->68 datagram may only reach the
+             * DHCP client's own socket; a wildcard bind on port 68 must
+             * not receive it. (The gate above guarantees DHCP is running
+             * when dhcp_exchange is set.) */
+            addr_match = is_dhcp;
+        } else {
+            addr_match =
+                    (((t->local_ip == 0) && DHCP_IS_RUNNING(s) && is_dhcp) ||
+                     (bound_match && peer_match));
+        }
 #ifdef IP_MULTICAST
         if (wolfIP_ip_is_multicast(dst_ip)) {
             addr_match = udp_socket_has_mcast(t, if_idx, dst_ip) &&

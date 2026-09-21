@@ -799,6 +799,10 @@ START_TEST(test_ip_recv_l2_group_dhcp_still_reaches_local_udp)
     ip4 dest_ip      = 0x0A000063U;   /* 10.0.0.99 — not yet ours */
 
     setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    /* The client is mid-exchange: OFFER/ACK only arrive in this window, and
+     * the udp_try_recv() gate only admits third-party addressed 67->68
+     * datagrams while DHCP is running. */
+    s.dhcp_state = DHCP_DISCOVER_SENT;
     f11438_install_rx_observer();
 
     memset(frame, 0, sizeof(frame));
