@@ -300,13 +300,10 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
      * Versal). The Zynq-7000 GEM is fed by a 32-bit AXI master, where this
      * bit is inert, so it is left clear there.
      *
-     * Keyed off the compiler as well as XILINX_AARCH64 because the define
-     * is set by the board Makefiles only. A consumer that compiles these
-     * sources through its own build (wolfBoot's OBJS_EXTRA, for instance)
-     * does not read those Makefiles, and losing this bit leaves the MAC
-     * driving a 64-bit AMBA master with a 32-bit datapath: the transmitter
-     * never starts, TSR.TXGO stays asserted with zero octets sent, while
-     * receive keeps working and hides the cause. */
+     * Keyed off the compiler as well as XILINX_AARCH64, which only the board
+     * Makefiles set: a consumer building these sources its own way loses the
+     * bit, and a 64-bit master with a 32-bit datapath never transmits
+     * (TSR.TXGO stuck, zero octets) while receive keeps working. */
     GEM_NWCFG |= NWCFG_DWIDTH_64;
 #endif
 
