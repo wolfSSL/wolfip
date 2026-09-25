@@ -309,6 +309,19 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
     GEM_NWCFG |= NWCFG_DWIDTH_64;
 #endif
 
+#ifdef ZYNQMP_GEM_SGMII
+    /* SGMII: the MAC talks to the PHY through the internal PCS rather than a
+     * parallel RGMII/GMII interface, so the PCS has to be selected and its
+     * own clause-37 negotiation run. This is separate from, and in addition
+     * to, the PHY's copper negotiation with the link partner.
+     *
+     * UNTESTED. There is no SGMII board here to exercise it on, so it is
+     * opt-in and off by default. Treat it as a starting point: the PS-GTR
+     * serdes must already be up (platform firmware's job), and a board may
+     * need its own lane or PCS setup beyond this. */
+    GEM_NWCFG |= NWCFG_PCSSEL | NWCFG_SGMIIEN;
+#endif
+
     /* DMACR: AHB fixed burst 16 beats, RX buffer 1536/64=24, TX/RX packet
      * buffer memory at max. Do NOT set bit 30 (DMA_ADDR_BUS_WIDTH 64-bit):
      * that selects 16-byte BD format with addr_hi and would break the
@@ -466,6 +479,32 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
         GEM_NWCFG = cfg;
         gem_set_ref_clk(speed);
     }
+
+#ifdef ZYNQMP_GEM_SGMII
+    /* Run the PCS side once the copper link is up. Failure is reported but
+     * not fatal: the MAC is still usable if a board's PCS is brought up
+     * elsewhere, and returning an error here would take down a link that
+     * may be working. UNTESTED - see the note at the NWCFG bits above. */
+    {
+        uint32_t pcs;
+        int spin;
+
+        GEM_PCS_AN_ADV = 0x0020u;   /* full duplex, no pause */
+        pcs = GEM_PCS_CTRL;
+        GEM_PCS_CTRL = pcs | PCS_CTRL_ANEN | PCS_CTRL_ANRESTART;
+        for (spin = 0; spin < 2000000; spin++) {
+            if (GEM_PCS_STATUS & PCS_STATUS_ANDONE)
+                break;
+        }
+        pcs = GEM_PCS_STATUS;
+        uart_puts("GEM: PCS");
+        uart_puts((pcs & PCS_STATUS_ANDONE) ? " autoneg done" : " autoneg TIMEOUT");
+        uart_puts((pcs & PCS_STATUS_LINK) ? " link up" : " link down");
+        uart_puts(" lp=");
+        uart_puthex(GEM_PCS_AN_LP_BASE);
+        uart_puts("\n");
+    }
+#endif
 
     /* Arm the RX delivery model (install IRQ handler, or leave masked for
      * poll-only ports) and enable RX/TX. */

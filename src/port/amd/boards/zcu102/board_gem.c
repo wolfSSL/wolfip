@@ -27,7 +27,9 @@ void gem_soc_pre_init(void)
  * build with -DZYNQMP_GEM_EXT_REF_CLK; nothing else should. */
 void gem_set_ref_clk(int speed_mbps)
 {
-#ifdef ZYNQMP_GEM_EXT_REF_CLK
+/* SGMII implies it: the reference comes from the PS-GTR serdes, so a
+ * downshift must not reprogram CRL_APB and take the link down. */
+#if defined(ZYNQMP_GEM_EXT_REF_CLK) || defined(ZYNQMP_GEM_SGMII)
     (void)speed_mbps;
 #else
     volatile uint32_t *gem_ref = (volatile uint32_t *)CRL_APB_GEM_REF_CTRL;
