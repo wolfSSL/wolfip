@@ -78,7 +78,7 @@ static int mdio_wait_idle(void)
 {
     int spin;
     for (spin = 0; spin < 100000; spin++) {
-        if (GEM_NWSR & NWSR_PHY_IDLE)
+        if (GEM_MDIO_NWSR & NWSR_PHY_IDLE)
             return 0;
     }
     return -1;
@@ -358,6 +358,16 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
 
     /* Enable MDIO so we can talk to the PHY. */
     GEM_NWCTRL |= NWCTRL_MDEN;
+
+#if (GEM_MDIO_BASE != GEM_BASE)
+    /* The PHY answers on another controller's management bus, so that one
+     * needs its own MDC divisor and management enable; the block we just
+     * configured is only carrying data. Everything else about it is left
+     * alone, since another driver may own it. */
+    GEM_MDIO_NWCFG = (GEM_MDIO_NWCFG & ~(7u << NWCFG_MDCDIV_SHIFT))
+                   | (5u << NWCFG_MDCDIV_SHIFT);
+    GEM_MDIO_NWCTRL |= NWCTRL_MDEN;
+#endif
 
     /* Scan all 32 MDIO addresses, reporting each responsive PHY's ID and
      * link status (BMSR reg 1, bit 2). A board may present more than one

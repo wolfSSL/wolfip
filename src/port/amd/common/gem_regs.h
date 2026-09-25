@@ -30,7 +30,17 @@
 #define GEM_IER             (*(volatile uint32_t *)(GEM_BASE + 0x028))
 #define GEM_IDR             (*(volatile uint32_t *)(GEM_BASE + 0x02C))
 #define GEM_IMR             (*(volatile uint32_t *)(GEM_BASE + 0x030))
-#define GEM_PHYMNTNC        (*(volatile uint32_t *)(GEM_BASE + 0x034))
+/* MDIO lives on GEM_MDIO_BASE, which is GEM_BASE unless the board says the
+ * PHY is reached through a different controller. */
+#ifndef GEM_MDIO_BASE
+#define GEM_MDIO_BASE       GEM_BASE
+#endif
+#define GEM_PHYMNTNC        (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x034))
+#define GEM_MDIO_NWCTRL     (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x000))
+#define GEM_MDIO_NWCFG      (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x004))
+/* PHY_IDLE is per controller: it tracks the block that issued the transaction,
+ * so it has to be read from the one owning PHYMNTNC above. */
+#define GEM_MDIO_NWSR       (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x008))
 #define GEM_HASHL           (*(volatile uint32_t *)(GEM_BASE + 0x080))
 #define GEM_HASHH           (*(volatile uint32_t *)(GEM_BASE + 0x084))
 #define GEM_LADDR1L         (*(volatile uint32_t *)(GEM_BASE + 0x088))
