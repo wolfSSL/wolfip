@@ -383,6 +383,27 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
      * PHYs share one MDIO bus: it takes the first that answers, which may
      * belong to a different GEM than the one carrying our data. */
     gem_phy_addr = (uint8_t)(GEM_PHY_ADDR);
+#ifdef DEBUG_PHY
+    /* Still report every responder: which addresses answer, and how their
+     * link state compares, is what tells you whether the pinned one is the
+     * port you meant. */
+    {
+        uint8_t a;
+        uint16_t sid, sbmsr;
+        for (a = 0; a < 32; a++) {
+            sid = 0;
+            if (gem_mdio_read(a, 0x02, &sid) != 0 || sid == 0xFFFFu || sid == 0)
+                continue;
+            sbmsr = 0;
+            (void)gem_mdio_read(a, 0x01, &sbmsr);
+            uart_puts("MDIO scan: addr="); uart_puthex(a);
+            uart_puts(" id1=");            uart_puthex(sid);
+            uart_puts(" bmsr=");           uart_puthex(sbmsr);
+            uart_puts((sbmsr & 0x0004u) ? " LINK" : "");
+            uart_puts((a == gem_phy_addr) ? " <- pinned\n" : "\n");
+        }
+    }
+#endif
     if (gem_mdio_read(gem_phy_addr, 0x02, &id1) == 0
             && id1 != 0xFFFFu && id1 != 0) {
         found_phy = 1;
