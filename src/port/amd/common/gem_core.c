@@ -262,7 +262,9 @@ void gem_dump_state(void)
  * ------------------------------------------------------------------- */
 int amd_eth_init(struct wolfIP_ll_dev *ll)
 {
-    uint8_t addr;
+#ifndef GEM_PHY_ADDR
+    uint8_t addr;   /* scan cursor; unused when the address is pinned */
+#endif
     uint16_t id1;
     int found_phy;
     int speed;
@@ -376,6 +378,22 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
      * responder. */
     found_phy = 0;
     gem_phy_addr = 0;
+#ifdef GEM_PHY_ADDR
+    /* The board pins the address. Scanning cannot be trusted where several
+     * PHYs share one MDIO bus: it takes the first that answers, which may
+     * belong to a different GEM than the one carrying our data. */
+    gem_phy_addr = (uint8_t)(GEM_PHY_ADDR);
+    if (gem_mdio_read(gem_phy_addr, 0x02, &id1) == 0
+            && id1 != 0xFFFFu && id1 != 0) {
+        found_phy = 1;
+    }
+    if (!found_phy) {
+        uart_puts("GEM: no PHY at the configured MDIO address ");
+        uart_puthex(gem_phy_addr);
+        uart_puts("\n");
+        return -10;
+    }
+#else
     {
         uint16_t bmsr;
         for (addr = 0; addr < 32; addr++) {
@@ -399,6 +417,7 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
             return -10;
         }
     }
+#endif
     /* Re-read id1 for the selected PHY so the vendor dispatch is correct
      * even when the scan broke early on a linked PHY. */
     (void)gem_mdio_read(gem_phy_addr, 0x02, &id1);

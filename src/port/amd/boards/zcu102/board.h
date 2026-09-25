@@ -79,6 +79,20 @@
 #error "ZYNQMP_GEM_MDIO_INDEX must be 0, 1, 2 or 3"
 #endif
 #define GEM_MDIO_BASE           (GEM0_BASE + ((ZYNQMP_GEM_MDIO_INDEX) * 0x10000UL))
+/* When it differs from the data GEM, that controller must already be out of
+ * reset with its APB clock running - normally true, since platform firmware
+ * brings up the GEM it wired the MDIO pins to. We deliberately do not reset
+ * or reclock it: another driver may own it. If it is not up, MDIO simply
+ * finds no PHY and init fails with a message rather than misbehaving. */
+
+/* Optional: pin the PHY's MDIO address instead of scanning for it. Needed
+ * when several PHYs share the bus, since the scan takes whichever answers
+ * first. On ZynqMP this should match wolfBoot's ZYNQMP_PHY_ADDR.
+ *   -DGEM_PHY_ADDR=0x0F
+ */
+#if defined(GEM_PHY_ADDR) && ((GEM_PHY_ADDR) < 0 || (GEM_PHY_ADDR) > 31)
+#error "GEM_PHY_ADDR must be an MDIO address in the range 0-31"
+#endif
 
 #define CRL_APB_BASE            0xFF5E0000UL
 #define IOU_SLCR_BASE           0xFF180000UL
