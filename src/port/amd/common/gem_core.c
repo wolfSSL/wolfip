@@ -309,6 +309,17 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
     GEM_NWCFG |= NWCFG_DWIDTH_64;
 #endif
 
+#ifdef ZYNQMP_GEM_SGMII
+    /* SGMII: the MAC talks to the PHY through the internal PCS rather than a
+     * parallel RGMII/GMII interface, so the PCS has to be selected. The PCS
+     * itself is configured further down, once the copper link is resolved.
+     *
+     * Not exercised here: there is no SGMII board on hand, so this is opt-in
+     * and off by default. The PS-GTR serdes must already be up (platform
+     * firmware's job), and a board may need lane setup beyond this. */
+    GEM_NWCFG |= NWCFG_PCSSEL | NWCFG_SGMIIEN;
+#endif
+
     /* DMACR: AHB fixed burst 16 beats, RX buffer 1536/64=24, TX/RX packet
      * buffer memory at max. Do NOT set bit 30 (DMA_ADDR_BUS_WIDTH 64-bit):
      * that selects 16-byte BD format with addr_hi and would break the
@@ -466,6 +477,50 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
         GEM_NWCFG = cfg;
         gem_set_ref_clk(speed);
     }
+
+#ifdef ZYNQMP_GEM_SGMII
+    /* Bring up the PCS side. A MAC-to-PHY SGMII connection is normally a
+     * fixed link: the PHY runs copper autonegotiation with the link partner
+     * while the serdes stays at 1.25 Gbps, so the PCS is pinned to 1000 Mbps
+     * full duplex and its own clause-37 negotiation is left disabled. Boards
+     * that do expect clause-37 on the PCS select it with
+     * ZYNQMP_GEM_SGMII_ANEG. Neither path is fatal on failure: returning an
+     * error would take down a link a board may have brought up elsewhere. */
+    {
+        uint32_t pcs;
+#ifdef ZYNQMP_GEM_SGMII_ANEG
+        int spin;
+
+        GEM_PCS_AN_ADV = 0x0020u;   /* full duplex, no pause */
+        pcs = GEM_PCS_CTRL & ~(PCS_CTRL_SPEED1000 | PCS_CTRL_FDX);
+        GEM_PCS_CTRL = pcs | PCS_CTRL_ANEN | PCS_CTRL_ANRESTART;
+        for (spin = 0; spin < 2000000; spin++) {
+            if (GEM_PCS_STATUS & PCS_STATUS_ANDONE)
+                break;
+        }
+#else
+        pcs = GEM_PCS_CTRL & ~PCS_CTRL_ANEN;
+        GEM_PCS_CTRL = pcs | PCS_CTRL_SPEED1000 | PCS_CTRL_FDX;
+#endif
+        pcs = GEM_PCS_STATUS;
+        uart_puts("GEM: PCS");
+#ifdef ZYNQMP_GEM_SGMII_ANEG
+        uart_puts((pcs & PCS_STATUS_ANDONE) ? " autoneg done" : " autoneg TIMEOUT");
+#else
+        uart_puts(" fixed 1000/FD");
+#endif
+        uart_puts((pcs & PCS_STATUS_LINK) ? " link up" : " link down");
+        uart_puts(" ctrl=");
+        uart_puthex(GEM_PCS_CTRL);
+        uart_puts(" status=");
+        uart_puthex(pcs);
+        uart_puts(" lp=");
+        uart_puthex(GEM_PCS_AN_LP_BASE);
+        uart_puts(" nwcfg=");
+        uart_puthex(GEM_NWCFG);
+        uart_puts("\n");
+    }
+#endif
 
     /* Arm the RX delivery model (install IRQ handler, or leave masked for
      * poll-only ports) and enable RX/TX. */
