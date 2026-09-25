@@ -65,6 +65,7 @@
 
 #define BMSR_ANCOMPLETE     (1u << 5)
 #define BMSR_LINK_UP        (1u << 2)
+#define BMSR_EXTSTAT        (1u << 8)   /* has 1000 Mbps, so 0x09/0x0A exist */
 
 /* Autonegotiation and link waits, in ms. A PHY that needs longer than the
  * defaults (a slow partner, or a port whose vendor init settles late) can be
@@ -396,9 +397,17 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     }
     else {
         uint16_t gbcr = 0, gbsr = 0, anar = 0, anlpar = 0;
+        uint16_t cap = 0;
 
-        (void)gem_mdio_read(phy_addr, PHY_GBCR, &gbcr);
-        (void)gem_mdio_read(phy_addr, PHY_GBSR, &gbsr);
+        /* 0x09 and 0x0A are the 1000BASE-T registers, reserved on a
+         * 10/100-only PHY where they may read back as all ones rather than
+         * zero. Consult them only when BMSR says the part has extended
+         * status, or a 100 Mbps link would be taken for gigabit. */
+        (void)gem_mdio_read(phy_addr, PHY_BMSR, &cap);
+        if (cap & BMSR_EXTSTAT) {
+            (void)gem_mdio_read(phy_addr, PHY_GBCR, &gbcr);
+            (void)gem_mdio_read(phy_addr, PHY_GBSR, &gbsr);
+        }
         (void)gem_mdio_read(phy_addr, PHY_ANAR, &anar);
         (void)gem_mdio_read(phy_addr, PHY_ANLPAR, &anlpar);
 
