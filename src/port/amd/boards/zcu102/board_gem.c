@@ -50,15 +50,22 @@ void gem_set_ref_clk(int speed_mbps)
 }
 
 /* Pulse this GEM's reset so the MAC starts clean, then force 125 MHz
- * (amd_eth_init downshifts later if the PHY negotiates 100/10). */
+ * (amd_eth_init downshifts later if the PHY negotiates 100/10).
+ *
+ * Build with -DZYNQMP_GEM_NO_RESET where platform firmware has already set
+ * the controller up and the reset would discard that, for instance when the
+ * link runs off an externally supplied reference. Pair it with
+ * -DZYNQMP_GEM_EXT_REF_CLK to leave the clock alone as well. */
 void gem_clk_reset(void)
 {
+#ifndef ZYNQMP_GEM_NO_RESET
     volatile uint32_t *rst = (volatile uint32_t *)CRL_APB_RST_LPD_IOU0;
 
     *rst |= CRL_RST_GEM;
     delay_us(10);                /* hold the reset asserted */
     *rst &= ~CRL_RST_GEM;
     delay_ms(10);                /* settle after deassert (counter-backed) */
+#endif
 
     gem_set_ref_clk(1000);
 }
