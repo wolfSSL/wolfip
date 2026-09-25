@@ -46,8 +46,16 @@
 #define PHY_ID1             0x02
 #define PHY_ID2             0x03
 #define PHY_ANAR            0x04
+#define PHY_ANLPAR          0x05
 #define PHY_GBCR            0x09
+#define GBCR_ADV_1000_FD    (1u << 9)
+#define GBCR_ADV_1000_HD    (1u << 8)
 #define PHY_GBSR            0x0A
+#define GBSR_LP_1000_FD     (1u << 11)
+#define GBSR_LP_1000_HD     (1u << 10)
+#define ANAR_100_FD         (1u << 8)
+#define ANAR_100_HD         (1u << 7)
+#define ANAR_10_FD          (1u << 6)
 #define PHY_REGCR           0x0D
 #define PHY_ADDAR           0x0E
 
@@ -116,8 +124,9 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     uint16_t id2 = 0;
     uint16_t bmcr;
     uint16_t bmsr;
-    uint16_t physts;
+    uint16_t physts = 0;   /* only read on a real DP83867; printed under DEBUG_PHY */
     int i;
+    int is_dp83867;
 
     if (gem_mdio_read(phy_addr, PHY_ID1, &id1) < 0)
         return -1;
@@ -127,22 +136,30 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     uart_puts(" ID2=");        uart_puthex(id2);
     uart_puts("\n");
     /* DP83867 OUI = 0x2000A23x. ID1=0x2000, ID2 upper bits match. */
-    if (id1 != 0x2000u || (id2 & 0xFFF0u) != 0xA230u) {
-        uart_puts("  warn: PHY ID does not match DP83867, continuing\n");
+    is_dp83867 = (id1 == 0x2000u && (id2 & 0xFFF0u) == 0xA230u);
+    if (!is_dp83867) {
+        uart_puts("  warn: PHY ID does not match DP83867, using clause-22\n");
     }
 
-    /* Soft reset. */
-    if (gem_mdio_write(phy_addr, PHY_BMCR, BMCR_RESET) < 0)
-        return -3;
-    for (i = 0; i < 1000; i++) {
-        delay_ms(1);
-        if (gem_mdio_read(phy_addr, PHY_BMCR, &bmcr) < 0)
-            return -4;
-        if ((bmcr & BMCR_RESET) == 0)
-            break;
+    /* Soft reset, then reapply the settings below. Only for a part we know
+     * how to set up again: a foreign PHY has been configured by whatever
+     * brought it up (the bootloader, or platform firmware), often with
+     * vendor registers we cannot replay, and resetting it here would discard
+     * that and leave the link misconfigured. Autonegotiation is restarted
+     * either way, which is all that is needed to bring a ready PHY up. */
+    if (is_dp83867) {
+        if (gem_mdio_write(phy_addr, PHY_BMCR, BMCR_RESET) < 0)
+            return -3;
+        for (i = 0; i < 1000; i++) {
+            delay_ms(1);
+            if (gem_mdio_read(phy_addr, PHY_BMCR, &bmcr) < 0)
+                return -4;
+            if ((bmcr & BMCR_RESET) == 0)
+                break;
+        }
+        if (i == 1000)
+            return -5;
     }
-    if (i == 1000)
-        return -5;
 
     /* Order below mirrors the Linux/U-Boot dp83867_config sequence:
      *   1. Strap fix (CFG4 bit 7) right after SW reset.
@@ -150,8 +167,14 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
      *   3. RGMIICTL RMW to enable both delays.
      *   4. RGMIIDCTL set delay values.
      *   5. Restart AN (caller does after we return).
+     *
+     * All of it is TI-specific, and the indirect path uses the standard MMD
+     * access registers, so on another vendor's part these writes land in its
+     * MMD space and can undo whatever the platform already configured. Only
+     * run them on a real DP83867; a foreign PHY is left as its own init left
+     * it and just auto-negotiates.
      */
-    {
+    if (is_dp83867) {
         uint16_t strap = 0;
         uint16_t cfg4_before = 0;
         uint16_t cfg4_after = 0;
@@ -291,8 +314,15 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
             uart_puts(" TIMEOUT\n");
     }
 
-    if (gem_mdio_read(phy_addr, DP83867_PHYSTS, &physts) < 0)
-        return -12;
+    /* Speed and duplex. PHYSTS is a TI register: on another vendor's part it
+     * decodes to nonsense, and programming the MAC from it leaves the two
+     * ends at different rates with no traffic passing. Only trust it on a
+     * real DP83867; otherwise resolve the highest common denominator from
+     * the clause-22 registers every 802.3 PHY implements. */
+    if (is_dp83867) {
+        if (gem_mdio_read(phy_addr, DP83867_PHYSTS, &physts) < 0)
+            return -12;
+    }
 
 #ifdef DEBUG_PHY
     {
@@ -311,15 +341,44 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     }
 #endif
 
-    if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_1000)
-        *speed_out = 1000;
-    else if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_100)
-        *speed_out = 100;
-    else
-        *speed_out = 10;
-    *full_duplex_out = (physts & PHYSTS_DUPLEX) ? 1 : 0;
+    if (is_dp83867) {
+        if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_1000)
+            *speed_out = 1000;
+        else if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_100)
+            *speed_out = 100;
+        else
+            *speed_out = 10;
+        *full_duplex_out = (physts & PHYSTS_DUPLEX) ? 1 : 0;
+    }
+    else {
+        uint16_t gbcr = 0, gbsr = 0, anar = 0, anlpar = 0;
 
-    uart_puts("DP83867 link: ");
+        (void)gem_mdio_read(phy_addr, PHY_GBCR, &gbcr);
+        (void)gem_mdio_read(phy_addr, PHY_GBSR, &gbsr);
+        (void)gem_mdio_read(phy_addr, PHY_ANAR, &anar);
+        (void)gem_mdio_read(phy_addr, PHY_ANLPAR, &anlpar);
+
+        if ((gbcr & GBCR_ADV_1000_FD) && (gbsr & GBSR_LP_1000_FD)) {
+            *speed_out = 1000; *full_duplex_out = 1;
+        }
+        else if ((gbcr & GBCR_ADV_1000_HD) && (gbsr & GBSR_LP_1000_HD)) {
+            *speed_out = 1000; *full_duplex_out = 0;
+        }
+        else if (anar & anlpar & ANAR_100_FD) {
+            *speed_out = 100;  *full_duplex_out = 1;
+        }
+        else if (anar & anlpar & ANAR_100_HD) {
+            *speed_out = 100;  *full_duplex_out = 0;
+        }
+        else if (anar & anlpar & ANAR_10_FD) {
+            *speed_out = 10;   *full_duplex_out = 1;
+        }
+        else {
+            *speed_out = 10;   *full_duplex_out = 0;
+        }
+    }
+
+    uart_puts("PHY link: ");
     uart_putdec((uint32_t)*speed_out);
     uart_puts(*full_duplex_out ? " Mbps FD\n" : " Mbps HD\n");
 
