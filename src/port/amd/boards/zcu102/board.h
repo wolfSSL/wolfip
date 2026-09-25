@@ -69,6 +69,17 @@
 #define GEM_BASE                (GEM0_BASE + ((ZYNQMP_GEM_INDEX) * 0x10000UL))
 #define IRQ_GEM                 (32 + 57 + ((ZYNQMP_GEM_INDEX) * 2))
 
+/* ZynqMP designs often wire one MDIO bus and hang every PHY off it, so the
+ * controller that reaches the PHY need not be the one carrying the data.
+ * Defaults to the data GEM; set ZYNQMP_GEM_MDIO_INDEX when they differ. */
+#ifndef ZYNQMP_GEM_MDIO_INDEX
+#define ZYNQMP_GEM_MDIO_INDEX   ZYNQMP_GEM_INDEX
+#endif
+#if (ZYNQMP_GEM_MDIO_INDEX < 0) || (ZYNQMP_GEM_MDIO_INDEX > 3)
+#error "ZYNQMP_GEM_MDIO_INDEX must be 0, 1, 2 or 3"
+#endif
+#define GEM_MDIO_BASE           (GEM0_BASE + ((ZYNQMP_GEM_MDIO_INDEX) * 0x10000UL))
+
 #define CRL_APB_BASE            0xFF5E0000UL
 #define IOU_SLCR_BASE           0xFF180000UL
 
