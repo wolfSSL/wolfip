@@ -155,6 +155,21 @@ $(LAYOUT_STAMP): FORCE
 	fi
 $(OBJS): $(LAYOUT_STAMP)
 
+# make cannot see CFLAGS_EXTRA as a dependency, so changing it - the GEM
+# selection above all - would silently relink objects built with the previous
+# value and look like a dead PHY. Same stamp trick as LAYOUT. The stamp must
+# also be created when the value is empty, which is the default build, or the
+# rule has no output file and every make rebuilds everything.
+CFLAGS_EXTRA_STAMP := .cflags_extra_stamp
+$(CFLAGS_EXTRA_STAMP): FORCE
+	@if [ ! -f $@ ]; then \
+	    echo "$(CFLAGS_EXTRA)" > $@; \
+	elif [ "`cat $@`" != "$(CFLAGS_EXTRA)" ]; then \
+	    echo "CFLAGS_EXTRA changed; forcing rebuild"; \
+	    echo "$(CFLAGS_EXTRA)" > $@; \
+	fi
+$(OBJS): $(CFLAGS_EXTRA_STAMP)
+
 all: app.elf
 	@echo "Built: app.elf"
 	@$(SIZE) app.elf
@@ -198,7 +213,7 @@ bootbin:
 	FSBL_ELF=$$FSBL_ELF APP_ELF=$$PWD/app.elf bootgen/build_bootbin.sh
 
 clean:
-	rm -f $(OBJS) app.elf BOOT.BIN $(LAYOUT_STAMP)
+	rm -f $(OBJS) app.elf $(CFLAGS_EXTRA_STAMP) BOOT.BIN $(LAYOUT_STAMP)
 
 .PHONY: all clean bootbin help
 

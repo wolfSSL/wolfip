@@ -55,9 +55,44 @@
 #define GEM2_BASE               0xFF0D0000UL
 #define GEM3_BASE               0xFF0E0000UL
 
-/* On-board RJ45 is GEM3 on the ZCU102. */
-#define GEM_BASE                GEM3_BASE
-#define IRQ_GEM                 IRQ_GEM3
+/* Which GEM drives the Ethernet port (ZCU102 on-board RJ45 is GEM3). The
+ * base address, interrupt, reset bit and clock register all follow this
+ * index, deliberately as one knob: set individually they drift, and you end
+ * up driving one GEM while clocking another. */
+#ifndef ZYNQMP_GEM_INDEX
+#define ZYNQMP_GEM_INDEX        3
+#endif
+#if (ZYNQMP_GEM_INDEX < 0) || (ZYNQMP_GEM_INDEX > 3)
+#error "ZYNQMP_GEM_INDEX must be 0, 1, 2 or 3"
+#endif
+
+#define GEM_BASE                (GEM0_BASE + ((ZYNQMP_GEM_INDEX) * 0x10000UL))
+#define IRQ_GEM                 (32 + 57 + ((ZYNQMP_GEM_INDEX) * 2))
+
+/* ZynqMP designs often wire one MDIO bus and hang every PHY off it, so the
+ * controller that reaches the PHY need not be the one carrying the data.
+ * Defaults to the data GEM; set ZYNQMP_GEM_MDIO_INDEX when they differ. */
+#ifndef ZYNQMP_GEM_MDIO_INDEX
+#define ZYNQMP_GEM_MDIO_INDEX   ZYNQMP_GEM_INDEX
+#endif
+#if (ZYNQMP_GEM_MDIO_INDEX < 0) || (ZYNQMP_GEM_MDIO_INDEX > 3)
+#error "ZYNQMP_GEM_MDIO_INDEX must be 0, 1, 2 or 3"
+#endif
+#define GEM_MDIO_BASE           (GEM0_BASE + ((ZYNQMP_GEM_MDIO_INDEX) * 0x10000UL))
+/* When it differs from the data GEM, that controller must already be out of
+ * reset with its APB clock running - normally true, since platform firmware
+ * brings up the GEM it wired the MDIO pins to. We deliberately do not reset
+ * or reclock it: another driver may own it. If it is not up, MDIO simply
+ * finds no PHY and init fails with a message rather than misbehaving. */
+
+/* Optional: pin the PHY's MDIO address instead of scanning for it. Needed
+ * when several PHYs share the bus, since the scan takes whichever answers
+ * first. On ZynqMP this should match wolfBoot's ZYNQMP_PHY_ADDR.
+ *   -DGEM_PHY_ADDR=0x0F
+ */
+#if defined(GEM_PHY_ADDR) && ((GEM_PHY_ADDR) < 0 || (GEM_PHY_ADDR) > 31)
+#error "GEM_PHY_ADDR must be an MDIO address in the range 0-31"
+#endif
 
 #define CRL_APB_BASE            0xFF5E0000UL
 #define IOU_SLCR_BASE           0xFF180000UL
@@ -81,8 +116,10 @@
 /* ---------------------------------------------------------------------
  * CRL_APB clock and reset registers
  * ------------------------------------------------------------------- */
-#define CRL_APB_GEM3_REF_CTRL   (CRL_APB_BASE + 0x5C)
-#define CRL_APB_RST_LPD_IOU0    (CRL_APB_BASE + 0x230)  /* GEM3 reset bit 3 */
+/* GEM0_REF_CTRL at 0x50, four consecutive words. RST_LPD_IOU0 bit N = GEMn. */
+#define CRL_APB_GEM_REF_CTRL    (CRL_APB_BASE + 0x50 + ((ZYNQMP_GEM_INDEX) * 4))
+#define CRL_APB_RST_LPD_IOU0    (CRL_APB_BASE + 0x230)
+#define CRL_RST_GEM             (1u << (ZYNQMP_GEM_INDEX))
 
 /* ---------------------------------------------------------------------
  * PS UART0 (Cadence) - on-board USB-UART on ZCU102 via U104 FT4232

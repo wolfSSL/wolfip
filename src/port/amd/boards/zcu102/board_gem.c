@@ -4,30 +4,35 @@
  *
  * This file is part of wolfIP TCP/IP stack.
  *
- * ZCU102 (ZynqMP) GEM clock/reset hooks for the shared GEM core. The GEM3
- * reference clock and reset live in CRL_APB, which bare-metal may poke on
- * ZynqMP.
+ * ZCU102 (ZynqMP) GEM clock/reset hooks for the shared GEM core. The selected
+ * GEM's clock and reset live in CRL_APB. See ZYNQMP_GEM_INDEX in board.h.
  */
 #include <stdint.h>
 #include "board.h"
 #include "gem_port.h"
 #include "timer.h"   /* delay_us / delay_ms - deterministic, counter-backed */
 
-#define CRL_RST_GEM3        (1u << 3)   /* GEM3 reset bit in RST_LPD_IOU0 */
 
 void gem_soc_pre_init(void)
 {
     /* No SoC quirk needed before MAC config on ZynqMP. */
 }
 
-/* Configure CRL_APB.GEM3_REF_CTRL for the negotiated link speed. The MAC
- * sources TX_CLK to the PHY at this rate (RGMII): 125/25/2.5 MHz for
- * 1G/100M/10M. IOPLL = 1500 MHz, /12 base. Register layout (TRM):
- * CLKACT bit26, CLKACT_RX bit25, DIVISOR1 [21:16], DIVISOR0 [13:8],
- * SRCSEL [2:0]. */
+/* Drive TX_CLK at 125/25/2.5 MHz for 1G/100M/10M from IOPLL 1500 MHz, /12
+ * base. Register layout (TRM): CLKACT bit26, CLKACT_RX bit25, DIVISOR1
+ * [21:16], DIVISOR0 [13:8], SRCSEL [2:0]. RGMII and GMII both need this.
+ *
+ * SGMII does not: the reference comes from the PS-GTR serdes and platform
+ * firmware owns it, so writing here would undo a working setup. SGMII boards
+ * build with -DZYNQMP_GEM_EXT_REF_CLK; nothing else should. */
 void gem_set_ref_clk(int speed_mbps)
 {
-    volatile uint32_t *gem3_ref = (volatile uint32_t *)CRL_APB_GEM3_REF_CTRL;
+/* SGMII implies it: the reference comes from the PS-GTR serdes, so a
+ * downshift must not reprogram CRL_APB and take the link down. */
+#if defined(ZYNQMP_GEM_EXT_REF_CLK) || defined(ZYNQMP_GEM_SGMII)
+    (void)speed_mbps;
+#else
+    volatile uint32_t *gem_ref = (volatile uint32_t *)CRL_APB_GEM_REF_CTRL;
     uint32_t div1;
     uint32_t val;
 
@@ -42,20 +47,27 @@ void gem_set_ref_clk(int speed_mbps)
         | ((div1 & 0x3Fu) << 16)   /* DIVISOR1 */
         | ((12u  & 0x3Fu) << 8)    /* DIVISOR0 */
         | (0u);                    /* SRCSEL = IOPLL */
-    *gem3_ref = val;
+    *gem_ref = val;
+#endif
 }
 
-/* Pulse the GEM3 reset bit so the MAC starts from a known state, then
- * force the 125 MHz reference (amd_eth_init downshifts later if the PHY
- * negotiates 100/10). */
+/* Pulse this GEM's reset so the MAC starts clean, then force 125 MHz
+ * (amd_eth_init downshifts later if the PHY negotiates 100/10).
+ *
+ * Build with -DZYNQMP_GEM_NO_RESET where platform firmware has already set
+ * the controller up and the reset would discard that, for instance when the
+ * link runs off an externally supplied reference. Pair it with
+ * -DZYNQMP_GEM_EXT_REF_CLK to leave the clock alone as well. */
 void gem_clk_reset(void)
 {
+#ifndef ZYNQMP_GEM_NO_RESET
     volatile uint32_t *rst = (volatile uint32_t *)CRL_APB_RST_LPD_IOU0;
 
-    *rst |= CRL_RST_GEM3;
+    *rst |= CRL_RST_GEM;
     delay_us(10);                /* hold the reset asserted */
-    *rst &= ~CRL_RST_GEM3;
+    *rst &= ~CRL_RST_GEM;
     delay_ms(10);                /* settle after deassert (counter-backed) */
+#endif
 
     gem_set_ref_clk(1000);
 }

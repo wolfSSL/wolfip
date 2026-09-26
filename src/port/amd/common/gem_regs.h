@@ -30,7 +30,17 @@
 #define GEM_IER             (*(volatile uint32_t *)(GEM_BASE + 0x028))
 #define GEM_IDR             (*(volatile uint32_t *)(GEM_BASE + 0x02C))
 #define GEM_IMR             (*(volatile uint32_t *)(GEM_BASE + 0x030))
-#define GEM_PHYMNTNC        (*(volatile uint32_t *)(GEM_BASE + 0x034))
+/* MDIO lives on GEM_MDIO_BASE, which is GEM_BASE unless the board says the
+ * PHY is reached through a different controller. */
+#ifndef GEM_MDIO_BASE
+#define GEM_MDIO_BASE       GEM_BASE
+#endif
+#define GEM_PHYMNTNC        (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x034))
+#define GEM_MDIO_NWCTRL     (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x000))
+#define GEM_MDIO_NWCFG      (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x004))
+/* PHY_IDLE is per controller: it tracks the block that issued the transaction,
+ * so it has to be read from the one owning PHYMNTNC above. */
+#define GEM_MDIO_NWSR       (*(volatile uint32_t *)(GEM_MDIO_BASE + 0x008))
 #define GEM_HASHL           (*(volatile uint32_t *)(GEM_BASE + 0x080))
 #define GEM_HASHH           (*(volatile uint32_t *)(GEM_BASE + 0x084))
 #define GEM_LADDR1L         (*(volatile uint32_t *)(GEM_BASE + 0x088))
@@ -76,6 +86,21 @@
 #define NWCFG_MDCDIV_SHIFT  18u
 #define NWCFG_MDCDIV_MASK   (7u << 18)
 #define NWCFG_DWIDTH_64     (1u << 21)  /* Data bus width = 64 bit (AArch64) */
+#define NWCFG_PCSSEL        (1u << 11)  /* Use the internal PCS (SGMII) */
+#define NWCFG_SGMIIEN       (1u << 27)  /* SGMII mode, with PCSSEL */
+
+/* PCS block, used only in SGMII mode. The PCS carries its own clause-37
+ * autonegotiation with the PHY, separate from the PHY's copper-side
+ * negotiation with the link partner. */
+#define GEM_PCS_CTRL        (*(volatile uint32_t *)(GEM_BASE + 0x200))
+#define GEM_PCS_STATUS      (*(volatile uint32_t *)(GEM_BASE + 0x204))
+#define GEM_PCS_AN_ADV      (*(volatile uint32_t *)(GEM_BASE + 0x210))
+#define GEM_PCS_AN_LP_BASE  (*(volatile uint32_t *)(GEM_BASE + 0x214))
+
+#define PCS_CTRL_ANEN       (1u << 12)  /* autonegotiation enable */
+#define PCS_CTRL_ANRESTART  (1u << 9)   /* restart autonegotiation */
+#define PCS_STATUS_ANDONE   (1u << 5)   /* autonegotiation complete */
+#define PCS_STATUS_LINK     (1u << 2)   /* PCS link up */
 
 #define NWSR_PHY_IDLE       (1u << 2)
 

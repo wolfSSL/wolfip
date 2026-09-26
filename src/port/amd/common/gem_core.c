@@ -78,7 +78,7 @@ static int mdio_wait_idle(void)
 {
     int spin;
     for (spin = 0; spin < 100000; spin++) {
-        if (GEM_NWSR & NWSR_PHY_IDLE)
+        if (GEM_MDIO_NWSR & NWSR_PHY_IDLE)
             return 0;
     }
     return -1;
@@ -262,7 +262,9 @@ void gem_dump_state(void)
  * ------------------------------------------------------------------- */
 int amd_eth_init(struct wolfIP_ll_dev *ll)
 {
-    uint8_t addr;
+#ifndef GEM_PHY_ADDR
+    uint8_t addr;   /* scan cursor; unused when the address is pinned */
+#endif
     uint16_t id1;
     int found_phy;
     int speed;
@@ -295,11 +297,29 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
               | NWCFG_1536RXEN
               | NWCFG_MCASTHASHEN
               | (5u << NWCFG_MDCDIV_SHIFT);
-#ifdef XILINX_AARCH64
+#if defined(XILINX_AARCH64) || defined(__aarch64__)
     /* 64-bit AMBA data width: appropriate on the AArch64 SoCs (ZynqMP /
      * Versal). The Zynq-7000 GEM is fed by a 32-bit AXI master, where this
-     * bit is inert, so it is left clear there. */
+     * bit is inert, so it is left clear there.
+     *
+     * Keyed off the compiler as well as XILINX_AARCH64, which only the board
+     * Makefiles set: a consumer building these sources its own way loses the
+     * bit, and a 64-bit master with a 32-bit datapath never transmits
+     * (TSR.TXGO stuck, zero octets) while receive keeps working. */
     GEM_NWCFG |= NWCFG_DWIDTH_64;
+#endif
+
+#ifdef ZYNQMP_GEM_SGMII
+    /* SGMII: the MAC talks to the PHY through the internal PCS rather than a
+     * parallel RGMII/GMII interface, so the PCS has to be selected and its
+     * own clause-37 negotiation run. This is separate from, and in addition
+     * to, the PHY's copper negotiation with the link partner.
+     *
+     * UNTESTED. There is no SGMII board here to exercise it on, so it is
+     * opt-in and off by default. Treat it as a starting point: the PS-GTR
+     * serdes must already be up (platform firmware's job), and a board may
+     * need its own lane or PCS setup beyond this. */
+    GEM_NWCFG |= NWCFG_PCSSEL | NWCFG_SGMIIEN;
 #endif
 
     /* DMACR: AHB fixed burst 16 beats, RX buffer 1536/64=24, TX/RX packet
@@ -354,6 +374,16 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
     /* Enable MDIO so we can talk to the PHY. */
     GEM_NWCTRL |= NWCTRL_MDEN;
 
+#if (GEM_MDIO_BASE != GEM_BASE)
+    /* The PHY answers on another controller's management bus, so that one
+     * needs its own MDC divisor and management enable; the block we just
+     * configured is only carrying data. Everything else about it is left
+     * alone, since another driver may own it. */
+    GEM_MDIO_NWCFG = (GEM_MDIO_NWCFG & ~(7u << NWCFG_MDCDIV_SHIFT))
+                   | (5u << NWCFG_MDCDIV_SHIFT);
+    GEM_MDIO_NWCTRL |= NWCTRL_MDEN;
+#endif
+
     /* Scan all 32 MDIO addresses, reporting each responsive PHY's ID and
      * link status (BMSR reg 1, bit 2). A board may present more than one
      * PHY on the bus; prefer one that already has copper link so we
@@ -361,6 +391,43 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
      * responder. */
     found_phy = 0;
     gem_phy_addr = 0;
+#ifdef GEM_PHY_ADDR
+    /* The board pins the address. Scanning cannot be trusted where several
+     * PHYs share one MDIO bus: it takes the first that answers, which may
+     * belong to a different GEM than the one carrying our data. */
+    gem_phy_addr = (uint8_t)(GEM_PHY_ADDR);
+#ifdef DEBUG_PHY
+    /* Still report every responder: which addresses answer, and how their
+     * link state compares, is what tells you whether the pinned one is the
+     * port you meant. */
+    {
+        uint8_t a;
+        uint16_t sid, sbmsr;
+        for (a = 0; a < 32; a++) {
+            sid = 0;
+            if (gem_mdio_read(a, 0x02, &sid) != 0 || sid == 0xFFFFu || sid == 0)
+                continue;
+            sbmsr = 0;
+            (void)gem_mdio_read(a, 0x01, &sbmsr);
+            uart_puts("MDIO scan: addr="); uart_puthex(a);
+            uart_puts(" id1=");            uart_puthex(sid);
+            uart_puts(" bmsr=");           uart_puthex(sbmsr);
+            uart_puts((sbmsr & 0x0004u) ? " LINK" : "");
+            uart_puts((a == gem_phy_addr) ? " <- pinned\n" : "\n");
+        }
+    }
+#endif
+    if (gem_mdio_read(gem_phy_addr, 0x02, &id1) == 0
+            && id1 != 0xFFFFu && id1 != 0) {
+        found_phy = 1;
+    }
+    if (!found_phy) {
+        uart_puts("GEM: no PHY at the configured MDIO address ");
+        uart_puthex(gem_phy_addr);
+        uart_puts("\n");
+        return -10;
+    }
+#else
     {
         uint16_t bmsr;
         for (addr = 0; addr < 32; addr++) {
@@ -384,6 +451,7 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
             return -10;
         }
     }
+#endif
     /* Re-read id1 for the selected PHY so the vendor dispatch is correct
      * even when the scan broke early on a linked PHY. */
     (void)gem_mdio_read(gem_phy_addr, 0x02, &id1);
@@ -411,6 +479,32 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
         GEM_NWCFG = cfg;
         gem_set_ref_clk(speed);
     }
+
+#ifdef ZYNQMP_GEM_SGMII
+    /* Run the PCS side once the copper link is up. Failure is reported but
+     * not fatal: the MAC is still usable if a board's PCS is brought up
+     * elsewhere, and returning an error here would take down a link that
+     * may be working. UNTESTED - see the note at the NWCFG bits above. */
+    {
+        uint32_t pcs;
+        int spin;
+
+        GEM_PCS_AN_ADV = 0x0020u;   /* full duplex, no pause */
+        pcs = GEM_PCS_CTRL;
+        GEM_PCS_CTRL = pcs | PCS_CTRL_ANEN | PCS_CTRL_ANRESTART;
+        for (spin = 0; spin < 2000000; spin++) {
+            if (GEM_PCS_STATUS & PCS_STATUS_ANDONE)
+                break;
+        }
+        pcs = GEM_PCS_STATUS;
+        uart_puts("GEM: PCS");
+        uart_puts((pcs & PCS_STATUS_ANDONE) ? " autoneg done" : " autoneg TIMEOUT");
+        uart_puts((pcs & PCS_STATUS_LINK) ? " link up" : " link down");
+        uart_puts(" lp=");
+        uart_puthex(GEM_PCS_AN_LP_BASE);
+        uart_puts("\n");
+    }
+#endif
 
     /* Arm the RX delivery model (install IRQ handler, or leave masked for
      * poll-only ports) and enable RX/TX. */

@@ -46,8 +46,16 @@
 #define PHY_ID1             0x02
 #define PHY_ID2             0x03
 #define PHY_ANAR            0x04
+#define PHY_ANLPAR          0x05
 #define PHY_GBCR            0x09
+#define GBCR_ADV_1000_FD    (1u << 9)
+#define GBCR_ADV_1000_HD    (1u << 8)
 #define PHY_GBSR            0x0A
+#define GBSR_LP_1000_FD     (1u << 11)
+#define GBSR_LP_1000_HD     (1u << 10)
+#define ANAR_100_FD         (1u << 8)
+#define ANAR_100_HD         (1u << 7)
+#define ANAR_10_FD          (1u << 6)
 #define PHY_REGCR           0x0D
 #define PHY_ADDAR           0x0E
 
@@ -57,6 +65,22 @@
 
 #define BMSR_ANCOMPLETE     (1u << 5)
 #define BMSR_LINK_UP        (1u << 2)
+#define BMSR_EXTSTAT        (1u << 8)   /* has 1000 Mbps, so 0x09/0x0A exist */
+
+/* Autonegotiation and link waits, in ms. A PHY that needs longer than the
+ * defaults (a slow partner, or a port whose vendor init settles late) can be
+ * given more without touching the driver. */
+#ifndef GEM_PHY_ANEG_TIMEOUT_MS
+#define GEM_PHY_ANEG_TIMEOUT_MS  5000
+#endif
+#ifndef GEM_PHY_LINK_TIMEOUT_MS
+#define GEM_PHY_LINK_TIMEOUT_MS  5000
+#endif
+#define PHY_POLL_MS              50
+#if (GEM_PHY_ANEG_TIMEOUT_MS < PHY_POLL_MS) || \
+    (GEM_PHY_LINK_TIMEOUT_MS < PHY_POLL_MS)
+#error "GEM_PHY_*_TIMEOUT_MS must be at least the poll interval"
+#endif
 
 /* DP83867 extended registers (accessed via REGCR/ADDAR, devad 0x1F) */
 #define DP83867_CFG4        0x0031   /* Configuration 4 (RX_CTRL strap fix) */
@@ -115,9 +139,10 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     uint16_t id1 = 0;
     uint16_t id2 = 0;
     uint16_t bmcr;
-    uint16_t bmsr;
-    uint16_t physts;
+    uint16_t bmsr = 0;   /* read after the wait loop, which a short timeout can skip */
+    uint16_t physts = 0;   /* only read on a real DP83867; printed under DEBUG_PHY */
     int i;
+    int is_dp83867;
 
     if (gem_mdio_read(phy_addr, PHY_ID1, &id1) < 0)
         return -1;
@@ -127,22 +152,57 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     uart_puts(" ID2=");        uart_puthex(id2);
     uart_puts("\n");
     /* DP83867 OUI = 0x2000A23x. ID1=0x2000, ID2 upper bits match. */
-    if (id1 != 0x2000u || (id2 & 0xFFF0u) != 0xA230u) {
-        uart_puts("  warn: PHY ID does not match DP83867, continuing\n");
+    is_dp83867 = (id1 == 0x2000u && (id2 & 0xFFF0u) == 0xA230u);
+
+#ifdef DEBUG_PHY
+    /* State as the platform's own init left it, before this driver writes
+     * anything. PDOWN or ISOLATE set here, or an ANAR advertising nothing,
+     * explains an autonegotiation that never completes. */
+    {
+        uint16_t r;
+        uart_puts("PHY entry state @");
+        uart_puthex(phy_addr);
+        r = 0; (void)gem_mdio_read(phy_addr, PHY_BMCR, &r);
+        uart_puts(" BMCR=");   uart_puthex(r);
+        uart_puts((r & (1u << 11)) ? " PDOWN" : "");
+        uart_puts((r & (1u << 10)) ? " ISOLATE" : "");
+        uart_puts((r & BMCR_ANEN) ? " ANEN" : " ANEN-off");
+        r = 0; (void)gem_mdio_read(phy_addr, PHY_BMSR, &r);
+        uart_puts("\n                 BMSR="); uart_puthex(r);
+        r = 0; (void)gem_mdio_read(phy_addr, PHY_ANAR, &r);
+        uart_puts(" ANAR=");   uart_puthex(r);
+        r = 0; (void)gem_mdio_read(phy_addr, PHY_ANLPAR, &r);
+        uart_puts(" ANLPAR="); uart_puthex(r);
+        r = 0; (void)gem_mdio_read(phy_addr, PHY_GBCR, &r);
+        uart_puts(" GBCR=");   uart_puthex(r);
+        r = 0; (void)gem_mdio_read(phy_addr, PHY_GBSR, &r);
+        uart_puts(" GBSR=");   uart_puthex(r);
+        uart_puts("\n");
+    }
+#endif
+    if (!is_dp83867) {
+        uart_puts("  warn: PHY ID does not match DP83867, using clause-22\n");
     }
 
-    /* Soft reset. */
-    if (gem_mdio_write(phy_addr, PHY_BMCR, BMCR_RESET) < 0)
-        return -3;
-    for (i = 0; i < 1000; i++) {
-        delay_ms(1);
-        if (gem_mdio_read(phy_addr, PHY_BMCR, &bmcr) < 0)
-            return -4;
-        if ((bmcr & BMCR_RESET) == 0)
-            break;
+    /* Soft reset, then reapply the settings below. Only for a part we know
+     * how to set up again: a foreign PHY has been configured by whatever
+     * brought it up (the bootloader, or platform firmware), often with
+     * vendor registers we cannot replay, and resetting it here would discard
+     * that and leave the link misconfigured. Autonegotiation is restarted
+     * either way, which is all that is needed to bring a ready PHY up. */
+    if (is_dp83867) {
+        if (gem_mdio_write(phy_addr, PHY_BMCR, BMCR_RESET) < 0)
+            return -3;
+        for (i = 0; i < 1000; i++) {
+            delay_ms(1);
+            if (gem_mdio_read(phy_addr, PHY_BMCR, &bmcr) < 0)
+                return -4;
+            if ((bmcr & BMCR_RESET) == 0)
+                break;
+        }
+        if (i == 1000)
+            return -5;
     }
-    if (i == 1000)
-        return -5;
 
     /* Order below mirrors the Linux/U-Boot dp83867_config sequence:
      *   1. Strap fix (CFG4 bit 7) right after SW reset.
@@ -150,8 +210,14 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
      *   3. RGMIICTL RMW to enable both delays.
      *   4. RGMIIDCTL set delay values.
      *   5. Restart AN (caller does after we return).
+     *
+     * All of it is TI-specific, and the indirect path uses the standard MMD
+     * access registers, so on another vendor's part these writes land in its
+     * MMD space and can undo whatever the platform already configured. Only
+     * run them on a real DP83867; a foreign PHY is left as its own init left
+     * it and just auto-negotiates.
      */
-    {
+    if (is_dp83867) {
         uint16_t strap = 0;
         uint16_t cfg4_before = 0;
         uint16_t cfg4_after = 0;
@@ -233,14 +299,14 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     /* Wait up to 5 s for AN complete, polling at 50 ms. AN typically
      * needs 100-1500 ms depending on link partner. Report progress so
      * a hung negotiation is visible on UART. */
-    uart_puts("DP83867: waiting for autoneg");
-    for (i = 0; i < 100; i++) {
-        delay_ms(50);
+    uart_puts("PHY: waiting for autoneg");
+    for (i = 0; i < (GEM_PHY_ANEG_TIMEOUT_MS / PHY_POLL_MS); i++) {
+        delay_ms(PHY_POLL_MS);
         if (gem_mdio_read(phy_addr, PHY_BMSR, &bmsr) < 0)
             return -11;
         if (bmsr & BMSR_ANCOMPLETE) {
             uart_puts(" done (");
-            uart_putdec((uint32_t)i * 50u);
+            uart_putdec((uint32_t)i * PHY_POLL_MS);
             uart_puts("ms)\n");
             break;
         }
@@ -264,15 +330,15 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
         int j;
         uint16_t gbsr = 0;
         uint16_t bmsr2 = 0;
-        uart_puts("DP83867: waiting for link");
-        for (j = 0; j < 100; j++) {
-            delay_ms(50);
+        uart_puts("PHY: waiting for link");
+        for (j = 0; j < (GEM_PHY_LINK_TIMEOUT_MS / PHY_POLL_MS); j++) {
+            delay_ms(PHY_POLL_MS);
             (void)gem_mdio_read(phy_addr, PHY_BMSR, &bmsr2);
             (void)gem_mdio_read(phy_addr, PHY_BMSR, &bmsr2);
             (void)gem_mdio_read(phy_addr, PHY_GBSR, &gbsr);
             if (bmsr2 & BMSR_LINK_UP) {
                 uart_puts(" UP (");
-                uart_putdec((uint32_t)j * 50u);
+                uart_putdec((uint32_t)j * PHY_POLL_MS);
                 uart_puts("ms) GBSR=");
                 uart_puthex(gbsr);
                 uart_puts("\n");
@@ -281,8 +347,10 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
             }
             if ((j % 10) == 9) {
                 uart_puts(" [");
-                uart_putdec((uint32_t)(j + 1) * 50u);
-                uart_puts("ms GBSR=");
+                uart_putdec((uint32_t)(j + 1) * PHY_POLL_MS);
+                uart_puts("ms BMSR=");
+                uart_puthex(bmsr2);
+                uart_puts(" GBSR=");
                 uart_puthex(gbsr);
                 uart_puts("]");
             }
@@ -291,8 +359,15 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
             uart_puts(" TIMEOUT\n");
     }
 
-    if (gem_mdio_read(phy_addr, DP83867_PHYSTS, &physts) < 0)
-        return -12;
+    /* Speed and duplex. PHYSTS is a TI register: on another vendor's part it
+     * decodes to nonsense, and programming the MAC from it leaves the two
+     * ends at different rates with no traffic passing. Only trust it on a
+     * real DP83867; otherwise resolve the highest common denominator from
+     * the clause-22 registers every 802.3 PHY implements. */
+    if (is_dp83867) {
+        if (gem_mdio_read(phy_addr, DP83867_PHYSTS, &physts) < 0)
+            return -12;
+    }
 
 #ifdef DEBUG_PHY
     {
@@ -311,15 +386,52 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
     }
 #endif
 
-    if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_1000)
-        *speed_out = 1000;
-    else if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_100)
-        *speed_out = 100;
-    else
-        *speed_out = 10;
-    *full_duplex_out = (physts & PHYSTS_DUPLEX) ? 1 : 0;
+    if (is_dp83867) {
+        if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_1000)
+            *speed_out = 1000;
+        else if ((physts & PHYSTS_SPEED_MASK) == PHYSTS_SPEED_100)
+            *speed_out = 100;
+        else
+            *speed_out = 10;
+        *full_duplex_out = (physts & PHYSTS_DUPLEX) ? 1 : 0;
+    }
+    else {
+        uint16_t gbcr = 0, gbsr = 0, anar = 0, anlpar = 0;
+        uint16_t cap = 0;
 
-    uart_puts("DP83867 link: ");
+        /* 0x09 and 0x0A are the 1000BASE-T registers, reserved on a
+         * 10/100-only PHY where they may read back as all ones rather than
+         * zero. Consult them only when BMSR says the part has extended
+         * status, or a 100 Mbps link would be taken for gigabit. */
+        (void)gem_mdio_read(phy_addr, PHY_BMSR, &cap);
+        if (cap & BMSR_EXTSTAT) {
+            (void)gem_mdio_read(phy_addr, PHY_GBCR, &gbcr);
+            (void)gem_mdio_read(phy_addr, PHY_GBSR, &gbsr);
+        }
+        (void)gem_mdio_read(phy_addr, PHY_ANAR, &anar);
+        (void)gem_mdio_read(phy_addr, PHY_ANLPAR, &anlpar);
+
+        if ((gbcr & GBCR_ADV_1000_FD) && (gbsr & GBSR_LP_1000_FD)) {
+            *speed_out = 1000; *full_duplex_out = 1;
+        }
+        else if ((gbcr & GBCR_ADV_1000_HD) && (gbsr & GBSR_LP_1000_HD)) {
+            *speed_out = 1000; *full_duplex_out = 0;
+        }
+        else if (anar & anlpar & ANAR_100_FD) {
+            *speed_out = 100;  *full_duplex_out = 1;
+        }
+        else if (anar & anlpar & ANAR_100_HD) {
+            *speed_out = 100;  *full_duplex_out = 0;
+        }
+        else if (anar & anlpar & ANAR_10_FD) {
+            *speed_out = 10;   *full_duplex_out = 1;
+        }
+        else {
+            *speed_out = 10;   *full_duplex_out = 0;
+        }
+    }
+
+    uart_puts("PHY link: ");
     uart_putdec((uint32_t)*speed_out);
     uart_puts(*full_duplex_out ? " Mbps FD\n" : " Mbps HD\n");
 
