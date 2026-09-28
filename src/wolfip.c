@@ -7576,15 +7576,21 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         uint32_t payload_len = (uint32_t)len;
         uint32_t ip_mtu;
         uint32_t frame_len;
+        ip4 remote_ip;
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
+        /* Per-datagram addressing: an explicit sendto destination applies to
+         * this datagram only. The connected peer and icmp_try_recv's source
+         * filter are set only by connect(), and must survive this send even
+         * when the validation below fails. */
+        remote_ip = ts->remote_ip;
         if (sin) {
             if (addrlen < sizeof(struct wolfIP_sockaddr_in))
                 return -1;
-            ts->remote_ip = ee32(sin->sin_addr.s_addr);
+            remote_ip = ee32(sin->sin_addr.s_addr);
         }
-        if (ts->remote_ip == 0)
+        if (remote_ip == 0)
             return -1;
         if (ts->src_port == 0) {
             ts->src_port = port_alloc_random(s->icmpsockets, MAX_ICMPSOCKETS,
@@ -7600,7 +7606,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             ts->if_idx = (uint8_t)bound_if;
             ts->local_ip = ts->bound_local_ip;
         } else {
-            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            if_idx = wolfIP_route_for_ip(s, remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
             ts->if_idx = (uint8_t)if_idx;
             if (ts->local_ip == 0) {
@@ -7631,7 +7637,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
          * destination/source at enqueue time; the flush only adds the
          * link-layer header. */
         ip_output_add_header(ts, &icmp->ip, WI_IPPROTO_ICMP,
-                ts->local_ip, ts->remote_ip,
+                ts->local_ip, remote_ip,
                 (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, icmp, frame_len) < 0)
             return -WOLFIP_EAGAIN;

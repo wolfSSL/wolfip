@@ -1126,6 +1126,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sendto_udp_short_addrlen_and_zero_dest);
     tcase_add_test(tc_core, test_sendto_udp_auto_assigns_src_port);
     tcase_add_test(tc_core, test_sendto_icmp_branches);
+    tcase_add_test(tc_core, test_sendto_icmp_preserves_peer_and_filter);
     tcase_add_test(tc_core, test_recvfrom_arg_validation);
     tcase_add_test(tc_core, test_recvfrom_icmp_populates_sin);
     tcase_add_test(tc_core, test_setsockopt_invalid_socket);

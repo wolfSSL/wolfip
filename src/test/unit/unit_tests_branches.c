@@ -797,12 +797,57 @@ START_TEST(test_sendto_icmp_branches)
     ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload),
             0, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
             (int)sizeof(payload));
-    ck_assert_uint_eq(ts->remote_ip, 0x0A000002U);
+    /* Per-datagram destination: the connected peer / receive filter is set
+     * only by connect(), so an unconnected socket stays open (remote_ip==0). */
+    ck_assert_uint_eq(ts->remote_ip, 0);
 
     /* bound_local_ip mismatch -> EINVAL */
     ts->bound_local_ip = 0xDEADBEEFU;
     ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload),
             0, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+}
+END_TEST
+
+/* ---- wolfIP_sock_sendto: ICMP per-datagram dest must not clobber peer ---- */
+
+START_TEST(test_sendto_icmp_preserves_peer_and_filter)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+
+    /* sendto(A) on an unconnected socket: the datagram goes to A, but the
+     * socket peer / icmp_try_recv source filter must stay open. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A00000AU);
+    ck_assert_int_gt(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->remote_ip, 0);
+
+    /* connect(B) then sendto(A): the connected peer must survive the send. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A00000BU);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->remote_ip, 0x0A00000BU);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A00000AU);
+    ck_assert_int_gt(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->remote_ip, 0x0A00000BU);
 }
 END_TEST
 
