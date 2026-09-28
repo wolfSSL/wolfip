@@ -122,6 +122,18 @@ jobs:
           set -euo pipefail
           timeout --preserve-status 2m sudo ./build/packet_ping wtcp0 10.10.10.1
 
+      - name: Build without DHCP and with no UDP sockets
+        run: |
+          set -euo pipefail
+          mkdir -p build/noudp
+          sed 's/^#define MAX_UDPSOCKETS .*/#define MAX_UDPSOCKETS 0/' config.h > build/noudp/config.h
+          gcc -Ibuild/noudp -I. -D_GNU_SOURCE -DWOLFIP_ENABLE_DHCP=0 -Wall -Werror -Wextra -c src/wolfip.c -o build/noudp/wolfip.o
+          nm build/noudp/wolfip.o > build/noudp/syms.txt
+          if grep -qi dhcp build/noudp/syms.txt; then
+            echo "DHCP symbols left in a WOLFIP_ENABLE_DHCP=0 build"
+            exit 1
+          fi
+
       - name: Install check
         run: |
           sudo apt-get install -y check

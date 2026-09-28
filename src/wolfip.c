@@ -43,6 +43,9 @@
 #ifndef WOLFIP_ENABLE_DHCP
 #define WOLFIP_ENABLE_DHCP 1
 #endif
+#if WOLFIP_ENABLE_DHCP && defined(MAX_UDPSOCKETS) && (MAX_UDPSOCKETS < 1)
+#error "WOLFIP_ENABLE_DHCP requires MAX_UDPSOCKETS >= 1"
+#endif
 
 #define WOLFIP_LOOPBACK_IP 0x7F000001U
 #define WOLFIP_LOOPBACK_MASK 0xFF000000U
@@ -1517,6 +1520,7 @@ struct wolfIP {
     char dns_ptr_name[256];
     struct timers_binheap timers;
     struct tsocket tcpsockets[MAX_TCPSOCKETS];
+    /* Zero-length (GNU extension) when MAX_UDPSOCKETS is 0. */
     struct tsocket udpsockets[MAX_UDPSOCKETS];
     struct tsocket icmpsockets[MAX_ICMPSOCKETS];
 #if WOLFIP_RAWSOCKETS
