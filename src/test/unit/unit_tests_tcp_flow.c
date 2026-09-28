@@ -6188,6 +6188,432 @@ START_TEST(test_tcp_listener_preaccept_close_wait_timeout_reverts_port)
 }
 END_TEST
 
+static int llk_accepted_child(struct wolfIP *s)
+{
+    int fd;
+    struct tsocket *lsn;
+
+    wolfIP_init(s);
+    mock_link_init(s);
+    wolfIP_ipconfig_set(s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(s);
+    lsn = &s->tcpsockets[SOCKET_UNMARK(fd)];
+    llk_keep_arp_fresh(s, LLK_ATT_IP);
+    llk_attacker_syn(s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(s, lsn, LLK_ATT_IP, 41000, 1);
+    return wolfIP_sock_accept(s, fd, NULL, NULL);
+}
+
+START_TEST(test_sock_abort_established_resets_and_frees)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    const struct wolfIP_tcp_seg *out;
+    uint32_t frames_before;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+
+    frames_before = last_frame_sent_count;
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    ck_assert_uint_gt(last_frame_sent_count, frames_before);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee16(out->dst_port), 41000);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+/* The case abort exists for: a graceful close that cannot finish. */
+START_TEST(test_sock_abort_after_close_eagain_frees)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    const struct wolfIP_tcp_seg *out;
+    uint32_t last;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+    last = ts->sock.tcp.last;
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), last);
+    ck_assert_int_eq(ts->proto, 0);
+    ck_assert_uint_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+START_TEST(test_sock_abort_without_peer_sends_nothing)
+{
+    struct wolfIP s;
+    int lfd;
+    int cfd;
+    uint32_t frames_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    lfd = llk_open_listener(&s);
+    cfd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(cfd, 0);
+    s.tcpsockets[SOCKET_UNMARK(cfd)].sock.tcp.state = TCP_SYN_SENT;
+
+    frames_before = last_frame_sent_count;
+    ck_assert_int_eq(wolfIP_sock_abort(&s, lfd), 0);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, cfd), 0);
+    ck_assert_uint_eq(last_frame_sent_count, frames_before);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(lfd)].proto, 0);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(cfd)].proto, 0);
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, -1), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_abort(NULL, lfd), -WOLFIP_EINVAL);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, MARK_TCP_SOCKET | MAX_TCPSOCKETS),
+                     -WOLFIP_EINVAL);
+}
+END_TEST
+
+static int llk_child_fin_sent(struct wolfIP *s, uint32_t *last)
+{
+    int sd;
+    struct tsocket *ts;
+
+    sd = llk_accepted_child(s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s->tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(wolfIP_sock_close(s, sd), -WOLFIP_EAGAIN);
+    (void)wolfIP_poll(s, 3);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.tcp.txbuf));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+    *last = ts->sock.tcp.last;
+    return sd;
+}
+
+START_TEST(test_sock_abort_fin_wait_1_rst_covers_sent_fin)
+{
+    struct wolfIP s;
+    int sd;
+    uint32_t last;
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_child_fin_sent(&s, &last);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), last + 1);
+}
+END_TEST
+
+START_TEST(test_sock_abort_fin_wait_2_rst_covers_acked_fin)
+{
+    struct wolfIP s;
+    int sd;
+    uint32_t last;
+    struct tsocket *ts;
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_child_fin_sent(&s, &last);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, LLK_ATT_IP, LLK_LOCAL_IP,
+                       41000, (uint16_t)LLK_LISTEN_PORT, 2, last + 1,
+                       TCP_FLAG_ACK);
+    (void)wolfIP_poll(&s, 4);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), last + 1);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+START_TEST(test_sock_abort_syn_rcvd_rst_covers_syn)
+{
+    struct wolfIP s;
+    int fd;
+    int sd;
+    struct tsocket *lsn;
+    uint32_t isn;
+    const struct wolfIP_tcp_seg *out;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_SYN_RCVD);
+    isn = lsn->sock.tcp.seq;
+
+    sd = wolfIP_sock_accept(&s, fd, NULL, NULL);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state,
+                     TCP_SYN_RCVD);
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), isn + 1);
+    ck_assert_uint_eq(ee32(out->ack), 2);
+}
+END_TEST
+
+START_TEST(test_sock_abort_queued_data_rst_at_snd_una)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    uint32_t snd_una;
+    uint8_t payload[100];
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    snd_una = ts->sock.tcp.snd_una;
+    memset(payload, 0xA5, sizeof(payload));
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    ck_assert_uint_ne(ts->sock.tcp.seq, snd_una);
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), snd_una);
+}
+END_TEST
+
+START_TEST(test_sock_abort_preaccept_listener_stops_listening)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_STOP_LISTENING));
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, fd), 0);
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_int_eq(filter_last_event.reason, WOLFIP_FILT_STOP_LISTENING);
+    ck_assert_int_eq(lsn->proto, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+}
+END_TEST
+
+/* An RTO clears PKT_FLAG_SENT, but the bytes already reached the wire. */
+START_TEST(test_sock_abort_after_data_rto_rst_covers_sent_data)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    uint32_t snd_una;
+    uint8_t payload[100];
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    snd_una = ts->sock.tcp.snd_una;
+    memset(payload, 0x5A, sizeof(payload));
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    (void)wolfIP_poll(&s, 2);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_uint_ne(desc->flags & PKT_FLAG_SENT, 0);
+
+    tcp_rto_cb(ts);
+    ck_assert_uint_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_uint_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), snd_una + sizeof(payload));
+}
+END_TEST
+
+/* A FIN sent behind unacked data stays in the FIFO, flagged sent. */
+START_TEST(test_sock_abort_fin_behind_unacked_data_covers_fin)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    uint32_t last;
+    uint8_t payload[100];
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    memset(payload, 0x5A, sizeof(payload));
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    last = ts->sock.tcp.last;
+    ck_assert_uint_eq(last, ts->sock.tcp.snd_una + sizeof(payload));
+    (void)wolfIP_poll(&s, 3);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_ne(out->flags & TCP_FLAG_FIN, 0);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.tcp.txbuf));
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), last + 1);
+}
+END_TEST
+
+/* A FIN re-queued by the control RTO is unsent, but its first copy went out. */
+START_TEST(test_sock_abort_requeued_fin_covers_fin)
+{
+    struct wolfIP s;
+    int sd;
+    uint32_t last;
+    struct tsocket *ts;
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_child_fin_sent(&s, &last);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    tcp_rto_cb(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 1);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.tcp.txbuf));
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), last + 1);
+}
+END_TEST
+
+static int llk_child_close_wait(struct wolfIP *s)
+{
+    int sd;
+    struct tsocket *ts;
+
+    sd = llk_accepted_child(s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s->tcpsockets[SOCKET_UNMARK(sd)];
+    inject_tcp_segment(s, TEST_PRIMARY_IF, LLK_ATT_IP, LLK_LOCAL_IP,
+                       41000, (uint16_t)LLK_LISTEN_PORT, 2,
+                       ts->sock.tcp.seq, TCP_FLAG_ACK | TCP_FLAG_FIN);
+    (void)wolfIP_poll(s, 2);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSE_WAIT);
+    return sd;
+}
+
+START_TEST(test_sock_abort_close_wait_resets_peer)
+{
+    struct wolfIP s;
+    int sd;
+    uint32_t snd_una;
+    const struct wolfIP_tcp_seg *out;
+
+    sd = llk_child_close_wait(&s);
+    snd_una = s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.snd_una;
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), snd_una);
+    ck_assert_uint_eq(ee32(out->ack), 3);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].proto, 0);
+}
+END_TEST
+
+START_TEST(test_sock_abort_last_ack_sends_nothing)
+{
+    struct wolfIP s;
+    int sd;
+    int ud;
+    uint32_t frames_before;
+
+    sd = llk_child_close_wait(&s);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state,
+                     TCP_LAST_ACK);
+    frames_before = last_frame_sent_count;
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    ck_assert_uint_eq(last_frame_sent_count, frames_before);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].proto, 0);
+
+    ud = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(ud, 0);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, ud), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_abort_syn_rcvd_listener_resets_and_stops_listening)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    uint32_t isn;
+    const struct wolfIP_tcp_seg *out;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_SYN_RCVD);
+    isn = lsn->sock.tcp.seq;
+
+    filter_cb_calls = 0;
+    memset(&filter_last_event, 0, sizeof(filter_last_event));
+    wolfIP_filter_set_callback(test_filter_cb, NULL);
+    wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_STOP_LISTENING));
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, fd), 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->seq), isn + 1);
+    ck_assert_int_eq(filter_cb_calls, 1);
+    ck_assert_int_eq(lsn->proto, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+}
+END_TEST
+
 /* The accept() recovery path must also drain the dead connection's
  * transport state: segments parked on the listener socket during the
  * pre-accept window must not leak into the next connection (stale
