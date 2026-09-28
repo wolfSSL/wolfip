@@ -6229,6 +6229,13 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 (void)wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_REMOTE_RESET, S, t,
                     t->local_ip, t->src_port, t->remote_ip, t->dst_port);
+                if (t->sock.tcp.is_listener &&
+                        (t->sock.tcp.state == TCP_ESTABLISHED ||
+                         t->sock.tcp.state == TCP_CLOSE_WAIT)) {
+                    /* Un-accepted connection: the socket is still the port. */
+                    tcp_listener_revert_to_listen(t);
+                    continue;
+                }
                 close_socket(t);
                 continue;
             }
