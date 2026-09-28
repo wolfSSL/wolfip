@@ -996,6 +996,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_frag_needed_below_floor_preserves_peer_mss);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_frag_needed_larger_mtu_does_not_raise_peer_mss);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_closes_syn_sent_tcp_socket);
+    tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreach_reverts_syn_rcvd_listener);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_keep_established_tcp_socket);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_src_ip_ignored);
     tcase_add_test(tc_proto, test_icmp_input_dest_unreach_port_unreachable_mismatched_orig_dst_ip_ignored);

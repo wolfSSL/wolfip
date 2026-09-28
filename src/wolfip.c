@@ -3338,8 +3338,19 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
                     emb_seq = ee32(emb_seq);
                     snd_nxt = tcp_seq_inc(t->sock.tcp.snd_una, 1);
                     if (tcp_seq_leq(t->sock.tcp.snd_una, emb_seq) &&
-                            tcp_seq_lt(emb_seq, snd_nxt))
-                        close_socket(t);
+                            tcp_seq_lt(emb_seq, snd_nxt)) {
+                        if (t->sock.tcp.state == TCP_SYN_RCVD &&
+                                t->sock.tcp.is_listener) {
+                            /* A passive listener transitions in place to
+                             * SYN_RCVD; a hard ICMP error must abort only this
+                             * half-open connection, not destroy the listening
+                             * socket (RFC 1122 4.2.3.9). Mirror the RST and
+                             * control-RTO give-up guards. */
+                            tcp_listener_revert_to_listen(t);
+                        } else {
+                            close_socket(t);
+                        }
+                    }
                 }
             }
         }

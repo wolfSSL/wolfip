@@ -3058,6 +3058,67 @@ START_TEST(test_icmp_input_dest_unreach_port_unreachable_closes_syn_sent_tcp_soc
 }
 END_TEST
 
+/* A passive listener lives in SYN_RCVD (is_listener=1). A hard ICMP error must
+ * abort only the half-open connection and revert the socket to LISTEN, not
+ * destroy the listening endpoint. */
+START_TEST(test_icmp_input_dest_unreach_port_unreach_reverts_syn_rcvd_listener)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_RCVD;
+    ts->sock.tcp.is_listener = 1;
+    ts->sock.tcp.snd_una = 100; /* in-flight SYN-ACK occupies snd_una */
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_PORT_UNREACH;
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16(ts->dst_port);
+    /* Embedded SEQ must lie in [snd_una, snd_una+1): the SYN-ACK sequence. */
+    orig->seq = ee32(100);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    /* The listener reverts to LISTEN and stays a usable TCP socket; it is not
+     * destroyed (proto kept, state LISTEN, is_listener set). */
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(ts->sock.tcp.is_listener, 1);
+}
+END_TEST
+
 START_TEST(test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_keep_established_tcp_socket)
 {
     struct wolfIP s;
