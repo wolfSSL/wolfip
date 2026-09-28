@@ -11346,6 +11346,16 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             ip4 src = ee32(ip->src);
             int rpf_drop = 0;
 
+            /* Zero-network-prefix source: RFC 1812 §4.3.2.7 forbids an ICMP
+             * error for a packet whose source has a zero network prefix, and
+             * such a source is invalid for transit. The general filter above
+             * lets src=0.0.0.0 through while the DHCP client is unbound (for
+             * local DHCP/BOOTP traffic), but a non-local (transit) packet with
+             * a zero source must be dropped here, not forwarded or used as an
+             * ICMP-error destination. */
+            if ((src & 0xFF000000U) == 0) {
+                rpf_drop = 1;
+            }
             /* Martian source: 127.0.0.0/8 must not arrive on a non-loopback
              * interface (and must never be forwarded). */
             if ((src & WOLFIP_LOOPBACK_MASK) ==

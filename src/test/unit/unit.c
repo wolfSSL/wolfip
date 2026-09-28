@@ -1820,6 +1820,7 @@ Suite *wolf_suite(void)
     /* --- unit_tests_forwarding.c (router build) --- */
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_ttl1_silent_drop);
     tcase_add_test(tc_proto, test_fwd_first_frag_ttl1_sends_ttl_exceeded);
+    tcase_add_test(tc_proto, test_fwd_zero_source_transit_ttl1_silent_drop);
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_df_oversize_silent_drop);
     tcase_add_test(tc_proto, test_fwd_first_frag_df_oversize_sends_frag_needed);
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_bad_option_silent_drop);
