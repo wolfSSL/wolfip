@@ -1314,6 +1314,11 @@ struct tsocket {
 static void close_socket(struct tsocket *ts);
 
 #if WOLFIP_RAWSOCKETS
+/* Ingress interface filter for raw sockets: WOLFIP_RAWSOCK_ANY_IF receives
+ * on every interface, a concrete value restricts reception to that one.
+ * Kept separate from if_idx, which is the egress route written by the
+ * transmit paths (connect/sendto/flush). */
+#define WOLFIP_RAWSOCK_ANY_IF 0xFF
 struct rawsocket {
     struct fifo rxbuf;
     struct fifo txbuf;
@@ -1325,6 +1330,7 @@ struct rawsocket {
 #endif
     uint16_t protocol;
     uint8_t if_idx;
+    uint8_t recv_if_idx;
     uint8_t dontroute;
     uint8_t ipheader_include;
     uint8_t recv_ttl;
@@ -3194,6 +3200,7 @@ static struct rawsocket *raw_new_socket(struct wolfIP *s, int protocol, int iphe
             r->S = s;
             r->protocol = (uint16_t)protocol;
             r->ipheader_include = ipheader_include ? 1 : 0;
+            r->recv_if_idx = WOLFIP_RAWSOCK_ANY_IF;
             fifo_init(&r->rxbuf, r->rxmem, RXBUF_SIZE);
             fifo_init(&r->txbuf, r->txmem, TXBUF_SIZE);
             r->events |= CB_EVENT_WRITABLE;
@@ -3387,10 +3394,13 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
         /* Honour the bind contract, mirroring the TCP/UDP receive paths: a
          * socket bound to a specific local IP or interface must not capture
          * traffic for other destinations or arriving on other interfaces.
-         * bound_local_ip == IPADDR_ANY / if_idx == 0 mean "any". */
+         * bound_local_ip == IPADDR_ANY / recv_if_idx == ANY mean "any".
+         * recv_if_idx is the ingress bind; if_idx is the egress route and
+         * must not restrict reception. */
         if (r->bound_local_ip != IPADDR_ANY && r->bound_local_ip != ee32(ip->dst))
             continue;
-        if (r->if_idx != 0 && r->if_idx != (uint8_t)if_idx)
+        if (r->recv_if_idx != WOLFIP_RAWSOCK_ANY_IF &&
+                r->recv_if_idx != (uint8_t)if_idx)
             continue;
         if (fifo_push(&r->rxbuf, (void *)packet, payload_len) == 0) {
             r->last_pkt_ttl = ip->ttl;
@@ -9057,7 +9067,10 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             return -WOLFIP_EINVAL;
         if (sin->sin_family != AF_INET)
             return -WOLFIP_EINVAL;
-        rs->if_idx = (uint8_t)if_idx;
+        if (bind_ip == IPADDR_ANY)
+            rs->recv_if_idx = WOLFIP_RAWSOCK_ANY_IF;
+        else
+            rs->recv_if_idx = (uint8_t)if_idx;
         rs->bound_local_ip = bind_ip;
         if (bind_ip != IPADDR_ANY)
             rs->local_ip = bind_ip;
@@ -11042,7 +11055,8 @@ int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
 #if WOLFIP_RAWSOCKETS
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         if (s->rawsockets[i].used &&
-                s->rawsockets[i].if_idx == (uint8_t)if_idx)
+                (s->rawsockets[i].recv_if_idx == (uint8_t)if_idx ||
+                 s->rawsockets[i].if_idx == (uint8_t)if_idx))
             return -WOLFIP_EBUSY;
     }
 #if WOLFIP_PACKET_SOCKETS
