@@ -77,6 +77,8 @@ retransmit and lease timers never fire.
 
 ## 3. The API
 
+The DHCP client is compiled by default. A static-address build can drop it by setting `WOLFIP_ENABLE_DHCP` to 0; the functions below are then still declared, but not defined, so a call fails at link time.
+
 All declarations are in `wolfip.h`:
 
 ```c
