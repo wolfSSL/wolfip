@@ -3768,7 +3768,10 @@ START_TEST(test_sock_sendto_tcp_not_established)
     ck_assert_int_gt(tcp_sd, 0);
     ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
     ts->sock.tcp.state = TCP_SYN_SENT;
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0),
+                     -WOLFIP_EAGAIN);
 
+    ts->sock.tcp.state = TCP_LISTEN;
     ck_assert_int_eq(wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0), -1);
 }
 END_TEST

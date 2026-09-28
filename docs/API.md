@@ -180,6 +180,18 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
 Send/receive data on a datagram socket.
 - Parameters similar to send/recv with additional address parameters
 
+wolfIP never blocks, so every call above can ask the caller to retry. On a TCP socket they return:
+
+| Value | Meaning |
+|-------|---------|
+| `> 0` | Bytes transferred, possibly fewer than requested |
+| `0` | End of stream: the peer closed and nothing is left to read |
+| `-WOLFIP_EAGAIN` | Retry later: no data queued, no transmit space, or the socket is still connecting (`SYN_SENT`/`SYN_RCVD`) |
+| `-WOLFIP_EINVAL` | Bad descriptor or arguments |
+| `-1` | The operation cannot succeed on this socket (a listener, or a closing state) |
+
+`wolfIP_sock_close()` follows the same convention: on a connected socket it starts the FIN exchange and returns `-WOLFIP_EAGAIN`. The stack then releases the descriptor by itself, without notification, once the exchange completes, the peer resets, or the close times out, and the next `wolfIP_sock_socket()` or `wolfIP_sock_accept()` can hand out the same number. Calling `wolfIP_sock_close()` on it again is therefore only safe while no socket has been created or accepted since; after that, the call acts on the new socket.
+
 ## Stack Interface Functions
 
 ```c

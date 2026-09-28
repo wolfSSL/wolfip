@@ -561,7 +561,7 @@ START_TEST(test_sock_recvfrom_tcp_states)
 
     ts->sock.tcp.state = TCP_SYN_SENT;
     ret = wolfIP_sock_recvfrom(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
-    ck_assert_int_eq(ret, -1);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
 
     ts->sock.tcp.state = TCP_CLOSE_WAIT;
     queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
@@ -1666,7 +1666,7 @@ START_TEST(test_sock_sendto_more_error_paths)
     ts->remote_ip = 0x0A000002U;
     fifo_init(&ts->sock.tcp.txbuf, tiny, sizeof(tiny));
     ret = wolfIP_sock_sendto(&s, tcp_sd, buf, sizeof(buf), 0, NULL, 0);
-    ck_assert_int_eq(ret, -1);
+    ck_assert_int_eq(ret, -WOLFIP_EAGAIN);
 
     udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(udp_sd, 0);
