@@ -13101,7 +13101,6 @@ unsigned int wolfIP_route_count(struct wolfIP *s)
 int wolfIP_route_get(struct wolfIP *s, unsigned int route_idx,
                      struct wolfIP_route_info *info)
 {
-#if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
     unsigned int seen = 0U;
 
@@ -13121,18 +13120,11 @@ int wolfIP_route_get(struct wolfIP *s, unsigned int route_idx,
     }
 
     return -WOLFIP_EINVAL;
-#else
-    (void)s;
-    (void)route_idx;
-    (void)info;
-    return -WOLFIP_EINVAL;
-#endif
 }
 
 int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
                      uint8_t prefix_len, ip4 gateway)
 {
-#if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
     struct wolfIP_route_entry *free_slot = NULL;
     uint32_t mask;
@@ -13170,20 +13162,11 @@ int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
     free_slot->gateway = gateway;
     free_slot->order = s->route_generation++;
     return 0;
-#else
-    (void)s;
-    (void)if_idx;
-    (void)prefix;
-    (void)prefix_len;
-    (void)gateway;
-    return -WOLFIP_EINVAL;
-#endif
 }
 
 int wolfIP_route_delete(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
                         uint8_t prefix_len)
 {
-#if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
     uint32_t mask;
 
@@ -13206,13 +13189,6 @@ int wolfIP_route_delete(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
     }
 
     return -WOLFIP_EINVAL;
-#else
-    (void)s;
-    (void)if_idx;
-    (void)prefix;
-    (void)prefix_len;
-    return -WOLFIP_EINVAL;
-#endif
 }
 
 int wolfIP_route_lookup(struct wolfIP *s, ip4 dest, unsigned int *if_idx,
