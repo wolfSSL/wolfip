@@ -780,6 +780,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc);
     tcase_add_test(tc_utils, test_flush_tcp_tx_pure_ack_keeps_unacked_data_desc);
     tcase_add_test(tc_utils, test_tcp_ack_parked_zero_desc_keeps_rtt_sample);
+    tcase_add_test(tc_utils, test_flush_tcp_tx_sends_pure_ack_behind_window_blocked_data);
+    tcase_add_test(tc_utils, test_flush_tcp_tx_fin_ack_stays_behind_window_blocked_data);
+    tcase_add_test(tc_utils, test_flush_tcp_tx_fin_held_behind_blocked_data_after_ack);
+    tcase_add_test(tc_utils, test_tcp_first_unsent_seq_skips_pending_retransmit);
     tcase_add_test(tc_utils, test_tcp_ack_sack_blocks_clamped_and_dropped);
     tcase_add_test(tc_utils, test_tcp_recv_ooo_capacity_limit);
     tcase_add_test(tc_utils, test_tcp_recv_overlapping_ooo_segments_coalesce_on_consume);

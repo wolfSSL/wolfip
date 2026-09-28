@@ -6799,6 +6799,69 @@ static struct pkt_desc *tcp_find_pending_retrans(struct tsocket *ts, struct pkt_
     return NULL;
 }
 
+/* First queued pure ACK (no payload, ACK flag, not yet sent) at or after
+ * start. A window-blocked data segment must not hold these back. */
+static struct pkt_desc *tcp_find_pending_ack(struct tsocket *ts, struct pkt_desc *start)
+{
+    struct pkt_desc *scan;
+    uint32_t guard = 0;
+    uint32_t budget;
+
+    if (!ts || !start)
+        return NULL;
+    budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
+    scan = start;
+    while (scan && guard++ < budget) {
+        if (!(scan->flags & PKT_FLAG_SENT)) {
+            struct wolfIP_tcp_seg *seg =
+                (struct wolfIP_tcp_seg *)(ts->txmem + scan->pos + sizeof(*scan));
+            uint32_t seg_len = tcp_tx_desc_payload_len(ts, scan, seg);
+            /* A pure ACK is exactly the ACK flag: FIN|ACK, SYN|ACK, RST|ACK
+             * and PSH|ACK are control segments that must stay in order behind
+             * the data, not jump ahead of it. */
+            if (seg_len == 0 && seg->flags == TCP_FLAG_ACK)
+                return scan;
+        }
+        scan = fifo_next(&ts->sock.tcp.txbuf, scan);
+        if (!scan || scan == start)
+            break;
+    }
+    return NULL;
+}
+
+/* Sequence of the first queued-but-unsent data byte, or SND.NXT when no data
+ * is queued. A pure ACK sent ahead of queued data must carry this, not
+ * SND.NXT (which counts the queued bytes), to stay inside the peer window. */
+static uint32_t tcp_first_unsent_seq(struct tsocket *ts)
+{
+    struct pkt_desc *scan;
+    struct pkt_desc *head;
+    uint32_t guard = 0;
+    uint32_t budget;
+
+    if (!ts)
+        return 0;
+    budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
+    head = fifo_peek(&ts->sock.tcp.txbuf);
+    scan = head;
+    while (scan && guard++ < budget) {
+        struct wolfIP_tcp_seg *seg =
+            (struct wolfIP_tcp_seg *)(ts->txmem + scan->pos + sizeof(*scan));
+        uint32_t seg_len = tcp_tx_desc_payload_len(ts, scan, seg);
+        /* A retransmit re-sends an old byte (its SENT flag was cleared when it
+         * was marked for retransmission): it is not new unsent data, so skip it
+         * and report the first truly-new byte. Otherwise a pure ACK sent while a
+         * retransmit is still pending would carry the retransmit's old seq. */
+        if (seg_len > 0 && !(scan->flags & PKT_FLAG_SENT) &&
+                !(scan->flags & PKT_FLAG_RETRANS))
+            return ee32(seg->seq);
+        scan = fifo_next(&ts->sock.tcp.txbuf, scan);
+        if (!scan || scan == head)
+            break;
+    }
+    return ts->sock.tcp.seq;
+}
+
 static void close_socket(struct tsocket *ts)
 {
     tsocket_cb cb;
@@ -12445,6 +12508,7 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
         uint32_t send_budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
         struct pkt_desc *desc;
         struct wolfIP_tcp_seg *tcp;
+        int ack_jump = 0;
         tcp_resync_inflight(s, ts, now);
         if (ts->sock.tcp.ack_retry_pending) {
             int ack_ret = tcp_send_empty(ts, TCP_FLAG_ACK);
@@ -12499,12 +12563,28 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                 seg_ip_len = tcp_tx_desc_ip_len(ts, desc, tcp);
                 seg_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
                 seg_payload_len = (seg_ip_len > seg_hdr_len) ? (seg_ip_len - seg_hdr_len) : 0;
+                /* After jumping past a window-blocked data segment to send the
+                 * pure ACKs behind it, stop at the next non-pure-ACK segment
+                 * (data, FIN, RST): a zero-length segment such as a FIN would
+                 * otherwise pass the send condition and go out ahead of the
+                 * blocked data. Only further pure ACKs are sent. */
+                if (ack_jump && !(seg_payload_len == 0 &&
+                                  tcp->flags == TCP_FLAG_ACK))
+                    break;
                 if (is_retrans || seg_payload_len == 0 ||
                         (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
                     struct wolfIP_timer new_tmr = {};
                     size = seg_ip_len;
                     tcp->ack = ee32(ts->sock.tcp.ack);
                     tcp->win = ee16(tcp_adv_win(ts, 1));
+                    if (seg_payload_len == 0 && tcp->flags == TCP_FLAG_ACK) {
+                        /* A pure ACK sent ahead of queued data must carry the
+                         * first unsent sequence, not SND.NXT: an out-of-window
+                         * SEQ is discarded by the peer (RFC 9293 3.10.7.4). A
+                         * FIN/SYN/RST keeps its own sequence (the byte after
+                         * the queued data). */
+                        tcp->seq = ee32(tcp_first_unsent_seq(ts));
+                    }
                     ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
                 ts->local_ip, ts->remote_ip, size);
 #ifdef ETHERNET
@@ -12595,12 +12675,25 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     }
                 } else {
                     struct pkt_desc *rexmit_desc = NULL;
+                    struct pkt_desc *ack_desc = NULL;
                     if (seg_payload_len > 0 && ts->sock.tcp.peer_rwnd == 0)
                         tcp_persist_start(ts, now);
                     if (!is_retrans) {
                         rexmit_desc = tcp_find_pending_retrans(ts, desc);
                         if (rexmit_desc && rexmit_desc != desc) {
                             desc = rexmit_desc;
+                            continue;
+                        }
+                        /* A window-blocked data segment must not hold back the
+                         * pure ACKs queued behind it (RFC 5681 4.2): the peer
+                         * needs our ACKs to advance its state even while our
+                         * send window is closed. Jump to the first queued pure
+                         * ACK so it is sent now; its SEQ is fixed to the first
+                         * unsent byte by the send path above. */
+                        ack_desc = tcp_find_pending_ack(ts, desc);
+                        if (ack_desc) {
+                            desc = ack_desc;
+                            ack_jump = 1;
                             continue;
                         }
                     }

@@ -6421,3 +6421,233 @@ START_TEST(test_tcp_ack_parked_zero_desc_keeps_rtt_sample)
     ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
 }
 END_TEST
+
+/* A pure ACK queued behind a window-blocked data segment must be sent now,
+ * not held behind the data (RFC 5681 4.2), and it must carry the first
+ * unsent sequence so the peer accepts it. */
+START_TEST(test_flush_tcp_tx_sends_pure_ack_behind_window_blocked_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *data_desc;
+    struct pkt_desc *ack_desc;
+    struct wolfIP_tcp_seg *ack_seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0; /* closed window: the data segment is blocked */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data segment (seq 1000) that cannot fit the closed window. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    data_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(data_desc);
+    /* The real send path advances seq past queued data; mirror it so the
+     * pure ACK is enqueued with SND.NXT (1008), ahead of the first unsent. */
+    ts->sock.tcp.seq = 1008;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    ack_desc = fifo_next(&ts->sock.tcp.txbuf, data_desc);
+    ck_assert_ptr_nonnull(ack_desc);
+
+    (void)wolfIP_poll(&s, 200);
+
+    /* The data stays blocked by the closed window... */
+    ck_assert_int_eq(data_desc->flags & PKT_FLAG_SENT, 0);
+    /* ...but the pure ACK behind it is sent now, not held back. */
+    ck_assert_int_ne(ack_desc->flags & PKT_FLAG_SENT, 0);
+    /* The ACK carries the first unsent sequence (1000), not SND.NXT (1008). */
+    ack_seg = (struct wolfIP_tcp_seg *)(ts->txmem + ack_desc->pos + sizeof(*ack_desc));
+    ck_assert_uint_eq(ee32(ack_seg->seq), 1000);
+}
+END_TEST
+
+START_TEST(test_flush_tcp_tx_fin_ack_stays_behind_window_blocked_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *data_desc;
+    struct pkt_desc *fin_desc;
+    struct wolfIP_tcp_seg *fin_seg;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0; /* closed window: the data segment is blocked */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data segment (seq 1000) that cannot fit the closed window. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    data_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(data_desc);
+    /* A FIN|ACK queued behind the data (seq 1008). It must NOT jump ahead of
+     * the blocked data: a FIN sent at the data's sequence would make the peer
+     * end the stream and discard the data. */
+    ts->sock.tcp.seq = 1008;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, (TCP_FLAG_FIN | TCP_FLAG_ACK)), 0);
+    fin_desc = fifo_next(&ts->sock.tcp.txbuf, data_desc);
+    ck_assert_ptr_nonnull(fin_desc);
+
+    (void)wolfIP_poll(&s, 200);
+
+    /* The data stays blocked by the closed window... */
+    ck_assert_int_eq(data_desc->flags & PKT_FLAG_SENT, 0);
+    /* ...and the FIN|ACK behind it is held too: a FIN|ACK is a control
+     * segment, not a pure ACK, so it is not jumped to. */
+    ck_assert_int_eq(fin_desc->flags & PKT_FLAG_SENT, 0);
+    /* The FIN keeps its own sequence (1008), not the first-unsent rewrite. */
+    fin_seg = (struct wolfIP_tcp_seg *)(ts->txmem + fin_desc->pos + sizeof(*fin_desc));
+    ck_assert_uint_eq(ee32(fin_seg->seq), 1008);
+}
+END_TEST
+
+/* After jumping past window-blocked data to send the pure ACKs behind it, the
+ * walk must stop at the next non-pure-ACK segment, not just at data: a
+ * zero-length FIN queued behind the ACK would otherwise pass the send
+ * condition and go out ahead of the blocked data. Realistic trigger: the app
+ * writes, the peer's data queues an ACK, then the app closes (FIN queued). */
+START_TEST(test_flush_tcp_tx_fin_held_behind_blocked_data_after_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *data_desc;
+    struct pkt_desc *ack_desc;
+    struct pkt_desc *fin_desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0; /* closed window: the data segment is blocked */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data segment (seq 1000) blocked by the closed window. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    data_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(data_desc);
+    /* A pure ACK queued behind the data (SND.NXT = 1008). */
+    ts->sock.tcp.seq = 1008;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    ack_desc = fifo_next(&ts->sock.tcp.txbuf, data_desc);
+    ck_assert_ptr_nonnull(ack_desc);
+    /* A FIN|ACK queued behind the ACK (seq 1008). */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, (TCP_FLAG_FIN | TCP_FLAG_ACK)), 0);
+    fin_desc = fifo_next(&ts->sock.tcp.txbuf, ack_desc);
+    ck_assert_ptr_nonnull(fin_desc);
+
+    (void)wolfIP_poll(&s, 200);
+
+    /* The data stays blocked by the closed window... */
+    ck_assert_int_eq(data_desc->flags & PKT_FLAG_SENT, 0);
+    /* ...the pure ACK behind it is sent now... */
+    ck_assert_int_ne(ack_desc->flags & PKT_FLAG_SENT, 0);
+    /* ...and the FIN|ACK behind the ACK is held: after the jump, only pure
+     * ACKs are sent, so the FIN must not go out ahead of the blocked data. */
+    ck_assert_int_eq(fin_desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
+/* tcp_first_unsent_seq must skip a retransmit that is still pending: marking a
+ * descriptor for retransmission clears PKT_FLAG_SENT, so without the RETRANS
+ * guard the helper would report the retransmit's old seq and a pure ACK sent
+ * while it is pending (its send failed partway) would carry that old seq
+ * instead of the first truly-new byte. */
+START_TEST(test_tcp_first_unsent_seq_skips_pending_retransmit)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *retrans_desc;
+    struct pkt_desc *new_desc;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 1000;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* A retransmit (seq 1000) still pending: SENT cleared, RETRANS set. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK), 0);
+    retrans_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(retrans_desc);
+    retrans_desc->flags &= ~PKT_FLAG_SENT;
+    retrans_desc->flags |= PKT_FLAG_RETRANS;
+    /* New unsent data (seq 1008) queued behind it. */
+    ts->sock.tcp.seq = 1008;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK), 0);
+    new_desc = fifo_next(&ts->sock.tcp.txbuf, retrans_desc);
+    ck_assert_ptr_nonnull(new_desc);
+    ts->sock.tcp.seq = 1016;  /* SND.NXT after the new data */
+
+    /* The first unsent seq is the new byte (1008), not the retransmit (1000). */
+    ck_assert_uint_eq(tcp_first_unsent_seq(ts), 1008);
+}
+END_TEST
