@@ -377,7 +377,7 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
      * needs its own MDC divisor and management enable; the block we just
      * configured is only carrying data. Everything else about it is left
      * alone, since another driver may own it. */
-    GEM_MDIO_NWCFG = (GEM_MDIO_NWCFG & ~(7u << NWCFG_MDCDIV_SHIFT))
+    GEM_MDIO_NWCFG = (GEM_MDIO_NWCFG & ~NWCFG_MDCDIV_MASK)
                    | (5u << NWCFG_MDCDIV_SHIFT);
     GEM_MDIO_NWCTRL |= NWCTRL_MDEN;
 #endif

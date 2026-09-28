@@ -69,7 +69,8 @@
 
 /* Autonegotiation and link waits, in ms. A PHY that needs longer than the
  * defaults (a slow partner, or a port whose vendor init settles late) can be
- * given more without touching the driver. */
+ * given more without touching the driver. Each is rounded down to a whole
+ * number of PHY_POLL_MS intervals. */
 #ifndef GEM_PHY_ANEG_TIMEOUT_MS
 #define GEM_PHY_ANEG_TIMEOUT_MS  5000
 #endif
@@ -426,12 +427,22 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
         else if (anar & anlpar & ANAR_10_FD) {
             *speed_out = 10;   *full_duplex_out = 1;
         }
-        else {
+        else if (cap & BMSR_ANCOMPLETE) {
             *speed_out = 10;   *full_duplex_out = 0;
+        }
+        else {
+            /* Autonegotiation never completed, so ANLPAR and GBSR hold no
+             * partner advertisement (802.3 clause 28) and nothing above
+             * matched for want of data rather than want of capability. Leave
+             * the MAC at the gigabit default instead of inventing a speed: a
+             * downshift also reprograms the reference clock, which under
+             * SGMII belongs to the serdes. */
+            *speed_out = 1000; *full_duplex_out = 1;
         }
     }
 
-    uart_puts("PHY link: ");
+    uart_puts((bmsr & BMSR_ANCOMPLETE) ? "PHY link: "
+                                       : "PHY link: none, autoneg incomplete, MAC at ");
     uart_putdec((uint32_t)*speed_out);
     uart_puts(*full_duplex_out ? " Mbps FD\n" : " Mbps HD\n");
 
