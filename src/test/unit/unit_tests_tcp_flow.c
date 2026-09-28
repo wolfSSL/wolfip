@@ -5974,6 +5974,87 @@ START_TEST(test_tcp_listener_preaccept_timeout_reverts_port)
 }
 END_TEST
 
+/* A peer waiting for the server to speak sends nothing more, so it never
+ * draws the LISTEN RST: the pre-accept timeout must reset it explicitly. */
+START_TEST(test_tcp_listener_preaccept_timeout_resets_peer)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    uint64_t t;
+    uint32_t seq;
+    const struct wolfIP_tcp_seg *out = NULL;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+    seq = lsn->sock.tcp.seq;
+
+    for (t = 1000; t <= 10000; t += 1000) {
+        (void)wolfIP_poll(&s, t);
+        if (lsn->sock.tcp.state == TCP_LISTEN) {
+            out = llk_last_tcp();
+            break;
+        }
+    }
+
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_LISTEN);
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee16(out->src_port), (uint16_t)LLK_LISTEN_PORT);
+    ck_assert_uint_eq(ee16(out->dst_port), 41000);
+    ck_assert_uint_eq(ee32(out->seq), seq);
+    ck_assert_uint_eq(ee32(out->ack), 2);
+}
+END_TEST
+
+/* With no socket free, accept() cannot hand the connection off and drops it;
+ * the peer must be reset rather than left talking to a reverted listener. */
+START_TEST(test_tcp_listener_preaccept_accept_no_socket_resets_peer)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    struct wolfIP_sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+    const struct wolfIP_tcp_seg *out;
+    uint32_t frames_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+
+    while (wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+                WI_IPPROTO_TCP) > 0)
+        ;
+
+    memset(&peer, 0, sizeof(peer));
+    frames_before = last_frame_sent_count;
+    ck_assert_int_eq(wolfIP_sock_accept(&s, fd,
+            (struct wolfIP_sockaddr *)&peer, &peer_len), -1);
+    ck_assert_uint_gt(last_frame_sent_count, frames_before);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee16(out->dst_port), 41000);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
 /* The accept() recovery path must also drain the dead connection's
  * transport state: segments parked on the listener socket during the
  * pre-accept window must not leak into the next connection (stale

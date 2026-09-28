@@ -4032,17 +4032,13 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     }
 }
 
-static int tcp_send_empty(struct tsocket *t, uint8_t flags)
+/* tcp must have room for sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN. */
+static uint32_t tcp_build_empty(struct tsocket *t, struct wolfIP_tcp_seg *tcp,
+        uint8_t flags)
 {
-    struct wolfIP_tcp_seg *tcp;
     uint8_t opt_len;
-    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
-    uint32_t frame_len;
 
-    if (!t)
-        return -WOLFIP_EINVAL;
-    tcp = (struct wolfIP_tcp_seg *)buffer;
-    memset(tcp, 0, sizeof(buffer));
+    memset(tcp, 0, sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN);
     opt_len = tcp_build_ack_options(t, tcp->data, TCP_MAX_OPTIONS_LEN);
     tcp->src_port = ee16(t->src_port);
     tcp->dst_port = ee16(t->dst_port);
@@ -4053,7 +4049,19 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
     tcp->win = ee16(tcp_adv_win(t, 1));
     tcp->csum = 0;
     tcp->urg = 0;
-    frame_len = sizeof(struct wolfIP_tcp_seg) + opt_len;
+    return sizeof(struct wolfIP_tcp_seg) + opt_len;
+}
+
+static int tcp_send_empty(struct tsocket *t, uint8_t flags)
+{
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
+    uint32_t frame_len;
+
+    if (!t)
+        return -WOLFIP_EINVAL;
+    tcp = (struct wolfIP_tcp_seg *)buffer;
+    frame_len = tcp_build_empty(t, tcp, flags);
     if (fifo_push(&t->sock.tcp.txbuf, tcp, frame_len) == 0)
         return 0;
 
@@ -4062,6 +4070,19 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
     if (flags == TCP_FLAG_ACK)
         return tcp_send_empty_immediate(t, tcp, frame_len);
     return -1;
+}
+
+/* Bypasses the TX FIFO, which the caller's teardown reinitialises. */
+static int tcp_send_reset_now(struct tsocket *t)
+{
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
+
+    if (!t)
+        return -WOLFIP_EINVAL;
+    tcp = (struct wolfIP_tcp_seg *)buffer;
+    return tcp_send_empty_immediate(t, tcp,
+            tcp_build_empty(t, tcp, TCP_FLAG_RST | TCP_FLAG_ACK));
 }
 
 static void tcp_send_ack(struct tsocket *t)
@@ -6569,10 +6590,9 @@ static void tcp_rto_cb(void *arg)
             tcp_preaccept_timeout_stop(ts);
             return;
         }
-        /* The handshake completed but the application never accepted: an
-         * un-accepted established listener has no accept() path and no
-         * other timer, so the port would stay pinned forever. Revert to
-         * LISTEN; the peer's next segment gets the normal LISTEN RST. */
+        /* Never accepted: reclaim the port. The peer may have nothing left to
+         * send, so it would never draw the LISTEN RST; tell it now. */
+        (void)tcp_send_reset_now(ts);
         tcp_listener_revert_to_listen(ts);
         return;
     }
@@ -7332,6 +7352,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * and spinning the poll loop until the pre-accept timeout. */
             newts = tcp_new_socket(s);
             if (!newts) {
+                (void)tcp_send_reset_now(ts);
                 tcp_listener_revert_to_listen(ts);
                 return -1;
             }
