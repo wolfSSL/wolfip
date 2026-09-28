@@ -6145,6 +6145,49 @@ START_TEST(test_tcp_listener_closed_preaccept_rst_frees_last_ack)
 }
 END_TEST
 
+/* A peer that connects and closes before accept() leaves the listener in
+ * CLOSE_WAIT; the pre-accept timer must still bound that pin. */
+START_TEST(test_tcp_listener_preaccept_close_wait_timeout_reverts_port)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    uint64_t t;
+    uint64_t reverted_at = 0;
+    const struct wolfIP_tcp_seg *out = NULL;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, LLK_ATT_IP, LLK_LOCAL_IP,
+                       41000, (uint16_t)LLK_LISTEN_PORT, 2,
+                       lsn->sock.tcp.seq, TCP_FLAG_ACK | TCP_FLAG_FIN);
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_CLOSE_WAIT);
+
+    for (t = 1000; t <= 10000; t += 1000) {
+        (void)wolfIP_poll(&s, t);
+        if (reverted_at == 0 && lsn->sock.tcp.state == TCP_LISTEN) {
+            reverted_at = t;
+            out = llk_last_tcp();
+        }
+    }
+
+    ck_assert_uint_eq(reverted_at, TCP_PREACCEPT_TIMEOUT_MS);
+    ck_assert_int_eq(lsn->sock.tcp.preaccept_timeout_active, 0);
+    ck_assert_uint_eq(lsn->remote_ip, 0);
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee32(out->ack), 3);
+}
+END_TEST
+
 /* The accept() recovery path must also drain the dead connection's
  * transport state: segments parked on the listener socket during the
  * pre-accept window must not leak into the next connection (stale

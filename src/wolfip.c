@@ -6590,7 +6590,8 @@ static void tcp_rto_cb(void *arg)
         return;
     }
     if (ts->sock.tcp.preaccept_timeout_active) {
-        if (ts->sock.tcp.state != TCP_ESTABLISHED ||
+        if ((ts->sock.tcp.state != TCP_ESTABLISHED &&
+             ts->sock.tcp.state != TCP_CLOSE_WAIT) ||
                 !ts->sock.tcp.is_listener) {
             /* The socket left the pinned condition (accepted away, reset,
              * or closed): disarm quietly. */
