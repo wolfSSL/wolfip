@@ -353,6 +353,8 @@ if your application needs UDP sockets of its own. If the pool is exhausted,
 `dhcp_client_init()` returns negative and `nslookup()` fails to allocate its
 socket.
 
+A target that needs no UDP at all can set `MAX_UDPSOCKETS 0` together with `WOLFIP_ENABLE_DHCP 0`. Every UDP path then finds no socket to use, DNS lookups fail to allocate one, and the per-socket UDP buffers disappear from RAM. Leaving DHCP enabled with no UDP sockets stops the build with an `#error`.
+
 ## 10. Troubleshooting
 
 **DHCP never gets bound.** Confirm `now_ms` advances between `wolfIP_poll()`
