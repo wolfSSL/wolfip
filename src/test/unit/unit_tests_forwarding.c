@@ -195,7 +195,7 @@ START_TEST(test_fwd_zero_source_transit_ttl1_silent_drop)
 
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
 
-    /* Silent: no Time Exceeded addressed to 0.0.0.0, no relay. */
+    /* Silent: no Time Exceeded addressed to 0.1.2.3, no relay. */
     ck_assert_uint_eq(last_frame_sent_count, 0);
 }
 END_TEST

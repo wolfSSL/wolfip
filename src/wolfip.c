@@ -6572,47 +6572,48 @@ static void tcp_rto_cb(void *arg)
         if (!tcp_ctrl_state_needs_rto(ts)) {
             /* Data is still outstanding (drain check failed): the control RTO
              * that close() armed over the data timer must yield. Stop it and
-             * hand the RTO back to the data path, which re-arms the data timer
-             * from the in-flight descriptors. */
+             * fall through to the data-loss recovery below, which retransmits
+             * the outstanding payload now and re-arms the data RTO. The control
+             * timeout has already expired, so re-arming here and returning would
+             * delay the retransmit by a second RTO interval. */
             tcp_ctrl_rto_stop(ts);
-            tcp_resync_inflight(ts->S, ts, ts->S->last_tick);
-            return;
-        }
-        if (ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) {
-            tcp_ctrl_rto_stop(ts);
-            if (ts->sock.tcp.is_listener &&
-                    ts->sock.tcp.state == TCP_SYN_RCVD) {
-                /* Revert listen socket back to LISTEN instead of
-                 * destroying it, mirrors the accept() recovery path.
-                 * The helper drains the parked SYN-ACK from the TX FIFO
-                 * (see the accept() revert for why). */
-                tcp_listener_revert_to_listen(ts);
-            } else {
-                ts->sock.tcp.state = TCP_CLOSED;
-                close_socket(ts);
+        } else {
+            if (ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) {
+                tcp_ctrl_rto_stop(ts);
+                if (ts->sock.tcp.is_listener &&
+                        ts->sock.tcp.state == TCP_SYN_RCVD) {
+                    /* Revert listen socket back to LISTEN instead of
+                     * destroying it, mirrors the accept() recovery path.
+                     * The helper drains the parked SYN-ACK from the TX FIFO
+                     * (see the accept() revert for why). */
+                    tcp_listener_revert_to_listen(ts);
+                } else {
+                    ts->sock.tcp.state = TCP_CLOSED;
+                    close_socket(ts);
+                }
+                return;
             }
-            return;
-        }
-        {
-            int queued = 0;
+            {
+                int queued = 0;
 
-            if (ts->sock.tcp.state == TCP_SYN_SENT) {
-                queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
-            } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
-                queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
-            } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
-                queued = (tcp_send_finack(ts) == 0);
+                if (ts->sock.tcp.state == TCP_SYN_SENT) {
+                    queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
+                } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
+                    queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
+                } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
+                    queued = (tcp_send_finack(ts) == 0);
+                    if (queued)
+                        ts->sock.tcp.ctrl_rto_retries++;
+                    if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
+                        tcp_ctrl_rto_give_up(ts);
+                    return;
+                }
                 if (queued)
                     ts->sock.tcp.ctrl_rto_retries++;
                 if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
                     tcp_ctrl_rto_give_up(ts);
                 return;
             }
-            if (queued)
-                ts->sock.tcp.ctrl_rto_retries++;
-            if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
-                tcp_ctrl_rto_give_up(ts);
-            return;
         }
     }
     if (ts->sock.tcp.state != TCP_ESTABLISHED &&

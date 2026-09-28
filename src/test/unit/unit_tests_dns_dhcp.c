@@ -5054,16 +5054,11 @@ START_TEST(test_tcp_rto_cb_last_ack_with_data_retransmits_data)
     s.last_tick = 1000;
     ck_assert_int_eq(tcp_ctrl_rto_start(ts, 1000), 0);
 
-    /* First fire: control RTO yields to the outstanding data. */
+    /* The control timeout has already expired: it yields to the data path and
+     * the outstanding payload is retransmitted now, not after a second RTO. */
     tcp_rto_cb(ts);
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
     ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
-    ck_assert_int_eq(desc->flags & PKT_FLAG_RETRANS, 0);
-    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
-
-    /* Second fire: the data RTO retransmits the payload segment. */
-    s.last_tick = 2000;
-    tcp_rto_cb(ts);
     ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
     ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
 }
