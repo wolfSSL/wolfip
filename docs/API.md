@@ -246,6 +246,8 @@ For `non_ethernet` devices this value remains the internal frame budget; the max
 
 ## DHCP Client Functions
 
+Compiled unless `WOLFIP_ENABLE_DHCP` is set to 0.
+
 ```c
 int dhcp_client_init(struct wolfIP *s);
 ```

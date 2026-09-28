@@ -40,6 +40,10 @@
 #define WOLFIP_MAX_ROUTES 16U
 #endif
 
+#ifndef WOLFIP_ENABLE_DHCP
+#define WOLFIP_ENABLE_DHCP 1
+#endif
+
 #define WOLFIP_LOOPBACK_IP 0x7F000001U
 #define WOLFIP_LOOPBACK_MASK 0xFF000000U
 #if WOLFIP_ENABLE_LOOPBACK
@@ -9159,6 +9163,7 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     icmp_try_recv(s, if_idx, icmp, len);
 }
 
+#if WOLFIP_ENABLE_DHCP
 static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
 #ifdef ETHERNET
@@ -10337,6 +10342,7 @@ static void dhcp_dad_conflict(struct wolfIP *s)
     dhcp_schedule_timer_at(s, s->last_tick + DHCP_DECLINE_WAIT_MS);
 }
 #endif
+#endif /* WOLFIP_ENABLE_DHCP */
 
 /* ARP */
 #ifdef ETHERNET
@@ -10585,6 +10591,7 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
  * reply is detected in arp_recv (dhcp_dad_conflict). Deliberately bypasses
  * the 1 req/s rate limit: DAD is at most 3 probes per acquisition, one
  * per second, and must not starve behind ordinary traffic. */
+#if WOLFIP_ENABLE_DHCP
 static int dhcp_send_dad_probe(struct wolfIP *s)
 {
     struct arp_packet arp;
@@ -10613,6 +10620,7 @@ static int dhcp_send_dad_probe(struct wolfIP *s)
     return wolfIP_ll_send_frame(s, WOLFIP_PRIMARY_IF_IDX, &arp,
                                 sizeof(struct arp_packet));
 }
+#endif /* WOLFIP_ENABLE_DHCP */
 
 static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
 {
@@ -10640,6 +10648,7 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     if (arp->sma[0] & 0x01)
         return;
 
+#if WOLFIP_ENABLE_DHCP
     /* RFC 4331/5227 DAD: on the probing interface, a request from a
      * foreign MAC that claims the candidate (sender IP, including a
      * gratuitous announcement with sip==tip) or probes for it is a
@@ -10654,6 +10663,7 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
             return;
         }
     }
+#endif /* WOLFIP_ENABLE_DHCP */
 
     /* An unconfigured interface (no assigned address) must not answer
      * ARP requests: matching tip against a zero conf->ip would let a
@@ -10690,6 +10700,7 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     else if (arp->opcode == ee16(ARP_REPLY)) {
         ip4 sip = ee32(arp->sip);
         int pending;
+#if WOLFIP_ENABLE_DHCP
         /* RFC 4331 DAD: a reply on the probing interface claiming the
          * candidate is a conflict, unless it is our own MAC (looped probe).
          * Bound to the DAD interface + recorded candidate so a reply on
@@ -10700,6 +10711,7 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
                 dhcp_dad_conflict(s);
             return;
         }
+#endif /* WOLFIP_ENABLE_DHCP */
         /* Validate sender IP: reject broadcast, multicast, zero, and
          * our own address -- same checks as the ARP request handler. */
         if (sip == IPADDR_ANY || sip == conf->ip ||
@@ -12876,7 +12888,9 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 
     /* Handle timers */
     handle_timers(s, now);
+#if WOLFIP_ENABLE_DHCP
     dhcp_timer_recover(s);
+#endif
 #ifdef IP_MULTICAST
     igmp_timer_recover(s);
 #endif
