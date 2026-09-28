@@ -604,6 +604,48 @@ START_TEST(test_tcp_input_syn_rcvd_rst_good_seq_reverts_to_listen)
 }
 END_TEST
 
+/* Reverting a SYN_RCVD listener to LISTEN must leave no armed RTO timer in
+ * the heap. The SYN-ACK retransmit (control RTO) shares the tmr_rto slot, and
+ * tcp_preaccept_timeout_stop - called before the state reset - cancels it.
+ * Guard the invariant: a stale timer would fire after the next SYN and burn a
+ * retry from the new connection's SYN-ACK budget. */
+START_TEST(test_listener_revert_cancels_synack_retransmit_timer)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_SYN_RCVD;
+    ts->sock.tcp.is_listener = 1;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.rto = 200;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 8080;
+    ts->dst_port = 40000;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+
+    /* Arm the SYN-ACK retransmit (control RTO). */
+    ck_assert_int_eq(tcp_ctrl_rto_start(ts, s.last_tick), 0);
+    ck_assert_uint_eq(s.timers.size, 1U);
+
+    tcp_listener_revert_to_listen(ts);
+
+    /* The timer must be gone from the heap, not just zeroed out. */
+    ck_assert_uint_eq(s.timers.size, 0U);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LISTEN);
+}
+END_TEST
+
 /* RST in SYN_RCVD with matching seq on an accepted (non-listener) socket →
  * the half-open connection is torn down and CB_EVENT_CLOSED is delivered, so a
  * blocked consumer wakes instead of waiting on a phantom LISTEN socket. */
