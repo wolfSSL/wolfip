@@ -1615,7 +1615,9 @@ static inline uint32_t wolfIP_frame_mtu(struct wolfIP *s, unsigned int if_idx)
     return wolfIP_ll_frame_mtu(wolfIP_ll_at(s, if_idx));
 }
 
-/* IP payload MTU derived from the frame budget after removing link overhead. */
+/* IP MTU (header + payload) derived from the frame budget after removing
+ * link overhead. Callers subtract IP_HEADER_LEN themselves to size a
+ * payload. */
 static inline uint32_t wolfIP_ip_mtu(struct wolfIP *s, unsigned int if_idx)
 {
     uint32_t mtu = wolfIP_frame_mtu(s, if_idx);
@@ -1623,8 +1625,8 @@ static inline uint32_t wolfIP_ip_mtu(struct wolfIP *s, unsigned int if_idx)
     if (mtu <= ETH_HEADER_LEN)
         return 0;
     mtu -= ETH_HEADER_LEN;
-    /* Frame MTU may exceed the IPv4 payload maximum (e.g. 1536-byte link
-     * frames), but IP payload MTU remains capped at the standard 1500 bytes. */
+    /* Frame MTU may exceed the IPv4 maximum (e.g. 1536-byte link frames),
+     * but the IP MTU remains capped at the standard 1500 bytes. */
     if (mtu > IP_MTU_MAX)
         mtu = IP_MTU_MAX;
     return mtu;
