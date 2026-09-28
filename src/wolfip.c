@@ -1374,6 +1374,7 @@ static void tcp_persist_start(struct tsocket *t, uint64_t now);
 static void tcp_persist_stop(struct tsocket *t);
 static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms);
 static void tcp_rto_cb(void *arg);
+static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t now);
 static int tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
 static void tcp_ctrl_rto_give_up(struct tsocket *t);
@@ -4286,13 +4287,13 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
     if (!t || t->proto != WI_IPPROTO_TCP)
         return 0;
     if ((t->sock.tcp.state == TCP_SYN_SENT) ||
-            (t->sock.tcp.state == TCP_SYN_RCVD) ||
-            (t->sock.tcp.state == TCP_LAST_ACK))
+            (t->sock.tcp.state == TCP_SYN_RCVD))
         return 1;
-    /* In FIN_WAIT_1 keep data-RTO active while payload is still outstanding.
-     * Switch to control-RTO only after data is fully drained and only FIN/ACK
-     * teardown control traffic remains. */
-    if ((t->sock.tcp.state == TCP_FIN_WAIT_1) &&
+    /* In FIN_WAIT_1 and LAST_ACK keep data-RTO active while payload is still
+     * outstanding. Switch to control-RTO only after data is fully drained and
+     * only the FIN/ACK teardown control traffic remains. */
+    if (((t->sock.tcp.state == TCP_FIN_WAIT_1) ||
+             (t->sock.tcp.state == TCP_LAST_ACK)) &&
             (t->sock.tcp.bytes_in_flight == 0) &&
             !tcp_has_pending_unsent_payload((struct tsocket *)t))
         return 1;
@@ -5767,6 +5768,22 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             new_tmr.arg = t;
             t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, new_tmr);
         }
+        if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                !t->sock.tcp.preaccept_timeout_active &&
+                t->sock.tcp.bytes_in_flight == 0 &&
+                !tcp_has_pending_unsent_payload(t) &&
+                (t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                 t->sock.tcp.state == TCP_LAST_ACK) &&
+                t->sock.tcp.tmr_rto == NO_TIMER) {
+            /* Data fully drained but the FIN is still in flight: hand the RTO
+             * back to the control path so the FIN keeps being retransmitted.
+             * The !pending-unsent gate keeps it from taking over while data is
+             * still queued: arming the control RTO there leaves ctrl_rto_active
+             * set, and the data timer flush swaps in would then fire into a
+             * bail in tcp_rto_cb, delaying the first data retransmit by an RTO. */
+            if (tcp_ctrl_rto_start(t, t->S->last_tick) < 0)
+                tcp_ctrl_rto_give_up(t);
+        }
         if (t->sock.tcp.bytes_in_flight < inflight_pre) {
             t->events |= CB_EVENT_WRITABLE;
         }
@@ -6530,7 +6547,12 @@ static void tcp_rto_cb(void *arg)
     }
     if (tcp_ctrl_state_needs_rto(ts) || ts->sock.tcp.ctrl_rto_active) {
         if (!tcp_ctrl_state_needs_rto(ts)) {
+            /* Data is still outstanding (drain check failed): the control RTO
+             * that close() armed over the data timer must yield. Stop it and
+             * hand the RTO back to the data path, which re-arms the data timer
+             * from the in-flight descriptors. */
             tcp_ctrl_rto_stop(ts);
+            tcp_resync_inflight(ts->S, ts, ts->S->last_tick);
             return;
         }
         if (ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) {
@@ -6571,8 +6593,14 @@ static void tcp_rto_cb(void *arg)
         }
     }
     if (ts->sock.tcp.state != TCP_ESTABLISHED &&
-            ts->sock.tcp.state != TCP_FIN_WAIT_1)
+            ts->sock.tcp.state != TCP_FIN_WAIT_1 &&
+            ts->sock.tcp.state != TCP_CLOSE_WAIT &&
+            ts->sock.tcp.state != TCP_LAST_ACK) {
+        /* The fired timer's id is stale once the heap popped it: clear it so a
+         * later tcp_resync_inflight() can re-arm the data RTO. */
+        ts->sock.tcp.tmr_rto = NO_TIMER;
         return;
+    }
     /* RFC 6675 / RFC 2018 guidance: after an RTO, SACK scoreboard must not be
      * trusted (receiver may renege). Fall back to cumulative-ACK driven
      * retransmission until forward ACK progress rebuilds SACK state. */

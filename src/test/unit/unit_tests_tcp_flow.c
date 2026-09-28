@@ -2107,6 +2107,63 @@ START_TEST(test_tcp_ack_closes_last_ack_socket)
 }
 END_TEST
 
+/* The control (FIN) RTO must not be armed over window-blocked data: when the
+ * data is fully acked (bytes_in_flight == 0) but more payload is still queued
+ * unsent, the data RTO owns the retransmit. Arming the control RTO here would
+ * leave ctrl_rto_active set, and the data timer that flush swaps in would then
+ * fire into a bail in tcp_rto_cb, delaying the first data retransmit by an RTO.
+ * The gate is !tcp_has_pending_unsent_payload in the tcp_ack handoff block. */
+START_TEST(test_tcp_ack_ctrl_rto_not_armed_over_blocked_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *data_desc;
+    struct pkt_desc *pending_desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->sock.tcp.snd_una = 1000;  /* in-flight data starts here */
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.last = 1008;     /* the FIN is at 1008 */
+    ts->sock.tcp.bytes_in_flight = 8; /* the in-flight data */
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* In-flight data (seq 1000, len 8) that the ACK will drain. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK), 0);
+    data_desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(data_desc);
+    data_desc->flags |= PKT_FLAG_SENT;
+    /* Unsent data queued behind it (seq 1008): pending payload. */
+    ts->sock.tcp.seq = 1008;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 8, TCP_FLAG_ACK), 0);
+    pending_desc = fifo_next(&ts->sock.tcp.txbuf, data_desc);
+    ck_assert_ptr_nonnull(pending_desc);
+    ts->sock.tcp.seq = 1008;  /* SND.NXT after the in-flight data */
+
+    /* A forward ACK that drains the in-flight data (ack 1008) but does not
+     * ack the FIN (fin_acked 1009): state stays FIN_WAIT_1, bIF -> 0. */
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ack = ee32(1008);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+
+    tcp_ack(ts, &ackseg);
+
+    /* State unchanged (the FIN was not acked) and the data is drained... */
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+    ck_assert_int_eq(ts->sock.tcp.bytes_in_flight, 0);
+    /* ...and the control RTO must not be armed over the blocked data. */
+    ck_assert_int_eq(ts->sock.tcp.ctrl_rto_active, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_ack_last_seq_match_no_close)
 {
     struct wolfIP s;

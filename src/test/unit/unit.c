@@ -592,6 +592,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_synack_cancels_control_rto);
     tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_requeues_finack_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_full_txbuf_keeps_retry_budget);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_close_wait_retransmits_data);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_last_ack_with_data_retransmits_data);
+    tcase_add_test(tc_utils, test_tcp_ctrl_state_needs_rto_last_ack_waits_for_payload_drain);
     tcase_add_test(tc_utils, test_tcp_ctrl_state_needs_rto_fin_wait_1_waits_for_payload_drain);
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_with_data_uses_data_recovery);
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_no_data_requeues_finack);
@@ -691,6 +694,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_ack_duplicate_resend_clears_sent);
     tcase_add_test(tc_utils, test_tcp_ack_discards_zero_len_segment);
     tcase_add_test(tc_utils, test_tcp_ack_closes_last_ack_socket);
+    tcase_add_test(tc_utils, test_tcp_ack_ctrl_rto_not_armed_over_blocked_data);
     tcase_add_test(tc_utils, test_tcp_ack_last_seq_match_no_close);
     tcase_add_test(tc_utils, test_tcp_ack_fresh_desc_updates_rtt_existing);
     tcase_add_test(tc_utils, test_tcp_ack_retransmitted_desc_skips_rtt_update);
