@@ -532,7 +532,7 @@ esp_iv_len_from_enc(esp_enc_t enc)
 
 #ifdef DEBUG_ESP
 #define esp_print_sep \
-    LOG("+------------------+\n")
+    ESP_LOG("+------------------+\n")
 #define esp_str_4hex \
     "|  %02x  %02x  %02x  %02x  |"
 #define esp_str_skip \
@@ -540,24 +540,36 @@ esp_iv_len_from_enc(esp_enc_t enc)
 #define esp_pad_fld \
     "| %02x%02x | %02d | 0x%02x |"
 
+/* Prints an esp packet field (spi, seq, iv, payload, etc).
+ * The majority of these are minimum 4 bytes, or 4 byte multiple.
+ * */
 static inline void
 esp_print_field(const char * fld, const uint8_t * val,
                 uint32_t val_len)
 {
     esp_print_sep;
-    LOG(esp_str_4hex " (%s, %d bytes)\n",
-        val[0], val[1], val[2], val[3], fld, val_len);
-    if (val_len > 4) {
-        for (size_t i = 4; i < val_len; i += 4) {
-            if (i > 16 || (i + 4) > val_len) {
-                LOG(esp_str_skip "\n");
-                break;
-            }
+    if (val_len < 4) {
+        /* short field */
+        ESP_LOG(esp_str_skip " (%s, %d bytes)\n", fld, val_len);
+    }
+    else {
+        /* print first 4 bytes, and subsequent full multiples of 4. */
+        ESP_LOG(esp_str_4hex " (%s, %d bytes)\n",
+                val[0], val[1], val[2], val[3], fld, val_len);
+        if (val_len > 4) {
+            for (size_t i = 4; i < val_len; i += 4) {
+                if (i > 16 || (i + 4) > val_len) {
+                    /* short remainder */
+                    ESP_LOG(esp_str_skip "\n");
+                    break;
+                }
 
-            LOG(esp_str_4hex"\n",
-                val[0 + i], val[1 + i], val[2 + i], val[3 + i]);
+                ESP_LOG(esp_str_4hex"\n",
+                    val[0 + i], val[1 + i], val[2 + i], val[3 + i]);
+            }
         }
     }
+
     return;
 }
 
@@ -599,7 +611,7 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
 
     /* last 2 bytes of padding */
     padding = esp_data + esp_len - esp_sa->icv_len - 4;
-    LOG("esp packet: (%d bytes)\n", esp_len);
+    ESP_LOG("esp packet: (%d bytes)\n", esp_len);
 
    /**   ESP header
     *     ______________
@@ -623,8 +635,8 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
     *    | (variable length) | Length | Header |
     *     ------------------------------------- */
     esp_print_sep;
-    LOG(esp_pad_fld " (padding last 2 bytes, pad len, nxt hdr)\n",
-        padding[0], padding[1], pad_len, nxt_hdr);
+    ESP_LOG(esp_pad_fld " (padding last 2 bytes, pad len, nxt hdr)\n",
+            padding[0], padding[1], pad_len, nxt_hdr);
 
     if (icv) {
         esp_print_field("icv", icv, esp_sa->icv_len);
