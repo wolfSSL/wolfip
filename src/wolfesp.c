@@ -1701,6 +1701,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     uint16_t  icv_offset = 0;
     wolfIP_esp_sa * esp_sa = NULL;
     uint8_t   iv_len = 0;
+    uint32_t  oseq = 0;
 
     if (ip_hdr_len < IP_HEADER_LEN || orig_ip_len < ip_hdr_len) {
         ESP_LOG("error: ip_len below header: %u\n", orig_ip_len);
@@ -1756,14 +1757,15 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     memcpy(payload, esp_sa->spi, sizeof(esp_sa->spi));
     payload += ESP_SPI_LEN;
 
-    esp_sa->replay.oseq++;
-    if (esp_sa->replay.oseq == 0) {
-        esp_sa->replay.oseq--;
+    oseq = esp_sa->replay.oseq;
+    oseq++;
+
+    if (oseq == 0) {
         ESP_LOG("error: oseq overflow\n");
         return -1;
     }
-    esp_state_save(esp_sa);
-    seq_n = ee32(esp_sa->replay.oseq);
+
+    seq_n = ee32(oseq);
     memcpy(payload, &seq_n, sizeof(seq_n));
     payload += ESP_SEQ_LEN;
 
@@ -1911,6 +1913,10 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
     #ifdef DEBUG_ESP
     wolfIP_print_esp(esp_sa, esp_base, payload_len, pad_len, ip->proto);
     #endif /* DEBUG_ESP */
+
+    /* finally, commit the esp state */
+    esp_sa->replay.oseq = oseq;
+    esp_state_save(esp_sa);
 
     /* update len, set proto to ESP 0x32 (50), recalculate iphdr checksum. */
     ip->len = ee16(*ip_len);
