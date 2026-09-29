@@ -1321,6 +1321,11 @@ struct tsocket {
 static void close_socket(struct tsocket *ts);
 
 #if WOLFIP_RAWSOCKETS
+/* Ingress interface filter for raw sockets: WOLFIP_RAWSOCK_ANY_IF receives
+ * on every interface, a concrete value restricts reception to that one.
+ * Kept separate from if_idx, which is the egress route written by the
+ * transmit paths (connect/sendto/flush). */
+#define WOLFIP_RAWSOCK_ANY_IF 0xFF
 struct rawsocket {
     struct fifo rxbuf;
     struct fifo txbuf;
@@ -1332,6 +1337,7 @@ struct rawsocket {
 #endif
     uint16_t protocol;
     uint8_t if_idx;
+    uint8_t recv_if_idx;
     uint8_t dontroute;
     uint8_t ipheader_include;
     uint8_t recv_ttl;
@@ -1381,6 +1387,7 @@ static void tcp_persist_start(struct tsocket *t, uint64_t now);
 static void tcp_persist_stop(struct tsocket *t);
 static void tcp_rto_update_from_sample(struct tsocket *t, uint32_t sample_ms);
 static void tcp_rto_cb(void *arg);
+static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t now);
 static int tcp_ctrl_rto_start(struct tsocket *t, uint64_t now);
 static void tcp_ctrl_rto_stop(struct tsocket *t);
 static void tcp_ctrl_rto_give_up(struct tsocket *t);
@@ -1616,7 +1623,9 @@ static inline uint32_t wolfIP_frame_mtu(struct wolfIP *s, unsigned int if_idx)
     return wolfIP_ll_frame_mtu(wolfIP_ll_at(s, if_idx));
 }
 
-/* IP payload MTU derived from the frame budget after removing link overhead. */
+/* IP MTU (header + payload) derived from the frame budget after removing
+ * link overhead. Callers subtract IP_HEADER_LEN themselves to size a
+ * payload. */
 static inline uint32_t wolfIP_ip_mtu(struct wolfIP *s, unsigned int if_idx)
 {
     uint32_t mtu = wolfIP_frame_mtu(s, if_idx);
@@ -1624,8 +1633,8 @@ static inline uint32_t wolfIP_ip_mtu(struct wolfIP *s, unsigned int if_idx)
     if (mtu <= ETH_HEADER_LEN)
         return 0;
     mtu -= ETH_HEADER_LEN;
-    /* Frame MTU may exceed the IPv4 payload maximum (e.g. 1536-byte link
-     * frames), but IP payload MTU remains capped at the standard 1500 bytes. */
+    /* Frame MTU may exceed the IPv4 maximum (e.g. 1536-byte link frames),
+     * but the IP MTU remains capped at the standard 1500 bytes. */
     if (mtu > IP_MTU_MAX)
         mtu = IP_MTU_MAX;
     return mtu;
@@ -3201,6 +3210,7 @@ static struct rawsocket *raw_new_socket(struct wolfIP *s, int protocol, int iphe
             r->S = s;
             r->protocol = (uint16_t)protocol;
             r->ipheader_include = ipheader_include ? 1 : 0;
+            r->recv_if_idx = WOLFIP_RAWSOCK_ANY_IF;
             fifo_init(&r->rxbuf, r->rxmem, RXBUF_SIZE);
             fifo_init(&r->txbuf, r->txmem, TXBUF_SIZE);
             r->events |= CB_EVENT_WRITABLE;
@@ -3345,8 +3355,19 @@ static void icmp_try_deliver_tcp_error(struct wolfIP *s,
                     emb_seq = ee32(emb_seq);
                     snd_nxt = tcp_seq_inc(t->sock.tcp.snd_una, 1);
                     if (tcp_seq_leq(t->sock.tcp.snd_una, emb_seq) &&
-                            tcp_seq_lt(emb_seq, snd_nxt))
-                        close_socket(t);
+                            tcp_seq_lt(emb_seq, snd_nxt)) {
+                        if (t->sock.tcp.state == TCP_SYN_RCVD &&
+                                t->sock.tcp.is_listener) {
+                            /* A passive listener transitions in place to
+                             * SYN_RCVD; a hard ICMP error must abort only this
+                             * half-open connection, not destroy the listening
+                             * socket (RFC 1122 4.2.3.9). Mirror the RST and
+                             * control-RTO give-up guards. */
+                            tcp_listener_revert_to_listen(t);
+                        } else {
+                            close_socket(t);
+                        }
+                    }
                 }
             }
         }
@@ -3383,10 +3404,13 @@ static void raw_try_recv(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip
         /* Honour the bind contract, mirroring the TCP/UDP receive paths: a
          * socket bound to a specific local IP or interface must not capture
          * traffic for other destinations or arriving on other interfaces.
-         * bound_local_ip == IPADDR_ANY / if_idx == 0 mean "any". */
+         * bound_local_ip == IPADDR_ANY / recv_if_idx == ANY mean "any".
+         * recv_if_idx is the ingress bind; if_idx is the egress route and
+         * must not restrict reception. */
         if (r->bound_local_ip != IPADDR_ANY && r->bound_local_ip != ee32(ip->dst))
             continue;
-        if (r->if_idx != 0 && r->if_idx != (uint8_t)if_idx)
+        if (r->recv_if_idx != WOLFIP_RAWSOCK_ANY_IF &&
+                r->recv_if_idx != (uint8_t)if_idx)
             continue;
         if (fifo_push(&r->rxbuf, (void *)packet, payload_len) == 0) {
             r->last_pkt_ttl = ip->ttl;
@@ -4294,13 +4318,13 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
     if (!t || t->proto != WI_IPPROTO_TCP)
         return 0;
     if ((t->sock.tcp.state == TCP_SYN_SENT) ||
-            (t->sock.tcp.state == TCP_SYN_RCVD) ||
-            (t->sock.tcp.state == TCP_LAST_ACK))
+            (t->sock.tcp.state == TCP_SYN_RCVD))
         return 1;
-    /* In FIN_WAIT_1 keep data-RTO active while payload is still outstanding.
-     * Switch to control-RTO only after data is fully drained and only FIN/ACK
-     * teardown control traffic remains. */
-    if ((t->sock.tcp.state == TCP_FIN_WAIT_1) &&
+    /* In FIN_WAIT_1 and LAST_ACK keep data-RTO active while payload is still
+     * outstanding. Switch to control-RTO only after data is fully drained and
+     * only the FIN/ACK teardown control traffic remains. */
+    if (((t->sock.tcp.state == TCP_FIN_WAIT_1) ||
+             (t->sock.tcp.state == TCP_LAST_ACK)) &&
             (t->sock.tcp.bytes_in_flight == 0) &&
             !tcp_has_pending_unsent_payload((struct tsocket *)t))
         return 1;
@@ -5775,6 +5799,22 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
             new_tmr.arg = t;
             t->sock.tcp.tmr_rto = timers_binheap_insert(&t->S->timers, new_tmr);
         }
+        if (!t->sock.tcp.fin_wait_2_timeout_active &&
+                !t->sock.tcp.preaccept_timeout_active &&
+                t->sock.tcp.bytes_in_flight == 0 &&
+                !tcp_has_pending_unsent_payload(t) &&
+                (t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                 t->sock.tcp.state == TCP_LAST_ACK) &&
+                t->sock.tcp.tmr_rto == NO_TIMER) {
+            /* Data fully drained but the FIN is still in flight: hand the RTO
+             * back to the control path so the FIN keeps being retransmitted.
+             * The !pending-unsent gate keeps it from taking over while data is
+             * still queued: arming the control RTO there leaves ctrl_rto_active
+             * set, and the data timer flush swaps in would then fire into a
+             * bail in tcp_rto_cb, delaying the first data retransmit by an RTO. */
+            if (tcp_ctrl_rto_start(t, t->S->last_tick) < 0)
+                tcp_ctrl_rto_give_up(t);
+        }
         if (t->sock.tcp.bytes_in_flight < inflight_pre) {
             t->events |= CB_EVENT_WRITABLE;
         }
@@ -6538,49 +6578,61 @@ static void tcp_rto_cb(void *arg)
     }
     if (tcp_ctrl_state_needs_rto(ts) || ts->sock.tcp.ctrl_rto_active) {
         if (!tcp_ctrl_state_needs_rto(ts)) {
+            /* Data is still outstanding (drain check failed): the control RTO
+             * that close() armed over the data timer must yield. Stop it and
+             * fall through to the data-loss recovery below, which retransmits
+             * the outstanding payload now and re-arms the data RTO. The control
+             * timeout has already expired, so re-arming here and returning would
+             * delay the retransmit by a second RTO interval. */
             tcp_ctrl_rto_stop(ts);
-            return;
-        }
-        if (ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) {
-            tcp_ctrl_rto_stop(ts);
-            if (ts->sock.tcp.is_listener &&
-                    ts->sock.tcp.state == TCP_SYN_RCVD) {
-                /* Revert listen socket back to LISTEN instead of
-                 * destroying it, mirrors the accept() recovery path.
-                 * The helper drains the parked SYN-ACK from the TX FIFO
-                 * (see the accept() revert for why). */
-                tcp_listener_revert_to_listen(ts);
-            } else {
-                ts->sock.tcp.state = TCP_CLOSED;
-                close_socket(ts);
+        } else {
+            if (ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) {
+                tcp_ctrl_rto_stop(ts);
+                if (ts->sock.tcp.is_listener &&
+                        ts->sock.tcp.state == TCP_SYN_RCVD) {
+                    /* Revert listen socket back to LISTEN instead of
+                     * destroying it, mirrors the accept() recovery path.
+                     * The helper drains the parked SYN-ACK from the TX FIFO
+                     * (see the accept() revert for why). */
+                    tcp_listener_revert_to_listen(ts);
+                } else {
+                    ts->sock.tcp.state = TCP_CLOSED;
+                    close_socket(ts);
+                }
+                return;
             }
-            return;
-        }
-        {
-            int queued = 0;
+            {
+                int queued = 0;
 
-            if (ts->sock.tcp.state == TCP_SYN_SENT) {
-                queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
-            } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
-                queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
-            } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
-                queued = (tcp_send_finack(ts) == 0);
+                if (ts->sock.tcp.state == TCP_SYN_SENT) {
+                    queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
+                } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
+                    queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
+                } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
+                    queued = (tcp_send_finack(ts) == 0);
+                    if (queued)
+                        ts->sock.tcp.ctrl_rto_retries++;
+                    if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
+                        tcp_ctrl_rto_give_up(ts);
+                    return;
+                }
                 if (queued)
                     ts->sock.tcp.ctrl_rto_retries++;
                 if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
                     tcp_ctrl_rto_give_up(ts);
                 return;
             }
-            if (queued)
-                ts->sock.tcp.ctrl_rto_retries++;
-            if (tcp_ctrl_rto_start(ts, ts->S->last_tick) < 0)
-                tcp_ctrl_rto_give_up(ts);
-            return;
         }
     }
     if (ts->sock.tcp.state != TCP_ESTABLISHED &&
-            ts->sock.tcp.state != TCP_FIN_WAIT_1)
+            ts->sock.tcp.state != TCP_FIN_WAIT_1 &&
+            ts->sock.tcp.state != TCP_CLOSE_WAIT &&
+            ts->sock.tcp.state != TCP_LAST_ACK) {
+        /* The fired timer's id is stale once the heap popped it: clear it so a
+         * later tcp_resync_inflight() can re-arm the data RTO. */
+        ts->sock.tcp.tmr_rto = NO_TIMER;
         return;
+    }
     /* RFC 6675 / RFC 2018 guidance: after an RTO, SACK scoreboard must not be
      * trusted (receiver may renege). Fall back to cumulative-ACK driven
      * retransmission until forward ACK progress rebuilds SACK state. */
@@ -6766,6 +6818,69 @@ static struct pkt_desc *tcp_find_pending_retrans(struct tsocket *ts, struct pkt_
             break;
     }
     return NULL;
+}
+
+/* First queued pure ACK (no payload, ACK flag, not yet sent) at or after
+ * start. A window-blocked data segment must not hold these back. */
+static struct pkt_desc *tcp_find_pending_ack(struct tsocket *ts, struct pkt_desc *start)
+{
+    struct pkt_desc *scan;
+    uint32_t guard = 0;
+    uint32_t budget;
+
+    if (!ts || !start)
+        return NULL;
+    budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
+    scan = start;
+    while (scan && guard++ < budget) {
+        if (!(scan->flags & PKT_FLAG_SENT)) {
+            struct wolfIP_tcp_seg *seg =
+                (struct wolfIP_tcp_seg *)(ts->txmem + scan->pos + sizeof(*scan));
+            uint32_t seg_len = tcp_tx_desc_payload_len(ts, scan, seg);
+            /* A pure ACK is exactly the ACK flag: FIN|ACK, SYN|ACK, RST|ACK
+             * and PSH|ACK are control segments that must stay in order behind
+             * the data, not jump ahead of it. */
+            if (seg_len == 0 && seg->flags == TCP_FLAG_ACK)
+                return scan;
+        }
+        scan = fifo_next(&ts->sock.tcp.txbuf, scan);
+        if (!scan || scan == start)
+            break;
+    }
+    return NULL;
+}
+
+/* Sequence of the first queued-but-unsent data byte, or SND.NXT when no data
+ * is queued. A pure ACK sent ahead of queued data must carry this, not
+ * SND.NXT (which counts the queued bytes), to stay inside the peer window. */
+static uint32_t tcp_first_unsent_seq(struct tsocket *ts)
+{
+    struct pkt_desc *scan;
+    struct pkt_desc *head;
+    uint32_t guard = 0;
+    uint32_t budget;
+
+    if (!ts)
+        return 0;
+    budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
+    head = fifo_peek(&ts->sock.tcp.txbuf);
+    scan = head;
+    while (scan && guard++ < budget) {
+        struct wolfIP_tcp_seg *seg =
+            (struct wolfIP_tcp_seg *)(ts->txmem + scan->pos + sizeof(*scan));
+        uint32_t seg_len = tcp_tx_desc_payload_len(ts, scan, seg);
+        /* A retransmit re-sends an old byte (its SENT flag was cleared when it
+         * was marked for retransmission): it is not new unsent data, so skip it
+         * and report the first truly-new byte. Otherwise a pure ACK sent while a
+         * retransmit is still pending would carry the retransmit's old seq. */
+        if (seg_len > 0 && !(scan->flags & PKT_FLAG_SENT) &&
+                !(scan->flags & PKT_FLAG_RETRANS))
+            return ee32(seg->seq);
+        scan = fifo_next(&ts->sock.tcp.txbuf, scan);
+        if (!scan || scan == head)
+            break;
+    }
+    return ts->sock.tcp.seq;
 }
 
 static void close_socket(struct tsocket *ts)
@@ -7556,15 +7671,21 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         uint32_t payload_len = (uint32_t)len;
         uint32_t ip_mtu;
         uint32_t frame_len;
+        ip4 remote_ip;
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
+        /* Per-datagram addressing: an explicit sendto destination applies to
+         * this datagram only. The connected peer and icmp_try_recv's source
+         * filter are set only by connect(), and must survive this send even
+         * when the validation below fails. */
+        remote_ip = ts->remote_ip;
         if (sin) {
             if (addrlen < sizeof(struct wolfIP_sockaddr_in))
                 return -1;
-            ts->remote_ip = ee32(sin->sin_addr.s_addr);
+            remote_ip = ee32(sin->sin_addr.s_addr);
         }
-        if (ts->remote_ip == 0)
+        if (remote_ip == 0)
             return -1;
         if (ts->src_port == 0) {
             ts->src_port = port_alloc_random(s->icmpsockets, MAX_ICMPSOCKETS,
@@ -7580,7 +7701,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             ts->if_idx = (uint8_t)bound_if;
             ts->local_ip = ts->bound_local_ip;
         } else {
-            if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
+            if_idx = wolfIP_route_for_ip(s, remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
             ts->if_idx = (uint8_t)if_idx;
             if (ts->local_ip == 0) {
@@ -7611,7 +7732,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
          * destination/source at enqueue time; the flush only adds the
          * link-layer header. */
         ip_output_add_header(ts, &icmp->ip, WI_IPPROTO_ICMP,
-                ts->local_ip, ts->remote_ip,
+                ts->local_ip, remote_ip,
                 (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, icmp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
@@ -8957,7 +9078,10 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             return -WOLFIP_EINVAL;
         if (sin->sin_family != AF_INET)
             return -WOLFIP_EINVAL;
-        rs->if_idx = (uint8_t)if_idx;
+        if (bind_ip == IPADDR_ANY)
+            rs->recv_if_idx = WOLFIP_RAWSOCK_ANY_IF;
+        else
+            rs->recv_if_idx = (uint8_t)if_idx;
         rs->bound_local_ip = bind_ip;
         if (bind_ip != IPADDR_ANY)
             rs->local_ip = bind_ip;
@@ -10950,7 +11074,8 @@ int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
 #if WOLFIP_RAWSOCKETS
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
         if (s->rawsockets[i].used &&
-                s->rawsockets[i].if_idx == (uint8_t)if_idx)
+                (s->rawsockets[i].recv_if_idx == (uint8_t)if_idx ||
+                 s->rawsockets[i].if_idx == (uint8_t)if_idx))
             return -WOLFIP_EBUSY;
     }
 #if WOLFIP_PACKET_SOCKETS
@@ -11238,6 +11363,16 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
             ip4 src = ee32(ip->src);
             int rpf_drop = 0;
 
+            /* Zero-network-prefix source: RFC 1812 §4.3.2.7 forbids an ICMP
+             * error for a packet whose source has a zero network prefix, and
+             * such a source is invalid for transit. The general filter above
+             * lets src=0.0.0.0 through while the DHCP client is unbound (for
+             * local DHCP/BOOTP traffic), but a non-local (transit) packet with
+             * a zero source must be dropped here, not forwarded or used as an
+             * ICMP-error destination. */
+            if ((src & 0xFF000000U) == 0) {
+                rpf_drop = 1;
+            }
             /* Martian source: 127.0.0.0/8 must not arrive on a non-loopback
              * interface (and must never be forwarded). */
             if ((src & WOLFIP_LOOPBACK_MASK) ==
@@ -12416,6 +12551,7 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
         uint32_t send_budget = fifo_desc_budget(&ts->sock.tcp.txbuf);
         struct pkt_desc *desc;
         struct wolfIP_tcp_seg *tcp;
+        int ack_jump = 0;
         tcp_resync_inflight(s, ts, now);
         if (ts->sock.tcp.ack_retry_pending) {
             int ack_ret = tcp_send_empty(ts, TCP_FLAG_ACK);
@@ -12470,12 +12606,28 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                 seg_ip_len = tcp_tx_desc_ip_len(ts, desc, tcp);
                 seg_hdr_len = IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2);
                 seg_payload_len = (seg_ip_len > seg_hdr_len) ? (seg_ip_len - seg_hdr_len) : 0;
+                /* After jumping past a window-blocked data segment to send the
+                 * pure ACKs behind it, stop at the next non-pure-ACK segment
+                 * (data, FIN, RST): a zero-length segment such as a FIN would
+                 * otherwise pass the send condition and go out ahead of the
+                 * blocked data. Only further pure ACKs are sent. */
+                if (ack_jump && !(seg_payload_len == 0 &&
+                                  tcp->flags == TCP_FLAG_ACK))
+                    break;
                 if (is_retrans || seg_payload_len == 0 ||
                         (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
                     struct wolfIP_timer new_tmr = {};
                     size = seg_ip_len;
                     tcp->ack = ee32(ts->sock.tcp.ack);
                     tcp->win = ee16(tcp_adv_win(ts, 1));
+                    if (seg_payload_len == 0 && tcp->flags == TCP_FLAG_ACK) {
+                        /* A pure ACK sent ahead of queued data must carry the
+                         * first unsent sequence, not SND.NXT: an out-of-window
+                         * SEQ is discarded by the peer (RFC 9293 3.10.7.4). A
+                         * FIN/SYN/RST keeps its own sequence (the byte after
+                         * the queued data). */
+                        tcp->seq = ee32(tcp_first_unsent_seq(ts));
+                    }
                     ip_output_add_header(ts, (struct wolfIP_ip_packet *)tcp, WI_IPPROTO_TCP,
                 ts->local_ip, ts->remote_ip, size);
 #ifdef ETHERNET
@@ -12566,12 +12718,25 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     }
                 } else {
                     struct pkt_desc *rexmit_desc = NULL;
+                    struct pkt_desc *ack_desc = NULL;
                     if (seg_payload_len > 0 && ts->sock.tcp.peer_rwnd == 0)
                         tcp_persist_start(ts, now);
                     if (!is_retrans) {
                         rexmit_desc = tcp_find_pending_retrans(ts, desc);
                         if (rexmit_desc && rexmit_desc != desc) {
                             desc = rexmit_desc;
+                            continue;
+                        }
+                        /* A window-blocked data segment must not hold back the
+                         * pure ACKs queued behind it (RFC 5681 4.2): the peer
+                         * needs our ACKs to advance its state even while our
+                         * send window is closed. Jump to the first queued pure
+                         * ACK so it is sent now; its SEQ is fixed to the first
+                         * unsent byte by the send path above. */
+                        ack_desc = tcp_find_pending_ack(ts, desc);
+                        if (ack_desc) {
+                            desc = ack_desc;
+                            ack_jump = 1;
                             continue;
                         }
                     }
@@ -12967,7 +13132,6 @@ unsigned int wolfIP_route_count(struct wolfIP *s)
 int wolfIP_route_get(struct wolfIP *s, unsigned int route_idx,
                      struct wolfIP_route_info *info)
 {
-#if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
     unsigned int seen = 0U;
 
@@ -12987,18 +13151,11 @@ int wolfIP_route_get(struct wolfIP *s, unsigned int route_idx,
     }
 
     return -WOLFIP_EINVAL;
-#else
-    (void)s;
-    (void)route_idx;
-    (void)info;
-    return -WOLFIP_EINVAL;
-#endif
 }
 
 int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
                      uint8_t prefix_len, ip4 gateway)
 {
-#if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
     struct wolfIP_route_entry *free_slot = NULL;
     uint32_t mask;
@@ -13036,20 +13193,11 @@ int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
     free_slot->gateway = gateway;
     free_slot->order = s->route_generation++;
     return 0;
-#else
-    (void)s;
-    (void)if_idx;
-    (void)prefix;
-    (void)prefix_len;
-    (void)gateway;
-    return -WOLFIP_EINVAL;
-#endif
 }
 
 int wolfIP_route_delete(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
                         uint8_t prefix_len)
 {
-#if WOLFIP_ENABLE_FORWARDING
     unsigned int i;
     uint32_t mask;
 
@@ -13072,13 +13220,6 @@ int wolfIP_route_delete(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
     }
 
     return -WOLFIP_EINVAL;
-#else
-    (void)s;
-    (void)if_idx;
-    (void)prefix;
-    (void)prefix_len;
-    return -WOLFIP_EINVAL;
-#endif
 }
 
 int wolfIP_route_lookup(struct wolfIP *s, ip4 dest, unsigned int *if_idx,

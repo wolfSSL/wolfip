@@ -3058,6 +3058,67 @@ START_TEST(test_icmp_input_dest_unreach_port_unreachable_closes_syn_sent_tcp_soc
 }
 END_TEST
 
+/* A passive listener lives in SYN_RCVD (is_listener=1). A hard ICMP error must
+ * abort only the half-open connection and revert the socket to LISTEN, not
+ * destroy the listening endpoint. */
+START_TEST(test_icmp_input_dest_unreach_port_unreach_reverts_syn_rcvd_listener)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_icmp_dest_unreachable_packet icmp;
+    struct wolfIP_tcp_wire_prefix *orig;
+    uint32_t frame_len;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_SYN_RCVD;
+    ts->sock.tcp.is_listener = 1;
+    ts->sock.tcp.snd_una = 100; /* in-flight SYN-ACK occupies snd_una */
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0A0000FEU);
+    icmp.ip.dst = ee32(ts->local_ip);
+    icmp.ip.ttl = 64;
+    icmp.ip.proto = WI_IPPROTO_ICMP;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+    icmp.type = ICMP_DEST_UNREACH;
+    icmp.code = ICMP_PORT_UNREACH;
+
+    orig = (struct wolfIP_tcp_wire_prefix *)icmp.orig_packet;
+    orig->ip.ver_ihl = 0x45;
+    orig->ip.proto = WI_IPPROTO_TCP;
+    orig->ip.src = ee32(ts->local_ip);
+    orig->ip.dst = ee32(ts->remote_ip);
+    orig->ip.len = ee16(IP_HEADER_LEN + 8U);
+    orig->src_port = ee16(ts->src_port);
+    orig->dst_port = ee16(ts->dst_port);
+    /* Embedded SEQ must lie in [snd_una, snd_una+1): the SYN-ACK sequence. */
+    orig->seq = ee32(100);
+
+    icmp.csum = ee16(icmp_checksum((struct wolfIP_icmp_packet *)&icmp,
+                ICMP_DEST_UNREACH_SIZE));
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_DEST_UNREACH_SIZE);
+
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+
+    /* The listener reverts to LISTEN and stays a usable TCP socket; it is not
+     * destroyed (proto kept, state LISTEN, is_listener set). */
+    ck_assert_uint_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(ts->sock.tcp.is_listener, 1);
+}
+END_TEST
+
 START_TEST(test_icmp_input_dest_unreach_port_unreachable_quoted_ip_options_keep_established_tcp_socket)
 {
     struct wolfIP s;
@@ -4922,6 +4983,110 @@ START_TEST(test_tcp_rto_cb_last_ack_full_txbuf_keeps_retry_budget)
     ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 1);
     ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
     ck_assert_uint_eq(find_timer_expiry(&s, ts->sock.tcp.tmr_rto), 1400U);
+}
+END_TEST
+
+/* CLOSE_WAIT carries outbound data (peer half-closed, we still send). The RTO
+ * must retransmit a lost payload segment, not skip the state. */
+START_TEST(test_tcp_rto_cb_close_wait_retransmits_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSE_WAIT;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.snd_una = 101;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+/* LAST_ACK with payload still in flight: the control RTO armed by close() must
+ * yield to the data path, which retransmits the data. The FIN is re-queued only
+ * once the data drains (covered by the drained LAST_ACK tests). */
+START_TEST(test_tcp_rto_cb_last_ack_with_data_retransmits_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.snd_una = 101;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    /* close() armed the control RTO over the data timer. */
+    s.last_tick = 1000;
+    ck_assert_int_eq(tcp_ctrl_rto_start(ts, 1000), 0);
+
+    /* The control timeout has already expired: it yields to the data path and
+     * the outstanding payload is retransmitted now, not after a second RTO. */
+    tcp_rto_cb(ts);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 0);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
+/* LAST_ACK mirrors FIN_WAIT_1: control RTO only after the payload drains. */
+START_TEST(test_tcp_ctrl_state_needs_rto_last_ack_waits_for_payload_drain)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ts->sock.tcp.bytes_in_flight = 1;
+    ck_assert_int_eq(tcp_ctrl_state_needs_rto(ts), 0);
+
+    ts->sock.tcp.bytes_in_flight = 0;
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    ck_assert_int_eq(tcp_ctrl_state_needs_rto(ts), 0);
+
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ck_assert_int_eq(tcp_ctrl_state_needs_rto(ts), 1);
 }
 END_TEST
 

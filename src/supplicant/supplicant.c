@@ -563,8 +563,8 @@ static int supp_handle_eap_success(struct wolfip_supplicant *s)
     if (ret != 0) {
         return -1;
     }
-    /* RFC 5216: PMK = MSK[0..31]. The remaining 32 bytes form the EMSK
-     * and are unused in v1. */
+    /* RFC 5216: PMK = MSK[0..31]. The remaining 32 bytes are the unused MSK
+     * tail, not the EMSK. */
     memcpy(s->pmk, msk, WPA_PMK_LEN);
     wpa_secure_zero(msk, sizeof(msk));
 

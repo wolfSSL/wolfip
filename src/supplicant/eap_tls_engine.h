@@ -101,7 +101,9 @@ int  eap_tls_engine_step(struct eap_tls_engine *e);
  * EAP-TLS Type-Code context), which requires a wolfSSL built with
  * --enable-keying-material (else the 1.3 export fails rather than returning
  * a wrong MSK). Caller takes msk[0..31] as the PMK for the subsequent 4-way
- * handshake; msk[32..63] becomes the EMSK (currently unused).
+ * handshake (RFC 5216 §2.3); msk[32..63] is the remainder of the MSK and is
+ * not the EMSK - the EMSK is a separate 64-octet value this function does
+ * not derive.
  *
  * Returns 0 on success.
  */

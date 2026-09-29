@@ -7864,7 +7864,7 @@ START_TEST(test_raw_socket_recv_honors_bound_local_ip_and_if)
 
     /* Bound to 10.0.0.1: a packet destined elsewhere must be filtered out. */
     rs->bound_local_ip = 0x0A000001U;
-    rs->if_idx = 0;
+    rs->recv_if_idx = WOLFIP_RAWSOCK_ANY_IF;
     raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A0000FEU);
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
@@ -7878,18 +7878,78 @@ START_TEST(test_raw_socket_recv_honors_bound_local_ip_and_if)
 
     /* Catch-all destination but bound to a different interface: filtered. */
     rs->bound_local_ip = IPADDR_ANY;
-    rs->if_idx = (uint8_t)(TEST_PRIMARY_IF + 1U);
+    rs->recv_if_idx = (uint8_t)(TEST_PRIMARY_IF + 1U);
     raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
                 NULL, 0), -WOLFIP_EAGAIN);
 
-    /* if_idx == 0 means "any interface": delivered on the arriving one. */
-    rs->if_idx = 0;
+    /* recv_if_idx == ANY means "any interface": delivered on the arriving one. */
+    rs->recv_if_idx = WOLFIP_RAWSOCK_ANY_IF;
     raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
     ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
                 NULL, 0), delivered);
+}
+END_TEST
+
+START_TEST(test_raw_socket_send_and_wildcard_bind_keep_any_if_recv)
+{
+    struct wolfIP s;
+    int sd;
+    struct rawsocket *rs;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t frame_buf[sizeof(struct wolfIP_ip_packet) + 8];
+    struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
+    uint8_t rxbuf[64];
+    uint8_t payload[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    const int delivered = IP_HEADER_LEN + 8;
+
+    setup_stack_with_two_ifaces(&s, 0x0A000001U, 0x0B000001U);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    rs = &s.rawsockets[SOCKET_UNMARK(sd)];
+
+    /* Send one datagram to the second subnet: the egress route lands in
+     * if_idx. That must not turn the socket into a single-interface
+     * receiver. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0B000002U);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload),
+            0, (const struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+    ck_assert_uint_eq(rs->if_idx, (uint8_t)TEST_SECOND_IF);
+
+    /* A frame arriving on the primary interface is still delivered. */
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0A000001U);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            NULL, 0), delivered);
+
+    /* ...and one arriving on the second interface is delivered too. The
+     * frame must carry the second interface's MAC as eth dst, or the L2
+     * dispatch drops it before the raw tap. */
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0B000001U);
+    memcpy(frame->eth.dst, s.ll_dev[TEST_SECOND_IF].mac, 6);
+    wolfIP_recv_ex(&s, TEST_SECOND_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            NULL, 0), delivered);
+
+    /* A wildcard bind keeps reception on every interface, not just the
+     * primary one. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, sd,
+            (const struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(rs->recv_if_idx, WOLFIP_RAWSOCK_ANY_IF);
+    raw_bind_build_frame(&s, frame, sizeof(frame_buf), 0x0B000001U);
+    memcpy(frame->eth.dst, s.ll_dev[TEST_SECOND_IF].mac, 6);
+    wolfIP_recv_ex(&s, TEST_SECOND_IF, frame, RAW_BIND_FRAME_LEN);
+    ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, rxbuf, sizeof(rxbuf), 0,
+            NULL, 0), delivered);
 }
 END_TEST
 

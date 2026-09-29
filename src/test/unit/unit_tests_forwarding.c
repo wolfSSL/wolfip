@@ -152,6 +152,55 @@ START_TEST(test_fwd_first_frag_ttl1_sends_ttl_exceeded)
 END_TEST
 
 /* =========================================================================
+ * RFC 1812 4.3.2.7: zero-network-prefix source, transit, TTL=1 - silent
+ * drop
+ * =========================================================================
+ * The general per-packet filter lets src=0.0.0.0 through while the DHCP
+ * client is unbound (for local DHCP/BOOTP traffic). A non-local (transit)
+ * packet with a zero source must not be relayed or used as an ICMP-error
+ * destination: RFC 1812 4.3.2.7 forbids an ICMP error for a packet whose
+ * source has a zero network prefix. Drop it in the forwarding RPF block,
+ * not a Time Exceeded addressed to 0.0.0.0.
+ */
+START_TEST(test_fwd_zero_source_transit_ttl1_silent_drop)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 8];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    static const uint8_t dest_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(NULL, NULL);
+    fwd_arp_store(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+    /* Unbound DHCP: the general zero-source filter is bypassed, so the
+     * forwarding RPF block is what must drop the zero-source transit packet. */
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    last_frame_sent_count = 0;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type  = ee16(ETH_TYPE_IP);
+    ip->ver_ihl   = 0x45;
+    ip->flags_fo  = ee16(0x2000U); /* MF=1, offset=0 (first fragment) */
+    ip->ttl       = 1;
+    ip->proto     = WI_IPPROTO_UDP;
+    ip->len       = ee16(IP_HEADER_LEN + 8);
+    ip->src       = ee32(0x00010203U); /* 0.1.2.3: in 0/8, not the exact zero */
+    ip->dst       = ee32(dest_ip);
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Silent: no Time Exceeded addressed to 0.1.2.3, no relay. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+/* =========================================================================
  * RFC 1812 4.3.2.7: non-first fragment, DF set, larger than egress MTU
  * - silent drop
  * =========================================================================
