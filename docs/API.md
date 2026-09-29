@@ -159,6 +159,15 @@ Accepts a connection on a listening socket.
   - addrlen: Length of address structure
 - Returns: New socket descriptor or negative error code
 
+```c
+int wolfIP_sock_abort(struct wolfIP *s, int sockfd);
+```
+Abortive close, like `SO_LINGER` with a zero timeout: sends an RST in `SYN_RCVD`, `ESTABLISHED`, `CLOSE_WAIT`, `FIN_WAIT_1` and `FIN_WAIT_2` (other states, such as `CLOSING` and `LAST_ACK`, are released without one), and releases the socket at once instead of waiting for a FIN exchange the peer may never complete. Also valid on a socket whose `wolfIP_sock_close()` returned `-WOLFIP_EAGAIN`, as long as no socket has been created or accepted since (see the return values under Data Transfer).
+- Parameters:
+  - s: wolfIP instance
+  - sockfd: TCP socket descriptor
+- Returns: 0 on success, `-WOLFIP_EINVAL` for a bad or non-TCP descriptor
+
 ### Data Transfer
 ```c
 int wolfIP_sock_send(struct wolfIP *s, int sockfd, const void *buf, size_t len, int flags);
@@ -179,6 +188,18 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
 ```
 Send/receive data on a datagram socket.
 - Parameters similar to send/recv with additional address parameters
+
+wolfIP never blocks, so every call above can ask the caller to retry. On a TCP socket they return:
+
+| Value | Meaning |
+|-------|---------|
+| `> 0` | Bytes transferred, possibly fewer than requested |
+| `0` | End of stream: the peer closed and nothing is left to read |
+| `-WOLFIP_EAGAIN` | Retry later: no data queued, no transmit space, or the socket is still connecting (`SYN_SENT`/`SYN_RCVD`) |
+| `-WOLFIP_EINVAL` | Bad descriptor or arguments |
+| `-1` | The operation cannot succeed on this socket (a listener, or a closing state) |
+
+`wolfIP_sock_close()` follows the same convention: on a connected socket it starts the FIN exchange and returns `-WOLFIP_EAGAIN`. The stack then releases the descriptor by itself, without notification, once the exchange completes, the peer resets, or the close times out, and the next `wolfIP_sock_socket()` or `wolfIP_sock_accept()` can hand out the same number. Calling `wolfIP_sock_close()` or `wolfIP_sock_abort()` on it again is therefore only safe while no socket has been created or accepted since; after that, the call acts on the new socket.
 
 ## Stack Interface Functions
 

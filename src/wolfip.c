@@ -1398,6 +1398,7 @@ static void tcp_preaccept_timeout_stop(struct tsocket *t);
 static void tcp_listener_revert_to_listen(struct tsocket *t);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
+static uint32_t tcp_snd_nxt(struct tsocket *t);
 static inline struct wolfIP_ll_dev *wolfIP_ll_at(struct wolfIP *s, unsigned int if_idx);
 static int wolfIP_mask_prefix_len(uint32_t mask, uint8_t *prefix_len);
 #if WOLFIP_ENABLE_FORWARDING
@@ -4032,17 +4033,13 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
     }
 }
 
-static int tcp_send_empty(struct tsocket *t, uint8_t flags)
+/* tcp must have room for sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN. */
+static uint32_t tcp_build_empty(struct tsocket *t, struct wolfIP_tcp_seg *tcp,
+        uint8_t flags)
 {
-    struct wolfIP_tcp_seg *tcp;
     uint8_t opt_len;
-    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
-    uint32_t frame_len;
 
-    if (!t)
-        return -WOLFIP_EINVAL;
-    tcp = (struct wolfIP_tcp_seg *)buffer;
-    memset(tcp, 0, sizeof(buffer));
+    memset(tcp, 0, sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN);
     opt_len = tcp_build_ack_options(t, tcp->data, TCP_MAX_OPTIONS_LEN);
     tcp->src_port = ee16(t->src_port);
     tcp->dst_port = ee16(t->dst_port);
@@ -4053,7 +4050,19 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
     tcp->win = ee16(tcp_adv_win(t, 1));
     tcp->csum = 0;
     tcp->urg = 0;
-    frame_len = sizeof(struct wolfIP_tcp_seg) + opt_len;
+    return sizeof(struct wolfIP_tcp_seg) + opt_len;
+}
+
+static int tcp_send_empty(struct tsocket *t, uint8_t flags)
+{
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
+    uint32_t frame_len;
+
+    if (!t)
+        return -WOLFIP_EINVAL;
+    tcp = (struct wolfIP_tcp_seg *)buffer;
+    frame_len = tcp_build_empty(t, tcp, flags);
     if (fifo_push(&t->sock.tcp.txbuf, tcp, frame_len) == 0)
         return 0;
 
@@ -4062,6 +4071,21 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
     if (flags == TCP_FLAG_ACK)
         return tcp_send_empty_immediate(t, tcp, frame_len);
     return -1;
+}
+
+/* Bypasses the TX FIFO, which the caller's teardown reinitialises. */
+static int tcp_send_reset_now(struct tsocket *t)
+{
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t buffer[sizeof(struct wolfIP_tcp_seg) + TCP_MAX_OPTIONS_LEN];
+    uint32_t frame_len;
+
+    if (!t)
+        return -WOLFIP_EINVAL;
+    tcp = (struct wolfIP_tcp_seg *)buffer;
+    frame_len = tcp_build_empty(t, tcp, TCP_FLAG_RST | TCP_FLAG_ACK);
+    tcp->seq = ee32(tcp_snd_nxt(t));
+    return tcp_send_empty_immediate(t, tcp, frame_len);
 }
 
 static void tcp_send_ack(struct tsocket *t)
@@ -4564,6 +4588,49 @@ static uint32_t tcp_tx_desc_payload_len(const struct tsocket *t,
     if (seg_ip_len <= seg_hdr_len)
         return 0;
     return seg_ip_len - seg_hdr_len;
+}
+
+/* SND.NXT as transmitted: seq runs ahead by queued data and never covers the
+ * FIN, and a peer drops an RST below its RCV.NXT without a challenge ACK. */
+static uint32_t tcp_snd_nxt(struct tsocket *t)
+{
+    struct pkt_desc *desc;
+    uint32_t guard = 0;
+    uint32_t budget;
+    uint32_t snd_nxt;
+    uint32_t fin_end;
+    int fin_unsent = 0;
+
+    snd_nxt = t->sock.tcp.snd_una;
+    if (t->sock.tcp.state == TCP_SYN_RCVD)
+        return tcp_seq_inc(snd_nxt, 1);
+    budget = fifo_desc_budget(&t->sock.tcp.txbuf);
+    desc = fifo_peek(&t->sock.tcp.txbuf);
+    while (desc && guard++ < budget) {
+        struct wolfIP_tcp_seg *seg;
+        uint32_t seg_end;
+
+        seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
+        seg_end = tcp_seq_inc(ee32(seg->seq),
+                tcp_tx_desc_payload_len(t, desc, seg));
+        if (desc->flags & (PKT_FLAG_SENT | PKT_FLAG_ACKED | PKT_FLAG_RETRANS)) {
+            if (tcp_seq_lt(snd_nxt, seg_end))
+                snd_nxt = seg_end;
+        } else if (seg->flags & TCP_FLAG_FIN) {
+            fin_unsent = 1;
+        }
+        desc = fifo_next(&t->sock.tcp.txbuf, desc);
+    }
+    if ((t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+            t->sock.tcp.state == TCP_FIN_WAIT_2 ||
+            t->sock.tcp.state == TCP_CLOSING ||
+            t->sock.tcp.state == TCP_LAST_ACK) &&
+            (!fin_unsent || t->sock.tcp.ctrl_rto_retries > 0)) {
+        fin_end = tcp_seq_inc(t->sock.tcp.last, 1);
+        if (tcp_seq_lt(snd_nxt, fin_end))
+            snd_nxt = fin_end;
+    }
+    return snd_nxt;
 }
 
 static int tcp_has_pending_unsent_payload(struct tsocket *t)
@@ -6208,6 +6275,13 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                 (void)wolfIP_filter_notify_socket_event(
                     WOLFIP_FILT_REMOTE_RESET, S, t,
                     t->local_ip, t->src_port, t->remote_ip, t->dst_port);
+                if (t->sock.tcp.is_listener &&
+                        (t->sock.tcp.state == TCP_ESTABLISHED ||
+                         t->sock.tcp.state == TCP_CLOSE_WAIT)) {
+                    /* Un-accepted connection: the socket is still the port. */
+                    tcp_listener_revert_to_listen(t);
+                    continue;
+                }
                 close_socket(t);
                 continue;
             }
@@ -6562,17 +6636,17 @@ static void tcp_rto_cb(void *arg)
         return;
     }
     if (ts->sock.tcp.preaccept_timeout_active) {
-        if (ts->sock.tcp.state != TCP_ESTABLISHED ||
+        if ((ts->sock.tcp.state != TCP_ESTABLISHED &&
+             ts->sock.tcp.state != TCP_CLOSE_WAIT) ||
                 !ts->sock.tcp.is_listener) {
             /* The socket left the pinned condition (accepted away, reset,
              * or closed): disarm quietly. */
             tcp_preaccept_timeout_stop(ts);
             return;
         }
-        /* The handshake completed but the application never accepted: an
-         * un-accepted established listener has no accept() path and no
-         * other timer, so the port would stay pinned forever. Revert to
-         * LISTEN; the peer's next segment gets the normal LISTEN RST. */
+        /* Never accepted: reclaim the port. The peer may have nothing left to
+         * send, so it would never draw the LISTEN RST; tell it now. */
+        (void)tcp_send_reset_now(ts);
         tcp_listener_revert_to_listen(ts);
         return;
     }
@@ -7332,6 +7406,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * and spinning the poll loop until the pre-accept timeout. */
             newts = tcp_new_socket(s);
             if (!newts) {
+                (void)tcp_send_reset_now(ts);
                 tcp_listener_revert_to_listen(ts);
                 return -1;
             }
@@ -7509,7 +7584,10 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EINVAL;
 
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-        if (ts->sock.tcp.state == TCP_SYN_RCVD)
+        if (ts->sock.tcp.is_listener)
+            return -1;
+        if (ts->sock.tcp.state == TCP_SYN_SENT ||
+                ts->sock.tcp.state == TCP_SYN_RCVD)
             return -WOLFIP_EAGAIN;
         if (ts->sock.tcp.state != TCP_ESTABLISHED &&
                 ts->sock.tcp.state != TCP_CLOSE_WAIT)
@@ -7947,6 +8025,9 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        /* Pre-accept data queued on a listener belongs to the accepted socket. */
+        if (ts->sock.tcp.is_listener)
+            return -1;
         if (ts->sock.tcp.state == TCP_CLOSE_WAIT)
         {
             /* In close-wait, return 0 if the queue is empty */
@@ -7987,7 +8068,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             if (queue_len(&ts->sock.tcp.rxbuf) == 0)
                 return 0;
             return queue_pop(&ts->sock.tcp.rxbuf, buf, len);
-        } else { /* Not established (LISTEN / SYN_SENT / SYN_RCVD / closing) */
+        } else if (ts->sock.tcp.state == TCP_SYN_SENT ||
+                ts->sock.tcp.state == TCP_SYN_RCVD) {
+            return -WOLFIP_EAGAIN;
+        } else { /* closing with nothing left to read */
             return -1;
         }
     } else if (IS_SOCKET_UDP(sockfd)) {
@@ -8699,6 +8783,43 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return 0;
 }
 
+int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
+{
+    struct tsocket *ts;
+
+    if (!s || sockfd < 0 || !IS_SOCKET_TCP(sockfd))
+        return -WOLFIP_EINVAL;
+    if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
+        return -WOLFIP_EINVAL;
+    ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+    if (ts->sock.tcp.state == TCP_LISTEN || ts->sock.tcp.state == TCP_CLOSED)
+        return wolfIP_sock_close(s, sockfd);
+    switch (ts->sock.tcp.state) {
+        case TCP_SYN_RCVD:
+        case TCP_ESTABLISHED:
+        case TCP_CLOSE_WAIT:
+        case TCP_FIN_WAIT_1:
+        case TCP_FIN_WAIT_2:
+            (void)tcp_send_reset_now(ts);
+            break;
+        default:
+            break;
+    }
+    ts->sock.tcp.state = TCP_CLOSED;
+    (void)wolfIP_filter_notify_socket_event(
+        WOLFIP_FILT_CLOSED, s, ts,
+        ts->local_ip, ts->src_port, ts->remote_ip, ts->dst_port);
+    if (ts->sock.tcp.is_listener) {
+        (void)wolfIP_filter_notify_socket_event(
+            WOLFIP_FILT_STOP_LISTENING, s, ts,
+            ts->local_ip, ts->src_port, IPADDR_ANY, 0);
+    }
+    ts->callback = NULL;
+    ts->callback_arg = NULL;
+    close_socket(ts);
+    return 0;
+}
+
 int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr,
                             const socklen_t *addrlen)
 {
@@ -8820,6 +8941,8 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd)
     if (IS_SOCKET_TCP(sockfd)) {
         if (!ts)
             return -WOLFIP_EINVAL;
+        if (ts->sock.tcp.is_listener)
+            return 1;
         if (ts->sock.tcp.state == TCP_SYN_SENT ||
                 ts->sock.tcp.state == TCP_SYN_RCVD)
             return 0;

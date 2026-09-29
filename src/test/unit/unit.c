@@ -635,6 +635,26 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_handoff_reemits_queued_ack);
     tcase_add_test(tc_utils, test_tcp_listener_closed_while_pending_is_not_readable);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_timeout_reverts_port);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_timeout_resets_peer);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_accept_no_socket_resets_peer);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_rst_keeps_listener);
+    tcase_add_test(tc_utils, test_tcp_listener_closed_preaccept_rst_frees_fin_wait_1);
+    tcase_add_test(tc_utils, test_tcp_listener_closed_preaccept_rst_frees_last_ack);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_close_wait_timeout_reverts_port);
+    tcase_add_test(tc_utils, test_sock_abort_established_resets_and_frees);
+    tcase_add_test(tc_utils, test_sock_abort_after_close_eagain_frees);
+    tcase_add_test(tc_utils, test_sock_abort_without_peer_sends_nothing);
+    tcase_add_test(tc_utils, test_sock_abort_fin_wait_1_rst_covers_sent_fin);
+    tcase_add_test(tc_utils, test_sock_abort_fin_wait_2_rst_covers_acked_fin);
+    tcase_add_test(tc_utils, test_sock_abort_syn_rcvd_rst_covers_syn);
+    tcase_add_test(tc_utils, test_sock_abort_queued_data_rst_at_snd_una);
+    tcase_add_test(tc_utils, test_sock_abort_preaccept_listener_stops_listening);
+    tcase_add_test(tc_utils, test_sock_abort_after_data_rto_rst_covers_sent_data);
+    tcase_add_test(tc_utils, test_sock_abort_fin_behind_unacked_data_covers_fin);
+    tcase_add_test(tc_utils, test_sock_abort_requeued_fin_covers_fin);
+    tcase_add_test(tc_utils, test_sock_abort_close_wait_resets_peer);
+    tcase_add_test(tc_utils, test_sock_abort_last_ack_sends_nothing);
+    tcase_add_test(tc_utils, test_sock_abort_syn_rcvd_listener_resets_and_stops_listening);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_revert_drains_connection_state);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_close_rto_retransmits_finack);
     tcase_add_test(tc_utils, test_tcp_fin_in_close_wait_does_not_advance_ack);
@@ -1281,6 +1301,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sock_sendto_tcp_established_sends_data);
     tcase_add_test(tc_core, test_sock_sendto_tcp_invalid_fd);
     tcase_add_test(tc_core, test_sock_sendto_tcp_syn_rcvd_returns_eagain);
+    tcase_add_test(tc_core, test_sock_tcp_listener_rejects_data_io);
     tcase_add_test(tc_core, test_sock_sendto_tcp_close_wait_sends_data);
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_sock_sendto_raw_null_dest_uses_stored_remote_ip);
