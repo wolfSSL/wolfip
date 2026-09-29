@@ -7584,6 +7584,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EINVAL;
 
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        if (ts->sock.tcp.is_listener)
+            return -1;
         if (ts->sock.tcp.state == TCP_SYN_SENT ||
                 ts->sock.tcp.state == TCP_SYN_RCVD)
             return -WOLFIP_EAGAIN;
@@ -8023,6 +8025,9 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        /* Pre-accept data queued on a listener belongs to the accepted socket. */
+        if (ts->sock.tcp.is_listener)
+            return -1;
         if (ts->sock.tcp.state == TCP_CLOSE_WAIT)
         {
             /* In close-wait, return 0 if the queue is empty */
@@ -8063,11 +8068,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             if (queue_len(&ts->sock.tcp.rxbuf) == 0)
                 return 0;
             return queue_pop(&ts->sock.tcp.rxbuf, buf, len);
-        } else if (!ts->sock.tcp.is_listener &&
-                (ts->sock.tcp.state == TCP_SYN_SENT ||
-                 ts->sock.tcp.state == TCP_SYN_RCVD)) {
+        } else if (ts->sock.tcp.state == TCP_SYN_SENT ||
+                ts->sock.tcp.state == TCP_SYN_RCVD) {
             return -WOLFIP_EAGAIN;
-        } else { /* a listener, or closing with nothing left to read */
+        } else { /* closing with nothing left to read */
             return -1;
         }
     } else if (IS_SOCKET_UDP(sockfd)) {
@@ -8937,6 +8941,8 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd)
     if (IS_SOCKET_TCP(sockfd)) {
         if (!ts)
             return -WOLFIP_EINVAL;
+        if (ts->sock.tcp.is_listener)
+            return 1;
         if (ts->sock.tcp.state == TCP_SYN_SENT ||
                 ts->sock.tcp.state == TCP_SYN_RCVD)
             return 0;

@@ -890,6 +890,40 @@ START_TEST(test_sock_sendto_tcp_syn_rcvd_returns_eagain)
 }
 END_TEST
 
+START_TEST(test_sock_tcp_listener_rejects_data_io)
+{
+    static const int states[] = {
+        TCP_LISTEN, TCP_SYN_RCVD, TCP_ESTABLISHED, TCP_CLOSE_WAIT
+    };
+    struct wolfIP s;
+    int sd;
+    size_t i;
+    struct tsocket *ts;
+    uint8_t buf[8] = {0};
+    uint8_t payload[4] = {1, 2, 3, 4};
+
+    for (i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+        wolfIP_init(&s);
+        mock_link_init(&s);
+        sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+        ck_assert_int_ge(sd, 0);
+        ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+        ts->sock.tcp.state = states[i];
+        ts->sock.tcp.is_listener = 1;
+        ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, payload, 0,
+                                      sizeof(payload)), 0);
+
+        ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, buf, sizeof(buf), 0,
+                                            NULL, 0), -1);
+        ck_assert_uint_eq(fifo_len(&ts->sock.tcp.txbuf), 0);
+        ck_assert_int_eq(wolfIP_sock_can_write(&s, sd), 1);
+        ck_assert_int_eq(wolfIP_sock_recvfrom(&s, sd, buf, sizeof(buf), 0,
+                                              NULL, NULL), -1);
+        ck_assert_uint_eq(queue_len(&ts->sock.tcp.rxbuf), sizeof(payload));
+    }
+}
+END_TEST
+
 START_TEST(test_sock_sendto_tcp_close_wait_sends_data)
 {
     struct wolfIP s;

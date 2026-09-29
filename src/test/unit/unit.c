@@ -1301,6 +1301,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_sock_sendto_tcp_established_sends_data);
     tcase_add_test(tc_core, test_sock_sendto_tcp_invalid_fd);
     tcase_add_test(tc_core, test_sock_sendto_tcp_syn_rcvd_returns_eagain);
+    tcase_add_test(tc_core, test_sock_tcp_listener_rejects_data_io);
     tcase_add_test(tc_core, test_sock_sendto_tcp_close_wait_sends_data);
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_sock_sendto_raw_null_dest_uses_stored_remote_ip);
