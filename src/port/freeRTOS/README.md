@@ -106,6 +106,7 @@ Defined in `bsd_socket.c`:
 - `WOLFIP_FREERTOS_BSD_MAX_FDS` (default: `16`)
 - `WOLFIP_FREERTOS_POLL_MIN_MS` (default: `1`)
 - `WOLFIP_FREERTOS_POLL_MAX_MS` (default: `5`)
+- `WOLFIP_BSD_DEBUG_CALLBACK` (default: `0`) - set to `1` to log socket callbacks from the poll task
 
 Override via compiler flags, for example:
 

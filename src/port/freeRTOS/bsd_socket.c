@@ -58,7 +58,13 @@ static SemaphoreHandle_t g_lock;
 static SemaphoreHandle_t volatile g_wake;
 static wolfip_bsd_fd_entry g_fds[WOLFIP_FREERTOS_BSD_MAX_FDS];
 static int g_last_error;
+
+#ifndef WOLFIP_BSD_DEBUG_CALLBACK
+#define WOLFIP_BSD_DEBUG_CALLBACK 0
+#endif
+#if WOLFIP_BSD_DEBUG_CALLBACK
 static volatile uint32_t g_cb_log_count;
+#endif
 
 static void wolfip_bsd_wake(void *arg)
 {
@@ -183,6 +189,7 @@ static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
         return;
     }
     entry->seen_events |= events;
+#if WOLFIP_BSD_DEBUG_CALLBACK
     g_cb_log_count++;
     if ((events & CB_EVENT_CLOSED) != 0u || (g_cb_log_count & 0x1Fu) == 0u) {
         printf("[sock_cb] ifd=%d events=0x%04x wait=0x%04x cb_count=%lu\n",
@@ -191,6 +198,7 @@ static void wolfip_bsd_socket_cb(int internal_fd, uint16_t events, void *arg)
             (unsigned)entry->wait_events,
             (unsigned long)g_cb_log_count);
     }
+#endif
     if ((events & entry->wait_events) != 0) {
         (void)xSemaphoreGive(entry->ready_sem);
     }
@@ -270,7 +278,9 @@ int wolfip_freertos_socket_init(struct wolfIP *ipstack,
 
     g_ipstack = ipstack;
     g_last_error = 0;
+#if WOLFIP_BSD_DEBUG_CALLBACK
     g_cb_log_count = 0;
+#endif
     wolfIP_set_wake_cb(g_ipstack, wolfip_bsd_wake, NULL);
 
     if (xTaskCreate(wolfip_bsd_poll_task, "wolfip_poll", poll_task_stack_words,
