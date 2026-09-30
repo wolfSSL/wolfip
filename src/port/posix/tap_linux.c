@@ -120,6 +120,9 @@ int tap_init(struct wolfIP_ll_dev *ll, const char *ifname, uint32_t host_ip)
         close(tap_fd);
         return -1;
     }
+    /* Setting it marks it user-assigned, so udev's MACAddressPolicy leaves it alone. */
+    if (ioctl(tap_fd, SIOCSIFHWADDR, &ifr) < 0)
+        perror("ioctl SIOCSIFHWADDR");
     strncpy(ll->ifname, ifname, sizeof(ll->ifname) - 1);
     memcpy(ll->mac, ifr.ifr_hwaddr.sa_data, 6);
     ll->mac[5] ^= 1;
