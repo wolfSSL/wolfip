@@ -16,7 +16,7 @@ This directory provides a FreeRTOS integration layer for wolfIP with:
 ## Design
 
 1. A global lock protects wolfIP core/socket operations.
-2. A poll thread/task calls `wolfIP_poll()` and sleeps until the deadline it returns, bounded by `WOLFIP_FREERTOS_POLL_MIN_MS`/`WOLFIP_FREERTOS_POLL_MAX_MS`. The core wakes it early when a socket call queues work.
+2. A poll thread/task calls `wolfIP_poll()` and sleeps until the deadline it returns, bounded by `WOLFIP_FREERTOS_POLL_MIN_MS`/`WOLFIP_FREERTOS_POLL_MAX_MS`. The core wakes it early when a socket call queues work, and a link driver can wake it from its RX interrupt.
 3. Blocking socket operations:
    - Try the underlying non-blocking wolfIP socket call.
    - If `-WOLFIP_EAGAIN`, register a callback and block on a FreeRTOS semaphore.
@@ -93,6 +93,7 @@ close(fd);
 
 - `int wolfip_freertos_socket_init(struct wolfIP *ipstack, UBaseType_t poll_task_priority, uint16_t poll_task_stack_words);`
 - `int socket_last_error(void);`
+- `void wolfip_freertos_notify_from_isr(void);` - call from a link driver's receive interrupt so an arriving frame is serviced at once instead of after up to `WOLFIP_FREERTOS_POLL_MAX_MS`. Does nothing before `wolfip_freertos_socket_init()`. Only call it from interrupts at or below `configMAX_SYSCALL_INTERRUPT_PRIORITY`. Each call ends the poll task's sleep, so under sustained receive load it can starve lower-priority tasks; mask the RX interrupt in the ISR and re-enable it from `ll->poll` once the RX ring is drained.
 - Socket calls:
   - `socket`, `bind`, `listen`, `accept`, `connect`, `close`
   - `send`, `sendto`, `recv`, `recvfrom`

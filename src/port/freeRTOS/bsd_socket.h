@@ -61,6 +61,10 @@ int getsockopt(int sockfd, int level, int optname,
 int getsockname(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen);
 int getpeername(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen);
 
+/* ISR-safe at or below configMAX_SYSCALL_INTERRUPT_PRIORITY: lets a link
+ * driver's receive interrupt wake the poll task. */
+void wolfip_freertos_notify_from_isr(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -778,7 +778,13 @@ the ceiling for power, but verify receive latency after raising it.
 
 The sleep ends early when `g_wake` is given. The port registers a callback with
 `wolfIP_set_wake_cb()` that gives it; the core calls it whenever a socket call
-queues a frame or arms a timer, so transmits leave at once.
+queues a frame or arms a timer, so transmits leave at once. A link driver's RX
+interrupt can do the same through `wolfip_freertos_notify_from_isr()`. Such an
+interrupt-driven wake has no minimum sleep: if frames arrive faster than one
+poll cycle runs, the poll task never blocks and starves lower-priority tasks.
+Mask the RX interrupt in the ISR and re-enable it from `ll->poll` once the RX
+ring is drained. Like any FreeRTOS `...FromISR` call, the ISR must run at or
+below `configMAX_SYSCALL_INTERRUPT_PRIORITY`.
 
 ### 6.3 The core mutex
 
