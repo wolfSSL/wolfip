@@ -235,6 +235,11 @@ void vde_cleanup(void)
     }
 }
 
+int vde_get_fd(void)
+{
+    return vde_conn ? vde_datafd(vde_conn) : -1;
+}
+
 /**
  * Get random number for wolfIP (used for MAC generation)
  */

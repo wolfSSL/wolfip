@@ -260,7 +260,7 @@ static int tap_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
     (void)ll;
     pfd.fd = tap_fd;
     pfd.events = POLLIN;
-    ret = poll(&pfd, 1, 2);
+    ret = poll(&pfd, 1, 0);
     if (ret < 0) {
         perror("poll");
         return -1;          /* driver error */

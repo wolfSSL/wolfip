@@ -2021,20 +2021,55 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
  * Implemented in port/posix/tap_*.c
  */
 extern int tap_init(struct wolfIP_ll_dev *dev, const char *name, uint32_t host_ip);
+extern int tap_get_fd(void);
 #endif
+
+static int wolfip_wake_pipe[2] = { -1, -1 };
+static int wolfip_rx_fd = -1;
+
+/* Runs under wolfIP_mutex, so it must not go through the intercepted write(). */
+static void wolfip_posix_wake(void *arg)
+{
+    char c = 'w';
+
+    (void)arg;
+    (void)WOLFIP_HOST_CALL(write)(wolfip_wake_pipe[1], &c, 1);
+}
 
 void *wolfIP_sock_posix_ip_loop(void *arg) {
     struct wolfIP *ipstack = (struct wolfIP *)arg;
-    uint32_t ms_next;
+    int ms_next;
     struct timeval tv;
+    struct pollfd pfd[2];
+    char drain[16];
     while (1) {
         pthread_mutex_lock(&wolfIP_mutex);
         gettimeofday(&tv, NULL);
         ms_next = wolfIP_poll(ipstack, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         pthread_mutex_unlock(&wolfIP_mutex);
-        if (ms_next > 1)
+        if (ms_next < 0)
+            ms_next = 0;
+        /* Without a wake pipe or RX descriptor nothing can end the sleep early. */
+        if ((wolfip_wake_pipe[0] < 0 || wolfip_rx_fd < 0) && ms_next > 1)
             ms_next = 1;
-        usleep(ms_next * 1000);
+        /* Sleep until the next deadline, a received frame, or a socket call
+         * that queued data. poll() ignores a negative fd. */
+        pfd[0].fd = wolfip_wake_pipe[0];
+        pfd[0].events = POLLIN;
+        pfd[0].revents = 0;
+        pfd[1].fd = wolfip_rx_fd;
+        pfd[1].events = POLLIN;
+        pfd[1].revents = 0;
+        if (WOLFIP_HOST_CALL(poll)(pfd, 2, ms_next) > 0) {
+            if (pfd[0].revents & POLLIN) {
+                while (WOLFIP_HOST_CALL(read)(wolfip_wake_pipe[0], drain,
+                            sizeof(drain)) > 0)
+                    ;
+            }
+            /* A device that went away would end every poll() at once. */
+            if (pfd[1].revents & (POLLERR | POLLHUP | POLLNVAL))
+                wolfip_rx_fd = -1;
+        }
         in_the_stack = 1;
     }
     return NULL;
@@ -2149,13 +2184,22 @@ void __attribute__((constructor)) init_wolfip_posix() {
             return;
         }
     }
+    wolfip_rx_fd = vde_get_fd();
 #else
     if (tap_init(tapdev, "wtcp0", host_stack_ip.s_addr) < 0) {
         perror("tap init");
         pthread_mutex_unlock(&wolfIP_mutex);
         return;
     }
+    wolfip_rx_fd = tap_get_fd();
 #endif
+    if (pipe(wolfip_wake_pipe) == 0) {
+        WOLFIP_HOST_CALL(fcntl)(wolfip_wake_pipe[0], F_SETFD, FD_CLOEXEC);
+        WOLFIP_HOST_CALL(fcntl)(wolfip_wake_pipe[1], F_SETFD, FD_CLOEXEC);
+        WOLFIP_HOST_CALL(fcntl)(wolfip_wake_pipe[0], F_SETFL, O_NONBLOCK);
+        WOLFIP_HOST_CALL(fcntl)(wolfip_wake_pipe[1], F_SETFL, O_NONBLOCK);
+        wolfIP_set_wake_cb(IPSTACK, wolfip_posix_wake, NULL);
+    }
 #if WOLFIP_POSIX_TCPDUMP
     if (!tcpdump_atexit_registered) {
         atexit(wolfIP_stop_tcpdump_atexit);

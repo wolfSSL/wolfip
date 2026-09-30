@@ -361,6 +361,8 @@ static void *pt_echoclient(void *arg)
 /* Test code (host side).
  * Thread with echo server to test the client.
  */
+static volatile int host_listening;
+
 static void *pt_echoserver(void *arg)
 {
     int fd, listen_fd, ret;
@@ -375,6 +377,7 @@ static void *pt_echoserver(void *arg)
     fd = socket(AF_INET, IPSTACK_SOCK_STREAM, 0);
     if (fd < 0) {
         printf("test server socket: %d\n", fd);
+        host_listening = -1;
         return (void *)-1;
     }
     local_sock.sin_addr.s_addr = inet_addr(HOST_STACK_IP);
@@ -383,15 +386,18 @@ static void *pt_echoserver(void *arg)
     if (ret < 0) {
         printf("test server bind: %d (%s)\n", ret, strerror(errno));
         close(fd);
+        host_listening = -1;
         return (void *)-1;
     }
     ret = listen(fd, 1);
     if (ret < 0) {
         printf("test server listen: %d\n", ret);
         close(fd);
+        host_listening = -1;
         return (void *)-1;
     }
     listen_fd = fd;
+    host_listening = 1;
     printf("Waiting for client\n");
     ret = accept(fd, NULL, NULL);
     if (ret < 0) {
@@ -483,10 +489,19 @@ static void test_wolfip_echoclient(struct wolfIP *s)
     conn_fd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, 0);
     printf("client socket: %04x\n", conn_fd);
     wolfIP_register_callback(s, conn_fd, client_cb, s);
+    host_listening = 0;
+    if (pthread_create(&pt, NULL, pt_echoserver, (void*)1) != 0)
+        host_listening = -1;
+    /* A SYN that beats listen() is reset and never retried. */
+    while (host_listening == 0)
+        usleep(1000);
+    if (host_listening < 0) {
+        printf("host server did not start\n");
+        exit(1);
+    }
     printf("Connecting to %s:8\n", HOST_STACK_IP);
     wolfIP_sock_connect(s, conn_fd, (struct wolfIP_sockaddr *)&remote_sock,
                         sizeof(remote_sock));
-    pthread_create(&pt, NULL, pt_echoserver, (void*)1);
     printf("Starting test: echo client active close\n");
     ret = test_loop(s, 1);
     printf("Test echo client active close: %d\n", ret);
