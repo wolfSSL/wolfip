@@ -20,6 +20,7 @@ static tsocket_cb registered_cb;
 static void *registered_arg;
 static int fake_internal_fd = MARK_TCP_SOCKET;
 static int close_calls;
+static int sem_gives;
 static int task_create_fail;
 static wolfIP_wake_cb registered_wake_cb;
 
@@ -57,9 +58,10 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
 
 BaseType_t xSemaphoreGive(SemaphoreHandle_t sem)
 {
-    if (sem == NULL)
+    sem_gives++;
+    if (sem == NULL || sem->count > 0)
         return pdFALSE;
-    sem->count++;
+    sem->count = 1;
     return pdTRUE;
 }
 
@@ -234,6 +236,14 @@ void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg)
 static int check_wake(struct wolfIP *stack)
 {
     int fails = 0;
+    int gives;
+
+    gives = sem_gives;
+    wolfip_freertos_notify_from_isr();
+    if (sem_gives != gives) {
+        printf("ISR wake before init gave a semaphore\n");
+        fails++;
+    }
 
     task_create_fail = 1;
     if (wolfip_freertos_socket_init(stack, 1, 128) == 0 ||
@@ -251,6 +261,13 @@ static int check_wake(struct wolfIP *stack)
     registered_wake_cb(NULL);
     if (g_wake->count != 1) {
         printf("wake callback did not give the poll task's semaphore\n");
+        fails++;
+    }
+
+    (void)xSemaphoreTake(g_wake, 0);
+    wolfip_freertos_notify_from_isr();
+    if (g_wake->count != 1) {
+        printf("ISR wake did not give the poll task's semaphore\n");
         fails++;
     }
     return fails;

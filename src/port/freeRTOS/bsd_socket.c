@@ -66,6 +66,18 @@ static void wolfip_bsd_wake(void *arg)
     (void)xSemaphoreGive(g_wake);
 }
 
+void wolfip_freertos_notify_from_isr(void)
+{
+    BaseType_t woken = pdFALSE;
+    SemaphoreHandle_t wake = g_wake;
+
+    if (wake == NULL) {
+        return;
+    }
+    (void)xSemaphoreGiveFromISR(wake, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+
 static void wolfip_bsd_poll_task(void *arg)
 {
     struct wolfIP *ipstack = (struct wolfIP *)arg;
