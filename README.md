@@ -191,6 +191,7 @@ This port follows the same model as the POSIX wrapper:
 Module how-tos:
 
 - [TLS over wolfIP](docs/tls_howto.md): running wolfSSL/TLS on wolfIP sockets, the I/O-callback bridge, and non-blocking handshakes
+- [Certificate enrolment (wolfCert)](docs/wolfcert_howto.md): running wolfCert's EST/SCEP client on wolfIP sockets, the transport vtable, and name resolution
 - [HTTP/HTTPS server](docs/http_server_howto.md): the `src/http/` server module, handler registration, and enabling HTTPS
 - [IPsec ESP](docs/ipsec_esp_howto.md): securing traffic with ESP transport mode, SA setup, and Linux `ip xfrm` interop
 - [wolfGuard (FIPS WireGuard)](docs/wolfguard_howto.md): the in-stack WireGuard tunnel, peer/key setup, and kernel interop
