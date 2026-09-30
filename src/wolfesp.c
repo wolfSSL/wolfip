@@ -1938,7 +1938,7 @@ esp_transport_wrap(struct wolfIP_ip_packet *ip, uint16_t * ip_len)
  * Returns -1 on error.
  * */
 static int
-esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
+esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet * ip,
          uint16_t len)
 {
     /**
@@ -1955,8 +1955,17 @@ esp_send(struct wolfIP_ll_dev * ll_dev, const struct wolfIP_ip_packet *ip,
     uint16_t                  ip_final_len = len;
     int                       esp_rc = 0;
 
-    if (!ll_dev || ll_dev->non_ethernet)
+    if (!ll_dev || ll_dev->non_ethernet) {
+        ESP_DEBUG("info: esp_wrap: %s\n", !ll_dev ?
+                  "no ll_dev" : "non-ether");
         return 1;
+    }
+
+    if ((size_t)(ETH_HEADER_LEN + len) > sizeof(frame)) {
+        ESP_LOG("error: esp_wrap: ip packet too large: %u > %zu\n",
+                ETH_HEADER_LEN + len, sizeof(frame));
+        return -1;
+    }
 
     esp = (struct wolfIP_ip_packet *) frame;
     memcpy(esp, ip, ETH_HEADER_LEN + len);
