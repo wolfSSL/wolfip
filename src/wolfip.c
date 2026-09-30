@@ -2416,8 +2416,16 @@ static void wolfIP_send_ttl_exceeded(struct wolfIP *s, unsigned int if_idx,
         }
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
-            if (esp_send(ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
+            int esp_err = esp_send(ll, &icmp.ip,
+                                   (uint16_t)(frame_len - ETH_HEADER_LEN));
+
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
             }
         } else {
             wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
@@ -2530,14 +2538,21 @@ static void wolfIP_send_param_problem(struct wolfIP *s, unsigned int if_idx,
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             struct wolfIP_ll_dev *esp_ll = ll;
-#if WOLFIP_VLAN
+    #if WOLFIP_VLAN
             /* A VLAN sub-iface has no send function of its own; esp_send needs
              * the physical device's send path. */
             if (ll->vlan_active && ll->vlan_parent)
                 esp_ll = ll->vlan_parent;
-#endif
-            if (esp_send(esp_ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
+    #endif
+            int esp_err = esp_send(esp_ll, &icmp.ip,
+                                   (uint16_t)(frame_len - ETH_HEADER_LEN));
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
             }
         } else {
             wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
@@ -2659,14 +2674,23 @@ static void wolfIP_send_frag_needed(struct wolfIP *s, unsigned int in_if,
 #ifdef WOLFIP_ESP
     if (!wolfIP_ll_is_non_ethernet(s, in_if)) {
         struct wolfIP_ll_dev *esp_ll = ll;
-#if WOLFIP_VLAN
+        int esp_err = 0;
+    #if WOLFIP_VLAN
         /* A VLAN sub-iface has no send function of its own; esp_send needs
          * the physical device's send path. */
         if (ll->vlan_active && ll->vlan_parent)
             esp_ll = ll->vlan_parent;
-#endif
-        if (esp_send(esp_ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
+    #endif
+        esp_err = esp_send(esp_ll, &icmp.ip,
+                           (uint16_t)(frame_len - ETH_HEADER_LEN));
+
+        switch (esp_err) {
+        case 1: /* send plaintext */
             wolfIP_ll_send_frame(s, in_if, &icmp, frame_len);
+        case 0: /* success */
+            break;
+        default: /* error */
+            LOG("esp_send: %d\n", esp_err);
         }
     } else {
         wolfIP_ll_send_frame(s, in_if, &icmp, frame_len);
@@ -2763,8 +2787,15 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
         }
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
-            if (esp_send(ll, &icmp.ip, (uint16_t)(frame_len - ETH_HEADER_LEN)) == 1) {
+            int esp_err = esp_send(ll, &icmp.ip,
+                                   (uint16_t)(frame_len - ETH_HEADER_LEN));
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
             }
         } else {
             wolfIP_ll_send_frame(s, if_idx, &icmp, frame_len);
@@ -4018,10 +4049,16 @@ static int tcp_send_empty_immediate(struct tsocket *t, struct wolfIP_tcp_seg *tc
 #ifdef WOLFIP_ESP
         if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
             struct wolfIP_ll_dev *ll_esp = wolfIP_ll_at(t->S, tx_if);
-            int esp_err = esp_send(ll_esp, (struct wolfIP_ip_packet *)tcp,
-                    (uint16_t)(frame_len - ETH_HEADER_LEN));
-            if (esp_err == 1) {
+            send_ret = esp_send(ll_esp, (struct wolfIP_ip_packet *)tcp,
+                                (uint16_t)(frame_len - ETH_HEADER_LEN));
+
+            switch (send_ret) {
+            case 1: /* send plaintext */
                 send_ret = wolfIP_ll_send_frame(t->S, tx_if, tcp, frame_len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", send_ret);
             }
         } else {
             send_ret = wolfIP_ll_send_frame(t->S, tx_if, tcp, frame_len);
@@ -4227,9 +4264,15 @@ static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
         if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
             struct wolfIP_ll_dev *ll_esp = wolfIP_ll_at(s, if_idx);
             int esp_err = esp_send(ll_esp, &out->ip,
-                    (uint16_t)(out_len - ETH_HEADER_LEN));
-            if (esp_err == 1) {
+                                   (uint16_t)(out_len - ETH_HEADER_LEN));
+
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(s, if_idx, &out->ip, out_len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
             }
         } else {
             wolfIP_ll_send_frame(s, if_idx, &out->ip, out_len);
@@ -4810,9 +4853,16 @@ static int tcp_send_zero_wnd_probe(struct tsocket *t)
         if (!wolfIP_ll_is_non_ethernet(t->S, tx_if)) {
             struct wolfIP_ll_dev *ll_esp = wolfIP_ll_at(t->S, tx_if);
             int esp_err = esp_send(ll_esp, (struct wolfIP_ip_packet *)probe,
-                    (uint16_t)(frame_len - ETH_HEADER_LEN));
-            if (esp_err == 1) {
+                                   (uint16_t)(frame_len - ETH_HEADER_LEN));
+
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(t->S, tx_if, probe, frame_len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
+                return -1;
             }
         } else {
             wolfIP_ll_send_frame(t->S, tx_if, probe, frame_len);
@@ -5094,9 +5144,17 @@ static int igmp_send_report(struct wolfIP *s, unsigned int if_idx, ip4 group,
      * is configured for 224.0.0.22 so the normal path is unchanged. */
     if (!wolfIP_ll_is_non_ethernet(s, if_idx)) {
         struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
-        if (esp_send(ll, ip, ip_len) == 1)
+        int esp_err = esp_send(ll, ip, ip_len);
+
+        switch (esp_err) {
+        case 1: /* send plaintext */
             return wolfIP_ll_send_frame(s, if_idx, frame, sizeof(frame));
-        return 0;
+        case 0: /* success */
+            return 0;
+        default: /* error */
+            LOG("esp_send: %d\n", esp_err);
+            return -1;
+        }
     }
 #endif
     return wolfIP_ll_send_frame(s, if_idx, frame, sizeof(frame));
@@ -5356,8 +5414,14 @@ static void wolfIP_forward_packet(struct wolfIP *s, unsigned int out_if,
             /* Encapsulate the datagram at its declared length; bytes past
              * the IP total length are L2 padding, not payload. */
             int esp_err = esp_send(ll_esp, ip, (uint16_t)ee16(ip->len));
-            if (esp_err == 1) {
+
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(s, out_if, ip, len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
             }
         } else {
             wolfIP_ll_send_frame(s, out_if, ip, len);
@@ -9393,10 +9457,15 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
             /* Encapsulate the datagram at its declared length; bytes past
              * the IP total length are L2 padding, not payload. */
-            if (esp_send(ll, ip, (uint16_t)ee16(ip->len)) == 1) {
-                /* ipsec not configured on this interface.
-                 * send plaintext. */
+            int esp_err = esp_send(ll, ip, (uint16_t)ee16(ip->len));
+
+            switch (esp_err) {
+            case 1: /* send plaintext */
                 wolfIP_ll_send_frame(s, if_idx, ip, len);
+            case 0: /* success */
+                break;
+            default: /* error */
+                LOG("esp_send: %d\n", esp_err);
             }
         } else {
             wolfIP_ll_send_frame(s, if_idx, ip, len);
@@ -12775,11 +12844,17 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
 #ifdef WOLFIP_ESP
                         if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
                             struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, tx_if);
-                            int esp_err = esp_send(ll, (struct wolfIP_ip_packet *)tcp, size);
-                            if (esp_err == 1) {
-                                /* ipsec not configured on this interface.
-                                 * send plaintext. */
-                                send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
+                            send_ret = esp_send(ll, (struct wolfIP_ip_packet *)tcp,
+                                                size);
+
+                            switch (send_ret) {
+                            case 1: /* send plaintext */
+                                send_ret = wolfIP_ll_send_frame(s, tx_if, tcp,
+                                                                desc->len);
+                            case 0: /* success */
+                                break;
+                            default: /* error */
+                                LOG("esp_send: %d\n", send_ret);
                             }
                         } else {
                             send_ret = wolfIP_ll_send_frame(s, tx_if, tcp, desc->len);
@@ -12953,8 +13028,15 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
                 /* IPsec not configured on this interface.
                  * Send plaintext instead.
                  * */
-                if (esp_send(ll, ip, (uint16_t)(desc->len - ETH_HEADER_LEN)) == 1)
+                send_ret = esp_send(ll, ip, (uint16_t)(desc->len - ETH_HEADER_LEN));
+                switch (send_ret) {
+                case 1: /* send plaintext */
                     send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
+                case 0: /* success */
+                    break;
+                default: /* error */
+                    LOG("esp_send: %d\n", send_ret);
+                }
             } else {
                 send_ret = wolfIP_ll_send_frame(s, tx_if, ip, desc->len);
             }
