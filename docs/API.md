@@ -27,6 +27,7 @@ The core socket and stack APIs are documented below. Optional modules and
 features have dedicated getting-started guides:
 
 - [TLS over wolfIP](tls_howto.md) — running wolfSSL/TLS on wolfIP sockets (`WOLFSSL_WOLFIP`), the I/O-callback bridge, and non-blocking handshakes.
+- [Certificate enrolment (wolfCert)](wolfcert_howto.md) — running wolfCert's EST/SCEP client on wolfIP sockets (`WOLFCERT_WOLFIP`), the transport vtable, and name resolution.
 - [HTTP/HTTPS server](http_server_howto.md) — the `src/http/` server module (`WOLFIP_ENABLE_HTTP`), handler registration, and enabling HTTPS via a `WOLFSSL_CTX`.
 - [IPsec ESP how-to](ipsec_esp_howto.md) — build with `WOLFIP_ESP`, install Security Associations, and interoperate with Linux `ip xfrm`.
 - [wolfGuard (FIPS WireGuard)](wolfguard_howto.md) — the in-stack WireGuard tunnel (`WOLFGUARD`), peer/key setup, and kernel interop.
