@@ -41,4 +41,6 @@ int vde_init(struct wolfIP_ll_dev *ll, const char *socket_path,
  */
 void vde_cleanup(void);
 
+int vde_get_fd(void);
+
 #endif /* VDE_DEVICE_H */

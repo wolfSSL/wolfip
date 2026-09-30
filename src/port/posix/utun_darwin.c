@@ -75,7 +75,7 @@ static int utun_poll(struct wolfIP_ll_dev *ll, void *buf, uint32_t len)
 
     pfd.fd = utun_fd;
     pfd.events = POLLIN;
-    if (poll(&pfd, 1, 2) <= 0)
+    if (poll(&pfd, 1, 0) <= 0)
         return 0;
 
     n = read(utun_fd, tmp, sizeof(tmp));
@@ -147,6 +147,11 @@ static int utun_setup_ipv4(const char *ifname, uint32_t host_ip, uint32_t peer_i
     system(cmd);
 
     return 0;
+}
+
+int tap_get_fd(void)
+{
+    return utun_fd;
 }
 
 int tap_init(struct wolfIP_ll_dev *ll, const char *requested_ifname, uint32_t host_ip)
