@@ -1724,9 +1724,204 @@ START_TEST(test_poll_no_timers_and_no_events_is_noop)
 
     wolfIP_init(&s);
     mock_link_init(&s);
-    /* Nothing registered; should return 0 silently */
-    ck_assert_int_eq(wolfIP_poll(&s, 100), 0);
-    ck_assert_int_eq(wolfIP_poll(&s, 101), 0);
+    /* Nothing armed: the idle maximum. */
+    ck_assert_int_eq(wolfIP_poll(&s, 100), WOLFIP_POLL_MAX_WAIT_MS);
+    ck_assert_int_eq(wolfIP_poll(&s, 101), WOLFIP_POLL_MAX_WAIT_MS);
+}
+END_TEST
+
+static void poll_neighbor_setup(struct wolfIP *s)
+{
+    uint8_t neighbor_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+
+    wolfIP_init(s);
+    mock_link_init(s);
+    mock_link_capture_reset();
+    wolfIP_ipconfig_set(s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s->arp.neighbors[0].ip = 0x0A000002U;
+    s->arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    s->arp.neighbors[0].ts = 1;
+    memcpy(s->arp.neighbors[0].mac, neighbor_mac, 6);
+    s->last_tick = 1;
+}
+
+START_TEST(test_poll_returns_ms_to_next_timer)
+{
+    struct wolfIP s;
+    struct wolfIP_timer tmr = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    tmr.expires = 250;
+    tmr.cb = test_timer_cb;
+    timers_binheap_insert(&s.timers, tmr);
+    timer_cb_calls = 0;
+    ck_assert_int_eq(wolfIP_poll(&s, 200), 50);
+    ck_assert_int_eq(timer_cb_calls, 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 250), WOLFIP_POLL_MAX_WAIT_MS);
+    ck_assert_int_eq(timer_cb_calls, 1);
+}
+END_TEST
+
+START_TEST(test_poll_returns_zero_when_driver_defers_tx)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0};
+    struct tsocket *ts;
+    int udp_sd;
+
+    poll_neighbor_setup(&s);
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload),
+            0, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+    mock_send_eagain_armed = 1;
+    ck_assert_int_eq(wolfIP_poll(&s, 2), 0);
+    ck_assert_uint_gt(fifo_len(&ts->sock.udp.txbuf), 0U);
+    ck_assert_int_eq(wolfIP_poll(&s, 3), WOLFIP_POLL_MAX_WAIT_MS);
+    ck_assert_uint_eq(fifo_len(&ts->sock.udp.txbuf), 0U);
+}
+END_TEST
+
+START_TEST(test_poll_returns_arp_retry_deadline)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0};
+    int udp_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000003U);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload),
+            0, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+    /* The request goes out at 2000; the next one is allowed at 3001. */
+    ck_assert_int_eq(wolfIP_poll(&s, 2000), WOLFIP_POLL_MAX_WAIT_MS);
+    ck_assert_int_eq(wolfIP_poll(&s, 2500), 501);
+}
+END_TEST
+
+static int endless_rx_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
+{
+    (void)dev;
+    memset(frame, 0, len < 64U ? len : 64U);
+    return 64;
+}
+
+START_TEST(test_poll_returns_zero_when_rx_budget_exhausted)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_getdev(&s)->poll = endless_rx_poll;
+    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+}
+END_TEST
+
+START_TEST(test_poll_socket_events_pending_tcp)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    int tcp_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    wolfIP_register_callback(&s, tcp_sd, test_socket_cb, NULL);
+
+    /* handle_socket_callbacks() skips a closed socket without CLOSED. */
+    ts->sock.tcp.state = TCP_CLOSED;
+    ts->events = CB_EVENT_READABLE;
+    ck_assert_int_eq(socket_events_pending(&s), 0);
+    ts->events |= CB_EVENT_CLOSED;
+    ck_assert_int_eq(socket_events_pending(&s), 1);
+    ts->events = 0;
+    ck_assert_int_eq(socket_events_pending(&s), 0);
+    ts->close_notify_pending = 1;
+    ck_assert_int_eq(socket_events_pending(&s), 1);
+}
+END_TEST
+
+#if WOLFIP_ENABLE_LOOPBACK
+static struct wolfIP *loopback_timer_stack;
+
+static void loopback_send_from_timer(void *arg)
+{
+    struct wolfIP_ll_dev *loop;
+    uint8_t frame[16] = {0};
+
+    (void)arg;
+    loop = wolfIP_getdev_ex(loopback_timer_stack, TEST_LOOPBACK_IF);
+    ck_assert_int_eq(wolfIP_loopback_send(loop, frame, sizeof(frame)),
+            (int)sizeof(frame));
+}
+
+START_TEST(test_poll_returns_zero_with_loopback_frame_queued)
+{
+    struct wolfIP s;
+    struct wolfIP_timer tmr = {0};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    loopback_timer_stack = &s;
+    tmr.expires = 5;
+    tmr.cb = loopback_send_from_timer;
+    ck_assert_uint_ne(timers_binheap_insert(&s.timers, tmr), 0U);
+
+    /* The timer runs after the loopback device was polled. */
+    ck_assert_int_eq(wolfIP_poll(&s, 10), 0);
+    ck_assert_uint_eq(s.loopback_count, 1U);
+    ck_assert_int_eq(wolfIP_poll(&s, 10), WOLFIP_POLL_MAX_WAIT_MS);
+}
+END_TEST
+#endif
+
+START_TEST(test_poll_returns_zero_while_flush_events_undelivered)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[4] = {0};
+    struct tsocket *ts;
+    int udp_sd;
+
+    poll_neighbor_setup(&s);
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(udp_sd)];
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload),
+            0, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(payload));
+    ts->events = 0;
+    wolfIP_register_callback(&s, udp_sd, test_socket_cb, NULL);
+    socket_cb_calls = 0;
+
+    /* The flush drains the txbuf after callbacks ran: WRITABLE is pending. */
+    ck_assert_int_eq(wolfIP_poll(&s, 2), 0);
+    ck_assert_int_eq(socket_cb_calls, 0);
+    ck_assert_uint_ne(ts->events & CB_EVENT_WRITABLE, 0U);
+    ck_assert_int_eq(wolfIP_poll(&s, 2), WOLFIP_POLL_MAX_WAIT_MS);
+    ck_assert_int_eq(socket_cb_calls, 1);
 }
 END_TEST
 

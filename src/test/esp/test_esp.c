@@ -209,6 +209,8 @@ static int test_loop(struct wolfIP *s, int active_close)
         struct timeval tv;
         gettimeofday(&tv, NULL);
         ms_next = wolfIP_poll(s, tv.tv_sec * 1000 + tv.tv_usec / 1000);
+        if (ms_next > 1)
+            ms_next = 1;
         usleep(ms_next * 1000);
         if (exit_ok > 0) {
             if (exit_count++ < 1)

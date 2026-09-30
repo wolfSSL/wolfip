@@ -229,7 +229,7 @@ Processes pending network events.
 - Parameters:
   - s: wolfIP instance
   - now: Current timestamp
-- Returns: Number of events processed
+- Returns: Milliseconds until the stack next needs `wolfIP_poll()` for its own deadlines, at most `WOLFIP_POLL_MAX_WAIT_MS` (default 1000); 0 when work is still pending; negative on error. Received frames are not included: a caller that sleeps for the returned time must also wake when its link driver has a frame.
 
 ```c
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
