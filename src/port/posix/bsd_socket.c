@@ -508,7 +508,7 @@ static int wolfip_wait_for_event_locked(struct wolfip_fd_entry *entry, short wai
             return -errno;
         }
         if (poll_ret == 0) {
-            return -ETIMEDOUT;
+            return -EAGAIN;
         }
         while (WOLFIP_HOST_CALL(read)(entry->public_fd, &c, 1) > 0) {
             wolfip_consume_token_locked(entry, c);
@@ -1473,6 +1473,22 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 }
 
 int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
+    if (!in_the_stack && level == SOL_SOCKET && optname == SO_RCVTIMEO &&
+            optval && optlen && *optlen >= (socklen_t)sizeof(struct timeval)) {
+        struct wolfip_fd_entry *entry;
+        pthread_mutex_lock(&wolfIP_mutex);
+        entry = wolfip_entry_from_public(sockfd);
+        if (entry) {
+            struct timeval *tv = (struct timeval *)optval;
+            int ms = (entry->rcv_timeout_ms > 0) ? entry->rcv_timeout_ms : 0;
+            tv->tv_sec = ms / 1000;
+            tv->tv_usec = (ms % 1000) * 1000;
+            *optlen = sizeof(struct timeval);
+            pthread_mutex_unlock(&wolfIP_mutex);
+            return 0;
+        }
+        pthread_mutex_unlock(&wolfIP_mutex);
+    }
     conditional_steal_call(getsockopt, sockfd, level, optname, optval, optlen);
 }
 
@@ -1485,6 +1501,33 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 }
 
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    if (!in_the_stack && level == SOL_SOCKET && optname == SO_RCVTIMEO &&
+            optval && optlen >= (socklen_t)sizeof(struct timeval)) {
+        struct wolfip_fd_entry *entry;
+        pthread_mutex_lock(&wolfIP_mutex);
+        entry = wolfip_entry_from_public(sockfd);
+        if (entry) {
+            const struct timeval *tv = (const struct timeval *)optval;
+            int ms;
+            if (tv->tv_usec < 0 || tv->tv_usec >= 1000000) {
+                pthread_mutex_unlock(&wolfIP_mutex);
+                errno = EDOM;
+                return -1;
+            }
+            /* As on Linux: {0, 0} or a huge value blocks forever, a negative one does not wait. */
+            if (tv->tv_sec < 0)
+                ms = 0;
+            else if (tv->tv_sec >= INT_MAX / 1000 ||
+                    (tv->tv_sec == 0 && tv->tv_usec == 0))
+                ms = -1;
+            else
+                ms = (int)(tv->tv_sec * 1000 + (tv->tv_usec + 999) / 1000);
+            entry->rcv_timeout_ms = ms;
+            pthread_mutex_unlock(&wolfIP_mutex);
+            return 0;
+        }
+        pthread_mutex_unlock(&wolfIP_mutex);
+    }
     conditional_steal_call(setsockopt, sockfd, level, optname, optval, optlen);
 }
 
