@@ -232,6 +232,12 @@ Processes pending network events.
 - Returns: Milliseconds until the stack next needs `wolfIP_poll()` for its own deadlines, at most `WOLFIP_POLL_MAX_WAIT_MS` (default 1000); 0 when work is still pending; negative on error. Received frames are not included: a caller that sleeps for the returned time must also wake when its link driver has a frame.
 
 ```c
+typedef void (*wolfIP_wake_cb)(void *arg);
+void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg);
+```
+Registers a callback the stack calls when a socket call (or `wolfIP_recv()` outside `wolfIP_poll()`) leaves work for the next `wolfIP_poll()`, such as a queued frame, a newly armed timer or a socket event raised again after a partial read. While a callback is set, a timer armed between polls starts at the next `wolfIP_poll()`, when its frame goes out, instead of at the time of the previous one. It is never called from inside `wolfIP_poll()`, and runs in the caller's context with whatever lock the caller holds, so it should only signal the thread that runs `wolfIP_poll()`. Pass `NULL` to unregister. Call it before other threads use the stack, or under the lock that serializes `wolfIP_poll()` and the socket calls.
+
+```c
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
 void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 ```

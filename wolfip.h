@@ -510,6 +510,10 @@ size_t wolfIP_instance_size(void);
 #define WOLFIP_POLL_MAX_WAIT_MS 1000U
 #endif
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
+/* Called when a socket call queues work for the next wolfIP_poll(); never
+ * from inside it. Set it under the lock that serializes wolfIP calls. */
+typedef void (*wolfIP_wake_cb)(void *arg);
+void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg);
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
 void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw);
