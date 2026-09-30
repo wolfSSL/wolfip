@@ -1513,6 +1513,15 @@ Suite *wolf_suite(void)
 #endif /* WOLFIP_PACKET_SOCKETS */
     tcase_add_test(tc_core, test_poll_combined_timer_and_socket_cb_in_same_tick);
     tcase_add_test(tc_core, test_poll_no_timers_and_no_events_is_noop);
+    tcase_add_test(tc_core, test_poll_returns_ms_to_next_timer);
+    tcase_add_test(tc_core, test_poll_returns_zero_when_driver_defers_tx);
+    tcase_add_test(tc_core, test_poll_returns_arp_retry_deadline);
+    tcase_add_test(tc_core, test_poll_returns_zero_when_rx_budget_exhausted);
+    tcase_add_test(tc_core, test_poll_socket_events_pending_tcp);
+#if WOLFIP_ENABLE_LOOPBACK
+    tcase_add_test(tc_core, test_poll_returns_zero_with_loopback_frame_queued);
+#endif
+    tcase_add_test(tc_core, test_poll_returns_zero_while_flush_events_undelivered);
     tcase_add_test(tc_core, test_poll_last_tick_updated);
     tcase_add_test(tc_core, test_poll_loopback_interface_iterated);
     tcase_add_test(tc_core, test_poll_multiple_udp_sockets_both_cbs_dispatched);

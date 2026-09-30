@@ -1542,6 +1542,7 @@ struct wolfIP {
 #endif
     uint16_t ipcounter;
     uint64_t last_tick;
+    uint64_t poll_next_at;
 #if WOLFIP_ENABLE_FORWARDING
     uint32_t route_generation;
     struct wolfIP_route_entry routes[WOLFIP_MAX_ROUTES];
@@ -1789,8 +1790,15 @@ static inline int wolfIP_ll_is_non_ethernet(struct wolfIP *s, unsigned int if_id
     return (ll && ll->non_ethernet) ? 1 : 0;
 }
 
-static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
-                                       void *buf, uint32_t len)
+/* Lowers the deadline the current wolfIP_poll() returns. */
+static void wolfIP_poll_by(struct wolfIP *s, uint64_t when)
+{
+    if (when < s->poll_next_at)
+        s->poll_next_at = when;
+}
+
+static inline int wolfIP_ll_xmit(struct wolfIP *s, unsigned int if_idx,
+                                 void *buf, uint32_t len)
 {
     struct wolfIP_ll_dev *ll;
     uint32_t frame_mtu;
@@ -1850,6 +1858,17 @@ static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
     }
 #endif
     return ll->send(ll, buf, len);
+}
+
+static inline int wolfIP_ll_send_frame(struct wolfIP *s, unsigned int if_idx,
+                                       void *buf, uint32_t len)
+{
+    int ret = wolfIP_ll_xmit(s, if_idx, buf, len);
+
+    /* A driver that is out of TX buffers wants the frame retried soon. */
+    if (ret == -WOLFIP_EAGAIN)
+        wolfIP_poll_by(s, s->last_tick);
+    return ret;
 }
 
 static inline struct ipconf *wolfIP_ipconf_at(struct wolfIP *s, unsigned int if_idx)
@@ -2923,6 +2942,14 @@ static void timers_heap_rebase(struct timers_binheap *heap, uint64_t now)
         if (heap->timers[i].expires != 0)
             heap->timers[i].expires = tick_rebase(heap->timers[i].expires, now);
     }
+}
+
+/* Earliest pending expiry, or 0 when no timer is armed. */
+static uint64_t timers_next_expiry(struct timers_binheap *heap)
+{
+    while (heap->size > 0 && heap->timers[0].expires == 0)
+        timers_binheap_pop(heap);
+    return (heap->size > 0) ? heap->timers[0].expires : 0;
 }
 
 static int is_timer_expired(struct timers_binheap *heap, uint64_t now)
@@ -10814,11 +10841,13 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
      * so the first request is never held back by the window. */
     if (s->arp.last_arp[if_idx] != 0 &&
             s->arp.last_arp[if_idx] + 1000 > s->last_tick) {
+        wolfIP_poll_by(s, s->arp.last_arp[if_idx] + 1000);
         return;
     }
     /* Store tick+1 so a request sent at tick 0 is distinguishable from
      * "never sent" (last_arp == 0). */
     s->arp.last_arp[if_idx] = s->last_tick + 1;
+    wolfIP_poll_by(s, s->arp.last_arp[if_idx] + 1000);
     memset(&arp, 0, sizeof(struct arp_packet));
     eth_output_add_header(s, if_idx, NULL, &arp.eth, ETH_TYPE_ARP);
     arp.htype = ee16(1); /* Ethernet */
@@ -12544,6 +12573,8 @@ static void poll_devices(struct wolfIP *s)
                 budget--;
             }
         } while (len > 0 && budget > 0);
+        if (budget == 0)
+            wolfIP_poll_by(s, s->last_tick);
     }
 }
 
@@ -12660,6 +12691,45 @@ static void handle_socket_callbacks(struct wolfIP *s)
         }
     }
 #endif
+}
+
+/* True when handle_socket_callbacks() would dispatch something. */
+static int socket_events_pending(struct wolfIP *s)
+{
+    int i;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *ts = &s->tcpsockets[i];
+        if (ts->close_notify_pending)
+            return 1;
+        if (ts->callback && ts->events &&
+                !((ts->sock.tcp.state == TCP_CLOSED) &&
+                  !(ts->events & CB_EVENT_CLOSED)))
+            return 1;
+    }
+    for (i = 0; i < MAX_UDPSOCKETS; i++) {
+        if (s->udpsockets[i].callback && s->udpsockets[i].events)
+            return 1;
+    }
+    for (i = 0; i < MAX_ICMPSOCKETS; i++) {
+        if (s->icmpsockets[i].callback && s->icmpsockets[i].events)
+            return 1;
+    }
+#if WOLFIP_RAWSOCKETS
+    for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
+        struct rawsocket *r = &s->rawsockets[i];
+        if (r->used && r->callback && r->events)
+            return 1;
+    }
+#if WOLFIP_PACKET_SOCKETS
+    for (i = 0; i < WOLFIP_MAX_PACKETSOCKETS; i++) {
+        struct packetsocket *p = &s->packetsockets[i];
+        if (p->used && p->callback && p->events)
+            return 1;
+    }
+#endif
+#endif
+    return 0;
 }
 
 static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
@@ -13120,11 +13190,14 @@ static void flush_packet_tx(struct wolfIP *s)
  *
  * This function also handles timers for all supported protocols.
  *
- * TODO: Return the number of milliseconds to wait before
- * calling it again.
+ * Returns the number of milliseconds until the next deadline, at most
+ * WOLFIP_POLL_MAX_WAIT_MS; received frames can need service sooner.
  */
 int wolfIP_poll(struct wolfIP *s, uint64_t now)
 {
+    uint64_t next_tmr;
+    int32_t wait;
+
     if (!s)
         return -WOLFIP_EINVAL;
 
@@ -13174,6 +13247,7 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     }
 
     s->last_tick = now;
+    s->poll_next_at = now + WOLFIP_POLL_MAX_WAIT_MS;
 
     /* Poll the device */
     poll_devices(s);
@@ -13197,7 +13271,19 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     flush_raw_tx(s);
     flush_packet_tx(s);
 
-    return 0;
+    /* The flushes can raise events after this poll dispatched callbacks. */
+    if (socket_events_pending(s))
+        wolfIP_poll_by(s, now);
+#if WOLFIP_ENABLE_LOOPBACK
+    if (s->loopback_count > 0)
+        wolfIP_poll_by(s, now);
+#endif
+    next_tmr = timers_next_expiry(&s->timers);
+    if (next_tmr != 0)
+        wolfIP_poll_by(s, next_tmr);
+
+    wait = (int32_t)((uint32_t)s->poll_next_at - (uint32_t)now);
+    return (wait > 0) ? (int)wait : 0;
 }
 
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw)

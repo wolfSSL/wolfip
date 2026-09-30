@@ -316,8 +316,8 @@ httpd_register_handler(&httpd, "/status", status_handler);
 
 /* Main loop: the server runs entirely inside wolfIP_poll(). */
 for (;;) {
-    uint32_t ms_next = wolfIP_poll(s, now_ms());
-    /* sleep up to ms_next, service other work, then loop */
+    int ms_next = wolfIP_poll(s, now_ms());
+    /* sleep up to ms_next, or until the link driver has a frame */
 }
 ```
 

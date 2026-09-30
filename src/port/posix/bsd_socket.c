@@ -2032,6 +2032,8 @@ void *wolfIP_sock_posix_ip_loop(void *arg) {
         gettimeofday(&tv, NULL);
         ms_next = wolfIP_poll(ipstack, tv.tv_sec * 1000 + tv.tv_usec / 1000);
         pthread_mutex_unlock(&wolfIP_mutex);
+        if (ms_next > 1)
+            ms_next = 1;
         usleep(ms_next * 1000);
         in_the_stack = 1;
     }

@@ -1141,7 +1141,7 @@ START_TEST(test_poll_dispatches_socket_callback)
     ts->events = CB_EVENT_READABLE;
     socket_cb_calls = 0;
     socket_cb_last_fd = -1;
-    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 1), WOLFIP_POLL_MAX_WAIT_MS);
     ck_assert_int_eq(socket_cb_calls, 1);
     ck_assert_int_eq(socket_cb_last_fd, SOCKET_UNMARK(udp_sd) | MARK_UDP_SOCKET);
 }
@@ -1158,7 +1158,7 @@ START_TEST(test_poll_fires_expired_timer)
     tmr.cb = test_timer_cb;
     timers_binheap_insert(&s.timers, tmr);
     timer_cb_calls = 0;
-    ck_assert_int_eq(wolfIP_poll(&s, 200), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 200), WOLFIP_POLL_MAX_WAIT_MS);
     ck_assert_int_eq(timer_cb_calls, 1);
 }
 END_TEST
@@ -1214,7 +1214,7 @@ START_TEST(test_poll_keeps_timer_armed_after_earlier_cancel)
     ck_assert_int_gt(id_second, 0);
     timer_binheap_cancel(&s.timers, (uint32_t)id_first);
     timer_cb_calls = 0;
-    ck_assert_int_eq(wolfIP_poll(&s, 250), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 250), WOLFIP_POLL_MAX_WAIT_MS);
     ck_assert_int_eq(timer_cb_calls, 1);
 }
 END_TEST
@@ -1242,7 +1242,7 @@ START_TEST(test_poll_arp_pending_when_nexthop_unresolved)
     ck_assert_uint_gt(fifo_len(&ts->sock.udp.txbuf), 0U);
     last_frame_sent_size = 0;
     /* Use now > 1000 so the ARP rate-limit window has elapsed. */
-    ck_assert_int_eq(wolfIP_poll(&s, 2000), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 2000), WOLFIP_POLL_MAX_WAIT_MS);
     /* Poll should have emitted an ARP request and left the datagram queued. */
     ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
     ck_assert_uint_gt(fifo_len(&ts->sock.udp.txbuf), 0U);
@@ -1284,7 +1284,7 @@ START_TEST(test_poll_filter_block_holds_tx)
     wolfIP_filter_set_callback(test_filter_cb_block, NULL);
     wolfIP_filter_set_udp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
     last_frame_sent_size = 0;
-    ck_assert_int_eq(wolfIP_poll(&s, 2), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 2), WOLFIP_POLL_MAX_WAIT_MS);
     /* Filter blocked send: nothing transmitted, packet still in txbuf. */
     ck_assert_uint_eq(last_frame_sent_size, 0U);
     ck_assert_uint_gt(fifo_len(&ts->sock.udp.txbuf), 0U);
@@ -1322,7 +1322,7 @@ START_TEST(test_poll_drains_icmp_tx)
     ck_assert_int_eq(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
     last_frame_sent_size = 0;
-    ck_assert_int_eq(wolfIP_poll(&s, 2), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 2), WOLFIP_POLL_MAX_WAIT_MS);
     ck_assert_uint_gt(last_frame_sent_size, 0U);
     ck_assert_uint_eq(fifo_len(&ts->sock.udp.txbuf), 0U);
 }
@@ -1617,7 +1617,7 @@ START_TEST(test_udp_send_and_receive_through_poll)
     ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, buf, sizeof(buf), 0,
             (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(buf));
     last_frame_sent_size = 0;
-    ck_assert_int_eq(wolfIP_poll(&s, 2), 0);
+    ck_assert_int_eq(wolfIP_poll(&s, 2), WOLFIP_POLL_MAX_WAIT_MS);
     ck_assert_uint_gt(last_frame_sent_size, 0U);
     ck_assert_uint_eq(fifo_len(&ts->sock.udp.txbuf), 0U);
 

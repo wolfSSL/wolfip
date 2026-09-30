@@ -290,7 +290,7 @@ START_TEST(test_multicast_udp_send_mac_ttl_loop_and_options)
     last_frame_sent_size = 0;
     ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
             (struct wolfIP_sockaddr *)&dst, sizeof(dst)), (int)sizeof(payload));
-    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_int_ge(wolfIP_poll(&s, 1), 0);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_mem_eq(last_frame_sent, "\x01\x00\x5e\x01\x02\x06", 6);
     udp = (struct wolfIP_udp_datagram *)last_frame_sent;
@@ -791,7 +791,7 @@ START_TEST(test_multicast_if_pins_egress_interface)
     ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
             (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
             (int)sizeof(payload));
-    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_int_ge(wolfIP_poll(&s, 1), 0);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_mem_eq(last_frame_sent + 6, secondary_mac, 6);
 
@@ -809,7 +809,7 @@ START_TEST(test_multicast_if_pins_egress_interface)
     ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
             (struct wolfIP_sockaddr *)&dst, sizeof(dst)),
             (int)sizeof(payload));
-    ck_assert_int_eq(wolfIP_poll(&s, 1), 0);
+    ck_assert_int_ge(wolfIP_poll(&s, 1), 0);
     ck_assert_uint_gt(last_frame_sent_size, 0);
     ck_assert_mem_eq(last_frame_sent + 6, primary_mac, 6);
 

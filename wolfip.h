@@ -505,6 +505,10 @@ int wolfIP_register_eapol_handler(struct wolfIP *s,
                                                  uint32_t len),
                                   void *ctx);
 size_t wolfIP_instance_size(void);
+/* What wolfIP_poll() returns when no deadline is pending. */
+#ifndef WOLFIP_POLL_MAX_WAIT_MS
+#define WOLFIP_POLL_MAX_WAIT_MS 1000U
+#endif
 int wolfIP_poll(struct wolfIP *s, uint64_t now);
 void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len);
 void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
