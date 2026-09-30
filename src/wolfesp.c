@@ -550,11 +550,11 @@ esp_print_field(const char * fld, const uint8_t * val,
     esp_print_sep;
     if (val_len < 4) {
         /* short field */
-        ESP_LOG(esp_str_skip " (%s, %d bytes)\n", fld, val_len);
+        ESP_LOG(esp_str_skip " (%s, %u bytes)\n", fld, val_len);
     }
     else {
         /* print first 4 bytes, and subsequent full multiples of 4. */
-        ESP_LOG(esp_str_4hex " (%s, %d bytes)\n",
+        ESP_LOG(esp_str_4hex " (%s, %u bytes)\n",
                 val[0], val[1], val[2], val[3], fld, val_len);
         if (val_len > 4) {
             for (size_t i = 4; i < val_len; i += 4) {
@@ -611,7 +611,7 @@ static void wolfIP_print_esp(const wolfIP_esp_sa * esp_sa,
 
     /* last 2 bytes of padding */
     padding = esp_data + esp_len - esp_sa->icv_len - 4;
-    ESP_LOG("esp packet: (%d bytes)\n", esp_len);
+    ESP_LOG("esp packet: (%u bytes)\n", esp_len);
 
    /**   ESP header
     *     ______________
