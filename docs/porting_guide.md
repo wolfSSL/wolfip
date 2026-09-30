@@ -730,7 +730,7 @@ socket-offload model) for contrast.
 | Binary semaphore / event per socket | Sleep a task until its socket is ready. |
 | Task creation | Run the poll task. |
 | Millisecond clock | Provide `now_ms` to `wolfIP_poll()`. |
-| Sleep/delay | Idle the poll task between cycles. |
+| Timed wait on a wakeable object | Idle the poll task until the next deadline; socket calls and the RX interrupt end it early. |
 
 That is the whole dependency list. wolfIP needs no dynamic memory, no per-socket
 threads, and no timer callbacks from the OS.
@@ -738,9 +738,9 @@ threads, and no timer callbacks from the OS.
 ### 6.2 The poll task: the heartbeat of the stack
 
 The poll task is a forever-loop that takes the core mutex, runs one poll cycle,
-releases the mutex, and sleeps for a bounded interval. `wolfIP_poll()` returns
-`>= 0` on success and a negative value on error; the FreeRTOS version clamps the
-sleep to a `[MIN, MAX]` window so the task neither spins nor oversleeps:
+releases the mutex, and sleeps until the deadline `wolfIP_poll()` returns. The
+FreeRTOS version clamps the sleep to a `[MIN, MAX]` window so the task neither
+spins nor oversleeps:
 
 ```c
 static void wolfip_bsd_poll_task(void *arg)
@@ -748,14 +748,14 @@ static void wolfip_bsd_poll_task(void *arg)
     struct wolfIP *ipstack = (struct wolfIP *)arg;
 
     for (;;) {
-        uint32_t next_ms;
+        int next_ms;
         TickType_t delay_ticks;
-        uint64_t now_ms = (uint64_t)xTaskGetTickCount() * (uint64_t)portTICK_PERIOD_MS;
+        uint64_t now_ms = (uint64_t)xTaskGetTickCount() * 1000u / configTICK_RATE_HZ;
 
         /* One poll cycle under the global lock so socket ops and timer
          * processing see a consistent core state. */
         xSemaphoreTake(g_lock, portMAX_DELAY);
-        next_ms = (uint32_t)wolfIP_poll(ipstack, now_ms);
+        next_ms = wolfIP_poll(ipstack, now_ms);
         xSemaphoreGive(g_lock);
 
         if (next_ms < WOLFIP_FREERTOS_POLL_MIN_MS) next_ms = WOLFIP_FREERTOS_POLL_MIN_MS;
@@ -763,15 +763,22 @@ static void wolfip_bsd_poll_task(void *arg)
 
         delay_ticks = pdMS_TO_TICKS(next_ms);
         if (delay_ticks == 0) delay_ticks = 1;   /* always yield at least 1 tick */
-        vTaskDelay(delay_ticks);
+        (void)xSemaphoreTake(g_wake, delay_ticks);
     }
 }
 ```
 
-The default bounds are 5 ms minimum and 20 ms maximum. That floor stops the
-task from busy-spinning; the ceiling guarantees TCP retransmit timers, delayed
-ACKs, DHCP, and DNS still fire promptly. Lower the ceiling for latency, raise it
-for power — but verify TCP behaviour after raising it.
+`wolfIP_poll()` returns the milliseconds until its next timer, ARP retry or
+other deadline. It cannot see frames the driver has not handed over yet, so the
+ceiling (`WOLFIP_FREERTOS_POLL_MAX_MS`, default 5 ms) bounds how long a received
+frame waits on a driver without an RX interrupt. The floor
+(`WOLFIP_FREERTOS_POLL_MIN_MS`, default 1 ms, never less than one tick) stops
+the task from spinning when `wolfIP_poll()` reports work still pending. Raise
+the ceiling for power, but verify receive latency after raising it.
+
+The sleep ends early when `g_wake` is given. The port registers a callback with
+`wolfIP_set_wake_cb()` that gives it; the core calls it whenever a socket call
+queues a frame or arms a timer, so transmits leave at once.
 
 ### 6.3 The core mutex
 

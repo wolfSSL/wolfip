@@ -16,6 +16,7 @@ struct wolfIP_sockaddr {
 };
 
 typedef void (*tsocket_cb)(int fd, uint16_t event, void *arg);
+typedef void (*wolfIP_wake_cb)(void *arg);
 
 #define AF_INET 2
 #define IPSTACK_SOCK_STREAM 1
@@ -54,5 +55,6 @@ int wolfIP_sock_can_write(struct wolfIP *s, int fd);
 int wolfIP_sock_can_read(struct wolfIP *s, int fd);
 int wolfIP_sock_close(struct wolfIP *s, int fd);
 void wolfIP_register_callback(struct wolfIP *s, int fd, tsocket_cb cb, void *arg);
+void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg);
 
 #endif

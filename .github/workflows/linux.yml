@@ -92,6 +92,12 @@ jobs:
           set -euo pipefail
           timeout --preserve-status 5m ./build/test-ttl-expired
 
+      - name: Run FreeRTOS BSD wrapper tests
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          for t in build/test-freertos-*; do timeout --preserve-status 1m "$t"; done
+
       - name: Testing ICMP socket by stealing system calls in ping
         timeout-minutes: 2
         run: |

@@ -1111,7 +1111,7 @@ Internally, the FreeRTOS port uses:
 * a poll task that calls `wolfIP_poll()`;
 * callbacks from wolfIP that wake blocked tasks by giving the socket’s semaphore.
 
-The FreeRTOS poll task locks the stack, calls `wolfIP_poll(ipstack, now_ms)`, unlocks the stack, bounds the next sleep between a minimum and maximum, converts milliseconds to ticks, and then calls `vTaskDelay()`. The default wrapper constants include `WOLFIP_FREERTOS_BSD_MAX_FDS 16`, `WOLFIP_FREERTOS_POLL_MAX_MS 20`, and `WOLFIP_FREERTOS_POLL_MIN_MS 5`.
+The FreeRTOS poll task locks the stack, calls `wolfIP_poll(ipstack, now_ms)`, unlocks the stack, bounds the returned time to the next deadline between a minimum and maximum, converts milliseconds to ticks, and then waits on a semaphore for that long. The stack gives the semaphore through `wolfIP_set_wake_cb()` whenever a socket call queues work, and a link driver can give it from its RX interrupt. The default wrapper constants include `WOLFIP_FREERTOS_BSD_MAX_FDS 16`, `WOLFIP_FREERTOS_POLL_MAX_MS 5`, and `WOLFIP_FREERTOS_POLL_MIN_MS 1`.
 
 ### 10.2 Blocking semantics in the wrapper
 
@@ -1216,10 +1216,10 @@ static void wolfip_os_poll_task(void *arg)
 
     for (;;) {
         uint64_t now_ms = os_time_millis();
-        uint32_t next_ms;
+        int next_ms;
 
         os_mutex_lock(&g_core_lock);
-        next_ms = (uint32_t)wolfIP_poll(ipstack, now_ms);
+        next_ms = wolfIP_poll(ipstack, now_ms);
         os_mutex_unlock(&g_core_lock);
 
         if (next_ms < OS_WOLFIP_POLL_MIN_MS) {
@@ -1230,7 +1230,8 @@ static void wolfip_os_poll_task(void *arg)
             next_ms = OS_WOLFIP_POLL_MAX_MS;
         }
 
-        os_sleep_ms(next_ms);
+        /* Given by the wolfIP_set_wake_cb() callback and the RX interrupt. */
+        os_sem_wait_timeout(&g_wake, next_ms);
     }
 }
 ```
@@ -1386,9 +1387,9 @@ Follow these rules in the new OS port:
 
 ### 11.5 Poll-task timing
 
-The FreeRTOS wrapper bounds the poll delay between 5 ms and 20 ms by default. That is a reasonable starting point for an RTOS port because it prevents the poll task from spinning while still giving TCP timers, ACKs, retransmissions, and queued TX work regular progress.
+The FreeRTOS wrapper sleeps until the deadline `wolfIP_poll()` returns, bounded between 1 ms and 5 ms by default, and socket calls wake it early through `wolfIP_set_wake_cb()`. The minimum prevents the poll task from spinning; the maximum bounds how long a received frame waits when the link driver has no RX interrupt.
 
-For latency-sensitive products, reduce the maximum delay. For power-sensitive products, allow a larger maximum delay only after confirming that retransmission behavior, DNS, DHCP, and application latency still meet product requirements.
+For latency-sensitive products without an RX interrupt, reduce the maximum delay, or wake the poll task from the RX interrupt. For power-sensitive products, allow a larger maximum delay only after confirming that receive latency and application behavior still meet product requirements.
 
 ---
 
