@@ -297,6 +297,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_udp_no_icmp_unreachable_for_multicast_dst);
 #ifdef IP_MULTICAST
     tcase_add_test(tc_utils, test_multicast_join_and_drop_reports);
+    tcase_add_test(tc_utils, test_multicast_join_wakes_poller);
     tcase_add_test(tc_utils, test_multicast_join_report_repeated);
     tcase_add_test(tc_utils, test_multicast_join_report_repeat_heap_full_rearmed_on_poll);
     tcase_add_test(tc_utils, test_multicast_join_validation_and_shared_refs);
@@ -1522,6 +1523,17 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_poll_returns_zero_with_loopback_frame_queued);
 #endif
     tcase_add_test(tc_core, test_poll_returns_zero_while_flush_events_undelivered);
+    tcase_add_test(tc_core, test_wake_cb_on_socket_tx);
+    tcase_add_test(tc_core, test_wake_cb_on_register_with_pending_events);
+    tcase_add_test(tc_core, test_wake_cb_on_recv_and_loopback_outside_poll);
+    tcase_add_test(tc_core, test_wake_cb_not_fired_inside_poll);
+#if WOLFIP_ENABLE_LOOPBACK
+    tcase_add_test(tc_core, test_wake_cb_on_ack_retry);
+#endif
+    tcase_add_test(tc_core, test_wake_cb_on_accept_send_and_partial_read);
+    tcase_add_test(tc_core, test_wake_cb_on_icmp_raw_packet_sendto);
+    tcase_add_test(tc_core, test_wake_cb_starts_timers_armed_between_polls);
+    tcase_add_test(tc_core, test_wake_cb_deferred_timers_keep_heap_order);
     tcase_add_test(tc_core, test_poll_last_tick_updated);
     tcase_add_test(tc_core, test_poll_loopback_interface_iterated);
     tcase_add_test(tc_core, test_poll_multiple_udp_sockets_both_cbs_dispatched);

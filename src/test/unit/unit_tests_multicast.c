@@ -98,6 +98,35 @@ START_TEST(test_multicast_join_and_drop_reports)
 }
 END_TEST
 
+static int mcast_wake_calls;
+
+static void mcast_wake_cb(void *arg)
+{
+    (void)arg;
+    mcast_wake_calls++;
+}
+
+START_TEST(test_multicast_join_wakes_poller)
+{
+    struct wolfIP s;
+    int sd;
+    struct wolfIP_ip_mreq mreq;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(sd, 0);
+    mcast_wake_calls = 0;
+    wolfIP_set_wake_cb(&s, mcast_wake_cb, NULL);
+
+    multicast_mreq(&mreq, 0xE9010203U, IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd, WOLFIP_SOL_IP,
+            WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+    ck_assert_int_eq(mcast_wake_calls, 1);
+}
+END_TEST
+
 /* RFC 3376 §5.1: the unsolicited join report is repeated once after a short delay */
 START_TEST(test_multicast_join_report_repeated)
 {

@@ -72,6 +72,7 @@ static inline int wolfIP_is_loopback_if(unsigned int if_idx)
 #if WOLFIP_ENABLE_LOOPBACK
 static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t len);
 #endif
+static void wolfIP_wake(struct wolfIP *s);
 static void wolfIP_recv_on(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len);
 
 struct wolfIP_eth_frame;
@@ -1475,6 +1476,7 @@ struct wolfIP;
 
 struct wolfIP_timer {
     uint32_t id;
+    uint8_t deferred;
     uint64_t expires;
     void *arg;
     void (*cb)(void *arg);
@@ -1493,6 +1495,7 @@ struct wolfIP_route_entry {
 struct timers_binheap {
     struct wolfIP_timer timers[MAX_TIMERS];
     uint32_t size;
+    uint8_t defer;
 };
 
 /* The main wolfip stack context structure. */
@@ -1543,6 +1546,9 @@ struct wolfIP {
     uint16_t ipcounter;
     uint64_t last_tick;
     uint64_t poll_next_at;
+    wolfIP_wake_cb wake_cb;
+    void *wake_arg;
+    uint8_t in_poll;
 #if WOLFIP_ENABLE_FORWARDING
     uint32_t route_generation;
     struct wolfIP_route_entry routes[WOLFIP_MAX_ROUTES];
@@ -1743,6 +1749,7 @@ static int wolfIP_loopback_send(struct wolfIP_ll_dev *ll, void *buf, uint32_t le
     s->loopback_pending_len[slot] = len;
     s->loopback_tail = (slot + 1U) % WOLFIP_LOOPBACK_QUEUE_DEPTH;
     s->loopback_count++;
+    wolfIP_wake(s);
     return (int)len;
 }
 
@@ -1788,6 +1795,12 @@ static inline int wolfIP_ll_is_non_ethernet(struct wolfIP *s, unsigned int if_id
 {
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
     return (ll && ll->non_ethernet) ? 1 : 0;
+}
+
+static void wolfIP_wake(struct wolfIP *s)
+{
+    if (s && s->wake_cb && !s->in_poll)
+        s->wake_cb(s->wake_arg);
 }
 
 /* Lowers the deadline the current wolfIP_poll() returns. */
@@ -2808,6 +2821,7 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
                               void *arg)
 {
     struct tsocket *t;
+    uint16_t pending = 0;
     if (!s)
         return;
     if (sock_fd < 0)
@@ -2818,18 +2832,21 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
         t = &s->tcpsockets[SOCKET_UNMARK(sock_fd)];
         t->callback = cb;
         t->callback_arg = arg;
+        pending = t->events;
     } else if (IS_SOCKET_UDP(sock_fd)) {
         if (SOCKET_UNMARK(sock_fd) >= MAX_UDPSOCKETS)
             return;
         t = &s->udpsockets[SOCKET_UNMARK(sock_fd)];
         t->callback = cb;
         t->callback_arg = arg;
+        pending = t->events;
     } else if (IS_SOCKET_ICMP(sock_fd)) {
         if (SOCKET_UNMARK(sock_fd) >= MAX_ICMPSOCKETS)
             return;
         t = &s->icmpsockets[SOCKET_UNMARK(sock_fd)];
         t->callback = cb;
         t->callback_arg = arg;
+        pending = t->events;
     }
 #if WOLFIP_RAWSOCKETS
     else if (IS_SOCKET_RAW(sock_fd)) {
@@ -2837,6 +2854,7 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
             return;
         s->rawsockets[SOCKET_UNMARK(sock_fd)].callback = cb;
         s->rawsockets[SOCKET_UNMARK(sock_fd)].callback_arg = arg;
+        pending = s->rawsockets[SOCKET_UNMARK(sock_fd)].events;
     }
 #endif
 #if WOLFIP_PACKET_SOCKETS
@@ -2845,8 +2863,12 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
             return;
         s->packetsockets[SOCKET_UNMARK(sock_fd)].callback = cb;
         s->packetsockets[SOCKET_UNMARK(sock_fd)].callback_arg = arg;
+        pending = s->packetsockets[SOCKET_UNMARK(sock_fd)].events;
     }
 #endif
+    /* Events raised while no callback was set are delivered by the next poll. */
+    if (cb && pending)
+        wolfIP_wake(s);
 }
 
 /* Timers */
@@ -2888,6 +2910,7 @@ static int timers_binheap_insert(struct timers_binheap *heap, struct wolfIP_time
     if (heap->size >= MAX_TIMERS)
         return 0; /* heap full */
     tmr.id = timer_id++;
+    tmr.deferred = heap->defer;
     /* Insert at the end */
     heap->timers[heap->size] = tmr;
     heap->size++;
@@ -2942,6 +2965,46 @@ static void timers_heap_rebase(struct timers_binheap *heap, uint64_t now)
         if (heap->timers[i].expires != 0)
             heap->timers[i].expires = tick_rebase(heap->timers[i].expires, now);
     }
+}
+
+static void timers_sift_down(struct timers_binheap *heap, uint32_t i)
+{
+    uint32_t n = heap->size;
+
+    while (2 * i + 1 < n) {
+        uint32_t j = 2 * i + 1;
+        struct wolfIP_timer tmp;
+        if (j + 1 < n && heap->timers[j + 1].expires < heap->timers[j].expires)
+            j++;
+        if (heap->timers[i].expires <= heap->timers[j].expires)
+            break;
+        tmp = heap->timers[i];
+        heap->timers[i] = heap->timers[j];
+        heap->timers[j] = tmp;
+        i = j;
+    }
+}
+
+/* With a wake callback the poll follows a call that armed a timer at once,
+ * so start the timer at that poll rather than at the stale last_tick. */
+static void timers_start_deferred(struct timers_binheap *heap, uint64_t delta)
+{
+    uint32_t i;
+    int moved = 0;
+
+    for (i = 0; i < heap->size; i++) {
+        if (!heap->timers[i].deferred)
+            continue;
+        heap->timers[i].deferred = 0;
+        if (heap->timers[i].expires != 0 && delta != 0) {
+            heap->timers[i].expires += delta;
+            moved = 1;
+        }
+    }
+    if (!moved)
+        return;
+    for (i = heap->size / 2; i-- > 0; )
+        timers_sift_down(heap, i);
 }
 
 /* Earliest pending expiry, or 0 when no timer is armed. */
@@ -4090,8 +4153,10 @@ static int tcp_send_empty(struct tsocket *t, uint8_t flags)
         return -WOLFIP_EINVAL;
     tcp = (struct wolfIP_tcp_seg *)buffer;
     frame_len = tcp_build_empty(t, tcp, flags);
-    if (fifo_push(&t->sock.tcp.txbuf, tcp, frame_len) == 0)
+    if (fifo_push(&t->sock.tcp.txbuf, tcp, frame_len) == 0) {
+        wolfIP_wake(t->S);
         return 0;
+    }
 
     /* Pure ACKs have no retransmission path, so do not drop them when the
      * shared data/control TX FIFO is saturated by already queued payload. */
@@ -4122,10 +4187,12 @@ static void tcp_send_ack(struct tsocket *t)
     if (!t)
         return;
     ret = tcp_send_empty(t, TCP_FLAG_ACK);
-    if (ret == -WOLFIP_EAGAIN)
+    if (ret == -WOLFIP_EAGAIN) {
         t->sock.tcp.ack_retry_pending = 1;
-    else if (ret >= 0)
+        wolfIP_wake(t->S);
+    } else if (ret >= 0) {
         t->sock.tcp.ack_retry_pending = 0;
+    }
 }
 
 static void tcp_send_reset_reply(struct wolfIP *s, unsigned int if_idx,
@@ -4359,7 +4426,11 @@ static int tcp_send_syn(struct tsocket *t, uint8_t flags)
         opt_len++;
     }
     tcp->hlen = ((20 + opt_len) << 2) & 0xF0;
-    return fifo_push(&t->sock.tcp.txbuf, tcp, sizeof(struct wolfIP_tcp_seg) + opt_len);
+    if (fifo_push(&t->sock.tcp.txbuf, tcp,
+            sizeof(struct wolfIP_tcp_seg) + opt_len) < 0)
+        return -1;
+    wolfIP_wake(t->S);
+    return 0;
 }
 
 /* Returns true when handshake/teardown control traffic is outstanding and
@@ -7463,6 +7534,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * peer waiting for its own retransmission timer. */
             fifo_init(&newts->sock.tcp.txbuf, newts->txmem, TXBUF_SIZE);
             newts->sock.tcp.ack_retry_pending = 1;
+            wolfIP_wake(s);
             /* Readiness follows the child's own buffers. The listener's
              * CB_EVENT_READABLE means "a connection is pending accept" and
              * would otherwise dispatch a read callback on an accepted socket
@@ -7679,6 +7751,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                     (struct wolfIP_tcp_seg *)((uint8_t *)last_desc + sizeof(*last_desc));
                 last_tcp->flags |= TCP_FLAG_PSH;
             }
+            wolfIP_wake(s);
             return sent;
         }
     } else if (IS_SOCKET_UDP(sockfd)) {
@@ -7760,6 +7833,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, udp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
+        wolfIP_wake(s);
         if (sin && !ts->sock.udp.connected) {
             /* An unconnected socket adopts the explicit destination as
              * its last destination for subsequent plain sends (DHCP/DNS
@@ -7841,6 +7915,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 (uint16_t)(frame_len - ETH_HEADER_LEN));
         if (fifo_push(&ts->sock.udp.txbuf, icmp, frame_len) < 0)
             return -WOLFIP_EAGAIN;
+        wolfIP_wake(s);
         return (int)payload_len;
     }
 #if WOLFIP_RAWSOCKETS
@@ -7961,6 +8036,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EAGAIN;
         if (fifo_push(&rs->txbuf, rip, total_len) < 0)
             return -WOLFIP_EAGAIN;
+        wolfIP_wake(s);
         return (int)len;
     }
 #endif
@@ -8008,6 +8084,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EAGAIN;
         if (fifo_push(&ps->txbuf, pkt_frame, (uint32_t)len) < 0)
             return -WOLFIP_EAGAIN;
+        wolfIP_wake(s);
         return (int)len;
     }
 #endif
@@ -8065,8 +8142,11 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
                 int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
                 if (ret > 0) {
                     uint16_t win_after = tcp_adv_win(ts, 1);
-                    if (queue_len(&ts->sock.tcp.rxbuf) > 0)
+                    if (queue_len(&ts->sock.tcp.rxbuf) > 0) {
                         ts->events |= CB_EVENT_READABLE;
+                        if (ts->callback)
+                            wolfIP_wake(s);
+                    }
                     if (win_after > win_before)
                         tcp_send_ack(ts);
                 }
@@ -8079,8 +8159,11 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
             if (ret > 0) {
                 uint16_t win_after = tcp_adv_win(ts, 1);
-                if (queue_len(&ts->sock.tcp.rxbuf) > 0)
+                if (queue_len(&ts->sock.tcp.rxbuf) > 0) {
                     ts->events |= CB_EVENT_READABLE;
+                    if (ts->callback)
+                        wolfIP_wake(s);
+                }
                 if (win_after > win_before)
                     tcp_send_ack(ts);
             }
@@ -8345,6 +8428,7 @@ static int udp_mcast_join(struct wolfIP *s, struct tsocket *ts, ip4 group,
                 (wolfIP_getrandom() % IGMP_UNSOLICITED_REPORT_MS) + 1U;
         m->tmr_unsol = igmp_arm_report(s, m, m->unsol_at,
                                        igmp_unsolicited_timer_cb);
+        wolfIP_wake(s);
     }
     return 0;
 }
@@ -11927,9 +12011,12 @@ void wolfIP_recv(struct wolfIP *s, void *buf, uint32_t len)
 #endif
         memcpy(frame + ETH_HEADER_LEN, buf, len);
         wolfIP_recv_on(s, WOLFIP_PRIMARY_IF_IDX, frame, len + ETH_HEADER_LEN);
+        wolfIP_wake(s);
         return;
     }
     wolfIP_recv_on(s, WOLFIP_PRIMARY_IF_IDX, buf, len);
+    /* A frame handed in outside wolfIP_poll() leaves its events for the next. */
+    wolfIP_wake(s);
 }
 
 void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t len)
@@ -11944,9 +12031,11 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #endif
         memcpy(frame + ETH_HEADER_LEN, buf, len);
         wolfIP_recv_on(s, if_idx, frame, len + ETH_HEADER_LEN);
+        wolfIP_wake(s);
         return;
     }
     wolfIP_recv_on(s, if_idx, buf, len);
+    wolfIP_wake(s);
 }
 
 /* DNS Client */
@@ -13246,7 +13335,11 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
 #endif
     }
 
+    timers_start_deferred(&s->timers,
+            (now > s->last_tick) ? now - s->last_tick : 0);
     s->last_tick = now;
+    s->in_poll = 1;
+    s->timers.defer = 0;
     s->poll_next_at = now + WOLFIP_POLL_MAX_WAIT_MS;
 
     /* Poll the device */
@@ -13281,9 +13374,19 @@ int wolfIP_poll(struct wolfIP *s, uint64_t now)
     next_tmr = timers_next_expiry(&s->timers);
     if (next_tmr != 0)
         wolfIP_poll_by(s, next_tmr);
+    s->in_poll = 0;
+    s->timers.defer = (s->wake_cb != NULL);
 
     wait = (int32_t)((uint32_t)s->poll_next_at - (uint32_t)now);
     return (wait > 0) ? (int)wait : 0;
+}
+
+void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg)
+{
+    if (!s)
+        return;
+    s->wake_cb = cb;
+    s->wake_arg = arg;
 }
 
 void wolfIP_ipconfig_set(struct wolfIP *s, ip4 ip, ip4 mask, ip4 gw)
