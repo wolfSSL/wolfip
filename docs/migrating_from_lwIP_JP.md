@@ -1110,7 +1110,7 @@ int close(int sockfd);
 * `wolfIP_poll()` を呼び出すポールタスク；
 * ソケットのセマフォを与えることでブロックされたタスクを起動する wolfIP からのコールバック。
 
-FreeRTOS ポールタスクはスタックをロックし、`wolfIP_poll(ipstack, now_ms)` を呼び出し、スタックをアンロックし、次のスリープを最小と最大の間に制限し、ミリ秒をティックに変換し、`vTaskDelay()` を呼び出します。デフォルトのラッパー定数には `WOLFIP_FREERTOS_BSD_MAX_FDS 16`、`WOLFIP_FREERTOS_POLL_MAX_MS 20`、`WOLFIP_FREERTOS_POLL_MIN_MS 5` が含まれます。
+FreeRTOS ポールタスクはスタックをロックし、`wolfIP_poll(ipstack, now_ms)` を呼び出し、スタックをアンロックし、戻り値の次の期限までの時間を最小と最大の間に制限し、ミリ秒をティックに変換し、その時間だけセマフォを待ちます。ソケット呼び出しが作業をキューに入れると、スタックは `wolfIP_set_wake_cb()` を通じてセマフォを与えます。リンクドライバは RX 割り込みからも与えることができます。デフォルトのラッパー定数には `WOLFIP_FREERTOS_BSD_MAX_FDS 16`、`WOLFIP_FREERTOS_POLL_MAX_MS 5`、`WOLFIP_FREERTOS_POLL_MIN_MS 1` が含まれます。
 
 ### 10.2 ラッパーのブロッキング動作
 
@@ -1215,10 +1215,10 @@ static void wolfip_os_poll_task(void *arg)
 
     for (;;) {
         uint64_t now_ms = os_time_millis();
-        uint32_t next_ms;
+        int next_ms;
 
         os_mutex_lock(&g_core_lock);
-        next_ms = (uint32_t)wolfIP_poll(ipstack, now_ms);
+        next_ms = wolfIP_poll(ipstack, now_ms);
         os_mutex_unlock(&g_core_lock);
 
         if (next_ms < OS_WOLFIP_POLL_MIN_MS) {
@@ -1229,7 +1229,8 @@ static void wolfip_os_poll_task(void *arg)
             next_ms = OS_WOLFIP_POLL_MAX_MS;
         }
 
-        os_sleep_ms(next_ms);
+        /* wolfIP_set_wake_cb() のコールバックと RX 割り込みが与える */
+        os_sem_wait_timeout(&g_wake, next_ms);
     }
 }
 ```
@@ -1385,9 +1386,9 @@ int recv(int public_fd, void *buf, size_t len, int flags)
 
 ### 11.5 ポールタスクのタイミング
 
-FreeRTOS ラッパーはデフォルトでポール遅延を 5 ms から 20 ms の間に制限します。これは RTOS ポートの合理的な出発点です。ポールタスクがスピンするのを防ぎながら、TCP タイマー、ACK、再送信、キュー済み TX 作業に定期的なプログレスを与えるためです。
+FreeRTOS ラッパーは `wolfIP_poll()` が返す期限までスリープし、デフォルトではその時間を 1 ms から 5 ms の間に制限します。ソケット呼び出しは `wolfIP_set_wake_cb()` を通じてポールタスクを早期に起こします。最小値はポールタスクのスピンを防ぎ、最大値はリンクドライバに RX 割り込みがない場合に受信フレームが待つ時間を制限します。
 
-レイテンシが重要な製品では、最大遅延を小さくしてください。省電力が重要な製品では、再送信動作、DNS、DHCP、アプリケーションレイテンシが製品要件を満たすことを確認した後にのみ、より大きな最大遅延を許可してください。
+RX 割り込みのないレイテンシ重視の製品では、最大遅延を小さくするか、RX 割り込みからポールタスクを起こしてください。省電力が重要な製品では、受信レイテンシとアプリケーション動作が製品要件を満たすことを確認した後にのみ、より大きな最大遅延を許可してください。
 
 ---
 

@@ -11,6 +11,9 @@ typedef uint32_t TickType_t;
 #define pdFALSE 0
 #define pdPASS 1
 #define portMAX_DELAY ((TickType_t)0xffffffffu)
+#ifndef configTICK_RATE_HZ
+#define configTICK_RATE_HZ 1000u
+#endif
 #define portTICK_PERIOD_MS 1u
 #define pdMS_TO_TICKS(ms) ((TickType_t)(ms))
 

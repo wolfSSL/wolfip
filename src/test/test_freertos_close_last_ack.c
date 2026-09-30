@@ -20,6 +20,8 @@ static tsocket_cb registered_cb;
 static void *registered_arg;
 static int fake_internal_fd = MARK_TCP_SOCKET;
 static int close_calls;
+static int task_create_fail;
+static wolfIP_wake_cb registered_wake_cb;
 
 SemaphoreHandle_t xSemaphoreCreateBinary(void)
 {
@@ -78,7 +80,7 @@ BaseType_t xTaskCreate(TaskFunction_t task, const char *name,
     (void)arg;
     (void)priority;
     (void)handle;
-    return pdPASS;
+    return task_create_fail ? pdFALSE : pdPASS;
 }
 
 void vTaskDelay(TickType_t ticks)
@@ -219,19 +221,51 @@ void wolfIP_register_callback(struct wolfIP *s, int fd, tsocket_cb cb, void *arg
     registered_arg = arg;
 }
 
+void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg)
+{
+    (void)s;
+    (void)arg;
+    registered_wake_cb = cb;
+}
+
 #include "../port/freeRTOS/bsd_socket.c"
+
+/* Brings the wrapper up through a failed init first, leaving it initialized. */
+static int check_wake(struct wolfIP *stack)
+{
+    int fails = 0;
+
+    task_create_fail = 1;
+    if (wolfip_freertos_socket_init(stack, 1, 128) == 0 ||
+            registered_wake_cb != NULL || g_lock != NULL || g_ipstack != NULL) {
+        printf("failed init left the wake callback or the lock behind\n");
+        fails++;
+    }
+    task_create_fail = 0;
+
+    if (wolfip_freertos_socket_init(stack, 1, 128) != 0 ||
+            registered_wake_cb == NULL || g_wake == NULL) {
+        printf("init did not register a wake callback\n");
+        return fails + 1;
+    }
+    registered_wake_cb(NULL);
+    if (g_wake->count != 1) {
+        printf("wake callback did not give the poll task's semaphore\n");
+        fails++;
+    }
+    return fails;
+}
 
 int main(void)
 {
     struct wolfIP stack;
     int fd;
     int rc;
+    int frees;
 
     memset(&stack, 0, sizeof(stack));
-    if (wolfip_freertos_socket_init(&stack, 1, 128) != 0) {
-        printf("init failed\n");
+    if (check_wake(&stack) != 0)
         return 1;
-    }
 
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -239,13 +273,14 @@ int main(void)
         return 1;
     }
 
+    frees = sem_frees;
     rc = close(fd);
     if (rc != 0) {
         printf("close failed rc=%d close_calls=%d sem_allocs=%d sem_frees=%d\n",
             rc, close_calls, sem_allocs, sem_frees);
         return 1;
     }
-    if (close_calls != 2 || sem_frees != 1) {
+    if (close_calls != 2 || sem_frees - frees != 1) {
         printf("unexpected state close_calls=%d sem_allocs=%d sem_frees=%d\n",
             close_calls, sem_allocs, sem_frees);
         return 1;

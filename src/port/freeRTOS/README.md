@@ -16,7 +16,7 @@ This directory provides a FreeRTOS integration layer for wolfIP with:
 ## Design
 
 1. A global lock protects wolfIP core/socket operations.
-2. A poll thread/task calls `wolfIP_poll()` periodically.
+2. A poll thread/task calls `wolfIP_poll()` and sleeps until the deadline it returns, bounded by `WOLFIP_FREERTOS_POLL_MIN_MS`/`WOLFIP_FREERTOS_POLL_MAX_MS`. The core wakes it early when a socket call queues work.
 3. Blocking socket operations:
    - Try the underlying non-blocking wolfIP socket call.
    - If `-WOLFIP_EAGAIN`, register a callback and block on a FreeRTOS semaphore.
@@ -26,7 +26,7 @@ This gives application code standard blocking socket behavior while wolfIP remai
 
 ## Poll Task Example
 
-The integration creates a dedicated task similar to:
+The integration registers a wake callback with `wolfIP_set_wake_cb()` that gives the binary semaphore `g_wake`, and creates a dedicated task similar to:
 
 ```c
 static void wolfip_poll_task(void *arg)
@@ -34,12 +34,12 @@ static void wolfip_poll_task(void *arg)
     struct wolfIP *ipstack = (struct wolfIP *)arg;
 
     for (;;) {
-        uint32_t next_ms;
+        int next_ms;
         TickType_t delay_ticks;
-        uint64_t now_ms = (uint64_t)xTaskGetTickCount() * (uint64_t)portTICK_PERIOD_MS;
+        uint64_t now_ms = (uint64_t)xTaskGetTickCount() * 1000u / configTICK_RATE_HZ;
 
         xSemaphoreTake(g_lock, portMAX_DELAY);
-        next_ms = (uint32_t)wolfIP_poll(ipstack, now_ms);
+        next_ms = wolfIP_poll(ipstack, now_ms);
         xSemaphoreGive(g_lock);
 
         if (next_ms < WOLFIP_FREERTOS_POLL_MIN_MS) {
@@ -53,10 +53,12 @@ static void wolfip_poll_task(void *arg)
         if (delay_ticks == 0) {
             delay_ticks = 1;
         }
-        vTaskDelay(delay_ticks);
+        (void)xSemaphoreTake(g_wake, delay_ticks);
     }
 }
 ```
+
+`WOLFIP_FREERTOS_POLL_MAX_MS` bounds how long a received frame waits when the link driver has no RX interrupt. `WOLFIP_FREERTOS_POLL_MIN_MS` keeps the task from spinning when `wolfIP_poll()` reports work still pending.
 
 ## Integration Steps
 
@@ -101,8 +103,8 @@ close(fd);
 Defined in `bsd_socket.c`:
 
 - `WOLFIP_FREERTOS_BSD_MAX_FDS` (default: `16`)
-- `WOLFIP_FREERTOS_POLL_MIN_MS` (default: `5`)
-- `WOLFIP_FREERTOS_POLL_MAX_MS` (default: `20`)
+- `WOLFIP_FREERTOS_POLL_MIN_MS` (default: `1`)
+- `WOLFIP_FREERTOS_POLL_MAX_MS` (default: `5`)
 
 Override via compiler flags, for example:
 

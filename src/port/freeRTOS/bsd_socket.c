@@ -38,11 +38,11 @@
 #endif
 
 #ifndef WOLFIP_FREERTOS_POLL_MAX_MS
-#define WOLFIP_FREERTOS_POLL_MAX_MS 20u
+#define WOLFIP_FREERTOS_POLL_MAX_MS 5u
 #endif
 
 #ifndef WOLFIP_FREERTOS_POLL_MIN_MS
-#define WOLFIP_FREERTOS_POLL_MIN_MS 5u
+#define WOLFIP_FREERTOS_POLL_MIN_MS 1u
 #endif
 
 typedef struct {
@@ -55,41 +55,50 @@ typedef struct {
 
 static struct wolfIP *g_ipstack;
 static SemaphoreHandle_t g_lock;
+static SemaphoreHandle_t volatile g_wake;
 static wolfip_bsd_fd_entry g_fds[WOLFIP_FREERTOS_BSD_MAX_FDS];
 static int g_last_error;
 static volatile uint32_t g_cb_log_count;
+
+static void wolfip_bsd_wake(void *arg)
+{
+    (void)arg;
+    (void)xSemaphoreGive(g_wake);
+}
 
 static void wolfip_bsd_poll_task(void *arg)
 {
     struct wolfIP *ipstack = (struct wolfIP *)arg;
 
     for (;;) {
-        uint32_t next_ms;
+        int next_ms;
         TickType_t delay_ticks;
-        uint64_t now_ms = (uint64_t)xTaskGetTickCount() * (uint64_t)portTICK_PERIOD_MS;
+        uint64_t now_ms = (uint64_t)xTaskGetTickCount() * 1000u /
+            configTICK_RATE_HZ;
 
         /* Run one wolfIP poll cycle under the global lock so socket operations
          * and timer processing see a consistent core state. */
         xSemaphoreTake(g_lock, portMAX_DELAY);
-        next_ms = (uint32_t)wolfIP_poll(ipstack, now_ms);
+        next_ms = wolfIP_poll(ipstack, now_ms);
         xSemaphoreGive(g_lock);
 
-        /* Bound sleep time to keep progress predictable and to avoid either
-         * spinning too fast or sleeping too long when no timers are pending. */
-        if (next_ms < WOLFIP_FREERTOS_POLL_MIN_MS) {
+        /* Sleep until the next wolfIP deadline, bounded so received frames
+         * are still polled and the task never spins. */
+        if (next_ms < (int)WOLFIP_FREERTOS_POLL_MIN_MS) {
             next_ms = WOLFIP_FREERTOS_POLL_MIN_MS;
         }
-        if (next_ms > WOLFIP_FREERTOS_POLL_MAX_MS) {
+        if (next_ms > (int)WOLFIP_FREERTOS_POLL_MAX_MS) {
             next_ms = WOLFIP_FREERTOS_POLL_MAX_MS;
         }
 
-        /* Convert milliseconds to RTOS ticks and always sleep at least one tick
-         * so the poll task yields CPU time to application tasks. */
+        /* Convert milliseconds to RTOS ticks and always block at least one tick
+         * so the poll task yields CPU time to application tasks. A socket call
+         * or the RX interrupt giving g_wake ends the wait early. */
         delay_ticks = pdMS_TO_TICKS(next_ms);
         if (delay_ticks == 0) {
             delay_ticks = 1;
         }
-        vTaskDelay(delay_ticks);
+        (void)xSemaphoreTake(g_wake, delay_ticks);
     }
 }
 
@@ -230,6 +239,15 @@ int wolfip_freertos_socket_init(struct wolfIP *ipstack,
     if (g_lock == NULL) {
         return -WOLFIP_ENOMEM;
     }
+    /* Never deleted: an RX interrupt may use it as soon as it exists. */
+    if (g_wake == NULL) {
+        g_wake = xSemaphoreCreateBinary();
+    }
+    if (g_wake == NULL) {
+        vSemaphoreDelete(g_lock);
+        g_lock = NULL;
+        return -WOLFIP_ENOMEM;
+    }
 
     for (i = 0; i < WOLFIP_FREERTOS_BSD_MAX_FDS; i++) {
         g_fds[i].in_use = 0;
@@ -241,9 +259,11 @@ int wolfip_freertos_socket_init(struct wolfIP *ipstack,
     g_ipstack = ipstack;
     g_last_error = 0;
     g_cb_log_count = 0;
+    wolfIP_set_wake_cb(g_ipstack, wolfip_bsd_wake, NULL);
 
     if (xTaskCreate(wolfip_bsd_poll_task, "wolfip_poll", poll_task_stack_words,
             g_ipstack, poll_task_priority, NULL) != pdPASS) {
+        wolfIP_set_wake_cb(g_ipstack, NULL, NULL);
         g_ipstack = NULL;
         vSemaphoreDelete(g_lock);
         g_lock = NULL;
