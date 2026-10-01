@@ -14,8 +14,9 @@ typedef uint32_t TickType_t;
 #ifndef configTICK_RATE_HZ
 #define configTICK_RATE_HZ 1000u
 #endif
-#define portTICK_PERIOD_MS 1u
-#define pdMS_TO_TICKS(ms) ((TickType_t)(ms))
+#define portTICK_PERIOD_MS ((TickType_t)1000u / configTICK_RATE_HZ)
+#define pdMS_TO_TICKS(ms) \
+    ((TickType_t)(((uint64_t)(ms) * configTICK_RATE_HZ) / 1000u))
 #define portYIELD_FROM_ISR(woken) ((void)(woken))
 
 #endif

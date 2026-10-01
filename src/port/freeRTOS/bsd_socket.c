@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -51,6 +52,9 @@ typedef struct {
     SemaphoreHandle_t ready_sem;
     volatile uint16_t wait_events;
     volatile uint16_t seen_events;
+    /* SO_RCVTIMEO / SO_SNDTIMEO in ticks; portMAX_DELAY means none. */
+    TickType_t rx_timeout;
+    TickType_t tx_timeout;
 } wolfip_bsd_fd_entry;
 
 static struct wolfIP *g_ipstack;
@@ -160,6 +164,8 @@ static int wolfip_bsd_fd_alloc(int internal_fd)
             g_fds[i].ready_sem = sem;
             g_fds[i].wait_events = 0;
             g_fds[i].seen_events = 0;
+            g_fds[i].rx_timeout = portMAX_DELAY;
+            g_fds[i].tx_timeout = portMAX_DELAY;
             return i;
         }
     }
@@ -213,12 +219,24 @@ static void wolfip_bsd_prepare_wait_locked(wolfip_bsd_fd_entry *entry, uint16_t 
     wolfIP_register_callback(g_ipstack, entry->internal_fd, wolfip_bsd_socket_cb, entry);
 }
 
-static int wolfip_bsd_wait_unlocked(wolfip_bsd_fd_entry *entry)
+static int wolfip_bsd_wait_unlocked(wolfip_bsd_fd_entry *entry,
+                                    TickType_t timeout)
 {
-    if (xSemaphoreTake(entry->ready_sem, portMAX_DELAY) != pdTRUE) {
+    if (xSemaphoreTake(entry->ready_sem, timeout) != pdTRUE) {
         return -1;
     }
     return 0;
+}
+
+static TickType_t wolfip_bsd_remaining(TickType_t timeout, TickType_t start)
+{
+    TickType_t elapsed;
+
+    if (timeout == portMAX_DELAY) {
+        return portMAX_DELAY;
+    }
+    elapsed = (TickType_t)(xTaskGetTickCount() - start);
+    return (elapsed < timeout) ? (TickType_t)(timeout - elapsed) : 0;
 }
 
 /* Some TCP core calls surface a temporary "not established yet" as -1 on a
@@ -362,14 +380,18 @@ int accept(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
     int public_fd;
     int retried_minus_one = 0;
     wolfip_bsd_fd_entry *entry;
+    TickType_t start;
+    TickType_t left;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
     }
     entry = &g_fds[sockfd];
+    start = xTaskGetTickCount();
 
     for (;;) {
         xSemaphoreTake(g_lock, portMAX_DELAY);
+        left = wolfip_bsd_remaining(entry->rx_timeout, start);
         ret = wolfIP_sock_accept(g_ipstack, entry->internal_fd, addr, addrlen);
         if (ret >= 0) {
             public_fd = wolfip_bsd_fd_alloc(ret);
@@ -388,7 +410,7 @@ int accept(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
             wolfip_bsd_prepare_wait_locked(entry,
                 (uint16_t)(CB_EVENT_READABLE | CB_EVENT_CLOSED));
             xSemaphoreGive(g_lock);
-            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+            if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
                 wolfip_bsd_set_error(WOLFIP_EAGAIN);
                 return -1;
             }
@@ -402,7 +424,7 @@ int accept(int sockfd, struct wolfIP_sockaddr *addr, socklen_t *addrlen)
 
         wolfip_bsd_prepare_wait_locked(entry, (uint16_t)(CB_EVENT_READABLE | CB_EVENT_CLOSED));
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
+        if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
             wolfip_bsd_set_error(WOLFIP_EAGAIN);
             return -1;
         }
@@ -413,14 +435,18 @@ int connect(int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen)
 {
     int ret;
     wolfip_bsd_fd_entry *entry;
+    TickType_t start;
+    TickType_t left;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
     }
     entry = &g_fds[sockfd];
+    start = xTaskGetTickCount();
 
     for (;;) {
         xSemaphoreTake(g_lock, portMAX_DELAY);
+        left = wolfip_bsd_remaining(entry->tx_timeout, start);
         ret = wolfIP_sock_connect(g_ipstack, entry->internal_fd, addr, addrlen);
         if (ret == 0) {
             xSemaphoreGive(g_lock);
@@ -434,8 +460,8 @@ int connect(int sockfd, const struct wolfIP_sockaddr *addr, socklen_t addrlen)
 
         wolfip_bsd_prepare_wait_locked(entry, (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
-            wolfip_bsd_set_error(WOLFIP_EAGAIN);
+        if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
+            wolfip_bsd_set_error(WOLFIP_EINPROGRESS);
             return -1;
         }
     }
@@ -446,14 +472,18 @@ int send(int sockfd, const void *buf, size_t len, int flags)
     int ret;
     int retried_minus_one = 0;
     wolfip_bsd_fd_entry *entry;
+    TickType_t start;
+    TickType_t left;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
     }
     entry = &g_fds[sockfd];
+    start = xTaskGetTickCount();
 
     for (;;) {
         xSemaphoreTake(g_lock, portMAX_DELAY);
+        left = wolfip_bsd_remaining(entry->tx_timeout, start);
         ret = wolfIP_sock_send(g_ipstack, entry->internal_fd, buf, len, flags);
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
@@ -464,7 +494,7 @@ int send(int sockfd, const void *buf, size_t len, int flags)
             wolfip_bsd_prepare_wait_locked(entry,
                 (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_READABLE | CB_EVENT_CLOSED));
             xSemaphoreGive(g_lock);
-            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+            if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
                 wolfip_bsd_set_error(WOLFIP_EAGAIN);
                 return -1;
             }
@@ -478,7 +508,7 @@ int send(int sockfd, const void *buf, size_t len, int flags)
 
         wolfip_bsd_prepare_wait_locked(entry, (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
+        if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
             wolfip_bsd_set_error(WOLFIP_EAGAIN);
             return -1;
         }
@@ -491,14 +521,18 @@ int sendto(int sockfd, const void *buf, size_t len, int flags,
     int ret;
     int retried_minus_one = 0;
     wolfip_bsd_fd_entry *entry;
+    TickType_t start;
+    TickType_t left;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
     }
     entry = &g_fds[sockfd];
+    start = xTaskGetTickCount();
 
     for (;;) {
         xSemaphoreTake(g_lock, portMAX_DELAY);
+        left = wolfip_bsd_remaining(entry->tx_timeout, start);
         ret = wolfIP_sock_sendto(g_ipstack, entry->internal_fd, buf, len, flags, dest_addr, addrlen);
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
@@ -509,7 +543,7 @@ int sendto(int sockfd, const void *buf, size_t len, int flags,
             wolfip_bsd_prepare_wait_locked(entry,
                 (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_READABLE | CB_EVENT_CLOSED));
             xSemaphoreGive(g_lock);
-            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+            if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
                 wolfip_bsd_set_error(WOLFIP_EAGAIN);
                 return -1;
             }
@@ -523,7 +557,7 @@ int sendto(int sockfd, const void *buf, size_t len, int flags,
 
         wolfip_bsd_prepare_wait_locked(entry, (uint16_t)(CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
+        if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
             wolfip_bsd_set_error(WOLFIP_EAGAIN);
             return -1;
         }
@@ -534,14 +568,18 @@ int recv(int sockfd, void *buf, size_t len, int flags)
 {
     int ret;
     wolfip_bsd_fd_entry *entry;
+    TickType_t start;
+    TickType_t left;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
     }
     entry = &g_fds[sockfd];
+    start = xTaskGetTickCount();
 
     for (;;) {
         xSemaphoreTake(g_lock, portMAX_DELAY);
+        left = wolfip_bsd_remaining(entry->rx_timeout, start);
         ret = wolfIP_sock_recv(g_ipstack, entry->internal_fd, buf, len, flags);
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
@@ -551,7 +589,7 @@ int recv(int sockfd, void *buf, size_t len, int flags)
             wolfip_bsd_prepare_wait_locked(entry,
                 (uint16_t)(CB_EVENT_READABLE | CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
             xSemaphoreGive(g_lock);
-            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+            if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
                 wolfip_bsd_set_error(WOLFIP_EAGAIN);
                 return -1;
             }
@@ -565,7 +603,7 @@ int recv(int sockfd, void *buf, size_t len, int flags)
 
         wolfip_bsd_prepare_wait_locked(entry, (uint16_t)(CB_EVENT_READABLE | CB_EVENT_CLOSED));
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
+        if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
             wolfip_bsd_set_error(WOLFIP_EAGAIN);
             return -1;
         }
@@ -577,14 +615,18 @@ int recvfrom(int sockfd, void *buf, size_t len, int flags,
 {
     int ret;
     wolfip_bsd_fd_entry *entry;
+    TickType_t start;
+    TickType_t left;
 
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
     }
     entry = &g_fds[sockfd];
+    start = xTaskGetTickCount();
 
     for (;;) {
         xSemaphoreTake(g_lock, portMAX_DELAY);
+        left = wolfip_bsd_remaining(entry->rx_timeout, start);
         ret = wolfIP_sock_recvfrom(g_ipstack, entry->internal_fd, buf, len, flags, src_addr, addrlen);
         if (ret >= 0) {
             xSemaphoreGive(g_lock);
@@ -594,7 +636,7 @@ int recvfrom(int sockfd, void *buf, size_t len, int flags,
             wolfip_bsd_prepare_wait_locked(entry,
                 (uint16_t)(CB_EVENT_READABLE | CB_EVENT_WRITABLE | CB_EVENT_CLOSED));
             xSemaphoreGive(g_lock);
-            if (wolfip_bsd_wait_unlocked(entry) < 0) {
+            if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
                 wolfip_bsd_set_error(WOLFIP_EAGAIN);
                 return -1;
             }
@@ -608,11 +650,45 @@ int recvfrom(int sockfd, void *buf, size_t len, int flags,
 
         wolfip_bsd_prepare_wait_locked(entry, (uint16_t)(CB_EVENT_READABLE | CB_EVENT_CLOSED));
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
+        if (wolfip_bsd_wait_unlocked(entry, left) < 0) {
             wolfip_bsd_set_error(WOLFIP_EAGAIN);
             return -1;
         }
     }
+}
+
+/* As on Linux: {0, 0} or a huge value waits forever, a negative one does not
+ * wait; anything else rounds up to whole ticks. */
+static TickType_t wolfip_bsd_timeout_ticks(const struct wolfIP_timeval *tv)
+{
+    uint64_t ticks;
+
+    if (tv->tv_sec < 0) {
+        return 0;
+    }
+    if (((tv->tv_sec == 0) && (tv->tv_usec == 0)) ||
+            ((uint64_t)tv->tv_sec >= (uint64_t)portMAX_DELAY / configTICK_RATE_HZ)) {
+        return portMAX_DELAY;
+    }
+    ticks = ((uint64_t)tv->tv_sec * configTICK_RATE_HZ) +
+        (((uint64_t)tv->tv_usec * configTICK_RATE_HZ + 999999u) / 1000000u);
+    if (ticks >= (uint64_t)portMAX_DELAY) {
+        return portMAX_DELAY;
+    }
+    return (TickType_t)ticks;
+}
+
+static void wolfip_bsd_timeout_timeval(TickType_t ticks,
+                                       struct wolfIP_timeval *tv)
+{
+    if (ticks == portMAX_DELAY) {
+        tv->tv_sec = 0;
+        tv->tv_usec = 0;
+        return;
+    }
+    tv->tv_sec = (long)(ticks / configTICK_RATE_HZ);
+    tv->tv_usec = (long)(((uint64_t)(ticks % configTICK_RATE_HZ) * 1000000u) /
+        configTICK_RATE_HZ);
 }
 
 int setsockopt(int sockfd, int level, int optname,
@@ -621,6 +697,34 @@ int setsockopt(int sockfd, int level, int optname,
     int ret;
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
+    }
+    if ((level == WOLFIP_SOL_SOCKET) &&
+        ((optname == WOLFIP_SO_RCVTIMEO) || (optname == WOLFIP_SO_SNDTIMEO))) {
+        struct wolfIP_timeval tv;
+
+        if ((optval == NULL) || (optlen != (socklen_t)sizeof(tv))) {
+            wolfip_bsd_set_error(WOLFIP_EINVAL);
+            return -1;
+        }
+        memcpy(&tv, optval, sizeof(tv));
+        if ((tv.tv_usec < 0) || (tv.tv_usec >= 1000000L)) {
+            wolfip_bsd_set_error(WOLFIP_EDOM);
+            return -1;
+        }
+        xSemaphoreTake(g_lock, portMAX_DELAY);
+        if (!g_fds[sockfd].in_use) {
+            xSemaphoreGive(g_lock);
+            wolfip_bsd_set_error(WOLFIP_EINVAL);
+            return -1;
+        }
+        if (optname == WOLFIP_SO_RCVTIMEO) {
+            g_fds[sockfd].rx_timeout = wolfip_bsd_timeout_ticks(&tv);
+        }
+        else {
+            g_fds[sockfd].tx_timeout = wolfip_bsd_timeout_ticks(&tv);
+        }
+        xSemaphoreGive(g_lock);
+        return 0;
     }
     xSemaphoreTake(g_lock, portMAX_DELAY);
     ret = wolfIP_sock_setsockopt(g_ipstack, g_fds[sockfd].internal_fd,
@@ -639,6 +743,30 @@ int getsockopt(int sockfd, int level, int optname,
     int ret;
     if (!wolfip_bsd_fd_valid(sockfd)) {
         return -1;
+    }
+    if ((level == WOLFIP_SOL_SOCKET) &&
+        ((optname == WOLFIP_SO_RCVTIMEO) || (optname == WOLFIP_SO_SNDTIMEO))) {
+        struct wolfIP_timeval tv;
+        TickType_t ticks;
+
+        if ((optval == NULL) || (optlen == NULL) ||
+                (*optlen < (socklen_t)sizeof(tv))) {
+            wolfip_bsd_set_error(WOLFIP_EINVAL);
+            return -1;
+        }
+        xSemaphoreTake(g_lock, portMAX_DELAY);
+        if (!g_fds[sockfd].in_use) {
+            xSemaphoreGive(g_lock);
+            wolfip_bsd_set_error(WOLFIP_EINVAL);
+            return -1;
+        }
+        ticks = (optname == WOLFIP_SO_RCVTIMEO) ? g_fds[sockfd].rx_timeout :
+            g_fds[sockfd].tx_timeout;
+        xSemaphoreGive(g_lock);
+        wolfip_bsd_timeout_timeval(ticks, &tv);
+        memcpy(optval, &tv, sizeof(tv));
+        *optlen = (socklen_t)sizeof(tv);
+        return 0;
     }
     xSemaphoreTake(g_lock, portMAX_DELAY);
     ret = wolfIP_sock_getsockopt(g_ipstack, g_fds[sockfd].internal_fd,
@@ -721,7 +849,7 @@ int close(int sockfd)
 
         wolfip_bsd_prepare_wait_locked(entry, CB_EVENT_CLOSED);
         xSemaphoreGive(g_lock);
-        if (wolfip_bsd_wait_unlocked(entry) < 0) {
+        if (wolfip_bsd_wait_unlocked(entry, portMAX_DELAY) < 0) {
             wolfip_bsd_set_error(WOLFIP_EAGAIN);
             return -1;
         }

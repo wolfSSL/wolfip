@@ -25,6 +25,8 @@ typedef void (*wolfIP_wake_cb)(void *arg);
 #define WOLFIP_EAGAIN 11
 #define WOLFIP_EINVAL 22
 #define WOLFIP_ENOMEM 12
+#define WOLFIP_EDOM 33
+#define WOLFIP_EINPROGRESS 115
 
 #define MARK_TCP_SOCKET 0x100
 #define IS_SOCKET_TCP(fd) (((fd) & MARK_TCP_SOCKET) == MARK_TCP_SOCKET)
@@ -32,6 +34,15 @@ typedef void (*wolfIP_wake_cb)(void *arg);
 #define CB_EVENT_READABLE 0x0001
 #define CB_EVENT_WRITABLE 0x0002
 #define CB_EVENT_CLOSED   0x0004
+
+#define WOLFIP_SOL_SOCKET 1
+#define WOLFIP_SO_RCVTIMEO 20
+#define WOLFIP_SO_SNDTIMEO 21
+
+struct wolfIP_timeval {
+    long tv_sec;
+    long tv_usec;
+};
 
 int wolfIP_poll(struct wolfIP *ipstack, uint64_t now_ms);
 int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol);
