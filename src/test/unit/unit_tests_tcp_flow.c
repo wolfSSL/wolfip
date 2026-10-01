@@ -6647,6 +6647,125 @@ START_TEST(test_sock_abort_after_close_stale_once_slot_reused)
 }
 END_TEST
 
+START_TEST(test_tcp_full_table_reclaims_time_wait_first)
+{
+    struct wolfIP s;
+    int sd[MAX_TCPSOCKETS];
+    int new_sd;
+    int i;
+    uint32_t frames_before;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        sd[i] = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+        ck_assert_int_ge(sd[i], 0);
+        s.tcpsockets[i].sock.tcp.state = TCP_ESTABLISHED;
+    }
+    s.tcpsockets[1].sock.tcp.state = TCP_FIN_WAIT_2;
+    s.tcpsockets[2].sock.tcp.state = TCP_TIME_WAIT;
+
+    frames_before = last_frame_sent_count;
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), 2);
+    ck_assert_int_eq(s.tcpsockets[2].sock.tcp.state, TCP_CLOSED);
+    ck_assert_int_eq(s.tcpsockets[1].sock.tcp.state, TCP_FIN_WAIT_2);
+    ck_assert_uint_eq(last_frame_sent_count, frames_before);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd[2]), -WOLFIP_EBADF);
+}
+END_TEST
+
+START_TEST(test_tcp_full_table_reclaims_fin_wait_2_with_rst)
+{
+    struct wolfIP s;
+    int sd, new_sd;
+    int i;
+    const struct wolfIP_tcp_seg *out;
+
+    /* The listener and the accepted child take two slots. */
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state = TCP_FIN_WAIT_2;
+    for (i = 2; i < MAX_TCPSOCKETS; i++)
+        ck_assert_int_ge(wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+                WI_IPPROTO_TCP), 0);
+
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), SOCKET_UNMARK(sd));
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee16(out->dst_port), 41000);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), -WOLFIP_EBADF);
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_eq(new_sd, -1);
+}
+END_TEST
+
+START_TEST(test_tcp_full_table_keeps_open_sockets)
+{
+    struct wolfIP s;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        ck_assert_int_ge(wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+                WI_IPPROTO_TCP), 0);
+        s.tcpsockets[i].sock.tcp.state = (i & 1) ? TCP_CLOSE_WAIT : TCP_ESTABLISHED;
+    }
+    ck_assert_int_eq(wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+            WI_IPPROTO_TCP), -1);
+    for (i = 0; i < MAX_TCPSOCKETS; i++)
+        ck_assert_int_eq(s.tcpsockets[i].proto, WI_IPPROTO_TCP);
+}
+END_TEST
+
+/* A socket still sending its FIN goes only when nothing cheaper is left. */
+static void full_table_reclaims_closing(int peer_fin, uint8_t expect_flags)
+{
+    struct wolfIP s;
+    int sd, new_sd;
+    int i;
+    uint32_t frames_before;
+    const struct wolfIP_tcp_seg *out;
+
+    sd = peer_fin ? llk_child_close_wait(&s) : llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state,
+            peer_fin ? TCP_LAST_ACK : TCP_FIN_WAIT_1);
+    for (i = 2; i < MAX_TCPSOCKETS; i++)
+        ck_assert_int_ge(wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+                WI_IPPROTO_TCP), 0);
+
+    frames_before = last_frame_sent_count;
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), SOCKET_UNMARK(sd));
+    if (expect_flags != 0) {
+        out = llk_last_tcp();
+        ck_assert_ptr_nonnull(out);
+        ck_assert_uint_eq(out->flags, expect_flags);
+        ck_assert_uint_eq(ee16(out->dst_port), 41000);
+    }
+    else {
+        ck_assert_uint_eq(last_frame_sent_count, frames_before);
+    }
+}
+
+START_TEST(test_tcp_full_table_reclaims_fin_wait_1_with_rst)
+{
+    full_table_reclaims_closing(0, TCP_FLAG_RST | TCP_FLAG_ACK);
+}
+END_TEST
+
+START_TEST(test_tcp_full_table_reclaims_last_ack_silently)
+{
+    full_table_reclaims_closing(1, 0);
+}
+END_TEST
+
 START_TEST(test_sock_abort_syn_rcvd_listener_resets_and_stops_listening)
 {
     struct wolfIP s;
