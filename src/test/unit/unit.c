@@ -480,6 +480,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_foreign_server_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_nak_foreign_server_restarts_discovery);
+    tcase_add_test(tc_utils, test_dhcp_poll_rebinding_nak_without_server_id_ignored);
     tcase_add_test(tc_utils, test_dhcp_poll_reply_wrong_chaddr_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_zero_yiaddr_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_defers_commit_until_ack);
@@ -1823,6 +1824,7 @@ Suite *wolf_suite(void)
 #endif /* WOLFIP_PACKET_SOCKETS */
     tcase_add_test(tc_core, test_bind_port_in_use_different_ips_no_collision);
     tcase_add_test(tc_core, test_bind_wildcard_and_specific_same_port_collide);
+    tcase_add_test(tc_core, test_tcp_connect_wildcard_zero_avoids_specific_bound_port);
     tcase_add_test(tc_core, test_bind_tcp_rejected_preserves_if_idx);
     tcase_add_test(tc_core, test_bind_udp_rejected_preserves_if_idx);
     tcase_add_test(tc_core, test_bind_icmp_rejected_preserves_if_idx);

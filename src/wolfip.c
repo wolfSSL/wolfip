@@ -7543,8 +7543,12 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         ts->if_idx = new_if_idx;
         ts->local_ip = new_local_ip;
         if (!ts->src_port) {
+            /* Check the collision against the bind claim, not the egress
+             * address resolved above: a wildcard-bound socket owns the
+             * port on every address. */
+            ip4 claim = ts->bound ? ts->bound_local_ip : ts->local_ip;
             ts->src_port = port_alloc_random(s->tcpsockets, MAX_TCPSOCKETS,
-                                             ts, ts->local_ip, 1024);
+                                             ts, claim, 1024);
             if (ts->src_port == 0) {
                 ts->sock.tcp.state = TCP_CLOSED;
                 return -WOLFIP_EAGAIN;
@@ -10304,12 +10308,14 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
             saw_server_id = 1;
         }
     }
-    /* Reject a reply that does not carry the server identifier of the
-     * server we committed to during the OFFER phase. While REBINDING the
-     * request is a broadcast and any server may answer (RFC 2131 4.3.5),
-     * so the identity check yields there - including for NAKs. */
+    /* A reply without a server identifier is not from a server in any
+     * state (a DHCPNAK in particular must carry one, RFC 2131). While
+     * REBINDING the request is a broadcast and any server may answer
+     * (RFC 2131 4.3.5), so only the equality comparison is waived there. */
+    if (s->dhcp_server_ip != 0 && !saw_server_id)
+        return -1;
     if (s->dhcp_server_ip != 0 && s->dhcp_state != DHCP_REBINDING &&
-        (!saw_server_id || server_id != s->dhcp_server_ip))
+        server_id != s->dhcp_server_ip)
         return -1;
     return msg_type;
 }
