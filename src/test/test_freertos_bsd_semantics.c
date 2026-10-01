@@ -34,7 +34,15 @@
 
 struct MockSemaphore {
     int count;
+    int deleted;
 };
+
+/* Deleted semaphores are kept so a later use is counted, not undefined. */
+static int use_after_delete;
+static SemaphoreHandle_t mock_mutex;
+/* Runs, in place of another task, at the lock_countdown-th take of g_lock. */
+static void (*lock_hook)(void);
+static int lock_countdown;
 
 #define LISTEN_FD (MARK_TCP_SOCKET | 0)
 #define CHILD_FD  (MARK_TCP_SOCKET | 1)
@@ -60,6 +68,7 @@ SemaphoreHandle_t xSemaphoreCreateMutex(void)
 
     if (sem != NULL)
         sem->count = 1;
+    mock_mutex = sem;
     return sem;
 }
 
@@ -68,12 +77,16 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
 {
     if (sem == NULL)
         return pdFALSE;
+    if (sem == mock_mutex && lock_countdown > 0 && --lock_countdown == 0)
+        lock_hook();
     if (sem->count == 0 && ticks != 0 && wait_hook != NULL) {
         void (*hook)(void) = wait_hook;
 
         wait_hook = NULL;
         hook();
     }
+    if (sem->deleted)
+        use_after_delete++;
     if (sem->count > 0) {
         sem->count--;
         return pdTRUE;
@@ -88,13 +101,15 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t sem)
 {
     if (sem == NULL)
         return pdFALSE;
+    if (sem->deleted)
+        use_after_delete++;
     sem->count++;
     return pdTRUE;
 }
 
 void vSemaphoreDelete(SemaphoreHandle_t sem)
 {
-    free(sem);
+    sem->deleted = 1;
 }
 
 BaseType_t xTaskCreate(TaskFunction_t task, const char *name,
@@ -437,11 +452,16 @@ static void child_established(void)
     registered_cb(0, CB_EVENT_READABLE, registered_arg);
 }
 
-/* Another task closes the listener and a third reuses its descriptor. */
+/* Another task closes the listener; its slot is not reused while accept()
+ * still waits on it. */
 static void listener_replaced(void)
 {
+    int fd;
+
     CHECK(close(hook_lfd) == 0);
-    CHECK(socket(AF_INET, SOCK_STREAM, 0) == hook_lfd);
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(fd >= 0 && fd != hook_lfd);
+    CHECK(close(fd) == 0);
 }
 
 static void test_accept(void)
@@ -479,7 +499,7 @@ static void test_accept(void)
     CHECK(accept(lfd, NULL, NULL) == -1);
     CHECK(socket_last_error() == WOLFIP_EBADF);
     CHECK(accept_calls == 1);
-    CHECK(close(lfd) == 0);
+    CHECK(close(lfd) == -1);
 }
 
 /* Room for the FIN frees up while close() waits. */
@@ -501,7 +521,9 @@ static void test_close(void)
     CHECK(close(fd) == 0);
     CHECK(close_calls == 1);
     CHECK(last_wait_ticks == 1234);
+    wolfip_bsd_set_error(WOLFIP_EAGAIN);
     CHECK(close(fd) == -1);
+    CHECK(socket_last_error() == WOLFIP_EBADF);
 
     /* A full TX FIFO: retry as room frees up. */
     script_reset();
@@ -536,6 +558,110 @@ static void test_close(void)
     CHECK(close(fd) == -1);
 }
 
+static int blocked_fd;
+static int other_waiter;
+
+/* Another task closes the descriptor this one is blocked on. */
+static void close_under_waiter(void)
+{
+    int fd;
+
+    if (other_waiter)
+        g_fds[blocked_fd].waiters++;
+    CHECK(close(blocked_fd) == 0);
+    /* The slot stays taken until every waiter has left it. */
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(fd >= 0 && fd != blocked_fd);
+    CHECK(close(fd) == 0);
+}
+
+static void test_close_while_blocked(void)
+{
+    char buf[8];
+
+    script_reset();
+    use_after_delete = 0;
+    recv_ret = -WOLFIP_EAGAIN;
+    blocked_fd = socket(AF_INET, SOCK_STREAM, 0);
+    other_waiter = 0;
+    wait_hook = close_under_waiter;
+    CHECK(recv(blocked_fd, buf, sizeof(buf), 0) == -1);
+    CHECK(socket_last_error() == WOLFIP_EBADF);
+    CHECK(use_after_delete == 0);
+    CHECK(!g_fds[blocked_fd].in_use);
+    CHECK(socket(AF_INET, SOCK_STREAM, 0) == blocked_fd);
+
+    /* With a second waiter the first one passes the wake on, and the
+     * second one frees the slot. */
+    other_waiter = 1;
+    wait_hook = close_under_waiter;
+    CHECK(recv(blocked_fd, buf, sizeof(buf), 0) == -1);
+    CHECK(g_fds[blocked_fd].in_use && g_fds[blocked_fd].closing);
+    /* A closing descriptor refuses new calls without blocking. */
+    last_wait_ticks = 1234;
+    CHECK(recv(blocked_fd, buf, sizeof(buf), 0) == -1);
+    CHECK(close(blocked_fd) == -1);
+    CHECK(last_wait_ticks == 1234);
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    g_fds[blocked_fd].waiters--;
+    CHECK(wolfip_bsd_wait(&g_fds[blocked_fd], blocked_fd, 0) == -WOLFIP_EBADF);
+    CHECK(!g_fds[blocked_fd].in_use);
+    CHECK(use_after_delete == 0);
+    CHECK(recv(blocked_fd, buf, sizeof(buf), 0) == -1);
+}
+
+static int reissued_fd;
+
+/* Another task closes the descriptor and a third gets its slot back. */
+static void close_and_reissue(void)
+{
+    CHECK(close(blocked_fd) == 0);
+    reissued_fd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(reissued_fd == blocked_fd);
+}
+
+/* Data arrives; the close lands before the woken task relocks. */
+static void wake_then_reissue(void)
+{
+    registered_cb(0, CB_EVENT_READABLE, registered_arg);
+    lock_hook = close_and_reissue;
+    lock_countdown = 2;
+}
+
+static void test_reissue_between_calls(void)
+{
+    struct wolfIP_timeval tv;
+    char buf[8];
+
+    script_reset();
+    recv_ret = -WOLFIP_EAGAIN;
+    blocked_fd = socket(AF_INET, SOCK_STREAM, 0);
+    wait_hook = wake_then_reissue;
+    CHECK(recv(blocked_fd, buf, sizeof(buf), 0) == -1);
+    CHECK(socket_last_error() == WOLFIP_EBADF);
+    CHECK(close(reissued_fd) == 0);
+
+    /* The same for an option set between the validity check and the lock. */
+    blocked_fd = socket(AF_INET, SOCK_STREAM, 0);
+    lock_hook = close_and_reissue;
+    lock_countdown = 1;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+    CHECK(setsockopt(blocked_fd, WOLFIP_SOL_SOCKET, WOLFIP_SO_RCVTIMEO, &tv,
+        sizeof(tv)) == -1);
+    CHECK(socket_last_error() == WOLFIP_EBADF);
+    CHECK(g_fds[reissued_fd].rx_timeout == portMAX_DELAY);
+    CHECK(close(reissued_fd) == 0);
+
+    /* And for the calls that never block. */
+    blocked_fd = socket(AF_INET, SOCK_STREAM, 0);
+    lock_hook = close_and_reissue;
+    lock_countdown = 1;
+    CHECK(listen(blocked_fd, 1) == -1);
+    CHECK(socket_last_error() == WOLFIP_EBADF);
+    CHECK(close(reissued_fd) == 0);
+}
+
 int main(void)
 {
     struct wolfIP stack;
@@ -549,6 +675,8 @@ int main(void)
     test_timeouts();
     test_accept();
     test_close();
+    test_close_while_blocked();
+    test_reissue_between_calls();
 
     if (failures != 0) {
         printf("test_freertos_bsd_semantics: %d FAILED\n", failures);
