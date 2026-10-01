@@ -2088,6 +2088,64 @@ START_TEST(test_tcp_persist_cb_closing_gives_up_after_maxrtx)
 }
 END_TEST
 
+/* Probes sent while ESTABLISHED must not consume the teardown budget:
+ * close() starts a fresh give-up window, otherwise a socket that probed
+ * near the limit before close() is released after one teardown probe and
+ * its queued data is discarded. */
+START_TEST(test_tcp_persist_close_resets_retry_budget)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    uint8_t payload[8] = {0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.persist_retries = TCP_PERSIST_MAXRTX - 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    s.last_tick = 500;
+    ck_assert_int_eq(wolfIP_sock_close(&s, tcp_sd), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+
+    /* Two unanswered teardown probes must not exhaust a fresh budget. */
+    s.last_tick = 600;
+    tcp_persist_cb(ts);
+    s.last_tick = 700;
+    tcp_persist_cb(ts);
+
+    ck_assert_int_ne(ts->proto, 0);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+}
+END_TEST
+
 /* A non-zero peer window smaller than the head segment must still arm the
  * persist timer (the old peer_rwnd == 0 gate missed this case). */
 START_TEST(test_tcp_persist_start_armed_for_subsegment_window)

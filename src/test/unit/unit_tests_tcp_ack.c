@@ -3143,7 +3143,11 @@ START_TEST(test_icmp_try_recv_mismatch_paths)
     icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
     ck_assert_int_gt(icmp_sd, 0);
     ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    /* Bound to a specific address: the address filter applies to the bind
+     * claim, not the per-send egress address in local_ip. */
     ts->local_ip = 0x0A000001U;
+    ts->bound_local_ip = 0x0A000001U;
+    ts->bound = 1;
     ts->remote_ip = 0x0A000002U;
     ts->src_port = ee16(0x1234);
 
@@ -3184,7 +3188,11 @@ START_TEST(test_icmp_try_recv_mismatch_local_ip)
 
     ts = icmp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
+    /* Bound to a specific address: the address filter now applies to the
+     * bind claim, not the per-send egress address in local_ip. */
     ts->local_ip = 0x0A000001U;
+    ts->bound_local_ip = 0x0A000001U;
+    ts->bound = 1;
 
     memset(&icmp, 0, sizeof(icmp));
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);

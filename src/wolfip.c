@@ -164,10 +164,12 @@ struct wolfIP_icmp_packet;
  * RTO and the 64 s backoff cap the arms are 1,2,4,8,16,32,64,64,64 = 255 s
  * before the 8th timeout gives up. */
 #define TCP_CTRL_RTO_MAXRTX 8U
-/* Unanswered zero-window probe budget for teardown states (FIN_WAIT_1,
+/* Zero-window probe budget for teardown states (FIN_WAIT_1, CLOSING,
  * LAST_ACK): with the 1 s base interval and 60 s backoff cap the arms are
- * 1,2,4,8,16,32,60,60 = 183 s of peer silence before the socket is
- * released, in the spirit of the RFC 9293 R2 (3 min) teardown timeout. */
+ * 1,2,4,8,16,32,60,60 = 183 s before the socket is released, in the spirit
+ * of the RFC 9293 R2 (3 min) teardown timeout. A forward ACK resets the
+ * counter; a peer that keeps answering with a zero window still consumes
+ * the budget - a deliberately finite patience, not infinite. */
 #define TCP_PERSIST_MAXRTX 8U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
@@ -3389,7 +3391,10 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
         struct tsocket *t = &s->icmpsockets[i];
         if (t->proto != WI_IPPROTO_ICMP)
             continue;
-        if (t->local_ip != 0 && t->local_ip != dst_ip)
+        /* Ingress matches the bound address, not the per-send egress
+         * address in local_ip: a wildcard (or unbound) socket receives
+         * replies to pings sent through any interface. */
+        if (t->bound_local_ip != IPADDR_ANY && t->bound_local_ip != dst_ip)
             continue;
         if (t->src_port != 0 && t->src_port != echo_id)
             continue;
@@ -8905,6 +8910,9 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
                 return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             ts->sock.tcp.ctrl_rto_retries = 0;
+            /* Fresh teardown: probes sent while ESTABLISHED must not
+             * consume the teardown give-up budget. */
+            ts->sock.tcp.persist_retries = 0;
             ts->callback = NULL;
             ts->callback_arg = NULL;
             if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
@@ -8928,6 +8936,9 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
                 return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_LAST_ACK;
             ts->sock.tcp.ctrl_rto_retries = 0;
+            /* Fresh teardown: probes sent before close() must not consume
+             * the teardown give-up budget. */
+            ts->sock.tcp.persist_retries = 0;
             ts->callback = NULL;
             ts->callback_arg = NULL;
             if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
@@ -10294,8 +10305,10 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
         }
     }
     /* Reject a reply that does not carry the server identifier of the
-     * server we committed to during the OFFER phase. */
-    if (s->dhcp_server_ip != 0 &&
+     * server we committed to during the OFFER phase. While REBINDING the
+     * request is a broadcast and any server may answer (RFC 2131 4.3.5),
+     * so the identity check yields there - including for NAKs. */
+    if (s->dhcp_server_ip != 0 && s->dhcp_state != DHCP_REBINDING &&
         (!saw_server_id || server_id != s->dhcp_server_ip))
         return -1;
     return msg_type;
@@ -10435,7 +10448,7 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         (lease_mask != 0) &&
         dhcp_lease_ip_sane(lease_ip, lease_mask)) {
         /* Renewal/rebind that re-confirms the address already in use:
-         * RFC 4331 DAD guards a NEW address; the in-use one already
+         * RFC 5227 DAD guards a NEW address; the in-use one already
          * proved itself, so go straight to BOUND without re-probing. */
         int skip_dad = (lease_ip == primary->ip) &&
                 ((s->dhcp_state == DHCP_RENEWING) ||
@@ -10455,7 +10468,7 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
             s->dhcp_state = DHCP_BOUND;
             dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
         } else {
-            /* RFC 4331: probe the address before using it. The
+            /* RFC 5227: probe the address before using it. The
              * lease timers are armed now so they are in place when
              * the probes complete; the short DAD timer overrides
              * them until then. A conflicting answer is detected in
@@ -13151,7 +13164,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                             break;
                         desc = next_desc;
                         if (ts->sock.tcp.persist_active &&
-                                tcp_head_unsent_seg_len(ts) <= ts->sock.tcp.peer_rwnd)
+                                tcp_head_unsent_seg_len(ts) <=
+                                ts->sock.tcp.peer_rwnd)
                             tcp_persist_stop(ts);
                     }
                 } else {
