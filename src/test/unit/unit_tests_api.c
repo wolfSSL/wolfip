@@ -2630,6 +2630,59 @@ START_TEST(test_sendto_wildcard_bound_uses_egress_if_source)
 }
 END_TEST
 
+START_TEST(test_sock_connect_icmp_bound_local_ip_no_match_keeps_state)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->bound_local_ip = 0x0B000001U;
+    ts->remote_ip = 0x0A000009U; /* must survive a failed connect */
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(ts->remote_ip, 0x0A000009U);
+}
+END_TEST
+
+START_TEST(test_sock_connect_icmp_bound_local_ip_match)
+{
+    struct wolfIP s;
+    const ip4 primary_ip = 0xC0A80009U;
+    const ip4 secondary_ip = 0xC0A80109U;
+    const ip4 remote_secondary = 0xC0A801A1U;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->bound_local_ip = primary_ip;
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(remote_secondary);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, primary_ip);
+    ck_assert_uint_eq(ts->if_idx, TEST_PRIMARY_IF);
+}
+END_TEST
+
 START_TEST(test_sock_connect_icmp_primary_ip_fallback)
 {
     struct wolfIP s;

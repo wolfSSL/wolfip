@@ -7414,21 +7414,26 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         return 0;
     } else if (IS_SOCKET_ICMP(sockfd)) {
         struct ipconf *conf;
+        ip4 new_remote_ip;
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
 
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
         if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
             return -WOLFIP_EINVAL;
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        /* Resolve into a local first, as in the UDP branch above: a failed
+         * bound-address check must not narrow the receive filter. */
+        new_remote_ip = ee32(sin->sin_addr.s_addr);
         if (ts->bound_local_ip != IPADDR_ANY) {
             int bound_match = 0;
             unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
             if (!bound_match)
                 return -WOLFIP_EINVAL;
+            ts->remote_ip = new_remote_ip;
             ts->if_idx = (uint8_t)bound_if;
             ts->local_ip = ts->bound_local_ip;
         } else {
+            ts->remote_ip = new_remote_ip;
             if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
             ts->if_idx = (uint8_t)if_idx;
