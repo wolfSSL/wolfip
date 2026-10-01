@@ -9068,9 +9068,8 @@ static int sock_close(struct wolfIP *s, int sockfd)
                 /* No FIN retransmit is possible: release the socket. */
                 ts->sock.tcp.state = TCP_CLOSED;
                 close_socket(ts);
-                return 0;
             }
-            return -WOLFIP_EAGAIN;
+            return 0;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
             ts->sock.tcp.state = TCP_CLOSED;
             (void)wolfIP_filter_notify_socket_event(
@@ -9093,14 +9092,15 @@ static int sock_close(struct wolfIP *s, int sockfd)
             if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
                 ts->sock.tcp.state = TCP_CLOSED;
                 close_socket(ts);
-                return 0;
             }
-            return -WOLFIP_EAGAIN;
-        } else if (ts->sock.tcp.state == TCP_CLOSING) {
-            return -WOLFIP_EAGAIN;
+            return 0;
         } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 ||
-                ts->sock.tcp.state == TCP_FIN_WAIT_2) {
-            return -WOLFIP_EAGAIN;
+                ts->sock.tcp.state == TCP_FIN_WAIT_2 ||
+                ts->sock.tcp.state == TCP_CLOSING ||
+                ts->sock.tcp.state == TCP_LAST_ACK ||
+                ts->sock.tcp.state == TCP_TIME_WAIT) {
+            /* Our FIN is out: the stack finishes the close on its own. */
+            return 0;
         } else if (ts->sock.tcp.state != TCP_CLOSED) {
             ts->sock.tcp.state = TCP_CLOSED;
             (void)wolfIP_filter_notify_socket_event(
@@ -9178,7 +9178,10 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     if (sock_fd_stale(s, sockfd))
         return -WOLFIP_EBADF;
     ret = sock_close(s, sockfd);
-    if (ret == 0)
+    /* A socket still finishing its FIN exchange keeps its descriptor for
+     * wolfIP_sock_abort(); the stack retires it when it frees the slot. */
+    if ((ret == 0) && !(IS_SOCKET_TCP(sockfd) &&
+            (s->tcpsockets[SOCKET_UNMARK(sockfd)].proto != 0)))
         sock_fd_retire(s, sockfd);
     return ret;
 }

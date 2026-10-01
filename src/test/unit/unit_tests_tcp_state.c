@@ -2724,7 +2724,7 @@ START_TEST(test_sock_close_established_disarms_callback)
     wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
 
     /* Active close: FIN sent, FIN_WAIT_1, EAGAIN, callback disarmed. */
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
     ck_assert_ptr_null(ts->callback);
     ck_assert_ptr_null(ts->callback_arg);
@@ -2803,7 +2803,7 @@ START_TEST(test_sock_close_close_wait_disarms_callback)
 
     /* Active close from CLOSE_WAIT: FIN sent (seq 120), LAST_ACK, EAGAIN,
      * callback disarmed. */
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
     ck_assert_ptr_null(ts->callback);
     ck_assert_ptr_null(ts->callback_arg);
@@ -2844,7 +2844,7 @@ START_TEST(test_rst_in_fin_wait_1_delivers_close_event)
     wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
 
     /* Active close: FIN sent, FIN_WAIT_1, EAGAIN, native callback disarmed. */
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
 
     /* The wrapper re-arms its own callback to wait for CB_EVENT_CLOSED. */
@@ -2913,7 +2913,7 @@ START_TEST(test_last_ack_final_ack_delivers_close_event)
 
     /* Active close from CLOSE_WAIT: FIN sent (seq 120), LAST_ACK, EAGAIN,
      * native callback disarmed. */
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
 
     /* The wrapper re-arms its own callback to wait for CB_EVENT_CLOSED. */
