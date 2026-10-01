@@ -1371,7 +1371,7 @@ START_TEST(test_tcp_connect_wildcard_zero_avoids_specific_bound_port)
     test_rand_override_value = 8080;
 
     /* Connect through the primary interface: the egress address is
-     * 10.0.0.1, but the wildcard claim still covers 192.168.1.1:8080. */
+     * 10.0.0.1, but the wildcard claim still covers 10.0.1.1:8080. */
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_port = ee16(9);
