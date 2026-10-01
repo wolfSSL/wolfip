@@ -1,5 +1,5 @@
-/* Regression test for the FreeRTOS BSD close() wrapper when the core delivers
- * CB_EVENT_CLOSED synchronously during LAST_ACK teardown. */
+/* Regression test for the FreeRTOS BSD close() wrapper when the core releases
+ * the socket while close() waits for room to queue its FIN. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,7 +212,13 @@ int wolfIP_sock_close(struct wolfIP *s, int fd)
     close_calls++;
     if (close_calls == 1)
         return -WOLFIP_EAGAIN;
-    return -1;
+    return -WOLFIP_EBADF;
+}
+
+int wolfIP_sock_abort(struct wolfIP *s, int fd)
+{
+    (void)s; (void)fd;
+    return 0;
 }
 
 void wolfIP_register_callback(struct wolfIP *s, int fd, tsocket_cb cb, void *arg)

@@ -27,6 +27,7 @@ typedef void (*wolfIP_wake_cb)(void *arg);
 #define WOLFIP_ENOMEM 12
 #define WOLFIP_EDOM 33
 #define WOLFIP_EINPROGRESS 115
+#define WOLFIP_EBADF 9
 
 #define MARK_TCP_SOCKET 0x100
 #define IS_SOCKET_TCP(fd) (((fd) & MARK_TCP_SOCKET) == MARK_TCP_SOCKET)
@@ -65,6 +66,7 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int fd, struct wolfIP_sockaddr *ad
 int wolfIP_sock_can_write(struct wolfIP *s, int fd);
 int wolfIP_sock_can_read(struct wolfIP *s, int fd);
 int wolfIP_sock_close(struct wolfIP *s, int fd);
+int wolfIP_sock_abort(struct wolfIP *s, int fd);
 void wolfIP_register_callback(struct wolfIP *s, int fd, tsocket_cb cb, void *arg);
 void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg);
 

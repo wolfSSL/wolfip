@@ -144,9 +144,25 @@ int wolfIP_sock_listen(struct wolfIP *s, int fd, int backlog)
     return 0;
 }
 
+/* Successive results of wolfIP_sock_accept() and wolfIP_sock_close(); once
+ * a script runs out, accept() keeps returning -EAGAIN and close() 0. */
+static int accept_script[4];
+static int accept_steps;
+static int accept_calls;
+static int accept_last_fd;
+static int close_script[4];
+static int close_steps;
+static int close_calls;
+static int abort_calls;
+static int abort_fd;
+
 int wolfIP_sock_accept(struct wolfIP *s, int fd, struct wolfIP_sockaddr *addr, socklen_t *len)
 {
-    (void)s; (void)fd; (void)addr; (void)len;
+    (void)s; (void)addr; (void)len;
+    accept_last_fd = fd;
+    if (accept_calls < accept_steps)
+        return accept_script[accept_calls++];
+    accept_calls++;
     return -WOLFIP_EAGAIN;
 }
 
@@ -223,6 +239,17 @@ int wolfIP_sock_can_read(struct wolfIP *s, int fd)
 int wolfIP_sock_close(struct wolfIP *s, int fd)
 {
     (void)s; (void)fd;
+    if (close_calls < close_steps)
+        return close_script[close_calls++];
+    close_calls++;
+    return 0;
+}
+
+int wolfIP_sock_abort(struct wolfIP *s, int fd)
+{
+    (void)s;
+    abort_calls++;
+    abort_fd = fd;
     return 0;
 }
 
@@ -393,6 +420,122 @@ static void test_timeouts(void)
     CHECK(close(fd) == 0);
 }
 
+static void script_reset(void)
+{
+    accept_steps = accept_calls = 0;
+    close_steps = close_calls = 0;
+    abort_calls = 0;
+    abort_fd = -1;
+    wait_hook = NULL;
+}
+
+static int hook_lfd;
+
+/* The listener's connection completes while accept() waits. */
+static void child_established(void)
+{
+    registered_cb(0, CB_EVENT_READABLE, registered_arg);
+}
+
+/* Another task closes the listener and a third reuses its descriptor. */
+static void listener_replaced(void)
+{
+    CHECK(close(hook_lfd) == 0);
+    CHECK(socket(AF_INET, SOCK_STREAM, 0) == hook_lfd);
+}
+
+static void test_accept(void)
+{
+    struct wolfIP_timeval tv;
+    int lfd;
+    int fd;
+
+    script_reset();
+    lfd = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(lfd >= 0);
+
+    /* -EAGAIN while the handshake runs: wait for the listener, then retry. */
+    accept_script[0] = -WOLFIP_EAGAIN;
+    accept_script[1] = CHILD_FD;
+    accept_steps = 2;
+    wait_hook = child_established;
+    fd = accept(lfd, NULL, NULL);
+    CHECK(fd >= 0 && fd != lfd);
+    CHECK(accept_calls == 2);
+    CHECK(close(fd) == 0);
+
+    tv.tv_sec = 0;
+    tv.tv_usec = 250000;
+    CHECK(setsockopt(lfd, WOLFIP_SOL_SOCKET, WOLFIP_SO_RCVTIMEO, &tv,
+        sizeof(tv)) == 0);
+    script_reset();
+    CHECK(accept(lfd, NULL, NULL) == -1);
+    CHECK(socket_last_error() == WOLFIP_EAGAIN);
+    CHECK(last_wait_ticks == pdMS_TO_TICKS(250));
+
+    script_reset();
+    hook_lfd = lfd;
+    wait_hook = listener_replaced;
+    CHECK(accept(lfd, NULL, NULL) == -1);
+    CHECK(socket_last_error() == WOLFIP_EBADF);
+    CHECK(accept_calls == 1);
+    CHECK(close(lfd) == 0);
+}
+
+/* Room for the FIN frees up while close() waits. */
+static void tx_space(void)
+{
+    registered_cb(0, CB_EVENT_WRITABLE, registered_arg);
+    wait_hook = tx_space;
+}
+
+static void test_close(void)
+{
+    TickType_t start;
+    int fd;
+
+    /* The FIN is queued at once: nothing to wait for. */
+    script_reset();
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    last_wait_ticks = 1234;
+    CHECK(close(fd) == 0);
+    CHECK(close_calls == 1);
+    CHECK(last_wait_ticks == 1234);
+    CHECK(close(fd) == -1);
+
+    /* A full TX FIFO: retry as room frees up. */
+    script_reset();
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    close_script[0] = -WOLFIP_EAGAIN;
+    close_script[1] = -WOLFIP_EAGAIN;
+    close_steps = 2;
+    wait_hook = tx_space;
+    CHECK(close(fd) == 0);
+    CHECK(close_calls == 3);
+    CHECK(abort_calls == 0);
+
+    /* Never any room: abort once the linger runs out. */
+    script_reset();
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    close_script[0] = close_script[1] = close_script[2] = -WOLFIP_EAGAIN;
+    close_steps = 3;
+    start = now_ticks;
+    CHECK(close(fd) == 0);
+    CHECK(abort_calls == 1);
+    CHECK(abort_fd == next_socket_fd - 1);
+    CHECK((TickType_t)(now_ticks - start) == pdMS_TO_TICKS(WOLFIP_BSD_CLOSE_LINGER_MS));
+    CHECK(close(fd) == -1);
+
+    /* The stack released the socket and reissued its descriptor. */
+    script_reset();
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    close_script[0] = -WOLFIP_EBADF;
+    close_steps = 1;
+    CHECK(close(fd) == 0);
+    CHECK(abort_calls == 0);
+    CHECK(close(fd) == -1);
+}
+
 int main(void)
 {
     struct wolfIP stack;
@@ -404,6 +547,8 @@ int main(void)
     }
 
     test_timeouts();
+    test_accept();
+    test_close();
 
     if (failures != 0) {
         printf("test_freertos_bsd_semantics: %d FAILED\n", failures);
