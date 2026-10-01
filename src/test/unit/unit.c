@@ -247,8 +247,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_local_ip_match);
     tcase_add_test(tc_utils, test_sock_connect_icmp_sets_local_ip_from_conf);
     tcase_add_test(tc_utils, test_sendto_wildcard_bound_uses_egress_if_source);
-    tcase_add_test(tc_utils, test_sock_connect_icmp_bound_local_ip_no_match_keeps_state);
     tcase_add_test(tc_utils, test_sock_connect_icmp_bound_local_ip_match);
+    tcase_add_test(tc_utils, test_sock_connect_icmp_bound_local_ip_no_match_keeps_state);
     tcase_add_test(tc_utils, test_sock_connect_icmp_wrong_family);
     tcase_add_test(tc_utils, test_sock_connect_icmp_local_ip_pre_set);
     tcase_add_test(tc_utils, test_sock_connect_icmp_conf_null);
@@ -1815,6 +1815,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_wolfip_packetsocket_from_fd_negative_fd);
 #endif /* WOLFIP_PACKET_SOCKETS */
     tcase_add_test(tc_core, test_bind_port_in_use_different_ips_no_collision);
+    tcase_add_test(tc_core, test_bind_wildcard_and_specific_same_port_collide);
     tcase_add_test(tc_core, test_bind_tcp_rejected_preserves_if_idx);
     tcase_add_test(tc_core, test_bind_udp_rejected_preserves_if_idx);
     tcase_add_test(tc_core, test_bind_icmp_rejected_preserves_if_idx);

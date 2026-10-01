@@ -1310,6 +1310,7 @@ struct tsocket {
     uint16_t proto, events;
     ip4 local_ip, remote_ip;
     ip4 bound_local_ip;
+    uint8_t bound; /* bound_local_ip is a bind claim, not just 0 */
     uint16_t src_port, dst_port;
     struct wolfIP *S;
 #ifdef ETHERNET
@@ -9211,12 +9212,16 @@ static int bind_port_in_use(const struct tsocket *arr, int n,
         return 0;
     for (i = 0; i < n; i++) {
         const struct tsocket *tk = &arr[i];
+        /* Compare the bind claim, not the resolved egress address: a
+         * wildcard bind owns the port on every address; a never-bound
+         * socket claims its resolved local_ip. */
+        ip4 claim = tk->bound ? tk->bound_local_ip : tk->local_ip;
         if (tk == self)
             continue;
         if (tk->src_port != new_port)
             continue;
-        if (tk->local_ip != IPADDR_ANY && new_local_ip != IPADDR_ANY &&
-            tk->local_ip != new_local_ip)
+        if (claim != IPADDR_ANY && new_local_ip != IPADDR_ANY &&
+            claim != new_local_ip)
             continue;
         return 1;
     }
@@ -9305,7 +9310,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->tcpsockets, MAX_TCPSOCKETS, ts,
-                                 ts->local_ip, new_port)) {
+                                 bind_ip, new_port)) {
                 ts->local_ip = prev_ip;
                 ts->if_idx = prev_if_idx;
                 return -1;
@@ -9321,6 +9326,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->src_port = new_port;
         }
         ts->bound_local_ip = bind_ip;
+        ts->bound = 1;
         return 0;
     } else if (IS_SOCKET_UDP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
@@ -9348,7 +9354,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->udpsockets, MAX_UDPSOCKETS, ts,
-                                 ts->local_ip, new_port)) {
+                                 bind_ip, new_port)) {
                 ts->local_ip = prev_ip;
                 ts->if_idx = prev_if_idx;
                 return -1;
@@ -9369,6 +9375,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->src_port = new_port;
         }
         ts->bound_local_ip = bind_ip;
+        ts->bound = 1;
         return 0;
     } else if (IS_SOCKET_ICMP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
@@ -9396,7 +9403,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->icmpsockets, MAX_ICMPSOCKETS, ts,
-                                 ts->local_ip, new_id)) {
+                                 bind_ip, new_id)) {
                 ts->local_ip = prev_ip;
                 ts->if_idx = prev_if_idx;
                 return -1;
@@ -9414,6 +9421,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->src_port = new_id;
         }
         ts->bound_local_ip = bind_ip;
+        ts->bound = 1;
         return 0;
 #if WOLFIP_RAWSOCKETS
     } else if (IS_SOCKET_RAW(sockfd)) {

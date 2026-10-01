@@ -1291,6 +1291,47 @@ START_TEST(test_bind_port_in_use_different_ips_no_collision)
 END_TEST
 
 /* =====================================================================
+ * bind_port_in_use -- wildcard and specific binds on the same port collide
+ * ===================================================================== */
+START_TEST(test_bind_wildcard_and_specific_same_port_collide)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    int fd1;
+    int fd2;
+
+    setup_stack_with_two_ifaces(&s, 0x0a000001U, 0x0a000101U);
+    fd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    fd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(fd1, 0);
+    ck_assert_int_ge(fd2, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5000);
+
+    /* Specific first, then wildcard: the wildcard claims the whole port. */
+    sin.sin_addr.s_addr = ee32(0x0a000101U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd2, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), -1);
+
+    /* Wildcard first, then a specific address on the same port. */
+    wolfIP_sock_close(&s, fd1);
+    wolfIP_sock_close(&s, fd2);
+    fd1 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    fd2 = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd1, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    sin.sin_addr.s_addr = ee32(0x0a000101U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd2, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), -1);
+}
+END_TEST
+
+/* =====================================================================
  * wolfIP_sock_bind -- a rejected TCP bind leaves if_idx unchanged
  * ===================================================================== */
 START_TEST(test_bind_tcp_rejected_preserves_if_idx)
