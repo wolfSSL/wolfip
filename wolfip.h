@@ -179,6 +179,14 @@ typedef uint32_t ip4;
 #endif
 #endif
 
+#ifndef WOLFIP_EBADF
+#ifdef EBADF
+#define WOLFIP_EBADF EBADF
+#else
+#define WOLFIP_EBADF (9)
+#endif
+#endif
+
 #ifndef WOLFIP_EBUSY
 #ifdef EBUSY
 #define WOLFIP_EBUSY EBUSY

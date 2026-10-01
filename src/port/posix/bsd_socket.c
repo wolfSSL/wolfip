@@ -292,6 +292,9 @@ static struct wolfip_fd_entry *wolfip_entry_from_internal(int internal_fd)
         return NULL;
     if (!wolfip_fd_entries[idx].in_use)
         return NULL;
+    /* A reused slot maps to the descriptor generation that replaced this one. */
+    if (wolfip_fd_entries[idx].internal_fd != internal_fd)
+        return NULL;
     return &wolfip_fd_entries[idx];
 }
 
@@ -306,6 +309,8 @@ static struct wolfip_fd_entry *wolfip_entry_from_public(int public_fd)
 
 static void wolfip_fd_detach_internal(int internal_fd)
 {
+    if (wolfip_entry_from_internal(internal_fd) == NULL)
+        return;
     if (IS_SOCKET_TCP(internal_fd)) {
         int pos = SOCKET_UNMARK(internal_fd);
         if (pos >= 0 && pos < MAX_TCPSOCKETS)

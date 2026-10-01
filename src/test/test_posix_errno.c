@@ -191,6 +191,26 @@ static void test_fd_lookup_synchronization(void)
     assert(close(fd) == 0);
 }
 
+/* The stack reused a TCP slot while the application still held its old
+ * descriptor: closing the old one must not unmap the new one. */
+static void test_reused_slot_keeps_new_mapping(void)
+{
+    const int old_internal = MARK_TCP_SOCKET | 1;
+    const int new_internal = MARK_TCP_SOCKET | 1 | (1 << 16);
+    int old_fd;
+    int new_fd;
+
+    old_fd = wolfip_fd_alloc(old_internal, 0);
+    new_fd = wolfip_fd_alloc(new_internal, 0);
+    assert(old_fd >= 0 && new_fd >= 0 && old_fd != new_fd);
+    assert(wolfip_entry_from_internal(new_internal) == &wolfip_fd_entries[new_fd]);
+    assert(wolfip_entry_from_internal(old_internal) == NULL);
+    wolfip_fd_release(old_fd);
+    assert(wolfip_entry_from_internal(new_internal) == &wolfip_fd_entries[new_fd]);
+    wolfip_fd_release(new_fd);
+    assert(wolfip_entry_from_internal(new_internal) == NULL);
+}
+
 int main(void)
 {
     struct sockaddr_in peer;
@@ -225,6 +245,7 @@ int main(void)
     printf("F-4950 regression test passed\n");
     test_host_call_publication();
     test_fd_lookup_synchronization();
+    test_reused_slot_keeps_new_mapping();
     printf("POSIX concurrency regression tests passed\n");
     return 0;
 }
