@@ -805,6 +805,9 @@ START_TEST(test_sock_listen_errors)
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_LISTENING));
     ck_assert_int_eq(wolfIP_sock_listen(&s, tcp_sd, 1), -1);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    /* A rejected listen() must not leave the listener role behind: the
+     * descriptor would otherwise refuse send/recv after a later connect(). */
+    ck_assert_uint_eq(ts->sock.tcp.is_listener, 0);
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_mask(0);
@@ -2361,6 +2364,66 @@ START_TEST(test_icmp_input_echo_reply_wrong_dst_dropped)
     memset(&icmp, 0, sizeof(icmp));
     icmp.ip.src = ee32(0x0A000002U);
     icmp.ip.dst = ee32(0x0A000001U);  /* configured local IP */
+    icmp.ip.ttl = 55;
+    icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
+    icmp.type = ICMP_ECHO_REPLY;
+    icmp_set_echo_id(&icmp, ts->src_port);
+    icmp.csum = ee16(icmp_checksum(&icmp, ICMP_HEADER_LEN));
+    icmp_input(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)&icmp, frame_len);
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
+}
+END_TEST
+
+/* sendto() rewrites local_ip to the egress interface's address on every
+ * send; ingress matching must use the bound address (wildcard here),
+ * otherwise a reply to an earlier ping on the other interface is dropped. */
+START_TEST(test_icmp_input_echo_reply_after_second_if_sendto_delivered)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_icmp_packet icmp;
+    uint8_t peer_mac[6] = {0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
+    uint32_t frame_len;
+    uint8_t payload[ICMP_HEADER_LEN] = {0, 0, 0, 0, 0, 0, 0, 1};
+
+    setup_stack_with_two_ifaces(&s, 0x0a000001U, 0x0a000101U);
+    s.arp.neighbors[0].ip = 0x0a000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+    s.arp.neighbors[1].ip = 0x0a000102U;
+    s.arp.neighbors[1].if_idx = TEST_SECOND_IF;
+    memcpy(s.arp.neighbors[1].mac, peer_mac, sizeof(peer_mac));
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+
+    /* Ping through the primary, then through the secondary: the second
+     * send rewrites local_ip to the secondary's address. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0a000002U);
+    ck_assert_int_ge(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+                                        (const struct wolfIP_sockaddr *)&sin,
+                                        sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, 0x0a000001U);
+    ck_assert_uint_ne(ts->src_port, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0a000102U);
+    ck_assert_int_ge(wolfIP_sock_sendto(&s, icmp_sd, payload, sizeof(payload), 0,
+                                        (const struct wolfIP_sockaddr *)&sin,
+                                        sizeof(sin)), 0);
+    ck_assert_uint_eq(ts->local_ip, 0x0a000101U);
+
+    /* The reply to the first ping is addressed to the primary's address:
+     * a wildcard-bound socket must receive it. */
+    frame_len = (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + ICMP_HEADER_LEN);
+    memset(&icmp, 0, sizeof(icmp));
+    icmp.ip.src = ee32(0x0a000002U);
+    icmp.ip.dst = ee32(0x0a000001U);
     icmp.ip.ttl = 55;
     icmp.ip.len = ee16(IP_HEADER_LEN + ICMP_HEADER_LEN);
     icmp.type = ICMP_ECHO_REPLY;
@@ -5311,6 +5374,150 @@ START_TEST(test_tcp_ack_closing_ack_of_fin_moves_to_time_wait_and_stops_timer)
 }
 END_TEST
 
+/* CLOSING with the data fully drained: the control RTO must keep
+ * retransmitting the FIN, same handling as FIN_WAIT_1. */
+START_TEST(test_tcp_rto_cb_closing_no_data_requeues_finack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.bytes_in_flight = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(seg->flags, (TCP_FLAG_FIN | TCP_FLAG_ACK));
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+/* CLOSING with the control retry budget exhausted: give up and reclaim
+ * the socket slot instead of pinning it forever. */
+START_TEST(test_tcp_rto_cb_closing_ctrl_maxretries_closes_socket)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = TCP_CTRL_RTO_MAXRTX;
+    ts->sock.tcp.bytes_in_flight = 0;
+
+    tcp_rto_cb(ts);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+/* CLOSING with payload still in flight: the control RTO must yield to the
+ * data path, which retransmits the outstanding data. */
+START_TEST(test_tcp_rto_cb_closing_with_data_retransmits_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.snd_una = 101;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+/* CLOSING: once the peer's ACK drains the last outstanding data byte, the
+ * control RTO takes over again so the unacked FIN keeps being retransmitted.
+ */
+START_TEST(test_tcp_ack_closing_data_drained_rearms_ctrl_rto)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg ackseg;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    /* FIN at seq 100 (last=100); one data byte at seq 99 still unacked. */
+    ts->sock.tcp.last = 100;
+    ts->sock.tcp.snd_una = 99;
+    ts->sock.tcp.seq = 99;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.bytes_in_flight = 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    ts->sock.tcp.seq = 101;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(100); /* acks the data byte, not the FIN at 101 */
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
 START_TEST(test_tcp_rto_cb_control_retry_cap_closes_socket)
 {
     struct wolfIP s;
@@ -6580,6 +6787,164 @@ START_TEST(test_dhcp_poll_rebinding_ack_binds_client)
     ck_assert_uint_eq(primary->mask, mask);
     ck_assert_uint_eq(primary->gw, router_ip);
     ck_assert_uint_eq(s.dns_server, dns_ip);
+}
+END_TEST
+
+/* A rebind request is a broadcast: a server other than the one committed
+ * during the OFFER phase may legitimately reconfirm the in-use address.
+ * The server-ID identity check must not reject that ACK, or the skip-DAD
+ * rebind path is unreachable for exactly the peers rebind exists for. */
+START_TEST(test_dhcp_poll_rebinding_ack_foreign_server_binds_client)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    uint32_t old_server_ip = 0x0A000001U;
+    uint32_t new_server_ip = 0x0A000002U;
+    uint32_t client_ip = 0x0A000064U;
+    uint32_t router_ip = 0x0A000002U;
+    uint32_t dns_ip = 0x08080808U;
+    uint32_t mask = 0xFFFFFF00U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_REBINDING;
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_server_ip = old_server_ip;
+    primary->ip = client_ip;
+    build_dhcp_ack_msg(&msg, new_server_ip, mask, router_ip, dns_ip);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(client_ip);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+
+    /* Same-address reconfirmation from the new server: skip DAD and bind,
+     * committing the responding server. */
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(primary->ip, client_ip);
+    ck_assert_uint_eq(s.dhcp_server_ip, new_server_ip);
+}
+END_TEST
+
+/* The mirror of the foreign-server ACK: while REBINDING a NAK from any
+ * server must deconfigure and restart discovery, not be silently ignored
+ * (RFC 2131 4.4.5). */
+START_TEST(test_dhcp_poll_rebinding_nak_foreign_server_restarts_discovery)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    uint32_t old_server_ip = 0x0A000001U;
+    uint32_t new_server_ip = 0x0A000002U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_REBINDING;
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_server_ip = old_server_ip;
+    primary->ip = 0x0A000064U;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_NAK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = (new_server_ip >> 24) & 0xFF;
+    opt->data[1] = (new_server_ip >> 16) & 0xFF;
+    opt->data[2] = (new_server_ip >> 8) & 0xFF;
+    opt->data[3] = (new_server_ip >> 0) & 0xFF;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_DISCOVER_SENT);
+    ck_assert_uint_eq(primary->ip, 0U);
+    ck_assert_uint_eq(primary->mask, 0U);
+}
+END_TEST
+
+/* A DHCPNAK without a server identifier is not a rebind answer, in any
+ * state: the presence check stays unconditional, REBINDING only waives
+ * the equality comparison. */
+START_TEST(test_dhcp_poll_rebinding_nak_without_server_id_ignored)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_REBINDING;
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_server_ip = 0x0A000001U;
+    primary->ip = 0x0A000064U;
+    primary->mask = 0xFFFFFF00U;
+
+    /* NAK with no option 54 at all. */
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(s.dhcp_xid);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_NAK;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_END;
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+
+    /* The lease survives: the NAK was not from a server. */
+    ck_assert_int_eq(ret, 0);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REBINDING);
+    ck_assert_uint_eq(primary->ip, 0x0A000064U);
+    ck_assert_uint_eq(primary->mask, 0xFFFFFF00U);
 }
 END_TEST
 

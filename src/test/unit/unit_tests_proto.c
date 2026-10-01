@@ -1888,6 +1888,423 @@ START_TEST(test_tcp_zero_wnd_probe_includes_timestamp_when_enabled)
 }
 END_TEST
 
+/* FIN_WAIT_1 with window-blocked queued data: the persist probe must fire,
+ * as it does in ESTABLISHED, so a silent peer cannot pin the socket. */
+START_TEST(test_tcp_persist_cb_fin_wait_1_sends_probe)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t payload[4] = {0x15, 0x16, 0x17, 0x18};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(tcp->seq), ts->sock.tcp.snd_una);
+    ck_assert_uint_eq(tcp->data[0], 0x15U);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+/* LAST_ACK with a sub-segment peer window: the head segment does not fit,
+ * so the probe must fire even though the window is non-zero. */
+START_TEST(test_tcp_persist_cb_last_ack_subsegment_window_sends_probe)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A000002U;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t payload[8] = {0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = remote_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LAST_ACK;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(tcp->seq), ts->sock.tcp.snd_una);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+}
+END_TEST
+
+/* CLOSING (FIN_WAIT_1 that received the peer's FIN) keeps window-blocked
+ * payload pinned: the data RTO is idle with nothing in flight and the
+ * control RTO yields while payload is queued, so persist is the only
+ * recovery path and must accept the state. */
+START_TEST(test_tcp_persist_cb_closing_sends_probe)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    struct wolfIP_tcp_seg *tcp;
+    uint8_t payload[8] = {0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_uint_gt(last_frame_sent_size, 0);
+    tcp = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(tcp->seq), ts->sock.tcp.snd_una);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+}
+END_TEST
+
+/* The teardown retry budget must cover CLOSING as well: a silent peer
+ * must not be able to pin a closing socket past the unanswered-probe
+ * budget. */
+START_TEST(test_tcp_persist_cb_closing_gives_up_after_maxrtx)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[4] = {0x25, 0x26, 0x27, 0x28};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.persist_retries = TCP_PERSIST_MAXRTX - 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_int_eq(ts->proto, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+}
+END_TEST
+
+/* Probes sent while ESTABLISHED must not consume the teardown budget:
+ * close() starts a fresh give-up window, otherwise a socket that probed
+ * near the limit before close() is released after one teardown probe and
+ * its queued data is discarded. */
+START_TEST(test_tcp_persist_close_resets_retry_budget)
+{
+    struct wolfIP s;
+    int tcp_sd;
+    struct tsocket *ts;
+    uint8_t peer_mac[6] = {0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xf2};
+    uint8_t payload[8] = {0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.persist_retries = TCP_PERSIST_MAXRTX - 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    s.last_tick = 500;
+    ck_assert_int_eq(wolfIP_sock_close(&s, tcp_sd), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+
+    /* Two unanswered teardown probes must not exhaust a fresh budget. */
+    s.last_tick = 600;
+    tcp_persist_cb(ts);
+    s.last_tick = 700;
+    tcp_persist_cb(ts);
+
+    ck_assert_int_ne(ts->proto, 0);
+    ck_assert_uint_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+}
+END_TEST
+
+/* A non-zero peer window smaller than the head segment must still arm the
+ * persist timer (the old peer_rwnd == 0 gate missed this case). */
+START_TEST(test_tcp_persist_start_armed_for_subsegment_window)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[8] = {0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c};
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.peer_rwnd = 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    s.last_tick = 500;
+    tcp_persist_start(ts, s.last_tick);
+
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+/* A sub-segment peer window (non-zero, smaller than the head segment) must
+ * not cancel an armed persist timer on the next ordinary poll: the queue
+ * is still window-blocked, so the probe deadline must survive until it
+ * fires. */
+START_TEST(test_tcp_persist_survives_poll_with_subsegment_window)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[8] = {0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.ack = 20;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 2;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    s.last_tick = 500;
+    tcp_persist_start(ts, s.last_tick);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+
+    (void)wolfIP_poll(&s, 100);
+
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_persist, NO_TIMER);
+}
+END_TEST
+
+/* Teardown states must not be pinnable by a silent peer: after the probe
+ * budget runs out without any acknowledgment, release the socket. */
+START_TEST(test_tcp_persist_cb_fin_wait_1_gives_up_after_maxrtx)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[4] = {0x15, 0x16, 0x17, 0x18};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_FIN_WAIT_1;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->src_port = 1111;
+    ts->dst_port = 2222;
+    ts->sock.tcp.seq = 10;
+    ts->sock.tcp.snd_una = 10;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.peer_rwnd = 0;
+    ts->sock.tcp.persist_retries = TCP_PERSIST_MAXRTX - 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx_with_payload(ts, payload, sizeof(payload),
+            (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+
+    s.last_tick = 500;
+    tcp_persist_cb(ts);
+
+    ck_assert_int_eq(ts->proto, 0);
+    ck_assert_uint_eq(ts->sock.tcp.persist_active, 0);
+}
+END_TEST
+
+/* Any forward acknowledgment resets the unanswered-probe counter so a slow
+ * but live peer is not given up on. */
+START_TEST(test_tcp_ack_forward_progress_resets_persist_retries)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg ackseg;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 999;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->sock.tcp.persist_retries = 5;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(1000);
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_uint_eq(ts->sock.tcp.persist_retries, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_zero_wnd_probe_selects_middle_byte_at_snd_una)
 {
     struct wolfIP s;

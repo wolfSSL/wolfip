@@ -1435,6 +1435,122 @@ START_TEST(test_dhcp_renew_rerandomizes_xid_rejecting_stale_ack)
 }
 END_TEST
 
+/* A renewal ACK re-confirming the address already in use must skip the
+ * RFC 4331 DAD phase: the address already proved itself, and probing a
+ * live address drops the client out of BOUND for ~3 s on every renewal
+ * while the DAD conflict hooks sit armed on the working address. */
+START_TEST(test_dhcp_renew_ack_same_ip_skips_dad_and_bounds)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    const uint32_t server_ip = 0x0A000001U;
+    const uint32_t lease_ip  = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip   = lease_ip;
+    primary->mask = 0xFFFFFF00U;
+    primary->gw   = server_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_ip        = lease_ip;
+    s.dhcp_xid       = 0x12345678U;
+    s.dhcp_state     = DHCP_RENEWING;
+    s.last_tick      = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    last_frame_sent_count = 0;
+
+    build_full_ack(&s, &msg, server_ip, lease_ip, primary->mask,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    /* Straight to BOUND: no DAD state, no ARP probe, lease timer armed. */
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(s.dhcp_dad_probes, 0);
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+}
+END_TEST
+
+/* Same for REBINDING: a rebind ACK on the in-use address must not re-probe. */
+START_TEST(test_dhcp_rebind_ack_same_ip_skips_dad_and_bounds)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    const uint32_t server_ip = 0x0A000001U;
+    const uint32_t lease_ip  = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip   = lease_ip;
+    primary->mask = 0xFFFFFF00U;
+    primary->gw   = server_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_ip        = lease_ip;
+    s.dhcp_xid       = 0x12345678U;
+    s.dhcp_state     = DHCP_REBINDING;
+    s.last_tick      = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    last_frame_sent_count = 0;
+
+    build_full_ack(&s, &msg, server_ip, lease_ip, primary->mask,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(s.dhcp_dad_probes, 0);
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+    ck_assert_int_ne(s.dhcp_timer, NO_TIMER);
+}
+END_TEST
+
+/* Guard: a renewal ACK that hands out a NEW address must still run DAD,
+ * the probe is what protects the interface from adopting a busy address. */
+START_TEST(test_dhcp_renew_ack_new_ip_still_runs_dad)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct ipconf *primary;
+    const uint32_t server_ip = 0x0A000001U;
+    const uint32_t old_ip    = 0x0A000064U;
+    const uint32_t new_ip    = 0x0A000065U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip   = old_ip;
+    primary->mask = 0xFFFFFF00U;
+    primary->gw   = server_ip;
+    s.dhcp_server_ip = server_ip;
+    s.dhcp_ip        = old_ip;
+    s.dhcp_xid       = 0x12345678U;
+    s.dhcp_state     = DHCP_RENEWING;
+    s.last_tick      = 1000U;
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM,
+                                       WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    last_frame_sent_count = 0;
+
+    build_full_ack(&s, &msg, server_ip, new_ip, primary->mask,
+                   server_ip, 0x08080808U, 120U);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+
+    ck_assert_int_eq(s.dhcp_state, DHCP_DAD);
+    ck_assert_uint_gt(s.dhcp_dad_probes, 0);
+    ck_assert_uint_gt(last_frame_sent_count, 0);
+}
+END_TEST
+
 /* F-5482: a DHCPACK is only valid with the mandatory IP-address-lease-time
  * option (51, RFC 2131). An ACK missing it - or carrying a zero duration -
  * must be rejected, never bound, otherwise the lease has no expiry/renewal

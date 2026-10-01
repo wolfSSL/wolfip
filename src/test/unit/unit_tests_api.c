@@ -2615,6 +2615,77 @@ START_TEST(test_sock_connect_icmp_primary_ip_fallback)
 }
 END_TEST
 
+START_TEST(test_sendto_wildcard_bound_uses_egress_if_source)
+{
+    struct wolfIP s;
+    int udp_sd;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t peer_mac[6] = {0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
+    const uint8_t payload[] = "hi";
+
+    setup_stack_with_two_ifaces(&s, 0x0a000001U, 0x0a000101U);
+    /* Pre-seed the ARP neighbor so the datagram is not stuck behind
+     * unresolved resolution. */
+    s.arp.neighbors[0].ip = 0x0a000102U;
+    s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
+    memcpy(s.arp.neighbors[0].mac, peer_mac, sizeof(peer_mac));
+    udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(udp_sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5000);
+    sin.sin_addr.s_addr = ee32(IPADDR_ANY);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, udp_sd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+
+    /* Destination in the secondary interface's subnet: the datagram must
+     * be sourced from that interface's address, not the primary one
+     * snapshotted into local_ip at bind time. */
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(53);
+    sin.sin_addr.s_addr = ee32(0x0a000102U);
+    ck_assert_int_ge(wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload), 0,
+                                        (const struct wolfIP_sockaddr *)&sin,
+                                        sizeof(sin)), 0);
+    (void)wolfIP_poll(&s, 100);
+
+    ck_assert_uint_eq(last_frame_sent_count, 1);
+    /* IP src = frame[14+12 .. 14+15] */
+    ck_assert_uint_eq(last_frame_sent[26], 0x0a);
+    ck_assert_uint_eq(last_frame_sent[27], 0x00);
+    ck_assert_uint_eq(last_frame_sent[28], 0x01);
+    ck_assert_uint_eq(last_frame_sent[29], 0x01);
+}
+END_TEST
+
+START_TEST(test_sock_connect_icmp_bound_local_ip_no_match_keeps_state)
+{
+    struct wolfIP s;
+    int icmp_sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    icmp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(icmp_sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(icmp_sd)];
+    ts->bound_local_ip = 0x0B000001U;
+    ts->remote_ip = 0x0A000009U; /* must survive a failed connect */
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A000002U);
+
+    ck_assert_int_eq(wolfIP_sock_connect(&s, icmp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), -WOLFIP_EINVAL);
+    ck_assert_uint_eq(ts->remote_ip, 0x0A000009U);
+}
+END_TEST
+
 START_TEST(test_sock_connect_icmp_bound_local_ip_match)
 {
     struct wolfIP s;

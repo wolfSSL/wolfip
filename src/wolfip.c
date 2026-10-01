@@ -164,6 +164,13 @@ struct wolfIP_icmp_packet;
  * RTO and the 64 s backoff cap the arms are 1,2,4,8,16,32,64,64,64 = 255 s
  * before the 8th timeout gives up. */
 #define TCP_CTRL_RTO_MAXRTX 8U
+/* Zero-window probe budget for teardown states (FIN_WAIT_1, CLOSING,
+ * LAST_ACK): with the 1 s base interval and 60 s backoff cap the arms are
+ * 1,2,4,8,16,32,60,60 = 183 s before the socket is released, in the spirit
+ * of the RFC 9293 R2 (3 min) teardown timeout. A forward ACK resets the
+ * counter; a peer that keeps answering with a zero window still consumes
+ * the budget - a deliberately finite patience, not infinite. */
+#define TCP_PERSIST_MAXRTX 8U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
 #ifdef IP_MULTICAST
@@ -1252,6 +1259,7 @@ struct tcpsocket {
     uint8_t early_rexmit_done;
     uint8_t persist_backoff;
     uint8_t persist_active;
+    uint8_t persist_retries;
     uint8_t ctrl_rto_retries;
     uint8_t ctrl_rto_active;
     uint8_t fin_wait_2_timeout_active;
@@ -1304,6 +1312,7 @@ struct tsocket {
     uint16_t proto, events;
     ip4 local_ip, remote_ip;
     ip4 bound_local_ip;
+    uint8_t bound; /* bound_local_ip is a bind claim, not just 0 */
     uint16_t src_port, dst_port;
     struct wolfIP *S;
 #ifdef ETHERNET
@@ -3382,7 +3391,10 @@ static void icmp_try_recv(struct wolfIP *s, unsigned int if_idx,
         struct tsocket *t = &s->icmpsockets[i];
         if (t->proto != WI_IPPROTO_ICMP)
             continue;
-        if (t->local_ip != 0 && t->local_ip != dst_ip)
+        /* Ingress matches the bound address, not the per-send egress
+         * address in local_ip: a wildcard (or unbound) socket receives
+         * replies to pings sent through any interface. */
+        if (t->bound_local_ip != IPADDR_ANY && t->bound_local_ip != dst_ip)
             continue;
         if (t->src_port != 0 && t->src_port != echo_id)
             continue;
@@ -4485,10 +4497,11 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
     if ((t->sock.tcp.state == TCP_SYN_SENT) ||
             (t->sock.tcp.state == TCP_SYN_RCVD))
         return 1;
-    /* In FIN_WAIT_1 and LAST_ACK keep data-RTO active while payload is still
-     * outstanding. Switch to control-RTO only after data is fully drained and
-     * only the FIN/ACK teardown control traffic remains. */
+    /* In FIN_WAIT_1, CLOSING and LAST_ACK keep data-RTO active while payload
+     * is still outstanding. Switch to control-RTO only after data is fully
+     * drained and only the FIN/ACK teardown control traffic remains. */
     if (((t->sock.tcp.state == TCP_FIN_WAIT_1) ||
+             (t->sock.tcp.state == TCP_CLOSING) ||
              (t->sock.tcp.state == TCP_LAST_ACK)) &&
             (t->sock.tcp.bytes_in_flight == 0) &&
             !tcp_has_pending_unsent_payload((struct tsocket *)t))
@@ -4774,7 +4787,10 @@ static uint32_t tcp_snd_nxt(struct tsocket *t)
     return snd_nxt;
 }
 
-static int tcp_has_pending_unsent_payload(struct tsocket *t)
+/* Payload length of the oldest unsent data segment, 0 when none is queued.
+ * ACKED descriptors are done (their cleanup pop runs later in the same
+ * tcp_ack() pass), so they are not pending payload. */
+static uint32_t tcp_head_unsent_seg_len(struct tsocket *t)
 {
     struct pkt_desc *desc;
     uint32_t guard = 0;
@@ -4789,11 +4805,17 @@ static int tcp_has_pending_unsent_payload(struct tsocket *t)
         uint32_t seg_len;
         seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         seg_len = tcp_tx_desc_payload_len(t, desc, seg);
-        if (seg_len > 0 && !(desc->flags & PKT_FLAG_SENT))
-            return 1;
+        if (seg_len > 0 && !(desc->flags & PKT_FLAG_SENT) &&
+                !(desc->flags & PKT_FLAG_ACKED))
+            return seg_len;
         desc = fifo_next(&t->sock.tcp.txbuf, desc);
     }
     return 0;
+}
+
+static int tcp_has_pending_unsent_payload(struct tsocket *t)
+{
+    return tcp_head_unsent_seg_len(t) > 0;
 }
 
 static uint32_t tcp_persist_interval_ms(const struct tsocket *t)
@@ -4816,16 +4838,21 @@ static void tcp_persist_stop(struct tsocket *t)
     }
     t->sock.tcp.persist_backoff = 0;
     t->sock.tcp.persist_active = 0;
+    t->sock.tcp.persist_retries = 0;
 }
 
 static void tcp_persist_start(struct tsocket *t, uint64_t now)
 {
     struct wolfIP_timer tmr = {0};
     uint32_t interval;
+    uint32_t head_len;
 
     if (!t || t->proto != WI_IPPROTO_TCP)
         return;
-    if (t->sock.tcp.peer_rwnd > 0 || !tcp_has_pending_unsent_payload(t)) {
+    head_len = tcp_head_unsent_seg_len(t);
+    /* Persist only probes a window-blocked queue: no pending payload, or a
+     * peer window that already fits the head segment, means data flows. */
+    if (head_len == 0 || head_len <= t->sock.tcp.peer_rwnd) {
         tcp_persist_stop(t);
         return;
     }
@@ -4977,15 +5004,29 @@ static void tcp_persist_cb(void *arg)
     struct tsocket *t = (struct tsocket *)arg;
     if (!t || t->proto != WI_IPPROTO_TCP)
         return;
-    if (t->sock.tcp.state != TCP_ESTABLISHED && t->sock.tcp.state != TCP_CLOSE_WAIT) {
+    if (t->sock.tcp.state != TCP_ESTABLISHED &&
+            t->sock.tcp.state != TCP_CLOSE_WAIT &&
+            t->sock.tcp.state != TCP_FIN_WAIT_1 &&
+            t->sock.tcp.state != TCP_LAST_ACK &&
+            t->sock.tcp.state != TCP_CLOSING) {
         tcp_persist_stop(t);
         return;
     }
-    if (t->sock.tcp.peer_rwnd > 0 || !tcp_has_pending_unsent_payload(t)) {
+    if (t->sock.tcp.peer_rwnd >= tcp_head_unsent_seg_len(t)) {
         tcp_persist_stop(t);
         return;
     }
     (void)tcp_send_zero_wnd_probe(t);
+    t->sock.tcp.persist_retries++;
+    if ((t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+             t->sock.tcp.state == TCP_CLOSING ||
+             t->sock.tcp.state == TCP_LAST_ACK) &&
+            t->sock.tcp.persist_retries >= TCP_PERSIST_MAXRTX) {
+        /* Teardown must not be pinnable by a silent peer: release the
+         * socket once the unanswered-probe budget runs out. */
+        tcp_ctrl_rto_give_up(t);
+        return;
+    }
     if (t->sock.tcp.persist_backoff < 10)
         t->sock.tcp.persist_backoff++;
     /* The timer that fired is out of the heap; drop the stale handle so
@@ -5603,8 +5644,6 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     tcp_parse_options(tcp, frame_len, &po);
     if (!po.ts_found)
         return -1;
-    if (!t->S)
-        return -1; /* Socket was closed; ignore. */
     /* RFC 7323 section 4.3 rule (2): TS.Recent is replaced only when the
      * segment's TSval is not older than the stored one and the segment's
      * sequence is at or below the ACK field of the last segment we sent
@@ -6007,6 +6046,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         t->sock.tcp.dup_acks = 0;
         t->sock.tcp.early_rexmit_done = 0;
         t->sock.tcp.last_early_rexmit_ack = ack;
+        t->sock.tcp.persist_retries = 0;
         /* Any forward ACK exits RTO recovery: clear exponential backoff and
          * stop the current RTO timer. If bytes remain in-flight and no new
          * send happens immediately, we must re-arm RTO here to avoid stalls. */
@@ -6033,6 +6073,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                 t->sock.tcp.bytes_in_flight == 0 &&
                 !tcp_has_pending_unsent_payload(t) &&
                 (t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                 t->sock.tcp.state == TCP_CLOSING ||
                  t->sock.tcp.state == TCP_LAST_ACK) &&
                 t->sock.tcp.tmr_rto == NO_TIMER) {
             /* Data fully drained but the FIN is still in flight: hand the RTO
@@ -6370,7 +6411,11 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->sock.tcp.snd_wscale : 0;
                 t->sock.tcp.peer_rwnd = (uint32_t)raw_win << ws_shift;
                 if (t->sock.tcp.peer_rwnd > prev_peer_rwnd) {
-                    if (t->sock.tcp.persist_active)
+                    /* Stop persist only when the window now fits the head
+                     * segment: a sub-segment window leaves the queue
+                     * window-blocked and the probe must keep running. */
+                    if (t->sock.tcp.persist_active &&
+                            tcp_head_unsent_seg_len(t) <= t->sock.tcp.peer_rwnd)
                         tcp_persist_stop(t);
                     t->events |= CB_EVENT_WRITABLE;
                 }
@@ -6844,7 +6889,9 @@ static void tcp_rto_cb(void *arg)
                     queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
                 } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
                     queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
-                } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
+                } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                        ts->sock.tcp.state == TCP_CLOSING ||
+                        ts->sock.tcp.state == TCP_LAST_ACK) {
                     queued = (tcp_send_finack(ts) == 0);
                     if (queued)
                         ts->sock.tcp.ctrl_rto_retries++;
@@ -6862,6 +6909,7 @@ static void tcp_rto_cb(void *arg)
     }
     if (ts->sock.tcp.state != TCP_ESTABLISHED &&
             ts->sock.tcp.state != TCP_FIN_WAIT_1 &&
+            ts->sock.tcp.state != TCP_CLOSING &&
             ts->sock.tcp.state != TCP_CLOSE_WAIT &&
             ts->sock.tcp.state != TCP_LAST_ACK) {
         /* The fired timer's id is stale once the heap popped it: clear it so a
@@ -7378,21 +7426,26 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         return 0;
     } else if (IS_SOCKET_ICMP(sockfd)) {
         struct ipconf *conf;
+        ip4 new_remote_ip;
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
             return -WOLFIP_EINVAL;
 
         ts = &s->icmpsockets[SOCKET_UNMARK(sockfd)];
         if ((sin->sin_family != AF_INET) || (addrlen < sizeof(struct wolfIP_sockaddr_in)))
             return -WOLFIP_EINVAL;
-        ts->remote_ip = ee32(sin->sin_addr.s_addr);
+        /* Resolve into a local first, as in the UDP branch above: a failed
+         * bound-address check must not narrow the receive filter. */
+        new_remote_ip = ee32(sin->sin_addr.s_addr);
         if (ts->bound_local_ip != IPADDR_ANY) {
             int bound_match = 0;
             unsigned int bound_if = wolfIP_if_for_local_ip(s, ts->bound_local_ip, &bound_match);
             if (!bound_match)
                 return -WOLFIP_EINVAL;
+            ts->remote_ip = new_remote_ip;
             ts->if_idx = (uint8_t)bound_if;
             ts->local_ip = ts->bound_local_ip;
         } else {
+            ts->remote_ip = new_remote_ip;
             if_idx = wolfIP_route_for_ip(s, ts->remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
             ts->if_idx = (uint8_t)if_idx;
@@ -7490,8 +7543,12 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
         ts->if_idx = new_if_idx;
         ts->local_ip = new_local_ip;
         if (!ts->src_port) {
+            /* Check the collision against the bind claim, not the egress
+             * address resolved above: a wildcard-bound socket owns the
+             * port on every address. */
+            ip4 claim = ts->bound ? ts->bound_local_ip : ts->local_ip;
             ts->src_port = port_alloc_random(s->tcpsockets, MAX_TCPSOCKETS,
-                                             ts, ts->local_ip, 1024);
+                                             ts, claim, 1024);
             if (ts->src_port == 0) {
                 ts->sock.tcp.state = TCP_CLOSED;
                 return -WOLFIP_EAGAIN;
@@ -7824,7 +7881,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         struct ipconf *conf;
         uint16_t dst_port;
         ip4 remote_ip;
-        ip4 src_ip;
+        ip4 src_ip = 0;
         uint32_t ip_mtu;
         uint32_t frame_len;
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
@@ -7860,7 +7917,12 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             if_idx = ts->sock.udp.mcast_if_idx;
 #endif
         conf = wolfIP_ipconf_at(s, if_idx);
-        src_ip = ts->local_ip;
+        /* A socket bound to a specific address pins its source; a
+         * wildcard (or unbound) socket sources each datagram from the
+         * egress interface's address. local_ip stays egress-only;
+         * ingress matching uses bound_local_ip. */
+        if (ts->bound && ts->bound_local_ip != IPADDR_ANY)
+            src_ip = ts->local_ip;
         if (src_ip == 0) {
             if (conf && conf->ip != IPADDR_ANY)
                 src_ip = conf->ip;
@@ -7868,6 +7930,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
                     src_ip = primary->ip;
+                else
+                    src_ip = IPADDR_ANY;
             }
         }
         /* Bind the socket's egress state once for any sendto (connected or
@@ -7947,14 +8011,12 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             if_idx = wolfIP_route_for_ip(s, remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
             ts->if_idx = (uint8_t)if_idx;
-            if (ts->local_ip == 0) {
-                if (conf && conf->ip != IPADDR_ANY)
-                    ts->local_ip = conf->ip;
-                else {
-                    struct ipconf *primary = wolfIP_primary_ipconf(s);
-                    if (primary && primary->ip != IPADDR_ANY)
-                        ts->local_ip = primary->ip;
-                }
+            if (conf && conf->ip != IPADDR_ANY)
+                ts->local_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    ts->local_ip = primary->ip;
             }
         }
         ip_mtu = wolfIP_socket_ip_mtu(ts);
@@ -8852,6 +8914,9 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
                 return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_FIN_WAIT_1;
             ts->sock.tcp.ctrl_rto_retries = 0;
+            /* Fresh teardown: probes sent while ESTABLISHED must not
+             * consume the teardown give-up budget. */
+            ts->sock.tcp.persist_retries = 0;
             ts->callback = NULL;
             ts->callback_arg = NULL;
             if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
@@ -8875,6 +8940,9 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
                 return -WOLFIP_EAGAIN;
             ts->sock.tcp.state = TCP_LAST_ACK;
             ts->sock.tcp.ctrl_rto_retries = 0;
+            /* Fresh teardown: probes sent before close() must not consume
+             * the teardown give-up budget. */
+            ts->sock.tcp.persist_retries = 0;
             ts->callback = NULL;
             ts->callback_arg = NULL;
             if (tcp_ctrl_rto_start(ts, s->last_tick) < 0) {
@@ -9165,12 +9233,16 @@ static int bind_port_in_use(const struct tsocket *arr, int n,
         return 0;
     for (i = 0; i < n; i++) {
         const struct tsocket *tk = &arr[i];
+        /* Compare the bind claim, not the resolved egress address: a
+         * wildcard bind owns the port on every address; a never-bound
+         * socket claims its resolved local_ip. */
+        ip4 claim = tk->bound ? tk->bound_local_ip : tk->local_ip;
         if (tk == self)
             continue;
         if (tk->src_port != new_port)
             continue;
-        if (tk->local_ip != IPADDR_ANY && new_local_ip != IPADDR_ANY &&
-            tk->local_ip != new_local_ip)
+        if (claim != IPADDR_ANY && new_local_ip != IPADDR_ANY &&
+            claim != new_local_ip)
             continue;
         return 1;
     }
@@ -9259,7 +9331,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->tcpsockets, MAX_TCPSOCKETS, ts,
-                                 ts->local_ip, new_port)) {
+                                 bind_ip, new_port)) {
                 ts->local_ip = prev_ip;
                 ts->if_idx = prev_if_idx;
                 return -1;
@@ -9275,6 +9347,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->src_port = new_port;
         }
         ts->bound_local_ip = bind_ip;
+        ts->bound = 1;
         return 0;
     } else if (IS_SOCKET_UDP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
@@ -9302,7 +9375,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->udpsockets, MAX_UDPSOCKETS, ts,
-                                 ts->local_ip, new_port)) {
+                                 bind_ip, new_port)) {
                 ts->local_ip = prev_ip;
                 ts->if_idx = prev_if_idx;
                 return -1;
@@ -9323,6 +9396,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->src_port = new_port;
         }
         ts->bound_local_ip = bind_ip;
+        ts->bound = 1;
         return 0;
     } else if (IS_SOCKET_ICMP(sockfd)) {
         if (SOCKET_UNMARK(sockfd) >= MAX_ICMPSOCKETS)
@@ -9350,7 +9424,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = IPADDR_ANY;
             }
             if (bind_port_in_use(s->icmpsockets, MAX_ICMPSOCKETS, ts,
-                                 ts->local_ip, new_id)) {
+                                 bind_ip, new_id)) {
                 ts->local_ip = prev_ip;
                 ts->if_idx = prev_if_idx;
                 return -1;
@@ -9368,6 +9442,7 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
             ts->src_port = new_id;
         }
         ts->bound_local_ip = bind_ip;
+        ts->bound = 1;
         return 0;
 #if WOLFIP_RAWSOCKETS
     } else if (IS_SOCKET_RAW(sockfd)) {
@@ -9419,6 +9494,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
             WOLFIP_FILT_LISTENING, s, ts,
             ts->local_ip, ts->src_port, IPADDR_ANY, 0) != 0) {
         ts->sock.tcp.state = TCP_CLOSED;
+        ts->sock.tcp.is_listener = 0;
         return -1;
     }
     return 0;
@@ -10232,10 +10308,14 @@ static int dhcp_msg_type(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_le
             saw_server_id = 1;
         }
     }
-    /* Reject a reply that does not carry the server identifier of the
-     * server we committed to during the OFFER phase. */
-    if (s->dhcp_server_ip != 0 &&
-        (!saw_server_id || server_id != s->dhcp_server_ip))
+    /* A reply without a server identifier is not from a server in any
+     * state (a DHCPNAK in particular must carry one, RFC 2131). While
+     * REBINDING the request is a broadcast and any server may answer
+     * (RFC 2131 4.3.5), so only the equality comparison is waived there. */
+    if (s->dhcp_server_ip != 0 && !saw_server_id)
+        return -1;
+    if (s->dhcp_server_ip != 0 && s->dhcp_state != DHCP_REBINDING &&
+        server_id != s->dhcp_server_ip)
         return -1;
     return msg_type;
 }
@@ -10300,8 +10380,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 return -1;
             val = DHCP_OPT_data_to_u32((struct dhcp_option *)data);
             /* Reject ACK from a server other than the one we committed to
-             * during the OFFER phase, wherever the option appears. */
-            if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip)
+             * during the OFFER phase, wherever the option appears. While
+             * REBINDING the request is a broadcast and any server may
+             * reconfirm the in-use address (RFC 2131 4.3.5): accept a
+             * foreign server ID there, the commit below records it. */
+            if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip &&
+                    s->dhcp_state != DHCP_REBINDING)
                 return -1;
             cand_server_ip = val;
             saw_server_id = 1;
@@ -10369,6 +10453,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     if (primary && saw_server_id && lease_s != 0 &&
         (lease_mask != 0) &&
         dhcp_lease_ip_sane(lease_ip, lease_mask)) {
+        /* Renewal/rebind that re-confirms the address already in use:
+         * RFC 5227 DAD guards a NEW address; the in-use one already
+         * proved itself, so go straight to BOUND without re-probing. */
+        int skip_dad = (lease_ip == primary->ip) &&
+                ((s->dhcp_state == DHCP_RENEWING) ||
+                 (s->dhcp_state == DHCP_REBINDING));
         /* Commit the validated configuration atomically. */
         s->dhcp_server_ip = cand_server_ip;
         primary->ip = lease_ip;
@@ -10380,29 +10470,34 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         dhcp_cancel_timer(s);
         s->dhcp_ip = primary->ip;
 #ifdef ETHERNET
-        /* RFC 4331: probe the address before using it. The
-         * lease timers are armed now so they are in place when
-         * the probes complete; the short DAD timer overrides
-         * them until then. A conflicting answer is detected in
-         * arp_recv (dhcp_dad_conflict). */
-        s->dhcp_state = DHCP_DAD;
-        s->dhcp_dad_probes = 0;
-        s->dhcp_dad_if = WOLFIP_PRIMARY_IF_IDX;
-        /* Arm the lease absolutes, then swap the renew timer for
-         * the DAD timer: handle_timers() fires every expired
-         * entry, so leaving both in the heap would double-fire
-         * the renew. The absolutes survive; the DAD completion
-         * re-arms the renew timer. */
-        dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
-        timer_binheap_cancel(&s->timers, s->dhcp_timer);
-        s->dhcp_timer = NO_TIMER;
-        /* ll drivers return the frame length (>= 0) on
-         * success, not 0; only count the probe when it
-         * actually went out. */
-        if (dhcp_send_dad_probe(s) >= 0)
-            s->dhcp_dad_probes = 1;
-        dhcp_schedule_timer_at(s,
-                s->last_tick + DHCP_DAD_INTERVAL_MS);
+        if (skip_dad) {
+            s->dhcp_state = DHCP_BOUND;
+            dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+        } else {
+            /* RFC 5227: probe the address before using it. The
+             * lease timers are armed now so they are in place when
+             * the probes complete; the short DAD timer overrides
+             * them until then. A conflicting answer is detected in
+             * arp_recv (dhcp_dad_conflict). */
+            s->dhcp_state = DHCP_DAD;
+            s->dhcp_dad_probes = 0;
+            s->dhcp_dad_if = WOLFIP_PRIMARY_IF_IDX;
+            /* Arm the lease absolutes, then swap the renew timer for
+             * the DAD timer: handle_timers() fires every expired
+             * entry, so leaving both in the heap would double-fire
+             * the renew. The absolutes survive; the DAD completion
+             * re-arms the renew timer. */
+            dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+            timer_binheap_cancel(&s->timers, s->dhcp_timer);
+            s->dhcp_timer = NO_TIMER;
+            /* ll drivers return the frame length (>= 0) on
+             * success, not 0; only count the probe when it
+             * actually went out. */
+            if (dhcp_send_dad_probe(s) >= 0)
+                s->dhcp_dad_probes = 1;
+            dhcp_schedule_timer_at(s,
+                    s->last_tick + DHCP_DAD_INTERVAL_MS);
+        }
 #else
         s->dhcp_state = DHCP_BOUND;
         dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
@@ -12912,8 +13007,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                 ts->sock.tcp.ack_retry_pending = 0;
         }
         in_flight = ts->sock.tcp.bytes_in_flight;
-        if (ts->sock.tcp.persist_active && (ts->sock.tcp.peer_rwnd > 0 ||
-                    !tcp_has_pending_unsent_payload(ts)))
+        if (ts->sock.tcp.persist_active &&
+                tcp_head_unsent_seg_len(ts) <= ts->sock.tcp.peer_rwnd)
             tcp_persist_stop(ts);
         desc = fifo_peek(&ts->sock.tcp.txbuf);
         while (desc && send_guard++ < send_budget) {
@@ -13037,8 +13132,12 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
                         if (desc == fifo_peek(&ts->sock.tcp.txbuf)) {
                             /* Cursor at the tail: fifo_pop() removes exactly
-                             * this descriptor. */
+                             * this descriptor. Resume from the new peek: the
+                             * popped pointer is stale, and when the pop
+                             * clears h_wrap, fifo_next() from it lands in the
+                             * unused wrap gap. */
                             desc = fifo_pop(&ts->sock.tcp.txbuf);
+                            desc = fifo_peek(&ts->sock.tcp.txbuf);
                         } else {
                             /* fifo_pop() only removes the tail, so popping
                              * here would discard the unacked data descriptor
@@ -13070,13 +13169,16 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                         if (next_desc == desc)
                             break;
                         desc = next_desc;
-                        if (ts->sock.tcp.persist_active && ts->sock.tcp.peer_rwnd > 0)
+                        if (ts->sock.tcp.persist_active &&
+                                tcp_head_unsent_seg_len(ts) <=
+                                ts->sock.tcp.peer_rwnd)
                             tcp_persist_stop(ts);
                     }
                 } else {
                     struct pkt_desc *rexmit_desc = NULL;
                     struct pkt_desc *ack_desc = NULL;
-                    if (seg_payload_len > 0 && ts->sock.tcp.peer_rwnd == 0)
+                    if (seg_payload_len > 0 && in_flight == 0 &&
+                            seg_payload_len > ts->sock.tcp.peer_rwnd)
                         tcp_persist_start(ts, now);
                     if (!is_retrans) {
                         rexmit_desc = tcp_find_pending_retrans(ts, desc);
