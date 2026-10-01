@@ -72,6 +72,22 @@ typedef unsigned long size_t;
 #endif
 #endif
 
+#ifndef WOLFIP_SO_RCVTIMEO
+#ifdef SO_RCVTIMEO
+#define WOLFIP_SO_RCVTIMEO SO_RCVTIMEO
+#else
+#define WOLFIP_SO_RCVTIMEO 20
+#endif
+#endif
+
+#ifndef WOLFIP_SO_SNDTIMEO
+#ifdef SO_SNDTIMEO
+#define WOLFIP_SO_SNDTIMEO SO_SNDTIMEO
+#else
+#define WOLFIP_SO_SNDTIMEO 21
+#endif
+#endif
+
 #ifndef WOLFIP_SO_DONTROUTE
 #ifdef SO_DONTROUTE
 #define WOLFIP_SO_DONTROUTE SO_DONTROUTE
@@ -176,6 +192,22 @@ typedef uint32_t ip4;
 #define WOLFIP_EACCES EACCES
 #else
 #define WOLFIP_EACCES (13)
+#endif
+#endif
+
+#ifndef WOLFIP_EINPROGRESS
+#ifdef EINPROGRESS
+#define WOLFIP_EINPROGRESS EINPROGRESS
+#else
+#define WOLFIP_EINPROGRESS (115)
+#endif
+#endif
+
+#ifndef WOLFIP_EDOM
+#ifdef EDOM
+#define WOLFIP_EDOM EDOM
+#else
+#define WOLFIP_EDOM (33)
 #endif
 #endif
 
@@ -367,6 +399,12 @@ struct wolfIP_sockaddr_in {
 };
 struct wolfIP_sockaddr { uint16_t sa_family; };
 typedef uint32_t socklen_t;
+
+/* struct timeval for SO_RCVTIMEO / SO_SNDTIMEO, without needing sys/time.h. */
+struct wolfIP_timeval {
+    long tv_sec;
+    long tv_usec;
+};
 
 /* Pull in the system socket types when available, but only declare
  * WOLFIP_HAVE_POSIX_TYPES once BOTH <sys/socket.h> AND <sys/uio.h> are

@@ -207,6 +207,8 @@ EXE=build/tcpecho build/tcp_netcat_poll build/tcp_netcat_select \
 	build/test-http-headers \
 	build/test-http-close-notify \
 	build/test-freertos-close-last-ack \
+	build/test-freertos-bsd-semantics \
+	build/test-freertos-bsd-semantics-2khz \
 	build/test-posix-errno \
 	build/ipfilter-logger \
 	build/test-esp build/esp-server
@@ -921,6 +923,17 @@ build/test-freertos-close-last-ack: src/test/test_freertos_close_last_ack.c src/
 	@mkdir -p build || true
 	@echo "[LD] $@"
 	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -o $@ src/test/test_freertos_close_last_ack.c $(LDFLAGS)
+
+build/test-freertos-bsd-semantics: src/test/test_freertos_bsd_semantics.c src/port/freeRTOS/bsd_socket.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) -Isrc/test/freertos_mocks $(CFLAGS) -o $@ src/test/test_freertos_bsd_semantics.c $(LDFLAGS)
+
+# Same test above 1000 Hz, where portTICK_PERIOD_MS is 0.
+build/test-freertos-bsd-semantics-2khz: src/test/test_freertos_bsd_semantics.c src/port/freeRTOS/bsd_socket.c
+	@mkdir -p build || true
+	@echo "[LD] $@"
+	@$(CC) -Isrc/test/freertos_mocks -DconfigTICK_RATE_HZ=2000u $(CFLAGS) -o $@ src/test/test_freertos_bsd_semantics.c $(LDFLAGS)
 
 build/%.o: src/%.c
 	@mkdir -p `dirname $@` || true
