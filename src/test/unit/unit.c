@@ -430,6 +430,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_initial_cwnd_caps_to_iw10_and_half_rwnd);
     tcase_add_test(tc_utils, test_tcp_persist_cb_sends_one_byte_probe);
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_includes_timestamp_when_enabled);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_fin_wait_1_sends_probe);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_last_ack_subsegment_window_sends_probe);
+    tcase_add_test(tc_utils, test_tcp_persist_start_armed_for_subsegment_window);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_fin_wait_1_gives_up_after_maxrtx);
+    tcase_add_test(tc_utils, test_tcp_ack_forward_progress_resets_persist_retries);
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_rejects_invalid_inputs_and_empty_payload);
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_skips_ack_only_segment);
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_selects_middle_byte_at_snd_una);

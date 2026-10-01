@@ -164,6 +164,11 @@ struct wolfIP_icmp_packet;
  * RTO and the 64 s backoff cap the arms are 1,2,4,8,16,32,64,64,64 = 255 s
  * before the 8th timeout gives up. */
 #define TCP_CTRL_RTO_MAXRTX 8U
+/* Unanswered zero-window probe budget for teardown states (FIN_WAIT_1,
+ * LAST_ACK): with the 1 s base interval and 60 s backoff cap the arms are
+ * 1,2,4,8,16,32,60,60 = 183 s of peer silence before the socket is
+ * released, in the spirit of the RFC 9293 R2 (3 min) teardown timeout. */
+#define TCP_PERSIST_MAXRTX 8U
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
 #ifdef IP_MULTICAST
@@ -1252,6 +1257,7 @@ struct tcpsocket {
     uint8_t early_rexmit_done;
     uint8_t persist_backoff;
     uint8_t persist_active;
+    uint8_t persist_retries;
     uint8_t ctrl_rto_retries;
     uint8_t ctrl_rto_active;
     uint8_t fin_wait_2_timeout_active;
@@ -4775,7 +4781,10 @@ static uint32_t tcp_snd_nxt(struct tsocket *t)
     return snd_nxt;
 }
 
-static int tcp_has_pending_unsent_payload(struct tsocket *t)
+/* Payload length of the oldest unsent data segment, 0 when none is queued.
+ * ACKED descriptors are done (their cleanup pop runs later in the same
+ * tcp_ack() pass), so they are not pending payload. */
+static uint32_t tcp_head_unsent_seg_len(struct tsocket *t)
 {
     struct pkt_desc *desc;
     uint32_t guard = 0;
@@ -4790,14 +4799,17 @@ static int tcp_has_pending_unsent_payload(struct tsocket *t)
         uint32_t seg_len;
         seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         seg_len = tcp_tx_desc_payload_len(t, desc, seg);
-        /* An ACKED descriptor is done (its cleanup pop runs later in the
-         * same tcp_ack() pass); it is not pending payload. */
         if (seg_len > 0 && !(desc->flags & PKT_FLAG_SENT) &&
                 !(desc->flags & PKT_FLAG_ACKED))
-            return 1;
+            return seg_len;
         desc = fifo_next(&t->sock.tcp.txbuf, desc);
     }
     return 0;
+}
+
+static int tcp_has_pending_unsent_payload(struct tsocket *t)
+{
+    return tcp_head_unsent_seg_len(t) > 0;
 }
 
 static uint32_t tcp_persist_interval_ms(const struct tsocket *t)
@@ -4820,16 +4832,21 @@ static void tcp_persist_stop(struct tsocket *t)
     }
     t->sock.tcp.persist_backoff = 0;
     t->sock.tcp.persist_active = 0;
+    t->sock.tcp.persist_retries = 0;
 }
 
 static void tcp_persist_start(struct tsocket *t, uint64_t now)
 {
     struct wolfIP_timer tmr = {0};
     uint32_t interval;
+    uint32_t head_len;
 
     if (!t || t->proto != WI_IPPROTO_TCP)
         return;
-    if (t->sock.tcp.peer_rwnd > 0 || !tcp_has_pending_unsent_payload(t)) {
+    head_len = tcp_head_unsent_seg_len(t);
+    /* Persist only probes a window-blocked queue: no pending payload, or a
+     * peer window that already fits the head segment, means data flows. */
+    if (head_len == 0 || head_len <= t->sock.tcp.peer_rwnd) {
         tcp_persist_stop(t);
         return;
     }
@@ -4981,15 +4998,27 @@ static void tcp_persist_cb(void *arg)
     struct tsocket *t = (struct tsocket *)arg;
     if (!t || t->proto != WI_IPPROTO_TCP)
         return;
-    if (t->sock.tcp.state != TCP_ESTABLISHED && t->sock.tcp.state != TCP_CLOSE_WAIT) {
+    if (t->sock.tcp.state != TCP_ESTABLISHED &&
+            t->sock.tcp.state != TCP_CLOSE_WAIT &&
+            t->sock.tcp.state != TCP_FIN_WAIT_1 &&
+            t->sock.tcp.state != TCP_LAST_ACK) {
         tcp_persist_stop(t);
         return;
     }
-    if (t->sock.tcp.peer_rwnd > 0 || !tcp_has_pending_unsent_payload(t)) {
+    if (t->sock.tcp.peer_rwnd >= tcp_head_unsent_seg_len(t)) {
         tcp_persist_stop(t);
         return;
     }
     (void)tcp_send_zero_wnd_probe(t);
+    t->sock.tcp.persist_retries++;
+    if ((t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+             t->sock.tcp.state == TCP_LAST_ACK) &&
+            t->sock.tcp.persist_retries >= TCP_PERSIST_MAXRTX) {
+        /* Teardown must not be pinnable by a silent peer: release the
+         * socket once the unanswered-probe budget runs out. */
+        tcp_ctrl_rto_give_up(t);
+        return;
+    }
     if (t->sock.tcp.persist_backoff < 10)
         t->sock.tcp.persist_backoff++;
     /* The timer that fired is out of the heap; drop the stale handle so
@@ -6011,6 +6040,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
         t->sock.tcp.dup_acks = 0;
         t->sock.tcp.early_rexmit_done = 0;
         t->sock.tcp.last_early_rexmit_ack = ack;
+        t->sock.tcp.persist_retries = 0;
         /* Any forward ACK exits RTO recovery: clear exponential backoff and
          * stop the current RTO timer. If bytes remain in-flight and no new
          * send happens immediately, we must re-arm RTO here to avoid stalls. */
@@ -13084,7 +13114,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                 } else {
                     struct pkt_desc *rexmit_desc = NULL;
                     struct pkt_desc *ack_desc = NULL;
-                    if (seg_payload_len > 0 && ts->sock.tcp.peer_rwnd == 0)
+                    if (seg_payload_len > 0 && in_flight == 0 &&
+                            seg_payload_len > ts->sock.tcp.peer_rwnd)
                         tcp_persist_start(ts, now);
                     if (!is_retrans) {
                         rexmit_desc = tcp_find_pending_retrans(ts, desc);
