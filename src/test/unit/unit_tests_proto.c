@@ -705,19 +705,19 @@ START_TEST(test_tcp_sock_close_state_transitions)
     ck_assert_int_gt(sd, 0);
     ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
     ts->sock.tcp.state = TCP_ESTABLISHED;
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
 
     ts->sock.tcp.state = TCP_CLOSE_WAIT;
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
 
     ts->sock.tcp.state = TCP_FIN_WAIT_2;
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_2);
 
     ts->sock.tcp.state = TCP_CLOSING;
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
 
     ts->sock.tcp.state = TCP_LISTEN;
@@ -2132,7 +2132,7 @@ START_TEST(test_tcp_persist_close_resets_retry_budget)
             (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
 
     s.last_tick = 500;
-    ck_assert_int_eq(wolfIP_sock_close(&s, tcp_sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, tcp_sd), 0);
     ck_assert_uint_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
 
     /* Two unanswered teardown probes must not exhaust a fresh budget. */

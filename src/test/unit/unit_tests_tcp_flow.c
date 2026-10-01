@@ -5911,7 +5911,7 @@ START_TEST(test_tcp_listener_closed_while_pending_is_not_readable)
     ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
     ck_assert_int_eq(wolfIP_sock_can_read(&s, fd), 1);
 
-    ck_assert_int_eq(wolfIP_sock_close(&s, fd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, fd), 0);
     ck_assert_int_eq(lsn->sock.tcp.state, TCP_FIN_WAIT_1);
     ck_assert_int_eq(lsn->sock.tcp.is_listener, 1);
 
@@ -6120,7 +6120,7 @@ static void llk_closed_listener_rst_frees(int peer_fin)
         ck_assert_int_eq(lsn->sock.tcp.state, TCP_CLOSE_WAIT);
         rst_seq = 3;
     }
-    ck_assert_int_eq(wolfIP_sock_close(&s, fd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, fd), 0);
     ck_assert_int_eq(lsn->sock.tcp.state,
                      peer_fin ? TCP_LAST_ACK : TCP_FIN_WAIT_1);
     (void)wolfIP_poll(&s, 3);
@@ -6229,7 +6229,7 @@ START_TEST(test_sock_abort_established_resets_and_frees)
 END_TEST
 
 /* The case abort exists for: a graceful close that cannot finish. */
-START_TEST(test_sock_abort_after_close_eagain_frees)
+START_TEST(test_sock_abort_after_close_frees)
 {
     struct wolfIP s;
     int sd;
@@ -6240,7 +6240,7 @@ START_TEST(test_sock_abort_after_close_eagain_frees)
     sd = llk_accepted_child(&s);
     ck_assert_int_ge(sd, 0);
     ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
     last = ts->sock.tcp.last;
 
@@ -6291,7 +6291,7 @@ static int llk_child_fin_sent(struct wolfIP *s, uint32_t *last)
     sd = llk_accepted_child(s);
     ck_assert_int_ge(sd, 0);
     ts = &s->tcpsockets[SOCKET_UNMARK(sd)];
-    ck_assert_int_eq(wolfIP_sock_close(s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(s, sd), 0);
     (void)wolfIP_poll(s, 3);
     ck_assert_ptr_null(fifo_peek(&ts->sock.tcp.txbuf));
     ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
@@ -6482,7 +6482,7 @@ START_TEST(test_sock_abort_fin_behind_unacked_data_covers_fin)
     ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
                      (int)sizeof(payload));
     (void)wolfIP_poll(&s, 2);
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     last = ts->sock.tcp.last;
     ck_assert_uint_eq(last, ts->sock.tcp.snd_una + sizeof(payload));
     (void)wolfIP_poll(&s, 3);
@@ -6564,7 +6564,7 @@ START_TEST(test_sock_abort_last_ack_sends_nothing)
     uint32_t frames_before;
 
     sd = llk_child_close_wait(&s);
-    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
     ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state,
                      TCP_LAST_ACK);
     frames_before = last_frame_sent_count;
@@ -6575,6 +6575,75 @@ START_TEST(test_sock_abort_last_ack_sends_nothing)
     ud = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
     ck_assert_int_gt(ud, 0);
     ck_assert_int_eq(wolfIP_sock_abort(&s, ud), -WOLFIP_EINVAL);
+}
+END_TEST
+
+START_TEST(test_sock_close_repeated_in_last_ack_keeps_socket)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    uint32_t frames_before;
+
+    sd = llk_child_close_wait(&s);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+
+    frames_before = last_frame_sent_count;
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LAST_ACK);
+    ck_assert_int_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_uint_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(last_frame_sent_count, frames_before);
+}
+END_TEST
+
+START_TEST(test_sock_close_repeated_in_time_wait_keeps_socket)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    uint16_t gen;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ts->sock.tcp.state = TCP_TIME_WAIT;
+    gen = s.tcp_gen[SOCKET_UNMARK(sd)].gen;
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_TIME_WAIT);
+    ck_assert_int_eq(ts->proto, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(s.tcp_gen[SOCKET_UNMARK(sd)].gen, gen);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+START_TEST(test_sock_abort_after_close_stale_once_slot_reused)
+{
+    struct wolfIP s;
+    int sd, new_sd;
+    struct tsocket *ts;
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_FIN_WAIT_1);
+
+    /* The stack finishes the close on its own and the slot is reused. */
+    close_socket(ts);
+    take_tcp_slots_except(&s, SOCKET_UNMARK(sd));
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), SOCKET_UNMARK(sd));
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_int_eq(ts->proto, WI_IPPROTO_TCP);
 }
 END_TEST
 
@@ -6758,7 +6827,7 @@ START_TEST(test_tcp_listener_preaccept_close_rto_retransmits_finack)
     /* Close the established-but-unaccepted connection: FIN_WAIT_1, the
      * control RTO owns the timer slot, and the pre-accept flag must be
      * gone with the timer it armed. */
-    ck_assert_int_eq(wolfIP_sock_close(&s, fd), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(wolfIP_sock_close(&s, fd), 0);
     ck_assert_int_eq(lsn->sock.tcp.state, TCP_FIN_WAIT_1);
     ck_assert_int_eq(lsn->sock.tcp.preaccept_timeout_active, 0);
     ck_assert_int_eq(lsn->sock.tcp.ctrl_rto_active, 1);
