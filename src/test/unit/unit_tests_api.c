@@ -1092,7 +1092,7 @@ START_TEST(test_tcp_listen_before_ipconfig_accepts_after)
     listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin,
+    client_sd = accept_after_handshake(&s, listen_sd, (struct wolfIP_sockaddr *)&sin,
             &alen);
     ck_assert_int_gt(client_sd, 0);
 }
@@ -3044,7 +3044,7 @@ START_TEST(test_sock_accept_success_sets_addr)
     listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
+    client_sd = accept_after_handshake(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
     ck_assert_int_gt(client_sd, 0);
     ck_assert_uint_eq(alen, sizeof(sin));
     ck_assert_uint_eq(sin.sin_family, AF_INET);
@@ -3257,7 +3257,8 @@ START_TEST(test_sock_accept_no_available_socket)
         ts->sock.tcp.state = TCP_ESTABLISHED;
     }
 
-    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -1);
+    /* No slot for the child: the connection stays on the listener. */
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
 }
 END_TEST
 
@@ -3294,7 +3295,9 @@ START_TEST(test_sock_accept_no_free_socket_syn_rcvd)
         s.tcpsockets[i].sock.tcp.state = TCP_ESTABLISHED;
     }
 
-    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -1);
+    /* No slot to park the child in: the listener keeps the handshake. */
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
 }
 END_TEST
 
@@ -3325,7 +3328,6 @@ START_TEST(test_sock_accept_bound_local_ip_no_match)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *listener;
     struct wolfIP_sockaddr_in sin;
 
@@ -3349,8 +3351,8 @@ START_TEST(test_sock_accept_bound_local_ip_no_match)
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
     s.if_count = 0;
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    ck_assert_ptr_nonnull(parked_child(&s, listen_sd));
     ck_assert_uint_eq(listener->if_idx, TEST_PRIMARY_IF);
 }
 END_TEST
@@ -3359,7 +3361,6 @@ START_TEST(test_sock_accept_starts_rto_timer)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *listener;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
@@ -3381,10 +3382,9 @@ START_TEST(test_sock_accept_starts_rto_timer)
     listener = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     /* Accepted socket should be in SYN_RCVD state with RTO timer active */
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
     ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 1);
@@ -3401,7 +3401,6 @@ START_TEST(test_sock_accept_initializes_snd_una)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *listener;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
@@ -3430,10 +3429,9 @@ START_TEST(test_sock_accept_initializes_snd_una)
         listener->sock.tcp.snd_una = isn;
     }
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     /* While in SYN_RCVD the socket's seq stays at the ISN; the final ACK
      * handler advances it to ISN+1 on establishment. */
     ck_assert_uint_eq(accepted->sock.tcp.seq, 0x80000000U);
@@ -3446,7 +3444,6 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *listener;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
@@ -3527,14 +3524,12 @@ START_TEST(test_sock_accept_clones_half_open_state_and_queues_synack)
     pre_accept_sack_permitted = listener->sock.tcp.sack_permitted;
 
     /* Accept should fork the half-open state into a child socket and queue a SYN-ACK there. */
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     /* The child socket should inherit the negotiated transport parameters verbatim. */
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
-    ck_assert_ptr_eq(accepted->callback, test_socket_cb);
-    ck_assert_ptr_eq(accepted->callback_arg, cb_arg);
+    ck_assert_ptr_null(accepted->callback);
     ck_assert_uint_eq(accepted->local_ip, pre_accept_local_ip);
     ck_assert_uint_eq(accepted->bound_local_ip, listener->bound_local_ip);
     ck_assert_uint_eq(accepted->if_idx, TEST_PRIMARY_IF);
@@ -3580,7 +3575,6 @@ START_TEST(test_sock_accept_synack_rto_txbuf_full_does_not_consume_retry)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
     uint8_t tiny_txbuf[32];
@@ -3599,10 +3593,9 @@ START_TEST(test_sock_accept_synack_rto_txbuf_full_does_not_consume_retry)
     ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
 
     fifo_init(&accepted->sock.tcp.txbuf, tiny_txbuf, sizeof(tiny_txbuf));
@@ -3622,7 +3615,6 @@ START_TEST(test_sock_accept_synack_retransmission)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
     struct pkt_desc *desc;
@@ -3642,10 +3634,9 @@ START_TEST(test_sock_accept_synack_retransmission)
     ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
 
     /* Clear tx buffer to prepare for retransmission check */
@@ -3669,7 +3660,6 @@ START_TEST(test_sock_accept_synack_window_not_scaled)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *listener;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
@@ -3695,10 +3685,9 @@ START_TEST(test_sock_accept_synack_window_not_scaled)
     listener->sock.tcp.ws_enabled = 1;
     listener->sock.tcp.rcv_wscale = 3;
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     desc = fifo_peek(&accepted->sock.tcp.txbuf);
     ck_assert_ptr_nonnull(desc);
     seg = (struct wolfIP_tcp_seg *)(accepted->txmem + desc->pos + sizeof(*desc));
@@ -3712,7 +3701,6 @@ START_TEST(test_sock_accept_ack_transitions_to_established)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
     struct wolfIP_tcp_seg ack;
@@ -3732,10 +3720,9 @@ START_TEST(test_sock_accept_ack_transitions_to_established)
     ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
     ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 1);
 
@@ -3769,7 +3756,8 @@ START_TEST(test_sock_accept_ack_transitions_to_established)
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_ESTABLISHED);
     ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_active, 0);
     ck_assert_uint_eq(accepted->sock.tcp.ctrl_rto_retries, 0);
-    ck_assert_int_eq(accepted->sock.tcp.tmr_rto, NO_TIMER);
+    /* Still held back from accept(), so the pre-accept timeout runs. */
+    ck_assert_uint_eq(accepted->sock.tcp.preaccept_timeout_active, 1);
     /* Should be signaled as writable */
     ck_assert(accepted->events & CB_EVENT_WRITABLE);
 }
@@ -5018,7 +5006,7 @@ END_TEST
 START_TEST(test_accepted_socket_destroyed_on_synrcvd_rto_expiry)
 {
     struct wolfIP s;
-    int listen_sd, client_sd;
+    int listen_sd;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
 
@@ -5036,10 +5024,9 @@ START_TEST(test_accepted_socket_destroyed_on_synrcvd_rto_expiry)
     ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
 
     /* Exhaust all ctrl-RTO retries */
@@ -5956,7 +5943,7 @@ END_TEST
 START_TEST(test_syn_rcvd_bad_ack_sends_rst)
 {
     struct wolfIP s;
-    int listen_sd, client_sd;
+    int listen_sd;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
 
@@ -5975,10 +5962,9 @@ START_TEST(test_syn_rcvd_bad_ack_sends_rst)
 
     /* SYN puts listen socket in SYN_RCVD, accept creates new socket */
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    accepted = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
 
     /* Inject ACK with wrong ack value (99 instead of snd_una+1) */

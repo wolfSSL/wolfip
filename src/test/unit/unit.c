@@ -655,7 +655,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_listener_closed_while_pending_is_not_readable);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_timeout_reverts_port);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_timeout_resets_peer);
-    tcase_add_test(tc_utils, test_tcp_listener_preaccept_accept_no_socket_resets_peer);
+    tcase_add_test(tc_utils, test_tcp_listener_preaccept_accept_no_socket_keeps_connection);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_rst_keeps_listener);
     tcase_add_test(tc_utils, test_tcp_listener_closed_preaccept_rst_frees_fin_wait_1);
     tcase_add_test(tc_utils, test_tcp_listener_closed_preaccept_rst_frees_last_ack);
@@ -665,7 +665,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_abort_without_peer_sends_nothing);
     tcase_add_test(tc_utils, test_sock_abort_fin_wait_1_rst_covers_sent_fin);
     tcase_add_test(tc_utils, test_sock_abort_fin_wait_2_rst_covers_acked_fin);
-    tcase_add_test(tc_utils, test_sock_abort_syn_rcvd_rst_covers_syn);
+    tcase_add_test(tc_utils, test_listener_close_resets_parked_syn_rcvd_child);
     tcase_add_test(tc_utils, test_sock_abort_queued_data_rst_at_snd_una);
     tcase_add_test(tc_utils, test_sock_abort_preaccept_listener_stops_listening);
     tcase_add_test(tc_utils, test_sock_abort_after_data_rto_rst_covers_sent_data);
@@ -681,6 +681,17 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_full_table_keeps_open_sockets);
     tcase_add_test(tc_utils, test_tcp_full_table_reclaims_fin_wait_1_with_rst);
     tcase_add_test(tc_utils, test_tcp_full_table_reclaims_last_ack_silently);
+    tcase_add_test(tc_utils, test_accept_parks_child_until_established);
+    tcase_add_test(tc_utils, test_accept_hands_out_parked_close_wait);
+    tcase_add_test(tc_utils, test_accept_drops_reset_parked_child_silently);
+    tcase_add_test(tc_utils, test_accept_parked_child_gives_up_after_synack_cap);
+    tcase_add_test(tc_utils, test_full_table_reclaims_parked_syn_rcvd_child);
+    tcase_add_test(tc_utils, test_parked_child_of_replaced_listener_not_handed_out);
+    tcase_add_test(tc_utils, test_parked_child_not_accepted_is_reset_after_timeout);
+    tcase_add_test(tc_utils, test_accept_reannounces_second_ready_child);
+    tcase_add_test(tc_utils, test_parked_child_handed_out_with_wide_listener_generation);
+    tcase_add_test(tc_utils, test_parked_child_in_freed_slot_retires_old_descriptor);
+    tcase_add_test(tc_utils, test_parked_child_in_held_slot_stays_silent);
     tcase_add_test(tc_utils, test_sock_abort_syn_rcvd_listener_resets_and_stops_listening);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_revert_drains_connection_state);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_close_rto_retransmits_finack);

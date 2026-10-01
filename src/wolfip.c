@@ -171,6 +171,10 @@ struct wolfIP_icmp_packet;
  * counter; a peer that keeps answering with a zero window still consumes
  * the budget - a deliberately finite patience, not infinite. */
 #define TCP_PERSIST_MAXRTX 8U
+/* SYN-ACK retries for a connection accept() holds back until it completes. */
+#ifndef TCP_SYNACK_MAXRTX
+#define TCP_SYNACK_MAXRTX 3U
+#endif
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
 #ifdef IP_MULTICAST
@@ -1266,6 +1270,10 @@ struct tcpsocket {
     uint8_t preaccept_timeout_active;
     uint8_t is_listener;
     uint8_t ack_retry_pending;
+    /* Cloned by accept() but not handed out until its handshake completes. */
+    uint8_t parked;
+    uint8_t parent;
+    uint16_t parent_gen;
     ip4 local_ip, remote_ip;
     uint32_t peer_rwnd;
     uint16_t peer_mss;
@@ -1417,6 +1425,7 @@ static int tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now);
 static void tcp_preaccept_timeout_stop(struct tsocket *t);
 static void tcp_listener_revert_to_listen(struct tsocket *t);
 static void tcp_reclaim_if_full(struct wolfIP *s);
+static void tcp_abort(struct tsocket *ts);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static uint32_t tcp_snd_nxt(struct tsocket *t);
@@ -2959,6 +2968,35 @@ static void sock_fd_retire(struct wolfIP *s, int fd)
 
     if (g)
         sock_gen_next(g);
+}
+
+static struct tsocket *tcp_parked_parent(struct tsocket *t)
+{
+    struct wolfIP *s = t->S;
+    struct tsocket *lsn;
+
+    if (!t->sock.tcp.parked || t->sock.tcp.parent >= MAX_TCPSOCKETS)
+        return NULL;
+    lsn = &s->tcpsockets[t->sock.tcp.parent];
+    if ((s->tcp_gen[t->sock.tcp.parent].gen != t->sock.tcp.parent_gen) ||
+            (lsn->proto != WI_IPPROTO_TCP) || !lsn->sock.tcp.is_listener)
+        return NULL;
+    return lsn;
+}
+
+static struct tsocket *tcp_parked_ready(struct wolfIP *s, struct tsocket *lsn)
+{
+    int i;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+
+        if ((t->proto == WI_IPPROTO_TCP) && (tcp_parked_parent(t) == lsn) &&
+                (t->sock.tcp.state == TCP_ESTABLISHED ||
+                 t->sock.tcp.state == TCP_CLOSE_WAIT))
+            return t;
+    }
+    return NULL;
 }
 
 /* User Callbacks */
@@ -6757,6 +6795,16 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     }
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
+                    if (t->sock.tcp.parked) {
+                        struct tsocket *lsn = tcp_parked_parent(t);
+
+                        if (tcp_preaccept_timeout_start(t, t->S->last_tick) < 0) {
+                            tcp_abort(t);
+                            continue;
+                        }
+                        if (lsn != NULL)
+                            lsn->events |= CB_EVENT_READABLE;
+                    }
                     if (t->sock.tcp.is_listener &&
                             tcp_preaccept_timeout_start(t, t->S->last_tick) < 0) {
                         /* Take the timeout's exit now rather than pin the port. */
@@ -6977,10 +7025,14 @@ static void tcp_rto_cb(void *arg)
     if (ts->sock.tcp.preaccept_timeout_active) {
         if ((ts->sock.tcp.state != TCP_ESTABLISHED &&
              ts->sock.tcp.state != TCP_CLOSE_WAIT) ||
-                !ts->sock.tcp.is_listener) {
+                (!ts->sock.tcp.is_listener && !ts->sock.tcp.parked)) {
             /* The socket left the pinned condition (accepted away, reset,
              * or closed): disarm quietly. */
             tcp_preaccept_timeout_stop(ts);
+            return;
+        }
+        if (ts->sock.tcp.parked) {
+            tcp_abort(ts);
             return;
         }
         /* Never accepted: reclaim the port. The peer may have nothing left to
@@ -6999,7 +7051,9 @@ static void tcp_rto_cb(void *arg)
              * delay the retransmit by a second RTO interval. */
             tcp_ctrl_rto_stop(ts);
         } else {
-            if (ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) {
+            if ((ts->sock.tcp.ctrl_rto_retries >= TCP_CTRL_RTO_MAXRTX) ||
+                    (ts->sock.tcp.parked &&
+                     ts->sock.tcp.ctrl_rto_retries >= TCP_SYNACK_MAXRTX)) {
                 tcp_ctrl_rto_stop(ts);
                 if (ts->sock.tcp.is_listener &&
                         ts->sock.tcp.state == TCP_SYN_RCVD) {
@@ -7747,6 +7801,35 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+        newts = ts->sock.tcp.is_listener ? tcp_parked_ready(s, ts) : NULL;
+        if (newts) {
+            newts->sock.tcp.parked = 0;
+            if (newts->sock.tcp.preaccept_timeout_active)
+                tcp_preaccept_timeout_stop(newts);
+            newts->callback = ts->callback;
+            newts->callback_arg = ts->callback_arg;
+            newts->events = 0;
+            if ((queue_len(&newts->sock.tcp.rxbuf) > 0) ||
+                    (newts->sock.tcp.state == TCP_CLOSE_WAIT))
+                newts->events |= CB_EVENT_READABLE;
+            if (tx_has_writable_space(newts))
+                newts->events |= CB_EVENT_WRITABLE;
+            /* The listener's READABLE is an edge: raise it again for what still waits. */
+            if ((tcp_parked_ready(s, ts) != NULL) ||
+                    (ts->sock.tcp.state == TCP_SYN_RCVD) ||
+                    (ts->sock.tcp.state == TCP_ESTABLISHED) ||
+                    (ts->sock.tcp.state == TCP_CLOSE_WAIT)) {
+                ts->events |= CB_EVENT_READABLE;
+                if (ts->callback)
+                    wolfIP_wake(s);
+            }
+            if (sin) {
+                sin->sin_family = AF_INET;
+                sin->sin_port = ee16(newts->dst_port);
+                sin->sin_addr.s_addr = ee32(newts->remote_ip);
+            }
+            return sock_fd_open(s, MARK_TCP_SOCKET, (int)(newts - s->tcpsockets));
+        }
         if (ts->sock.tcp.is_listener &&
                 (ts->sock.tcp.state == TCP_ESTABLISHED ||
                  ts->sock.tcp.state == TCP_CLOSE_WAIT)) {
@@ -7761,11 +7844,9 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * then EOF, instead of accept() failing on a readable listener
              * and spinning the poll loop until the pre-accept timeout. */
             newts = tcp_new_socket(s);
-            if (!newts) {
-                (void)tcp_send_reset_now(ts);
-                tcp_listener_revert_to_listen(ts);
-                return -1;
-            }
+            /* No slot yet: it waits on the listener, bounded by the pre-accept timeout. */
+            if (!newts)
+                return -WOLFIP_EAGAIN;
             tcp_preaccept_timeout_stop(ts);
             *newts = *ts;
             newts->sock.tcp.is_listener = 0;
@@ -7822,13 +7903,13 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
             return -1;
 
         if (ts->sock.tcp.state == TCP_SYN_RCVD) {
+            /* With no free slot the listener completes the handshake itself. */
             newts = tcp_new_socket(s);
             if (!newts)
-                return -1;
-            /* Don't signal writable until connection fully established */
-            newts->events &= ~CB_EVENT_WRITABLE;
-            newts->callback = ts->callback;
-            newts->callback_arg = ts->callback_arg;
+                return -WOLFIP_EAGAIN;
+            newts->sock.tcp.parked = 1;
+            newts->sock.tcp.parent = (uint8_t)SOCKET_UNMARK(sockfd);
+            newts->sock.tcp.parent_gen = SOCKET_GEN(sockfd);
             newts->local_ip = ts->local_ip;
             newts->bound_local_ip = (ts->bound_local_ip != IPADDR_ANY) ? ts->bound_local_ip : ts->local_ip;
             newts->if_idx = ts->if_idx;
@@ -7870,15 +7951,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
              * advances seq to ISN+1 when the connection is established. */
             newts->sock.tcp.ctrl_rto_retries = 0;
             if (tcp_ctrl_rto_start(newts, s->last_tick) < 0) {
-                newts->callback = NULL;
-                newts->callback_arg = NULL;
                 close_socket(newts);
                 return -WOLFIP_EAGAIN;
-            }
-            if (sin) {
-                sin->sin_family = AF_INET;
-                sin->sin_port = ee16(ts->dst_port);
-                sin->sin_addr.s_addr = ee32(ts->remote_ip);
             }
             /* The accepted connection owns the handshake now (its SYN-ACK
              * lives in the clone's TX FIFO). Revert the listener to the
@@ -7896,7 +7970,8 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 abort_accept_clone(newts);
                 return -1;
             }
-            return sock_fd_open(s, MARK_TCP_SOCKET, (int)(newts - s->tcpsockets));
+            /* Handed out by a later accept() once the handshake completes. */
+            return -WOLFIP_EAGAIN;
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
             return -WOLFIP_EAGAIN;
         }
@@ -9045,6 +9120,26 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
 #endif
     return 0;
 }
+/* Connections accept() never handed out die with their listener. */
+static void tcp_drop_parked(struct wolfIP *s, int sockfd)
+{
+    struct tsocket *lsn;
+    int i;
+
+    if (!s || sockfd < 0 || !IS_SOCKET_TCP(sockfd) ||
+            SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
+        return;
+    lsn = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+    if (!lsn->sock.tcp.is_listener)
+        return;
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+
+        if ((t->proto == WI_IPPROTO_TCP) && (tcp_parked_parent(t) == lsn))
+            tcp_abort(t);
+    }
+}
+
 static int sock_close(struct wolfIP *s, int sockfd)
 {
     if (sockfd < 0)
@@ -9179,6 +9274,7 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
 
     if (sock_fd_stale(s, sockfd))
         return -WOLFIP_EBADF;
+    tcp_drop_parked(s, sockfd);
     ret = sock_close(s, sockfd);
     /* A socket still finishing its FIN exchange keeps its descriptor for
      * wolfIP_sock_abort(); the stack retires it when it frees the slot. */
@@ -9228,20 +9324,24 @@ int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
     ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
     if (ts->sock.tcp.state == TCP_LISTEN || ts->sock.tcp.state == TCP_CLOSED)
         return wolfIP_sock_close(s, sockfd);
+    tcp_drop_parked(s, sockfd);
     tcp_abort(ts);
     sock_fd_retire(s, sockfd);
     return 0;
 }
 
-/* Order in which sockets the application has already closed give up their
- * slot when the table is full; 0 never does. */
-static int tcp_reclaim_rank(const struct tsocket *t)
+/* Order in which sockets the application has already closed, or never got,
+ * give up their slot when the table is full; 0 never does. */
+static int tcp_reclaim_rank(struct tsocket *t)
 {
+    if (t->sock.tcp.parked)
+        return ((t->sock.tcp.state == TCP_SYN_RCVD) ||
+                (tcp_parked_parent(t) == NULL)) ? 2 : 0;
     switch (t->sock.tcp.state) {
         case TCP_TIME_WAIT:
-            return 3;
+            return 4;
         case TCP_FIN_WAIT_2:
-            return 2;
+            return 3;
         case TCP_FIN_WAIT_1:
         case TCP_CLOSING:
         case TCP_LAST_ACK:
@@ -9359,7 +9459,8 @@ int wolfIP_sock_can_read(struct wolfIP *s, int sockfd)
         if (ts->sock.tcp.is_listener &&
                 (ts->sock.tcp.state == TCP_SYN_RCVD ||
                  ts->sock.tcp.state == TCP_ESTABLISHED ||
-                 ts->sock.tcp.state == TCP_CLOSE_WAIT))
+                 ts->sock.tcp.state == TCP_CLOSE_WAIT ||
+                 tcp_parked_ready(s, ts)))
             return 1;
         if (queue_len(&ts->sock.tcp.rxbuf) > 0)
             return 1;

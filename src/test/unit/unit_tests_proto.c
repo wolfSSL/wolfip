@@ -5512,7 +5512,6 @@ START_TEST(test_tcp_listen_accepts_bound_interface)
     const ip4 secondary_ip = 0xC0A80101U;
     const uint16_t listen_port = 23456;
     int listen_fd;
-    int client_fd;
     struct wolfIP_sockaddr_in addr;
     struct tsocket *listener;
     struct tsocket *client;
@@ -5536,9 +5535,9 @@ START_TEST(test_tcp_listen_accepts_bound_interface)
     ck_assert_uint_eq(listener->local_ip, secondary_ip);
     ck_assert_uint_eq(listener->if_idx, TEST_SECOND_IF);
 
-    client_fd = wolfIP_sock_accept(&s, listen_fd, NULL, NULL);
-    ck_assert_int_ge(client_fd, 0);
-    client = &s.tcpsockets[SOCKET_UNMARK(client_fd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_fd, NULL, NULL), -WOLFIP_EAGAIN);
+    client = parked_child(&s, listen_fd);
+    ck_assert_ptr_nonnull(client);
     ck_assert_uint_eq(client->local_ip, secondary_ip);
     ck_assert_uint_eq(client->bound_local_ip, secondary_ip);
     /* After accept(), socket stays in SYN_RCVD until final ACK. */
@@ -5600,7 +5599,6 @@ START_TEST(test_tcp_listen_accepts_any_interface)
     const ip4 secondary_ip = 0xC0A80105U;
     const uint16_t listen_port = 34567;
     int listen_fd;
-    int client_fd;
     struct wolfIP_sockaddr_in addr;
     struct tsocket *listener;
     struct tsocket *client;
@@ -5624,9 +5622,9 @@ START_TEST(test_tcp_listen_accepts_any_interface)
     ck_assert_uint_eq(listener->local_ip, secondary_ip);
     ck_assert_uint_eq(listener->if_idx, TEST_SECOND_IF);
 
-    client_fd = wolfIP_sock_accept(&s, listen_fd, NULL, NULL);
-    ck_assert_int_ge(client_fd, 0);
-    client = &s.tcpsockets[SOCKET_UNMARK(client_fd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_fd, NULL, NULL), -WOLFIP_EAGAIN);
+    client = parked_child(&s, listen_fd);
+    ck_assert_ptr_nonnull(client);
     ck_assert_uint_eq(client->local_ip, secondary_ip);
     /* After accept(), socket stays in SYN_RCVD until final ACK. */
     ck_assert_int_eq(client->sock.tcp.state, TCP_SYN_RCVD);
