@@ -9457,6 +9457,7 @@ int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
             WOLFIP_FILT_LISTENING, s, ts,
             ts->local_ip, ts->src_port, IPADDR_ANY, 0) != 0) {
         ts->sock.tcp.state = TCP_CLOSED;
+        ts->sock.tcp.is_listener = 0;
         return -1;
     }
     return 0;

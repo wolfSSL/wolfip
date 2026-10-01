@@ -805,6 +805,9 @@ START_TEST(test_sock_listen_errors)
     wolfIP_filter_set_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_LISTENING));
     ck_assert_int_eq(wolfIP_sock_listen(&s, tcp_sd, 1), -1);
     ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    /* A rejected listen() must not leave the listener role behind: the
+     * descriptor would otherwise refuse send/recv after a later connect(). */
+    ck_assert_uint_eq(ts->sock.tcp.is_listener, 0);
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_mask(0);
