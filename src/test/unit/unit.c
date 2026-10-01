@@ -434,6 +434,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_zero_wnd_probe_includes_timestamp_when_enabled);
     tcase_add_test(tc_utils, test_tcp_persist_cb_fin_wait_1_sends_probe);
     tcase_add_test(tc_utils, test_tcp_persist_cb_last_ack_subsegment_window_sends_probe);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_closing_sends_probe);
+    tcase_add_test(tc_utils, test_tcp_persist_cb_closing_gives_up_after_maxrtx);
+    tcase_add_test(tc_utils, test_tcp_persist_survives_poll_with_subsegment_window);
     tcase_add_test(tc_utils, test_tcp_persist_start_armed_for_subsegment_window);
     tcase_add_test(tc_utils, test_tcp_persist_cb_fin_wait_1_gives_up_after_maxrtx);
     tcase_add_test(tc_utils, test_tcp_ack_forward_progress_resets_persist_retries);
@@ -474,6 +477,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_poll_offer_and_ack);
     tcase_add_test(tc_utils, test_dhcp_poll_renewing_ack_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_binds_client);
+    tcase_add_test(tc_utils, test_dhcp_poll_rebinding_ack_foreign_server_binds_client);
     tcase_add_test(tc_utils, test_dhcp_poll_reply_wrong_chaddr_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_zero_yiaddr_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_defers_commit_until_ack);

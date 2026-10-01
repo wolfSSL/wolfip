@@ -5002,7 +5002,8 @@ static void tcp_persist_cb(void *arg)
     if (t->sock.tcp.state != TCP_ESTABLISHED &&
             t->sock.tcp.state != TCP_CLOSE_WAIT &&
             t->sock.tcp.state != TCP_FIN_WAIT_1 &&
-            t->sock.tcp.state != TCP_LAST_ACK) {
+            t->sock.tcp.state != TCP_LAST_ACK &&
+            t->sock.tcp.state != TCP_CLOSING) {
         tcp_persist_stop(t);
         return;
     }
@@ -5013,6 +5014,7 @@ static void tcp_persist_cb(void *arg)
     (void)tcp_send_zero_wnd_probe(t);
     t->sock.tcp.persist_retries++;
     if ((t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+             t->sock.tcp.state == TCP_CLOSING ||
              t->sock.tcp.state == TCP_LAST_ACK) &&
             t->sock.tcp.persist_retries >= TCP_PERSIST_MAXRTX) {
         /* Teardown must not be pinnable by a silent peer: release the
@@ -6404,7 +6406,11 @@ static void tcp_input(struct wolfIP *S, unsigned int if_idx,
                     t->sock.tcp.snd_wscale : 0;
                 t->sock.tcp.peer_rwnd = (uint32_t)raw_win << ws_shift;
                 if (t->sock.tcp.peer_rwnd > prev_peer_rwnd) {
-                    if (t->sock.tcp.persist_active)
+                    /* Stop persist only when the window now fits the head
+                     * segment: a sub-segment window leaves the queue
+                     * window-blocked and the probe must keep running. */
+                    if (t->sock.tcp.persist_active &&
+                            tcp_head_unsent_seg_len(t) <= t->sock.tcp.peer_rwnd)
                         tcp_persist_stop(t);
                     t->events |= CB_EVENT_WRITABLE;
                 }
@@ -10355,8 +10361,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
                 return -1;
             val = DHCP_OPT_data_to_u32((struct dhcp_option *)data);
             /* Reject ACK from a server other than the one we committed to
-             * during the OFFER phase, wherever the option appears. */
-            if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip)
+             * during the OFFER phase, wherever the option appears. While
+             * REBINDING the request is a broadcast and any server may
+             * reconfirm the in-use address (RFC 2131 4.3.5): accept a
+             * foreign server ID there, the commit below records it. */
+            if (s->dhcp_server_ip != 0 && val != s->dhcp_server_ip &&
+                    s->dhcp_state != DHCP_REBINDING)
                 return -1;
             cand_server_ip = val;
             saw_server_id = 1;
@@ -12978,8 +12988,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                 ts->sock.tcp.ack_retry_pending = 0;
         }
         in_flight = ts->sock.tcp.bytes_in_flight;
-        if (ts->sock.tcp.persist_active && (ts->sock.tcp.peer_rwnd > 0 ||
-                    !tcp_has_pending_unsent_payload(ts)))
+        if (ts->sock.tcp.persist_active &&
+                tcp_head_unsent_seg_len(ts) <= ts->sock.tcp.peer_rwnd)
             tcp_persist_stop(ts);
         desc = fifo_peek(&ts->sock.tcp.txbuf);
         while (desc && send_guard++ < send_budget) {
@@ -13140,7 +13150,8 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                         if (next_desc == desc)
                             break;
                         desc = next_desc;
-                        if (ts->sock.tcp.persist_active && ts->sock.tcp.peer_rwnd > 0)
+                        if (ts->sock.tcp.persist_active &&
+                                tcp_head_unsent_seg_len(ts) <= ts->sock.tcp.peer_rwnd)
                             tcp_persist_stop(ts);
                     }
                 } else {

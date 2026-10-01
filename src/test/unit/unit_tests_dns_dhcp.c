@@ -6730,6 +6730,54 @@ START_TEST(test_dhcp_poll_rebinding_ack_binds_client)
 }
 END_TEST
 
+/* A rebind request is a broadcast: a server other than the one committed
+ * during the OFFER phase may legitimately reconfirm the in-use address.
+ * The server-ID identity check must not reject that ACK, or the skip-DAD
+ * rebind path is unreachable for exactly the peers rebind exists for. */
+START_TEST(test_dhcp_poll_rebinding_ack_foreign_server_binds_client)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct tsocket *ts;
+    struct ipconf *primary;
+    uint32_t old_server_ip = 0x0A000001U;
+    uint32_t new_server_ip = 0x0A000002U;
+    uint32_t client_ip = 0x0A000064U;
+    uint32_t router_ip = 0x0A000002U;
+    uint32_t dns_ip = 0x08080808U;
+    uint32_t mask = 0xFFFFFF00U;
+    int ret;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    s.dhcp_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dhcp_udp_sd, 0);
+    ts = &s.udpsockets[SOCKET_UNMARK(s.dhcp_udp_sd)];
+
+    s.last_tick = 1000U;
+    s.dhcp_state = DHCP_REBINDING;
+    s.dhcp_xid = 0x12345678U;
+    s.dhcp_server_ip = old_server_ip;
+    primary->ip = client_ip;
+    build_dhcp_ack_msg(&msg, new_server_ip, mask, router_ip, dns_ip);
+    msg.xid = ee32(s.dhcp_xid);
+    msg.yiaddr = ee32(client_ip);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    ret = dhcp_poll(&s);
+
+    /* Same-address reconfirmation from the new server: skip DAD and bind,
+     * committing the responding server. */
+    ck_assert_int_eq(ret, 0);
+    ck_assert_uint_eq(s.dhcp_state, DHCP_BOUND);
+    ck_assert_uint_eq(primary->ip, client_ip);
+    ck_assert_uint_eq(s.dhcp_server_ip, new_server_ip);
+}
+END_TEST
+
 START_TEST(test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind)
 {
     struct wolfIP s;
