@@ -1568,6 +1568,8 @@ Suite *wolf_suite(void)
 #if WOLFIP_ENABLE_LOOPBACK
     tcase_add_test(tc_core, test_poll_returns_zero_with_loopback_frame_queued);
 #endif
+    tcase_add_test(tc_core, test_poll_rebased_timer_stays_within_max_wait);
+    tcase_add_test(tc_core, test_poll_by_rebased_deadline_keeps_earlier_one);
     tcase_add_test(tc_core, test_poll_returns_zero_while_flush_events_undelivered);
     tcase_add_test(tc_core, test_wake_cb_on_socket_tx);
     tcase_add_test(tc_core, test_wake_cb_on_register_with_pending_events);

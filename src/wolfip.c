@@ -1841,10 +1841,11 @@ static void wolfIP_wake(struct wolfIP *s)
         s->wake_cb(s->wake_arg);
 }
 
-/* Lowers the deadline the current wolfIP_poll() returns. */
+/* Lowers the deadline the current wolfIP_poll() returns, comparing in the
+ * 32-bit domain tick_expired() uses, since rebased timers are 32-bit values. */
 static void wolfIP_poll_by(struct wolfIP *s, uint64_t when)
 {
-    if (when < s->poll_next_at)
+    if ((int32_t)((uint32_t)when - (uint32_t)s->poll_next_at) < 0)
         s->poll_next_at = when;
 }
 
