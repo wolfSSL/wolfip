@@ -676,6 +676,11 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_close_repeated_in_last_ack_keeps_socket);
     tcase_add_test(tc_utils, test_sock_close_repeated_in_time_wait_keeps_socket);
     tcase_add_test(tc_utils, test_sock_abort_after_close_stale_once_slot_reused);
+    tcase_add_test(tc_utils, test_tcp_full_table_reclaims_time_wait_first);
+    tcase_add_test(tc_utils, test_tcp_full_table_reclaims_fin_wait_2_with_rst);
+    tcase_add_test(tc_utils, test_tcp_full_table_keeps_open_sockets);
+    tcase_add_test(tc_utils, test_tcp_full_table_reclaims_fin_wait_1_with_rst);
+    tcase_add_test(tc_utils, test_tcp_full_table_reclaims_last_ack_silently);
     tcase_add_test(tc_utils, test_sock_abort_syn_rcvd_listener_resets_and_stops_listening);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_revert_drains_connection_state);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_close_rto_retransmits_finack);

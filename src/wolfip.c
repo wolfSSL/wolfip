@@ -1416,6 +1416,7 @@ static void tcp_fin_wait_2_timeout_stop(struct tsocket *t);
 static int tcp_preaccept_timeout_start(struct tsocket *t, uint64_t now);
 static void tcp_preaccept_timeout_stop(struct tsocket *t);
 static void tcp_listener_revert_to_listen(struct tsocket *t);
+static void tcp_reclaim_if_full(struct wolfIP *s);
 static int tcp_ctrl_state_needs_rto(const struct tsocket *t);
 static int tcp_has_pending_unsent_payload(struct tsocket *t);
 static uint32_t tcp_snd_nxt(struct tsocket *t);
@@ -3745,6 +3746,7 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
     struct tsocket *t;
     int i;
     int pick;
+    tcp_reclaim_if_full(s);
     pick = tcp_free_slot(s);
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         t = &s->tcpsockets[i];
@@ -9186,19 +9188,8 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return ret;
 }
 
-int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
+static void tcp_abort(struct tsocket *ts)
 {
-    struct tsocket *ts;
-
-    if (!s || sockfd < 0 || !IS_SOCKET_TCP(sockfd))
-        return -WOLFIP_EINVAL;
-    if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
-        return -WOLFIP_EINVAL;
-    if (sock_fd_stale(s, sockfd))
-        return -WOLFIP_EBADF;
-    ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
-    if (ts->sock.tcp.state == TCP_LISTEN || ts->sock.tcp.state == TCP_CLOSED)
-        return wolfIP_sock_close(s, sockfd);
     switch (ts->sock.tcp.state) {
         case TCP_SYN_RCVD:
         case TCP_ESTABLISHED:
@@ -9212,18 +9203,74 @@ int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
     }
     ts->sock.tcp.state = TCP_CLOSED;
     (void)wolfIP_filter_notify_socket_event(
-        WOLFIP_FILT_CLOSED, s, ts,
+        WOLFIP_FILT_CLOSED, ts->S, ts,
         ts->local_ip, ts->src_port, ts->remote_ip, ts->dst_port);
     if (ts->sock.tcp.is_listener) {
         (void)wolfIP_filter_notify_socket_event(
-            WOLFIP_FILT_STOP_LISTENING, s, ts,
+            WOLFIP_FILT_STOP_LISTENING, ts->S, ts,
             ts->local_ip, ts->src_port, IPADDR_ANY, 0);
     }
     ts->callback = NULL;
     ts->callback_arg = NULL;
     close_socket(ts);
+}
+
+int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
+{
+    struct tsocket *ts;
+
+    if (!s || sockfd < 0 || !IS_SOCKET_TCP(sockfd))
+        return -WOLFIP_EINVAL;
+    if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
+        return -WOLFIP_EINVAL;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
+    ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+    if (ts->sock.tcp.state == TCP_LISTEN || ts->sock.tcp.state == TCP_CLOSED)
+        return wolfIP_sock_close(s, sockfd);
+    tcp_abort(ts);
     sock_fd_retire(s, sockfd);
     return 0;
+}
+
+/* Order in which sockets the application has already closed give up their
+ * slot when the table is full; 0 never does. */
+static int tcp_reclaim_rank(const struct tsocket *t)
+{
+    switch (t->sock.tcp.state) {
+        case TCP_TIME_WAIT:
+            return 3;
+        case TCP_FIN_WAIT_2:
+            return 2;
+        case TCP_FIN_WAIT_1:
+        case TCP_CLOSING:
+        case TCP_LAST_ACK:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static void tcp_reclaim_if_full(struct wolfIP *s)
+{
+    struct tsocket *victim = NULL;
+    int best = 0;
+    int i;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+        int rank;
+
+        if (t->proto == 0)
+            return;
+        rank = tcp_reclaim_rank(t);
+        if (rank > best) {
+            best = rank;
+            victim = t;
+        }
+    }
+    if (victim)
+        tcp_abort(victim);
 }
 
 int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *addr,
