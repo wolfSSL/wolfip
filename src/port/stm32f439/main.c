@@ -577,6 +577,8 @@ static void echo_cb(int fd, uint16_t event, void *arg)
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) &&
         (client_fd == -1)) {
         client_fd = wolfIP_sock_accept(s, listen_fd, NULL, NULL);
+        if (client_fd < 0)
+            client_fd = -1;
         if (client_fd > 0) {
             printf("Echo: client connected (fd=%d)\n", client_fd);
             wolfIP_register_callback(s, client_fd, echo_cb, s);

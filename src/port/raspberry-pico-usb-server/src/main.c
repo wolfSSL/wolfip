@@ -189,6 +189,8 @@ static void telnet_cb(int fd, uint16_t event, void *arg)
         char ipaddr[16];
         char welcome_msg[32];
         tel_c = wolfIP_sock_accept(IPStack, tel_s, (struct wolfIP_sockaddr*)&addr, &socklen);
+        if (tel_c < 0)
+            tel_c = -1;
         if (tel_c > 0) {
             iptoa(ee32(addr.sin_addr.s_addr), ipaddr);
             snprintf(welcome_msg, sizeof(welcome_msg), "Welcome %s!\n", ipaddr);
