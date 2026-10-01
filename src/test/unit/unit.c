@@ -809,6 +809,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_rescans_after_clearing_stale_sack);
     tcase_add_test(tc_utils, test_tcp_mark_unsacked_ignores_zero_ip_len_unsent_ack_only_desc);
     tcase_add_test(tc_utils, test_flush_tcp_tx_pure_ack_keeps_unacked_data_desc);
+    tcase_add_test(tc_utils, test_flush_tcp_tx_popped_tail_wrap_gap_no_phantom_frames);
     tcase_add_test(tc_utils, test_tcp_ack_parked_zero_desc_keeps_rtt_sample);
     tcase_add_test(tc_utils, test_flush_tcp_tx_sends_pure_ack_behind_window_blocked_data);
     tcase_add_test(tc_utils, test_flush_tcp_tx_fin_ack_stays_behind_window_blocked_data);

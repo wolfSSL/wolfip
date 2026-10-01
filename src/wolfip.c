@@ -13087,8 +13087,12 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     if (size == IP_HEADER_LEN + (uint32_t)(tcp->hlen >> 2)) {
                         if (desc == fifo_peek(&ts->sock.tcp.txbuf)) {
                             /* Cursor at the tail: fifo_pop() removes exactly
-                             * this descriptor. */
+                             * this descriptor. Resume from the new peek: the
+                             * popped pointer is stale, and when the pop
+                             * clears h_wrap, fifo_next() from it lands in the
+                             * unused wrap gap. */
                             desc = fifo_pop(&ts->sock.tcp.txbuf);
+                            desc = fifo_peek(&ts->sock.tcp.txbuf);
                         } else {
                             /* fifo_pop() only removes the tail, so popping
                              * here would discard the unacked data descriptor

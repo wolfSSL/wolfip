@@ -6975,6 +6975,75 @@ START_TEST(test_flush_tcp_tx_pure_ack_keeps_unacked_data_desc)
 }
 END_TEST
 
+/* A pure ACK at the FIFO tail whose raw end lands on the wrap boundary:
+ * the pop clears h_wrap, so the walk must resume from the new peek, not
+ * the just-popped (stale) descriptor - fifo_next() from it would wrap to
+ * the zeroed head region and send phantom frames. */
+START_TEST(test_flush_tcp_tx_popped_tail_wrap_gap_no_phantom_frames)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    uint8_t *tx;
+    uint32_t t_pos;
+    uint32_t desc_total;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TXBUF_SIZE;
+    ts->sock.tcp.peer_rwnd = TXBUF_SIZE;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* One pure ACK, then rotate it (4-aligned) so its raw end lands 3 bytes
+     * short of the buffer end: the push-wrap bookkeeping leaves h_wrap at
+     * the raw end and head at 0, so the pop clears h_wrap. The stale
+     * cursor's fifo_next() then lands in the wrap gap past the aligned
+     * end, where it reads a descriptor that is not there. */
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 0, TCP_FLAG_ACK), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc_total = sizeof(struct pkt_desc) + desc->len;
+    ck_assert_uint_eq(desc_total % 4, 2); /* Ethernet geometry: 2-byte gap */
+    t_pos = TXBUF_SIZE - desc_total - 6; /* 4-aligned, gap of 4 bytes after */
+    tx = ts->txmem;
+    memmove(tx + t_pos, tx, desc_total);
+    memset(tx, 0, t_pos);
+    ((struct pkt_desc *)(tx + t_pos))->pos = t_pos;
+    ts->sock.tcp.txbuf.tail = t_pos;
+    ts->sock.tcp.txbuf.h_wrap = t_pos + desc_total;
+    ts->sock.tcp.txbuf.head = 0;
+
+    last_frame_sent_count = 0;
+    (void)wolfIP_poll(&s, 200);
+
+    /* The ACK goes out exactly once; a stale-cursor walk into the zeroed
+     * head region would emit phantom frames. */
+    ck_assert_uint_eq(last_frame_sent_count, 1);
+    ck_assert_int_eq(fifo_is_empty(&ts->sock.tcp.txbuf), 1);
+}
+END_TEST
+
 /* Regression: the tcp_ack() zero-length drain pops the oldest descriptor,
  * so a zero-length descriptor parked behind a just-acked data descriptor
  * must not be popped there (that would discard the data descriptor and lose
