@@ -2026,3 +2026,167 @@ START_TEST(test_notify_loopback_null_stack_no_crash)
     wolfIP_notify_loopback_space_available(NULL);
 }
 END_TEST
+
+START_TEST(test_sock_fd_reissued_slot_rejects_old_descriptor)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    int old_sd, new_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    old_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_eq(old_sd, MARK_TCP_SOCKET | 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, old_sd), 0);
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), SOCKET_UNMARK(old_sd));
+    ck_assert_int_ne(new_sd, old_sd);
+
+    wolfIP_register_callback(&s, new_sd, test_socket_cb, (void *)0x42);
+    wolfIP_register_callback(&s, old_sd, NULL, NULL);
+    ck_assert_ptr_eq(s.tcpsockets[0].callback, test_socket_cb);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(8080);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, old_sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), -WOLFIP_EBADF);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, old_sd, 1), -WOLFIP_EBADF);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, old_sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(wolfIP_sock_close(&s, old_sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(s.tcpsockets[0].proto, WI_IPPROTO_TCP);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, new_sd, (struct wolfIP_sockaddr *)&sin,
+            sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, new_sd, 1), 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, new_sd), 0);
+}
+END_TEST
+
+START_TEST(test_sock_fd_slot_freed_by_stack_gets_new_generation)
+{
+    struct wolfIP s;
+    int old_sd, new_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* The stack frees the slot while the application still holds old_sd. */
+    old_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(old_sd, 0);
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(old_sd)]);
+    take_tcp_slots_except(&s, SOCKET_UNMARK(old_sd));
+    new_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), SOCKET_UNMARK(old_sd));
+    ck_assert_int_ne(new_sd, old_sd);
+    ck_assert_int_eq(wolfIP_sock_close(&s, old_sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(new_sd)].proto, WI_IPPROTO_TCP);
+
+    /* Closing a descriptor whose slot was freed but not reissued still works. */
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(new_sd)]);
+    ck_assert_int_eq(wolfIP_sock_close(&s, new_sd), 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, new_sd), -WOLFIP_EBADF);
+}
+END_TEST
+
+START_TEST(test_sock_fd_callback_carries_generation)
+{
+    struct wolfIP s;
+    int sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ne(sd, MARK_UDP_SOCKET | 0);
+    wolfIP_register_callback(&s, sd, test_socket_cb, NULL);
+    s.udpsockets[SOCKET_UNMARK(sd)].events = CB_EVENT_READABLE;
+    socket_cb_calls = 0;
+    socket_cb_last_fd = -1;
+    (void)wolfIP_poll(&s, 100);
+    ck_assert_int_eq(socket_cb_calls, 1);
+    ck_assert_int_eq(socket_cb_last_fd, sd);
+}
+END_TEST
+
+START_TEST(test_sock_fd_internal_reuse_retires_open_descriptor)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *t;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* The stack frees the slot and reuses it for a socket of its own. */
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(sd, 0);
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(sd)]);
+    take_tcp_slots_except(&s, SOCKET_UNMARK(sd));
+    t = tcp_new_socket(&s);
+    ck_assert_ptr_eq(t, &s.tcpsockets[SOCKET_UNMARK(sd)]);
+    t->sock.tcp.state = TCP_ESTABLISHED;
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(t->proto, WI_IPPROTO_TCP);
+}
+END_TEST
+
+START_TEST(test_sock_fd_held_slot_is_reused_last)
+{
+    struct wolfIP s;
+    int held, other;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    /* The stack frees a slot the application still holds a descriptor to. */
+    held = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(held)]);
+    other = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ne(SOCKET_UNMARK(other), SOCKET_UNMARK(held));
+    ck_assert_int_eq(wolfIP_sock_close(&s, held), 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, other), 0);
+}
+END_TEST
+
+START_TEST(test_sock_fd_reused_held_slot_drops_old_callback)
+{
+    struct wolfIP s;
+    int held, sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+
+    held = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(held)]);
+    /* The descriptor is not stale yet, so this lands in the free slot. */
+    wolfIP_register_callback(&s, held, test_socket_cb, (void *)0x42);
+    take_tcp_slots_except(&s, SOCKET_UNMARK(held));
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_eq(SOCKET_UNMARK(sd), SOCKET_UNMARK(held));
+    ck_assert_ptr_null(s.tcpsockets[SOCKET_UNMARK(sd)].callback);
+    ck_assert_ptr_null(s.tcpsockets[SOCKET_UNMARK(sd)].callback_arg);
+}
+END_TEST
+
+START_TEST(test_sock_fd_generation_wraps_positive)
+{
+    struct wolfIP s;
+    int sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.tcp_gen[0].gen = SOCKET_GEN_MASK;
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_gt(sd, 0);
+    ck_assert_uint_eq(SOCKET_GEN(sd), SOCKET_GEN_MASK);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), 0);
+    ck_assert_uint_eq(s.tcp_gen[0].gen, 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EBADF);
+}
+END_TEST

@@ -1304,6 +1304,16 @@ struct udpsocket {
 #endif
 };
 
+/* Generation of a socket slot, carried in bits 16-30 of its descriptors. */
+struct sock_gen {
+    uint16_t gen;
+    uint8_t open;
+};
+#define SOCKET_GEN_SHIFT 16
+#define SOCKET_GEN_MASK 0x7FFFU
+#define SOCKET_GEN(fd) \
+    ((uint16_t)(((unsigned int)(fd) >> SOCKET_GEN_SHIFT) & SOCKET_GEN_MASK))
+
 struct tsocket {
     union tsocket_sock {
         struct tcpsocket tcp;
@@ -1547,6 +1557,15 @@ struct wolfIP {
     struct rawsocket rawsockets[WOLFIP_MAX_RAWSOCKETS];
 #if WOLFIP_PACKET_SOCKETS
     struct packetsocket packetsockets[WOLFIP_MAX_PACKETSOCKETS];
+#endif
+#endif
+    struct sock_gen tcp_gen[MAX_TCPSOCKETS];
+    struct sock_gen udp_gen[MAX_UDPSOCKETS];
+    struct sock_gen icmp_gen[MAX_ICMPSOCKETS];
+#if WOLFIP_RAWSOCKETS
+    struct sock_gen raw_gen[WOLFIP_MAX_RAWSOCKETS];
+#if WOLFIP_PACKET_SOCKETS
+    struct sock_gen packet_gen[WOLFIP_MAX_PACKETSOCKETS];
 #endif
 #endif
 #ifdef IP_MULTICAST
@@ -2856,6 +2875,91 @@ static void wolfIP_send_port_unreachable(struct wolfIP *s, unsigned int if_idx,
 }
 #endif
 
+static struct sock_gen *sock_gen_slot(struct wolfIP *s, int mark, int idx)
+{
+    if (idx < 0)
+        return NULL;
+    if (mark == MARK_TCP_SOCKET)
+        return (idx < MAX_TCPSOCKETS) ? &s->tcp_gen[idx] : NULL;
+    if (mark == MARK_UDP_SOCKET)
+        return (idx < MAX_UDPSOCKETS) ? &s->udp_gen[idx] : NULL;
+    if (mark == MARK_ICMP_SOCKET)
+        return (idx < MAX_ICMPSOCKETS) ? &s->icmp_gen[idx] : NULL;
+#if WOLFIP_RAWSOCKETS
+    if (mark == MARK_RAW_SOCKET)
+        return (idx < WOLFIP_MAX_RAWSOCKETS) ? &s->raw_gen[idx] : NULL;
+#if WOLFIP_PACKET_SOCKETS
+    if (mark == MARK_PACKET_SOCKET)
+        return (idx < WOLFIP_MAX_PACKETSOCKETS) ? &s->packet_gen[idx] : NULL;
+#endif
+#endif
+    return NULL;
+}
+
+static struct sock_gen *sock_gen_of_fd(struct wolfIP *s, int fd)
+{
+    int mark;
+
+    if (!s || fd < 0)
+        return NULL;
+    if (IS_SOCKET_TCP(fd))
+        mark = MARK_TCP_SOCKET;
+    else if (IS_SOCKET_UDP(fd))
+        mark = MARK_UDP_SOCKET;
+    else if (IS_SOCKET_ICMP(fd))
+        mark = MARK_ICMP_SOCKET;
+    else if (IS_SOCKET_RAW(fd))
+        mark = MARK_RAW_SOCKET;
+    else if (IS_SOCKET_PACKET(fd))
+        mark = MARK_PACKET_SOCKET;
+    else
+        return NULL;
+    return sock_gen_slot(s, mark, SOCKET_UNMARK(fd));
+}
+
+static void sock_gen_next(struct sock_gen *g)
+{
+    g->gen = (uint16_t)((g->gen + 1U) & SOCKET_GEN_MASK);
+    g->open = 0;
+}
+
+static int sock_fd_make(struct wolfIP *s, int mark, int idx)
+{
+    struct sock_gen *g = sock_gen_slot(s, mark, idx);
+    int gen = g ? g->gen : 0;
+
+    return idx | mark | (gen << SOCKET_GEN_SHIFT);
+}
+
+/* A slot freed by the stack while its descriptor was still open gets a new
+ * generation when it is handed out again. */
+static int sock_fd_open(struct wolfIP *s, int mark, int idx)
+{
+    struct sock_gen *g = sock_gen_slot(s, mark, idx);
+
+    if (g) {
+        if (g->open)
+            sock_gen_next(g);
+        g->open = 1;
+    }
+    return sock_fd_make(s, mark, idx);
+}
+
+static int sock_fd_stale(struct wolfIP *s, int fd)
+{
+    struct sock_gen *g = sock_gen_of_fd(s, fd);
+
+    return g && (g->gen != SOCKET_GEN(fd));
+}
+
+static void sock_fd_retire(struct wolfIP *s, int fd)
+{
+    struct sock_gen *g = sock_gen_of_fd(s, fd);
+
+    if (g)
+        sock_gen_next(g);
+}
+
 /* User Callbacks */
 void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
                               void *arg)
@@ -2864,7 +2968,7 @@ void wolfIP_register_callback(struct wolfIP *s, int sock_fd, tsocket_cb cb,
     uint16_t pending = 0;
     if (!s)
         return;
-    if (sock_fd < 0)
+    if (sock_fd < 0 || sock_fd_stale(s, sock_fd))
         return;
     if (IS_SOCKET_TCP(sock_fd)) {
         if (SOCKET_UNMARK(sock_fd) >= MAX_TCPSOCKETS)
@@ -3243,7 +3347,7 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
          * for any other (e.g. connected) socket that still has no local
          * address while DHCP is running. */
         int is_dhcp = (s->dhcp_udp_sd > 0) &&
-                ((uint32_t)(MARK_UDP_SOCKET | i) == (uint32_t)s->dhcp_udp_sd);
+                (sock_fd_make(s, MARK_UDP_SOCKET, i) == s->dhcp_udp_sd);
         /* Ingress matching uses the bound address, not the egress address
          * selected into local_ip at bind time: a wildcard (INADDR_ANY)
          * bind must receive datagrams addressed to any local address
@@ -3619,15 +3723,41 @@ static uint32_t tcp_initial_ssthresh(uint32_t peer_rwnd)
     return (peer_rwnd < TXBUF_SIZE) ? peer_rwnd : TXBUF_SIZE;
 }
 
+/* A free slot whose descriptor the application still holds is taken last. */
+static int tcp_free_slot(struct wolfIP *s)
+{
+    int i;
+    int held = -1;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        if (s->tcpsockets[i].proto != 0)
+            continue;
+        if (!s->tcp_gen[i].open)
+            return i;
+        if (held < 0)
+            held = i;
+    }
+    return held;
+}
+
 static struct tsocket *tcp_new_socket(struct wolfIP *s)
 {
     struct tsocket *t;
     int i;
+    int pick;
+    pick = tcp_free_slot(s);
     for (i = 0; i < MAX_TCPSOCKETS; i++) {
         t = &s->tcpsockets[i];
-        if (t->proto == 0) {
+        if (i == pick) {
+            /* A descriptor still open on a slot the stack freed is stale now. */
+            if (s->tcp_gen[i].open)
+                sock_gen_next(&s->tcp_gen[i]);
             t->proto = WI_IPPROTO_TCP;
             t->S = s;
+            /* A callback registered through a stale descriptor may sit in a free slot. */
+            t->callback = NULL;
+            t->callback_arg = NULL;
+            t->events = 0;
             t->if_idx = 0;
             t->sock.tcp.state = TCP_CLOSED;
             t->sock.tcp.rto = TCP_RTO_MIN_MS;
@@ -7286,18 +7416,18 @@ int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
         ts = tcp_new_socket(s);
         if (!ts)
             return -1;
-        return (ts - s->tcpsockets) | MARK_TCP_SOCKET;
+        return sock_fd_open(s, MARK_TCP_SOCKET, (int)(ts - s->tcpsockets));
     } else if (type == IPSTACK_SOCK_DGRAM) {
         if (protocol == 0 || protocol == WI_IPPROTO_UDP) {
             ts = udp_new_socket(s);
             if (!ts)
                 return -1;
-            return (ts - s->udpsockets) | MARK_UDP_SOCKET;
+            return sock_fd_open(s, MARK_UDP_SOCKET, (int)(ts - s->udpsockets));
         } else if (protocol == WI_IPPROTO_ICMP) {
             ts = icmp_new_socket(s);
             if (!ts)
                 return -1;
-            return (ts - s->icmpsockets) | MARK_ICMP_SOCKET;
+            return sock_fd_open(s, MARK_ICMP_SOCKET, (int)(ts - s->icmpsockets));
         } else {
             return -1;
         }
@@ -7313,7 +7443,7 @@ int wolfIP_sock_socket(struct wolfIP *s, int domain, int type, int protocol)
         rs = raw_new_socket(s, protocol, hdrincl);
         if (!rs)
             return -1;
-        return (int)((rs - s->rawsockets) | MARK_RAW_SOCKET);
+        return sock_fd_open(s, MARK_RAW_SOCKET, (int)(rs - s->rawsockets));
     }
 #endif
     return -1;
@@ -7325,7 +7455,7 @@ packet_try:
         ps = packet_new_socket(s, protocol);
         if (!ps)
             return -1;
-        return (int)((ps - s->packetsockets) | MARK_PACKET_SOCKET);
+        return sock_fd_open(s, MARK_PACKET_SOCKET, (int)(ps - s->packetsockets));
     }
 #endif
     return -1;
@@ -7372,6 +7502,8 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
     struct tsocket *ts;
     const struct wolfIP_sockaddr_in *sin;
     unsigned int if_idx;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if ((!addr)|| (sockfd < 0))
         return -WOLFIP_EINVAL;
     if (!s)
@@ -7603,6 +7735,9 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
     if (!s)
         return -WOLFIP_EINVAL;
 
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
+
     if (addrlen)
         *addrlen = sizeof(struct wolfIP_sockaddr_in);
 
@@ -7679,7 +7814,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 abort_accept_clone(newts);
                 return -1;
             }
-            return (newts - s->tcpsockets) | MARK_TCP_SOCKET;
+            return sock_fd_open(s, MARK_TCP_SOCKET, (int)(newts - s->tcpsockets));
         }
         if ((ts->sock.tcp.state != TCP_SYN_RCVD) && (ts->sock.tcp.state != TCP_LISTEN))
             return -1;
@@ -7759,7 +7894,7 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 abort_accept_clone(newts);
                 return -1;
             }
-            return (newts - s->tcpsockets) | MARK_TCP_SOCKET;
+            return sock_fd_open(s, MARK_TCP_SOCKET, (int)(newts - s->tcpsockets));
         } else if (ts->sock.tcp.state == TCP_LISTEN) {
             return -WOLFIP_EAGAIN;
         }
@@ -7778,6 +7913,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
 #if WOLFIP_RAWSOCKETS
     struct wolfIP_ip_packet *rip;
 #endif
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     tcp = (struct wolfIP_tcp_seg *)frame;
     udp = (struct wolfIP_udp_datagram *)frame;
     icmp = (struct wolfIP_icmp_packet *)frame;
@@ -8236,6 +8373,8 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
     struct wolfIP_udp_datagram *udp;
     struct wolfIP_icmp_packet *icmp;
     struct tsocket *ts;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     (void)flags;
 
     if (sockfd < 0)
@@ -8614,6 +8753,8 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
                            const void *optval, socklen_t optlen)
 {
     struct tsocket *ts;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
 #if WOLFIP_RAWSOCKETS
     if (IS_SOCKET_RAW(sockfd)) {
         struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
@@ -8758,6 +8899,8 @@ int wolfIP_sock_setsockopt(struct wolfIP *s, int sockfd, int level, int optname,
 int wolfIP_sock_get_recv_ttl(struct wolfIP *s, int sockfd, int *ttl)
 {
     struct tsocket *ts;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
 #if WOLFIP_RAWSOCKETS
     if (IS_SOCKET_RAW(sockfd)) {
         struct rawsocket *rs = wolfIP_rawsocket_from_fd(s, sockfd);
@@ -8791,6 +8934,8 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
     struct packetsocket *ps = NULL;
 #endif
 
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
 #if WOLFIP_RAWSOCKETS
@@ -8898,7 +9043,7 @@ int wolfIP_sock_getsockopt(struct wolfIP *s, int sockfd, int level, int optname,
 #endif
     return 0;
 }
-int wolfIP_sock_close(struct wolfIP *s, int sockfd)
+static int sock_close(struct wolfIP *s, int sockfd)
 {
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
@@ -9026,6 +9171,18 @@ int wolfIP_sock_close(struct wolfIP *s, int sockfd)
     return 0;
 }
 
+int wolfIP_sock_close(struct wolfIP *s, int sockfd)
+{
+    int ret;
+
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
+    ret = sock_close(s, sockfd);
+    if (ret == 0)
+        sock_fd_retire(s, sockfd);
+    return ret;
+}
+
 int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
 {
     struct tsocket *ts;
@@ -9034,6 +9191,8 @@ int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
         return -WOLFIP_EINVAL;
     if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
         return -WOLFIP_EINVAL;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
     if (ts->sock.tcp.state == TCP_LISTEN || ts->sock.tcp.state == TCP_CLOSED)
         return wolfIP_sock_close(s, sockfd);
@@ -9060,6 +9219,7 @@ int wolfIP_sock_abort(struct wolfIP *s, int sockfd)
     ts->callback = NULL;
     ts->callback_arg = NULL;
     close_socket(ts);
+    sock_fd_retire(s, sockfd);
     return 0;
 }
 
@@ -9069,6 +9229,8 @@ int wolfIP_sock_getsockname(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
     struct tsocket *ts;
     struct wolfIP_sockaddr_in *sin;
 
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if ((!addr) || (sockfd < 0))
         return -WOLFIP_EINVAL;
 
@@ -9132,6 +9294,8 @@ int wolfIP_sock_can_read(struct wolfIP *s, int sockfd)
 {
     struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
 
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if (IS_SOCKET_TCP(sockfd)) {
         if (!ts)
             return -WOLFIP_EINVAL;
@@ -9181,6 +9345,8 @@ int wolfIP_sock_can_write(struct wolfIP *s, int sockfd)
 {
     struct tsocket *ts = wolfIP_socket_from_fd(s, sockfd);
 
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if (IS_SOCKET_TCP(sockfd)) {
         if (!ts)
             return -WOLFIP_EINVAL;
@@ -9269,6 +9435,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         return -WOLFIP_EINVAL;
 #endif
 
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
 
@@ -9474,6 +9642,8 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
 int wolfIP_sock_listen(struct wolfIP *s, int sockfd, int backlog)
 {
     struct tsocket *ts;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     (void)backlog;
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
@@ -9505,6 +9675,8 @@ int wolfIP_sock_getpeername(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr
 {
     struct tsocket *ts;
     struct wolfIP_sockaddr_in *sin = (struct wolfIP_sockaddr_in *)addr;
+    if (sock_fd_stale(s, sockfd))
+        return -WOLFIP_EBADF;
     if (sockfd < 0)
         return -WOLFIP_EINVAL;
     if (!s)
@@ -12841,7 +13013,8 @@ static void handle_timers(struct wolfIP *s, uint64_t now)
     }
 }
 
-static void dispatch_events(struct tsocket *socks, int count, uint32_t mark)
+static void dispatch_events(struct wolfIP *s, struct tsocket *socks, int count,
+        int mark)
 {
     int i;
     for (i = 0; i < count; i++) {
@@ -12849,7 +13022,8 @@ static void dispatch_events(struct tsocket *socks, int count, uint32_t mark)
         if (ts->callback && ts->events) {
             uint16_t events = ts->events;
             ts->events = 0;
-            ts->callback(i | mark, events, ts->callback_arg);
+            ts->callback(sock_fd_make(s, mark, i), events,
+                    ts->callback_arg);
         }
     }
 }
@@ -12871,7 +13045,7 @@ static void handle_socket_callbacks(struct wolfIP *s)
             uint16_t events = ts->events;
             memset(ts, 0, sizeof(struct tsocket));
             if (cb)
-                cb(i | MARK_TCP_SOCKET, events, cb_arg);
+                cb(sock_fd_make(s, MARK_TCP_SOCKET, i), events, cb_arg);
             continue;
         }
 
@@ -12890,7 +13064,7 @@ static void handle_socket_callbacks(struct wolfIP *s)
             void *cb_arg = ts->callback_arg;
             uint16_t events = ts->events;
             ts->events = 0;
-            cb(i | MARK_TCP_SOCKET, events, cb_arg);
+            cb(sock_fd_make(s, MARK_TCP_SOCKET, i), events, cb_arg);
 
             /* Now that CB_EVENT_CLOSED has been delivered, reap the
              * deferred-close socket - but only if the slot still holds the
@@ -12913,8 +13087,8 @@ static void handle_socket_callbacks(struct wolfIP *s)
         }
     }
 
-    dispatch_events(s->udpsockets,  MAX_UDPSOCKETS,  MARK_UDP_SOCKET);
-    dispatch_events(s->icmpsockets, MAX_ICMPSOCKETS, MARK_ICMP_SOCKET);
+    dispatch_events(s, s->udpsockets,  MAX_UDPSOCKETS,  MARK_UDP_SOCKET);
+    dispatch_events(s, s->icmpsockets, MAX_ICMPSOCKETS, MARK_ICMP_SOCKET);
 
 #if WOLFIP_RAWSOCKETS
     for (i = 0; i < WOLFIP_MAX_RAWSOCKETS; i++) {
@@ -12926,7 +13100,8 @@ static void handle_socket_callbacks(struct wolfIP *s)
              * post-callback clear would wipe them. */
             uint16_t events = r->events;
             r->events = 0;
-            r->callback(i | MARK_RAW_SOCKET, events, r->callback_arg);
+            r->callback(sock_fd_make(s, MARK_RAW_SOCKET, i), events,
+                    r->callback_arg);
         }
     }
 #endif
@@ -12940,7 +13115,8 @@ static void handle_socket_callbacks(struct wolfIP *s)
              * post-callback clear would wipe them. */
             uint16_t events = p->events;
             p->events = 0;
-            p->callback(i | MARK_PACKET_SOCKET, events, p->callback_arg);
+            p->callback(sock_fd_make(s, MARK_PACKET_SOCKET, i),
+                    events, p->callback_arg);
         }
     }
 #endif

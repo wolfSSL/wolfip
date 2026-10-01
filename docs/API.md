@@ -162,11 +162,11 @@ Accepts a connection on a listening socket.
 ```c
 int wolfIP_sock_abort(struct wolfIP *s, int sockfd);
 ```
-Abortive close, like `SO_LINGER` with a zero timeout: sends an RST in `SYN_RCVD`, `ESTABLISHED`, `CLOSE_WAIT`, `FIN_WAIT_1` and `FIN_WAIT_2` (other states, such as `CLOSING` and `LAST_ACK`, are released without one), and releases the socket at once instead of waiting for a FIN exchange the peer may never complete. Also valid on a socket whose `wolfIP_sock_close()` returned `-WOLFIP_EAGAIN`, as long as no socket has been created or accepted since (see the return values under Data Transfer).
+Abortive close, like `SO_LINGER` with a zero timeout: sends an RST in `SYN_RCVD`, `ESTABLISHED`, `CLOSE_WAIT`, `FIN_WAIT_1` and `FIN_WAIT_2` (other states, such as `CLOSING` and `LAST_ACK`, are released without one), and releases the socket at once instead of waiting for a FIN exchange the peer may never complete. Also valid on a socket whose `wolfIP_sock_close()` returned `-WOLFIP_EAGAIN`, until the stack releases it and its slot is handed out again (see the return values under Data Transfer).
 - Parameters:
   - s: wolfIP instance
   - sockfd: TCP socket descriptor
-- Returns: 0 on success, `-WOLFIP_EINVAL` for a bad or non-TCP descriptor
+- Returns: 0 on success, `-WOLFIP_EINVAL` for a bad or non-TCP descriptor, `-WOLFIP_EBADF` for a stale one
 
 ### Data Transfer
 ```c
@@ -197,9 +197,10 @@ wolfIP never blocks, so every call above can ask the caller to retry. On a TCP s
 | `0` | End of stream: the peer closed and nothing is left to read |
 | `-WOLFIP_EAGAIN` | Retry later: no data queued, no transmit space, or the socket is still connecting (`SYN_SENT`/`SYN_RCVD`) |
 | `-WOLFIP_EINVAL` | Bad descriptor or arguments |
+| `-WOLFIP_EBADF` | Stale descriptor: its socket was released and the slot handed out again |
 | `-1` | The operation cannot succeed on this socket (a listener, or a closing state) |
 
-`wolfIP_sock_close()` follows the same convention: on a connected socket it starts the FIN exchange and returns `-WOLFIP_EAGAIN`. The stack then releases the descriptor by itself, without notification, once the exchange completes, the peer resets, or the close times out, and the next `wolfIP_sock_socket()` or `wolfIP_sock_accept()` can hand out the same number. Calling `wolfIP_sock_close()` or `wolfIP_sock_abort()` on it again is therefore only safe while no socket has been created or accepted since; after that, the call acts on the new socket.
+`wolfIP_sock_close()` follows the same convention: on a connected socket it starts the FIN exchange and returns `-WOLFIP_EAGAIN`. The stack then releases the descriptor by itself, without notification, once the exchange completes, the peer resets, or the close times out, and the next `wolfIP_sock_socket()` or `wolfIP_sock_accept()` can reuse its slot. A descriptor carries the generation of its slot in bits 16-30, so once the slot has been handed out again, every call on the old descriptor returns `-WOLFIP_EBADF` instead of acting on the new socket. The generation wraps after 32768 reuses of the same slot. A slot the stack released on its own (peer reset, retransmission timeout) while the application still holds the descriptor is reused only when no other slot is free; from then on that descriptor, too, answers `-WOLFIP_EBADF` instead of reporting the connection as closed.
 
 ## Stack Interface Functions
 

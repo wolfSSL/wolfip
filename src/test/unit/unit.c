@@ -1386,6 +1386,13 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_notify_loopback_tcp_sets_writable);
     tcase_add_test(tc_core, test_notify_loopback_tcp_non_loopback_not_notified);
     tcase_add_test(tc_core, test_notify_loopback_null_stack_no_crash);
+    tcase_add_test(tc_core, test_sock_fd_reissued_slot_rejects_old_descriptor);
+    tcase_add_test(tc_core, test_sock_fd_slot_freed_by_stack_gets_new_generation);
+    tcase_add_test(tc_core, test_sock_fd_callback_carries_generation);
+    tcase_add_test(tc_core, test_sock_fd_internal_reuse_retires_open_descriptor);
+    tcase_add_test(tc_core, test_sock_fd_held_slot_is_reused_last);
+    tcase_add_test(tc_core, test_sock_fd_reused_held_slot_drops_old_callback);
+    tcase_add_test(tc_core, test_sock_fd_generation_wraps_positive);
 
     /* === Branch-coverage tests from fleet ===*/
     /* --- unit_tests_tcp_state.c (72 tests) --- */

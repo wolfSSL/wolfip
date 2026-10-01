@@ -530,7 +530,7 @@ START_TEST(test_poll_raw_socket_callback_reraised_event_survives)
     /* The reopened socket reuses slot 0; the event raised during dispatch
      * must not be wiped by the old iteration's clear. */
     ck_assert_int_ge(f10259_reopen_fd, 0);
-    ck_assert_int_eq(f10259_reopen_fd, raw_sd);
+    ck_assert_int_eq(SOCKET_UNMARK(f10259_reopen_fd), SOCKET_UNMARK(raw_sd));
     ck_assert(s.rawsockets[SOCKET_UNMARK(f10259_reopen_fd)].events &
               CB_EVENT_WRITABLE);
 
@@ -582,7 +582,7 @@ START_TEST(test_poll_packet_socket_callback_reraised_event_survives)
 
     (void)wolfIP_poll(&s, 100);
     ck_assert_int_ge(f10259_pkt_reopen_fd, 0);
-    ck_assert_int_eq(f10259_pkt_reopen_fd, pkt_sd);
+    ck_assert_int_eq(SOCKET_UNMARK(f10259_pkt_reopen_fd), SOCKET_UNMARK(pkt_sd));
     ck_assert(s.packetsockets[SOCKET_UNMARK(f10259_pkt_reopen_fd)].events &
               CB_EVENT_WRITABLE);
 

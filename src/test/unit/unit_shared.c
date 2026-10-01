@@ -496,6 +496,17 @@ static void inject_tcp_syn(struct wolfIP *s, unsigned int if_idx, ip4 dst_ip, ui
     tcp_input(s, if_idx, &syn, sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
 }
 
+/* Marks every other free TCP slot used, so the next allocation must take skip. */
+static void take_tcp_slots_except(struct wolfIP *s, int skip)
+{
+    int i;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        if (i != skip && s->tcpsockets[i].proto == 0)
+            s->tcpsockets[i].proto = WI_IPPROTO_TCP;
+    }
+}
+
 static void inject_tcp_segment(struct wolfIP *s, unsigned int if_idx, ip4 src_ip, ip4 dst_ip,
         uint16_t src_port, uint16_t dst_port, uint32_t seq, uint32_t ack, uint8_t flags)
 {
