@@ -10407,6 +10407,12 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     if (primary && saw_server_id && lease_s != 0 &&
         (lease_mask != 0) &&
         dhcp_lease_ip_sane(lease_ip, lease_mask)) {
+        /* Renewal/rebind that re-confirms the address already in use:
+         * RFC 4331 DAD guards a NEW address; the in-use one already
+         * proved itself, so go straight to BOUND without re-probing. */
+        int skip_dad = (lease_ip == primary->ip) &&
+                ((s->dhcp_state == DHCP_RENEWING) ||
+                 (s->dhcp_state == DHCP_REBINDING));
         /* Commit the validated configuration atomically. */
         s->dhcp_server_ip = cand_server_ip;
         primary->ip = lease_ip;
@@ -10418,29 +10424,34 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         dhcp_cancel_timer(s);
         s->dhcp_ip = primary->ip;
 #ifdef ETHERNET
-        /* RFC 4331: probe the address before using it. The
-         * lease timers are armed now so they are in place when
-         * the probes complete; the short DAD timer overrides
-         * them until then. A conflicting answer is detected in
-         * arp_recv (dhcp_dad_conflict). */
-        s->dhcp_state = DHCP_DAD;
-        s->dhcp_dad_probes = 0;
-        s->dhcp_dad_if = WOLFIP_PRIMARY_IF_IDX;
-        /* Arm the lease absolutes, then swap the renew timer for
-         * the DAD timer: handle_timers() fires every expired
-         * entry, so leaving both in the heap would double-fire
-         * the renew. The absolutes survive; the DAD completion
-         * re-arms the renew timer. */
-        dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
-        timer_binheap_cancel(&s->timers, s->dhcp_timer);
-        s->dhcp_timer = NO_TIMER;
-        /* ll drivers return the frame length (>= 0) on
-         * success, not 0; only count the probe when it
-         * actually went out. */
-        if (dhcp_send_dad_probe(s) >= 0)
-            s->dhcp_dad_probes = 1;
-        dhcp_schedule_timer_at(s,
-                s->last_tick + DHCP_DAD_INTERVAL_MS);
+        if (skip_dad) {
+            s->dhcp_state = DHCP_BOUND;
+            dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+        } else {
+            /* RFC 4331: probe the address before using it. The
+             * lease timers are armed now so they are in place when
+             * the probes complete; the short DAD timer overrides
+             * them until then. A conflicting answer is detected in
+             * arp_recv (dhcp_dad_conflict). */
+            s->dhcp_state = DHCP_DAD;
+            s->dhcp_dad_probes = 0;
+            s->dhcp_dad_if = WOLFIP_PRIMARY_IF_IDX;
+            /* Arm the lease absolutes, then swap the renew timer for
+             * the DAD timer: handle_timers() fires every expired
+             * entry, so leaving both in the heap would double-fire
+             * the renew. The absolutes survive; the DAD completion
+             * re-arms the renew timer. */
+            dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);
+            timer_binheap_cancel(&s->timers, s->dhcp_timer);
+            s->dhcp_timer = NO_TIMER;
+            /* ll drivers return the frame length (>= 0) on
+             * success, not 0; only count the probe when it
+             * actually went out. */
+            if (dhcp_send_dad_probe(s) >= 0)
+                s->dhcp_dad_probes = 1;
+            dhcp_schedule_timer_at(s,
+                    s->last_tick + DHCP_DAD_INTERVAL_MS);
+        }
 #else
         s->dhcp_state = DHCP_BOUND;
         dhcp_schedule_lease_timer(s, lease_s, renew_s, rebind_s);

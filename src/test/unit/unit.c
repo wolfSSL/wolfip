@@ -1617,6 +1617,9 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_timer_cb_default_state_noop);
     tcase_add_test(tc_core, test_dhcp_timer_cb_null_arg_noop);
     tcase_add_test(tc_core, test_dhcp_renew_rerandomizes_xid_rejecting_stale_ack);
+    tcase_add_test(tc_core, test_dhcp_renew_ack_same_ip_skips_dad_and_bounds);
+    tcase_add_test(tc_core, test_dhcp_rebind_ack_same_ip_skips_dad_and_bounds);
+    tcase_add_test(tc_core, test_dhcp_renew_ack_new_ip_still_runs_dad);
     tcase_add_test(tc_core, test_dhcp_parse_ack_without_lease_time_rejected);
     tcase_add_test(tc_core, test_dhcp_lease_expiry_relearns_dns_server);
     tcase_add_test(tc_core, test_dhcp_nak_relearns_dns_server);
