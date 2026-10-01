@@ -15,11 +15,16 @@
 
 #include <stdint.h>
 
-/* Returns 0 on success, < 0 on failure. On success *speed and *fd are
- * the negotiated speed (10/100/1000) and full-duplex flag. */
+/* Returns 0 on success, < 0 on failure. *speed and *fd are the negotiated
+ * values, except with GEM_PHY_*_TIMEOUT_MS = 0, which returns mid-negotiation
+ * with the gigabit default: poll dp83867_link_speed() instead. */
 int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out);
 
 /* Returns 1 if link is up, 0 if down, < 0 on MDIO error. */
 int dp83867_link_status(uint8_t phy_addr);
+
+/* Read the speed and duplex the PHY settled on, for a caller that built
+ * dp83867_init() not to wait. Returns 0 on success, < 0 on MDIO error. */
+int dp83867_link_speed(uint8_t phy_addr, int *speed_out, int *full_duplex_out);
 
 #endif /* AMD_PHY_DP83867_H */

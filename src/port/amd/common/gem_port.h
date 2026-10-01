@@ -42,6 +42,7 @@ void gem_set_ref_clk(int speed_mbps); /* RGMII TX clock for link speed */
  * the MDIO scan; sets *speed (10/100/1000) and *fd; returns 0 / <0. --- */
 int gem_phy_init(uint8_t phy_addr, uint16_t id1, int *speed, int *full_duplex);
 int gem_phy_link_status(uint8_t phy_addr);
+int gem_phy_link_speed(uint8_t phy_addr, int *speed, int *full_duplex);
 
 /* --- RX delivery model (ip/gem_rx_*.c) --- */
 void gem_rx_install(void);   /* arm the RX path (install IRQ, or mask) */

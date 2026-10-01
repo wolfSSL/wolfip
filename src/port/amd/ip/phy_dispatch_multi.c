@@ -27,3 +27,10 @@ int gem_phy_link_status(uint8_t phy_addr)
     /* Generic clause-22 BMSR read works for both PHYs. */
     return dp83867_link_status(phy_addr);
 }
+
+int gem_phy_link_speed(uint8_t phy_addr, int *speed, int *full_duplex)
+{
+    /* Falls back to clause-22 on a part it does not recognize, as the Marvell
+     * needs. */
+    return dp83867_link_speed(phy_addr, speed, full_duplex);
+}
