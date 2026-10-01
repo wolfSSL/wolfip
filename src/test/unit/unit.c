@@ -602,6 +602,10 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_rto_cb_fin_wait_1_no_data_full_txbuf_keeps_retry_budget);
     tcase_add_test(tc_utils, test_tcp_ack_fin_wait_1_ack_of_fin_moves_to_fin_wait_2_and_arms_timeout);
     tcase_add_test(tc_utils, test_tcp_ack_closing_ack_of_fin_moves_to_time_wait_and_stops_timer);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_closing_no_data_requeues_finack);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_closing_ctrl_maxretries_closes_socket);
+    tcase_add_test(tc_utils, test_tcp_rto_cb_closing_with_data_retransmits_data);
+    tcase_add_test(tc_utils, test_tcp_ack_closing_data_drained_rearms_ctrl_rto);
     tcase_add_test(tc_utils, test_tcp_rto_cb_control_retry_cap_closes_socket);
     tcase_add_test(tc_utils, test_tcp_rto_cb_cancels_existing_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_clears_sack_and_marks_lowest_only);

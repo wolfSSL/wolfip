@@ -5311,6 +5311,150 @@ START_TEST(test_tcp_ack_closing_ack_of_fin_moves_to_time_wait_and_stops_timer)
 }
 END_TEST
 
+/* CLOSING with the data fully drained: the control RTO must keep
+ * retransmitting the FIN, same handling as FIN_WAIT_1. */
+START_TEST(test_tcp_rto_cb_closing_no_data_requeues_finack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *seg;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    ts->sock.tcp.bytes_in_flight = 0;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    seg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    ck_assert_uint_eq(seg->flags, (TCP_FLAG_FIN | TCP_FLAG_ACK));
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_retries, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+/* CLOSING with the control retry budget exhausted: give up and reclaim
+ * the socket slot instead of pinning it forever. */
+START_TEST(test_tcp_rto_cb_closing_ctrl_maxretries_closes_socket)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.ctrl_rto_retries = TCP_CTRL_RTO_MAXRTX;
+    ts->sock.tcp.bytes_in_flight = 0;
+
+    tcp_rto_cb(ts);
+    ck_assert_int_eq(ts->proto, 0);
+}
+END_TEST
+
+/* CLOSING with payload still in flight: the control RTO must yield to the
+ * data path, which retransmits the outstanding data. */
+START_TEST(test_tcp_rto_cb_closing_with_data_retransmits_data)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.ctrl_rto_active = 1;
+    ts->sock.tcp.snd_una = 101;
+    ts->sock.tcp.seq = 101;
+    ts->sock.tcp.bytes_in_flight = 1;
+    ts->src_port = 12345;
+    ts->dst_port = 5001;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    s.last_tick = 1000;
+    tcp_rto_cb(ts);
+
+    ck_assert_int_ne(desc->flags & PKT_FLAG_RETRANS, 0);
+    ck_assert_int_eq(desc->flags & PKT_FLAG_SENT, 0);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
+/* CLOSING: once the peer's ACK drains the last outstanding data byte, the
+ * control RTO takes over again so the unacked FIN keeps being retransmitted.
+ */
+START_TEST(test_tcp_ack_closing_data_drained_rearms_ctrl_rto)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg ackseg;
+
+    wolfIP_init(&s);
+    s.last_tick = 1000U;
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_CLOSING;
+    /* FIN at seq 100 (last=100); one data byte at seq 99 still unacked. */
+    ts->sock.tcp.last = 100;
+    ts->sock.tcp.snd_una = 99;
+    ts->sock.tcp.seq = 99;
+    ts->sock.tcp.rto = 100;
+    ts->sock.tcp.bytes_in_flight = 1;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    ck_assert_int_eq(enqueue_tcp_tx(ts, 1, TCP_FLAG_PSH), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    ts->sock.tcp.seq = 101;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    ackseg.ack = ee32(100); /* acks the data byte, not the FIN at 101 */
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+
+    tcp_ack(ts, &ackseg);
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSING);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 0);
+    ck_assert_uint_eq(ts->sock.tcp.ctrl_rto_active, 1);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+}
+END_TEST
+
 START_TEST(test_tcp_rto_cb_control_retry_cap_closes_socket)
 {
     struct wolfIP s;

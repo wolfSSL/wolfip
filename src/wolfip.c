@@ -4485,10 +4485,11 @@ static int tcp_ctrl_state_needs_rto(const struct tsocket *t)
     if ((t->sock.tcp.state == TCP_SYN_SENT) ||
             (t->sock.tcp.state == TCP_SYN_RCVD))
         return 1;
-    /* In FIN_WAIT_1 and LAST_ACK keep data-RTO active while payload is still
-     * outstanding. Switch to control-RTO only after data is fully drained and
-     * only the FIN/ACK teardown control traffic remains. */
+    /* In FIN_WAIT_1, CLOSING and LAST_ACK keep data-RTO active while payload
+     * is still outstanding. Switch to control-RTO only after data is fully
+     * drained and only the FIN/ACK teardown control traffic remains. */
     if (((t->sock.tcp.state == TCP_FIN_WAIT_1) ||
+             (t->sock.tcp.state == TCP_CLOSING) ||
              (t->sock.tcp.state == TCP_LAST_ACK)) &&
             (t->sock.tcp.bytes_in_flight == 0) &&
             !tcp_has_pending_unsent_payload((struct tsocket *)t))
@@ -4789,7 +4790,10 @@ static int tcp_has_pending_unsent_payload(struct tsocket *t)
         uint32_t seg_len;
         seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
         seg_len = tcp_tx_desc_payload_len(t, desc, seg);
-        if (seg_len > 0 && !(desc->flags & PKT_FLAG_SENT))
+        /* An ACKED descriptor is done (its cleanup pop runs later in the
+         * same tcp_ack() pass); it is not pending payload. */
+        if (seg_len > 0 && !(desc->flags & PKT_FLAG_SENT) &&
+                !(desc->flags & PKT_FLAG_ACKED))
             return 1;
         desc = fifo_next(&t->sock.tcp.txbuf, desc);
     }
@@ -6033,6 +6037,7 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                 t->sock.tcp.bytes_in_flight == 0 &&
                 !tcp_has_pending_unsent_payload(t) &&
                 (t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                 t->sock.tcp.state == TCP_CLOSING ||
                  t->sock.tcp.state == TCP_LAST_ACK) &&
                 t->sock.tcp.tmr_rto == NO_TIMER) {
             /* Data fully drained but the FIN is still in flight: hand the RTO
@@ -6844,7 +6849,9 @@ static void tcp_rto_cb(void *arg)
                     queued = (tcp_send_syn(ts, TCP_FLAG_SYN) == 0);
                 } else if (ts->sock.tcp.state == TCP_SYN_RCVD) {
                     queued = (tcp_send_syn(ts, TCP_FLAG_SYN | TCP_FLAG_ACK) == 0);
-                } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 || ts->sock.tcp.state == TCP_LAST_ACK) {
+                } else if (ts->sock.tcp.state == TCP_FIN_WAIT_1 ||
+                        ts->sock.tcp.state == TCP_CLOSING ||
+                        ts->sock.tcp.state == TCP_LAST_ACK) {
                     queued = (tcp_send_finack(ts) == 0);
                     if (queued)
                         ts->sock.tcp.ctrl_rto_retries++;
@@ -6862,6 +6869,7 @@ static void tcp_rto_cb(void *arg)
     }
     if (ts->sock.tcp.state != TCP_ESTABLISHED &&
             ts->sock.tcp.state != TCP_FIN_WAIT_1 &&
+            ts->sock.tcp.state != TCP_CLOSING &&
             ts->sock.tcp.state != TCP_CLOSE_WAIT &&
             ts->sock.tcp.state != TCP_LAST_ACK) {
         /* The fired timer's id is stale once the heap popped it: clear it so a
