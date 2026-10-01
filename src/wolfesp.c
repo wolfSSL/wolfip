@@ -1149,7 +1149,7 @@ esp_aes_rfc4106_enc(const wolfIP_esp_sa * esp_sa, uint8_t * esp_data,
     err = wc_AesGcmEncrypt(&gcm_enc, enc_payload, enc_payload, enc_len,
                            nonce, sizeof(nonce), icv, icv_len, aad, aad_len);
     if (err != 0) {
-        ESP_LOG("error: wc_AesGcmDecrypt: %d\n", err);
+        ESP_LOG("error: wc_AesGcmEncrypt: %d\n", err);
         goto rfc4106_enc_out;
     }
 
