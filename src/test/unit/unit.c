@@ -246,6 +246,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_local_ip_no_match);
     tcase_add_test(tc_utils, test_sock_connect_udp_bound_local_ip_match);
     tcase_add_test(tc_utils, test_sock_connect_icmp_sets_local_ip_from_conf);
+    tcase_add_test(tc_utils, test_sendto_wildcard_bound_uses_egress_if_source);
     tcase_add_test(tc_utils, test_sock_connect_icmp_bound_local_ip_match);
     tcase_add_test(tc_utils, test_sock_connect_icmp_wrong_family);
     tcase_add_test(tc_utils, test_sock_connect_icmp_local_ip_pre_set);

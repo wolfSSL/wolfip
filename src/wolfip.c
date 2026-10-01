@@ -7860,7 +7860,7 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
         struct ipconf *conf;
         uint16_t dst_port;
         ip4 remote_ip;
-        ip4 src_ip;
+        ip4 src_ip = 0;
         uint32_t ip_mtu;
         uint32_t frame_len;
         if (SOCKET_UNMARK(sockfd) >= MAX_UDPSOCKETS)
@@ -7896,7 +7896,12 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             if_idx = ts->sock.udp.mcast_if_idx;
 #endif
         conf = wolfIP_ipconf_at(s, if_idx);
-        src_ip = ts->local_ip;
+        /* A socket bound to a specific address pins its source; a
+         * wildcard (or unbound) socket sources each datagram from the
+         * egress interface's address. local_ip stays egress-only;
+         * ingress matching uses bound_local_ip. */
+        if (ts->bound && ts->bound_local_ip != IPADDR_ANY)
+            src_ip = ts->local_ip;
         if (src_ip == 0) {
             if (conf && conf->ip != IPADDR_ANY)
                 src_ip = conf->ip;
@@ -7904,6 +7909,8 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                 struct ipconf *primary = wolfIP_primary_ipconf(s);
                 if (primary && primary->ip != IPADDR_ANY)
                     src_ip = primary->ip;
+                else
+                    src_ip = IPADDR_ANY;
             }
         }
         /* Bind the socket's egress state once for any sendto (connected or
@@ -7983,14 +7990,12 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             if_idx = wolfIP_route_for_ip(s, remote_ip);
             conf = wolfIP_ipconf_at(s, if_idx);
             ts->if_idx = (uint8_t)if_idx;
-            if (ts->local_ip == 0) {
-                if (conf && conf->ip != IPADDR_ANY)
-                    ts->local_ip = conf->ip;
-                else {
-                    struct ipconf *primary = wolfIP_primary_ipconf(s);
-                    if (primary && primary->ip != IPADDR_ANY)
-                        ts->local_ip = primary->ip;
-                }
+            if (conf && conf->ip != IPADDR_ANY)
+                ts->local_ip = conf->ip;
+            else {
+                struct ipconf *primary = wolfIP_primary_ipconf(s);
+                if (primary && primary->ip != IPADDR_ANY)
+                    ts->local_ip = primary->ip;
             }
         }
         ip_mtu = wolfIP_socket_ip_mtu(ts);
