@@ -5636,8 +5636,6 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     tcp_parse_options(tcp, frame_len, &po);
     if (!po.ts_found)
         return -1;
-    if (!t->S)
-        return -1; /* Socket was closed; ignore. */
     /* RFC 7323 section 4.3 rule (2): TS.Recent is replaced only when the
      * segment's TSval is not older than the stored one and the segment's
      * sequence is at or below the ACK field of the last segment we sent
