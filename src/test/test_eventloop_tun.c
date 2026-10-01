@@ -59,6 +59,8 @@ static void server_cb(int fd, uint16_t event, void *arg)
     int ret = 0;
     if ((fd == listen_fd) && (event & CB_EVENT_READABLE) && (client_fd == -1)) {
         client_fd = wolfIP_sock_accept((struct wolfIP *)arg, listen_fd, NULL, NULL);
+        if (client_fd < 0)
+            client_fd = -1;
         if (client_fd > 0) {
             printf("accept: %04x\n", client_fd);
         }

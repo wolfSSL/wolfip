@@ -232,6 +232,8 @@ static void server_cb(int fd, uint16_t events, void *arg)
     (void)events;
     if (fd == server_listen_fd && (events & CB_EVENT_READABLE) && server_client_fd == -1) {
         server_client_fd = wolfIP_sock_accept(s, server_listen_fd, NULL, NULL);
+        if (server_client_fd < 0)
+            server_client_fd = -1;
         if (server_client_fd > 0) {
             wolfIP_register_callback(s, server_client_fd, server_cb, s);
             server_ssl = wolfSSL_new(server_ctx);
