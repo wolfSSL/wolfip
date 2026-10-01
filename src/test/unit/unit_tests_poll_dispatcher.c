@@ -1893,6 +1893,38 @@ START_TEST(test_poll_returns_zero_with_loopback_frame_queued)
 END_TEST
 #endif
 
+START_TEST(test_poll_rebased_timer_stays_within_max_wait)
+{
+    struct wolfIP s;
+    struct wolfIP_timer tmr = {0};
+    const uint64_t base = 0x100000000ULL;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    (void)wolfIP_poll(&s, base + 20000);
+    tmr.expires = base + 25000;
+    tmr.cb = test_timer_cb;
+    ck_assert_uint_ne(timers_binheap_insert(&s.timers, tmr), 0U);
+
+    /* The clock steps back: the timer is rebased to a 32-bit value. */
+    ck_assert_int_eq(wolfIP_poll(&s, base + 10000), WOLFIP_POLL_MAX_WAIT_MS);
+}
+END_TEST
+
+START_TEST(test_poll_by_rebased_deadline_keeps_earlier_one)
+{
+    struct wolfIP s;
+    const uint64_t now = 0x100000000ULL + 10000;
+
+    wolfIP_init(&s);
+    s.poll_next_at = now + WOLFIP_POLL_MAX_WAIT_MS;
+    wolfIP_poll_by(&s, now);
+    /* A rebased timer 15 s ahead is smaller as a raw 64-bit value. */
+    wolfIP_poll_by(&s, 25000);
+    ck_assert_uint_eq(s.poll_next_at, now);
+}
+END_TEST
+
 START_TEST(test_poll_returns_zero_while_flush_events_undelivered)
 {
     struct wolfIP s;
