@@ -2946,7 +2946,6 @@ START_TEST(test_accept_synack_retransmit_repeats_isn)
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
     int syn_rcvd_sd;
-    int acc_sd;
     int i;
     uint32_t isn;
 
@@ -3010,9 +3009,9 @@ START_TEST(test_accept_synack_retransmit_repeats_isn)
 
     /* accept() sends a duplicate SYN-ACK from the new socket, same ISN. */
     syn_rcvd_sd = (int)(syn_rcvd - s.tcpsockets) | MARK_TCP_SOCKET;
-    acc_sd = wolfIP_sock_accept(&s, syn_rcvd_sd, NULL, 0);
-    ck_assert_int_gt(acc_sd, 0);
-    accepted = &s.tcpsockets[SOCKET_UNMARK(acc_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, syn_rcvd_sd, NULL, 0), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, syn_rcvd_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
     /* Poll before the accept-armed control RTO (last_tick 1000 + 1000ms
      * default) expires, so this flushes accept's own SYN-ACK. */
@@ -3047,7 +3046,6 @@ START_TEST(test_accept_clears_listener_tx_fifo)
     struct tsocket *listener;
     struct tsocket *accepted;
     struct wolfIP_sockaddr_in sin;
-    int acc_sd;
 
     wolfIP_init(&s);
     mock_link_init(&s);
@@ -3072,9 +3070,9 @@ START_TEST(test_accept_clears_listener_tx_fifo)
 
     /* accept() hands the handshake to the clone; the listener must revert
      * to LISTEN with an empty TX FIFO. */
-    acc_sd = wolfIP_sock_accept(&s, listen_sd, NULL, 0);
-    ck_assert_int_gt(acc_sd, 0);
-    accepted = &s.tcpsockets[SOCKET_UNMARK(acc_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, 0), -WOLFIP_EAGAIN);
+    accepted = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(accepted);
     ck_assert_int_eq(accepted->sock.tcp.state, TCP_SYN_RCVD);
     /* The clone carries the connection's SYN-ACK. */
     ck_assert_int_eq(fifo_is_empty(&accepted->sock.tcp.txbuf), 0);
@@ -3128,7 +3126,6 @@ START_TEST(test_no_stale_synack_after_accept_new_conn)
     int listen_sd;
     struct tsocket *listener;
     struct wolfIP_sockaddr_in sin;
-    int acc_sd;
     uint32_t count_before;
 
     wolfIP_init(&s);
@@ -3149,8 +3146,8 @@ START_TEST(test_no_stale_synack_after_accept_new_conn)
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
     wolfIP_poll(&s, 1000);
     ck_assert_int_eq(listener->sock.tcp.state, TCP_SYN_RCVD);
-    acc_sd = wolfIP_sock_accept(&s, listen_sd, NULL, 0);
-    ck_assert_int_gt(acc_sd, 0);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, 0), -WOLFIP_EAGAIN);
+    ck_assert_ptr_nonnull(parked_child(&s, listen_sd));
 
     /* Connection B: a second client port from the same peer while A's
      * SYN-ACK is still parked. */

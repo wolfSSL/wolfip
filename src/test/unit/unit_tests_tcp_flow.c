@@ -4872,7 +4872,6 @@ START_TEST(test_tcp_input_listen_accept_final_ack_does_not_send_rst)
 {
     struct wolfIP s;
     int listen_sd;
-    int client_sd;
     struct tsocket *listen_ts;
     struct tsocket *client_ts;
     struct wolfIP_sockaddr_in sin;
@@ -4897,10 +4896,9 @@ START_TEST(test_tcp_input_listen_accept_final_ack_does_not_send_rst)
     listen_ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_SYN_RCVD);
 
-    client_sd = wolfIP_sock_accept(&s, listen_sd, NULL, NULL);
-    ck_assert_int_gt(client_sd, 0);
-
-    client_ts = &s.tcpsockets[SOCKET_UNMARK(client_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, NULL, NULL), -WOLFIP_EAGAIN);
+    client_ts = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(client_ts);
     ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
     ck_assert_int_eq(client_ts->sock.tcp.state, TCP_SYN_RCVD);
 
@@ -6017,14 +6015,15 @@ END_TEST
 
 /* With no socket free, accept() cannot hand the connection off and drops it;
  * the peer must be reset rather than left talking to a reverted listener. */
-START_TEST(test_tcp_listener_preaccept_accept_no_socket_resets_peer)
+START_TEST(test_tcp_listener_preaccept_accept_no_socket_keeps_connection)
 {
     struct wolfIP s;
     int fd;
+    int sd;
+    int last = -1;
     struct tsocket *lsn;
     struct wolfIP_sockaddr_in peer;
     socklen_t peer_len = sizeof(peer);
-    const struct wolfIP_tcp_seg *out;
     uint32_t frames_before;
 
     wolfIP_init(&s);
@@ -6038,19 +6037,23 @@ START_TEST(test_tcp_listener_preaccept_accept_no_socket_resets_peer)
     llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
     ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
 
-    while (wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
-                WI_IPPROTO_TCP) > 0)
-        ;
+    while ((sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+                WI_IPPROTO_TCP)) > 0)
+        last = sd;
+    ck_assert_int_gt(last, 0);
 
+    /* No slot for the child: the connection waits on the listener. */
     memset(&peer, 0, sizeof(peer));
     frames_before = last_frame_sent_count;
     ck_assert_int_eq(wolfIP_sock_accept(&s, fd,
-            (struct wolfIP_sockaddr *)&peer, &peer_len), -1);
-    ck_assert_uint_gt(last_frame_sent_count, frames_before);
-    out = llk_last_tcp();
-    ck_assert_ptr_nonnull(out);
-    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
-    ck_assert_uint_eq(ee16(out->dst_port), 41000);
+            (struct wolfIP_sockaddr *)&peer, &peer_len), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(last_frame_sent_count, frames_before);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+
+    ck_assert_int_eq(wolfIP_sock_close(&s, last), 0);
+    ck_assert_int_ge(wolfIP_sock_accept(&s, fd,
+            (struct wolfIP_sockaddr *)&peer, &peer_len), 0);
+    ck_assert_uint_eq(ee16(peer.sin_port), 41000);
     ck_assert_int_eq(lsn->sock.tcp.state, TCP_LISTEN);
 }
 END_TEST
@@ -6340,12 +6343,12 @@ START_TEST(test_sock_abort_fin_wait_2_rst_covers_acked_fin)
 }
 END_TEST
 
-START_TEST(test_sock_abort_syn_rcvd_rst_covers_syn)
+START_TEST(test_listener_close_resets_parked_syn_rcvd_child)
 {
     struct wolfIP s;
     int fd;
-    int sd;
     struct tsocket *lsn;
+    struct tsocket *child;
     uint32_t isn;
     const struct wolfIP_tcp_seg *out;
 
@@ -6359,12 +6362,13 @@ START_TEST(test_sock_abort_syn_rcvd_rst_covers_syn)
     ck_assert_int_eq(lsn->sock.tcp.state, TCP_SYN_RCVD);
     isn = lsn->sock.tcp.seq;
 
-    sd = wolfIP_sock_accept(&s, fd, NULL, NULL);
-    ck_assert_int_ge(sd, 0);
-    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(sd)].sock.tcp.state,
-                     TCP_SYN_RCVD);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, fd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, fd);
+    ck_assert_ptr_nonnull(child);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_SYN_RCVD);
 
-    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), 0);
+    ck_assert_int_eq(wolfIP_sock_close(&s, fd), 0);
+    ck_assert_int_eq(child->proto, 0);
     out = llk_last_tcp();
     ck_assert_ptr_nonnull(out);
     ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
@@ -6763,6 +6767,341 @@ END_TEST
 START_TEST(test_tcp_full_table_reclaims_last_ack_silently)
 {
     full_table_reclaims_closing(1, 0);
+}
+END_TEST
+
+static int park_listener(struct wolfIP *s)
+{
+    struct wolfIP_sockaddr_in sin;
+    int sd;
+
+    wolfIP_init(s);
+    mock_link_init(s);
+    wolfIP_ipconfig_set(s, 0x0A000001U, 0xFFFFFF00U, 0);
+    sd = wolfIP_sock_socket(s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_ge(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(s, sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(s, sd, 1), 0);
+    wolfIP_register_callback(s, sd, test_socket_cb, (void *)0x42);
+    llk_keep_arp_fresh(s, 0x0A0000A1U);
+    return sd;
+}
+
+static void park_final_ack(struct wolfIP *s, struct tsocket *t, uint8_t flags)
+{
+    inject_tcp_segment(s, t->if_idx, t->remote_ip, t->local_ip, t->dst_port,
+            t->src_port, t->sock.tcp.ack, t->sock.tcp.seq + 1, flags);
+}
+
+START_TEST(test_accept_parks_child_until_established)
+{
+    struct wolfIP s;
+    int lsd, sd;
+    struct tsocket *lsn, *child;
+
+    lsd = park_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(lsd)];
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, lsd), 1);
+
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+    ck_assert_ptr_null(child->callback);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_LISTEN);
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, lsd), 0);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+
+    lsn->events = 0;
+    park_final_ack(&s, child, TCP_FLAG_ACK);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_ne(lsn->events & CB_EVENT_READABLE, 0);
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, lsd), 1);
+
+    sd = wolfIP_sock_accept(&s, lsd, NULL, NULL);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_ptr_eq(&s.tcpsockets[SOCKET_UNMARK(sd)], child);
+    ck_assert_uint_eq(child->sock.tcp.parked, 0);
+    ck_assert_ptr_eq(child->callback, test_socket_cb);
+    ck_assert_ptr_eq(child->callback_arg, (void *)0x42);
+    ck_assert_uint_eq(child->events, CB_EVENT_WRITABLE);
+    ck_assert_int_eq(wolfIP_sock_can_read(&s, lsd), 0);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+
+    /* Accepted in time: the pre-accept timeout no longer applies. */
+    ck_assert_uint_eq(child->sock.tcp.preaccept_timeout_active, 0);
+    (void)wolfIP_poll(&s, s.last_tick + TCP_PREACCEPT_TIMEOUT_MS + 10);
+    ck_assert_int_eq(child->proto, WI_IPPROTO_TCP);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_ESTABLISHED);
+}
+END_TEST
+
+START_TEST(test_accept_reannounces_second_ready_child)
+{
+    struct wolfIP s;
+    int lsd, sd;
+    struct tsocket *lsn, *a, *b;
+
+    lsd = park_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(lsd)];
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    a = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(a);
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U, 40001, 1234,
+            7, 0, TCP_FLAG_SYN);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    b = (a == &s.tcpsockets[2]) ? &s.tcpsockets[3] : &s.tcpsockets[2];
+    ck_assert_uint_eq(b->sock.tcp.parked, 1);
+
+    /* Both complete before the application runs: one READABLE for two. */
+    park_final_ack(&s, a, TCP_FLAG_ACK);
+    park_final_ack(&s, b, TCP_FLAG_ACK);
+    lsn->events = 0;
+    sd = wolfIP_sock_accept(&s, lsd, NULL, NULL);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_uint_ne(lsn->events & CB_EVENT_READABLE, 0);
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(sd)].events, CB_EVENT_WRITABLE);
+
+    lsn->events = 0;
+    sd = wolfIP_sock_accept(&s, lsd, NULL, NULL);
+    ck_assert_int_ge(sd, 0);
+    ck_assert_uint_eq(lsn->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
+START_TEST(test_parked_child_handed_out_with_wide_listener_generation)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    int lsd, sd;
+    struct tsocket *child;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    llk_keep_arp_fresh(&s, 0x0A0000A1U);
+    /* The listener's slot has been reused well past 8 bits of generation. */
+    s.tcp_gen[0].gen = 0x1234;
+    lsd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_uint_eq(SOCKET_GEN(lsd), 0x1234);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, lsd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, lsd, 1), 0);
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+    park_final_ack(&s, child, TCP_FLAG_ACK);
+    sd = wolfIP_sock_accept(&s, lsd, NULL, NULL);
+    ck_assert_ptr_eq(&s.tcpsockets[SOCKET_UNMARK(sd)], child);
+}
+END_TEST
+
+START_TEST(test_parked_child_not_accepted_is_reset_after_timeout)
+{
+    struct wolfIP s;
+    int lsd;
+    struct tsocket *child;
+    const struct wolfIP_tcp_seg *out;
+
+    lsd = park_listener(&s);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+    park_final_ack(&s, child, TCP_FLAG_ACK);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(child->sock.tcp.preaccept_timeout_active, 1);
+
+    (void)wolfIP_poll(&s, s.last_tick + TCP_PREACCEPT_TIMEOUT_MS + 10);
+    ck_assert_int_eq(child->proto, 0);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee16(out->dst_port), 40000);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+static int stale_cb_calls;
+
+static void stale_cb(int fd, uint16_t events, void *arg)
+{
+    (void)fd; (void)events; (void)arg;
+    stale_cb_calls++;
+}
+
+START_TEST(test_parked_child_in_held_slot_stays_silent)
+{
+    struct wolfIP s;
+    int lsd, sd;
+    struct tsocket *child;
+
+    lsd = park_listener(&s);
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(sd)]);
+    wolfIP_register_callback(&s, sd, stale_cb, NULL);
+    take_tcp_slots_except(&s, SOCKET_UNMARK(sd));
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_eq(child, &s.tcpsockets[SOCKET_UNMARK(sd)]);
+    ck_assert_ptr_null(child->callback);
+
+    stale_cb_calls = 0;
+    park_final_ack(&s, child, TCP_FLAG_RST | TCP_FLAG_ACK);
+    (void)wolfIP_poll(&s, 100);
+    ck_assert_int_eq(child->proto, 0);
+    ck_assert_int_eq(stale_cb_calls, 0);
+}
+END_TEST
+
+START_TEST(test_parked_child_in_freed_slot_retires_old_descriptor)
+{
+    struct wolfIP s;
+    int lsd, sd;
+    struct tsocket *child;
+
+    lsd = park_listener(&s);
+    /* The stack frees a slot whose descriptor the application still holds. */
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_ge(sd, 0);
+    close_socket(&s.tcpsockets[SOCKET_UNMARK(sd)]);
+    take_tcp_slots_except(&s, SOCKET_UNMARK(sd));
+
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_eq(child, &s.tcpsockets[SOCKET_UNMARK(sd)]);
+    ck_assert_int_eq(wolfIP_sock_abort(&s, sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(wolfIP_sock_close(&s, sd), -WOLFIP_EBADF);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_SYN_RCVD);
+}
+END_TEST
+
+START_TEST(test_accept_hands_out_parked_close_wait)
+{
+    struct wolfIP s;
+    int lsd, sd;
+    struct tsocket *child;
+
+    lsd = park_listener(&s);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+    park_final_ack(&s, child, TCP_FLAG_ACK | TCP_FLAG_FIN);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_CLOSE_WAIT);
+
+    sd = wolfIP_sock_accept(&s, lsd, NULL, NULL);
+    ck_assert_ptr_eq(&s.tcpsockets[SOCKET_UNMARK(sd)], child);
+    ck_assert_uint_ne(child->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
+START_TEST(test_accept_drops_reset_parked_child_silently)
+{
+    struct wolfIP s;
+    int lsd;
+    struct tsocket *child;
+
+    lsd = park_listener(&s);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+
+    park_final_ack(&s, child, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_int_eq(child->proto, 0);
+    socket_cb_calls = 0;
+    (void)wolfIP_poll(&s, 100);
+    ck_assert_int_eq(socket_cb_calls, 0);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+}
+END_TEST
+
+START_TEST(test_accept_parked_child_gives_up_after_synack_cap)
+{
+    struct wolfIP s;
+    int lsd;
+    unsigned int i;
+    struct tsocket *child;
+
+    lsd = park_listener(&s);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+
+    for (i = 0; i < TCP_SYNACK_MAXRTX; i++) {
+        fifo_init(&child->sock.tcp.txbuf, child->txmem, TXBUF_SIZE);
+        tcp_rto_cb(child);
+        ck_assert_int_eq(child->proto, WI_IPPROTO_TCP);
+    }
+    ck_assert_uint_eq(child->sock.tcp.ctrl_rto_retries, TCP_SYNACK_MAXRTX);
+    tcp_rto_cb(child);
+    ck_assert_int_eq(child->proto, 0);
+}
+END_TEST
+
+START_TEST(test_full_table_reclaims_parked_syn_rcvd_child)
+{
+    struct wolfIP s;
+    int lsd;
+    int i;
+    struct tsocket *child;
+    const struct wolfIP_tcp_seg *out;
+
+    lsd = park_listener(&s);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+    for (i = 2; i < MAX_TCPSOCKETS; i++)
+        ck_assert_int_ge(wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM,
+                WI_IPPROTO_TCP), 0);
+
+    /* A second peer: its connection takes the slot of the one still handshaking. */
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A0000A1U, 0x0A000001U, 40001, 1234,
+            7, 0, TCP_FLAG_SYN);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    out = llk_last_tcp();
+    ck_assert_ptr_nonnull(out);
+    ck_assert_uint_eq(out->flags, TCP_FLAG_RST | TCP_FLAG_ACK);
+    ck_assert_uint_eq(ee16(out->dst_port), 40000);
+    ck_assert_ptr_eq(parked_child(&s, lsd), child);
+    ck_assert_uint_eq(child->dst_port, 40001);
+}
+END_TEST
+
+START_TEST(test_parked_child_of_replaced_listener_not_handed_out)
+{
+    struct wolfIP s;
+    int lsd;
+    struct tsocket *child;
+
+    lsd = park_listener(&s);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    child = parked_child(&s, lsd);
+    ck_assert_ptr_nonnull(child);
+    /* The listener's slot now belongs to a later generation. */
+    s.tcp_gen[SOCKET_UNMARK(lsd)].gen++;
+    lsd = sock_fd_make(&s, MARK_TCP_SOCKET, SOCKET_UNMARK(lsd));
+    park_final_ack(&s, child, TCP_FLAG_ACK);
+    ck_assert_int_eq(child->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_int_eq(wolfIP_sock_accept(&s, lsd, NULL, NULL), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(tcp_reclaim_rank(child), 2);
 }
 END_TEST
 

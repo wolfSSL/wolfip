@@ -549,6 +549,35 @@ static void inject_tcp_segment(struct wolfIP *s, unsigned int if_idx, ip4 src_ip
     tcp_input(s, if_idx, &seg, sizeof(struct wolfIP_eth_frame) + IP_HEADER_LEN + TCP_HEADER_LEN);
 }
 
+static struct tsocket *parked_child(struct wolfIP *s, int listen_sd)
+{
+    int i;
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+
+        if ((t->proto == WI_IPPROTO_TCP) &&
+                (tcp_parked_parent(t) == &s->tcpsockets[SOCKET_UNMARK(listen_sd)]))
+            return t;
+    }
+    return NULL;
+}
+
+/* accept() parks the child, the peer ACKs its SYN-ACK, accept() hands it out. */
+static int accept_after_handshake(struct wolfIP *s, int listen_sd,
+        struct wolfIP_sockaddr *addr, socklen_t *addrlen)
+{
+    struct tsocket *t;
+
+    ck_assert_int_eq(wolfIP_sock_accept(s, listen_sd, addr, addrlen), -WOLFIP_EAGAIN);
+    t = parked_child(s, listen_sd);
+    ck_assert_ptr_nonnull(t);
+    inject_tcp_segment(s, t->if_idx, t->remote_ip, t->local_ip, t->dst_port,
+            t->src_port, t->sock.tcp.ack, t->sock.tcp.seq + 1, TCP_FLAG_ACK);
+    ck_assert_int_eq(t->sock.tcp.state, TCP_ESTABLISHED);
+    return wolfIP_sock_accept(s, listen_sd, addr, addrlen);
+}
+
 static int tcp_option_find(const struct wolfIP_tcp_seg *tcp, uint8_t kind)
 {
     const uint8_t *opt = tcp->data;

@@ -4313,16 +4313,18 @@ START_TEST(test_sock_accept_success)
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 1234);
 
-    new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
-    ck_assert_int_gt(new_sd, 0);
-    new_ts = &s.tcpsockets[SOCKET_UNMARK(new_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EAGAIN);
+    new_ts = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(new_ts);
     /* After accept(), socket stays in SYN_RCVD until final ACK completes
      * the three-way handshake (SYN-ACK retransmission fix). */
     ck_assert_int_eq(new_ts->sock.tcp.state, TCP_SYN_RCVD);
-    ck_assert_uint_eq(sin.sin_port, ee16(new_ts->dst_port));
-
     listen_ts = &s.tcpsockets[SOCKET_UNMARK(listen_sd)];
     ck_assert_int_eq(listen_ts->sock.tcp.state, TCP_LISTEN);
+
+    new_sd = accept_after_handshake(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
+    ck_assert_int_eq(SOCKET_UNMARK(new_sd), (int)(new_ts - s.tcpsockets));
+    ck_assert_uint_eq(sin.sin_port, ee16(new_ts->dst_port));
 }
 END_TEST
 
@@ -4330,7 +4332,6 @@ START_TEST(test_sock_accept_ack_with_payload_completes_handshake)
 {
     struct wolfIP s;
     int listen_sd;
-    int new_sd;
     struct wolfIP_sockaddr_in sin;
     socklen_t alen = sizeof(sin);
     struct tsocket *new_ts;
@@ -4359,9 +4360,9 @@ START_TEST(test_sock_accept_ack_with_payload_completes_handshake)
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, local_port);
 
-    new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
-    ck_assert_int_gt(new_sd, 0);
-    new_ts = &s.tcpsockets[SOCKET_UNMARK(new_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EAGAIN);
+    new_ts = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(new_ts);
     ck_assert_int_eq(new_ts->sock.tcp.state, TCP_SYN_RCVD);
 
     memset(buf, 0, sizeof(buf));
@@ -4396,7 +4397,6 @@ START_TEST(test_sock_accept_ack_at_snd_nxt_completes_handshake)
 {
     struct wolfIP s;
     int listen_sd;
-    int new_sd;
     struct wolfIP_sockaddr_in sin;
     socklen_t alen = sizeof(sin);
     struct tsocket *new_ts;
@@ -4421,9 +4421,9 @@ START_TEST(test_sock_accept_ack_at_snd_nxt_completes_handshake)
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, local_port);
 
-    new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
-    ck_assert_int_gt(new_sd, 0);
-    new_ts = &s.tcpsockets[SOCKET_UNMARK(new_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EAGAIN);
+    new_ts = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(new_ts);
     ck_assert_int_eq(new_ts->sock.tcp.state, TCP_SYN_RCVD);
 
     memset(&ackseg, 0, sizeof(ackseg));
@@ -4453,7 +4453,6 @@ START_TEST(test_sock_accept_ack_psh_with_payload_completes_handshake)
 {
     struct wolfIP s;
     int listen_sd;
-    int new_sd;
     struct wolfIP_sockaddr_in sin;
     socklen_t alen = sizeof(sin);
     struct tsocket *new_ts;
@@ -4482,9 +4481,9 @@ START_TEST(test_sock_accept_ack_psh_with_payload_completes_handshake)
 
     inject_tcp_syn(&s, TEST_PRIMARY_IF, local_ip, local_port);
 
-    new_sd = wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen);
-    ck_assert_int_gt(new_sd, 0);
-    new_ts = &s.tcpsockets[SOCKET_UNMARK(new_sd)];
+    ck_assert_int_eq(wolfIP_sock_accept(&s, listen_sd, (struct wolfIP_sockaddr *)&sin, &alen), -WOLFIP_EAGAIN);
+    new_ts = parked_child(&s, listen_sd);
+    ck_assert_ptr_nonnull(new_ts);
     ck_assert_int_eq(new_ts->sock.tcp.state, TCP_SYN_RCVD);
 
     memset(buf, 0, sizeof(buf));
