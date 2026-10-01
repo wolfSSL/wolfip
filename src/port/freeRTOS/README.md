@@ -107,6 +107,7 @@ Defined in `bsd_socket.c`:
 - `WOLFIP_FREERTOS_POLL_MIN_MS` (default: `1`)
 - `WOLFIP_FREERTOS_POLL_MAX_MS` (default: `5`)
 - `WOLFIP_BSD_DEBUG_CALLBACK` (default: `0`) - set to `1` to log socket callbacks from the poll task
+- `WOLFIP_BSD_CLOSE_LINGER_MS` (default: `10000`) - how long `close()` waits for room to queue its FIN before it aborts the connection
 
 Override via compiler flags, for example:
 
@@ -120,3 +121,5 @@ CFLAGS += -DWOLFIP_FREERTOS_BSD_MAX_FDS=32
 - File descriptors returned by this layer are wrapper FDs, not raw wolfIP internal FDs.
 - The wrapper is intended for task context (not ISR context).
 - Blocking calls wait indefinitely by default. `setsockopt(fd, WOLFIP_SOL_SOCKET, WOLFIP_SO_RCVTIMEO, &tv, sizeof(tv))` bounds `accept`, `recv` and `recvfrom`, and `WOLFIP_SO_SNDTIMEO` bounds `connect`, `send` and `sendto`, with `tv` a `struct wolfIP_timeval` and `optlen` exactly its size; each bounds the whole call, not each wait inside it. An expired wait returns -1 with `socket_last_error()` set to `WOLFIP_EAGAIN`; as on Linux, an all-zero `tv` or one too long for `TickType_t` waits without bound, a negative `tv_sec` does not wait, and a `tv_usec` outside [0, 999999] fails with `WOLFIP_EDOM`. A `connect()` that runs out of time fails with `WOLFIP_EINPROGRESS` instead, while the handshake goes on. `getsockopt()` reads the current values back.
+- `accept()` returns only connections whose handshake has completed; until then wolfIP holds them back (see `wolfIP_sock_accept()` in `docs/API.md`), and `accept()` waits.
+- `close()` returns once its FIN is queued, and wolfIP finishes the FIN exchange on its own. It waits only while the transmit buffer has no room for the FIN, for at most `WOLFIP_BSD_CLOSE_LINGER_MS`, and then resets the connection with `wolfIP_sock_abort()`.
