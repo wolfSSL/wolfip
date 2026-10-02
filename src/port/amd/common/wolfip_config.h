@@ -58,7 +58,7 @@
 #define TXBUF_SIZE              (LINK_MTU * 6)
 #else
 #define MAX_TCPSOCKETS          2
-#define MAX_UDPSOCKETS          4
+#define MAX_UDPSOCKETS          3
 #define MAX_ICMPSOCKETS         1
 #define RXBUF_SIZE              (LINK_MTU * 4)
 #define TXBUF_SIZE              (LINK_MTU * 4)
