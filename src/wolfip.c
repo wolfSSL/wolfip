@@ -8958,10 +8958,23 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
                 if (ts->callback)
                     wolfIP_wake(s);
             }
-            if (sin) {
-                sin->sin_family = AF_INET;
-                sin->sin_port = ee16(newts->dst_port);
-                sin->sin_addr.s_addr = ee32(newts->remote_ip);
+            if (addr) {
+                /* Reported in the accepted socket's family, as in the
+                 * SYN_RCVD path below. */
+                if (tsocket_getname(newts, addr, &caller_len, 1) != 0) {
+                    close_socket(newts);
+                    tcp_listener_revert_to_listen(ts);
+                    return -WOLFIP_EINVAL;
+                }
+            }
+            if (addrlen) {
+#if WOLFIP_IPV6
+                *addrlen = (newts->domain == AF_INET6) ?
+                        (socklen_t)sizeof(struct wolfIP_sockaddr_in6) :
+                        (socklen_t)sizeof(struct wolfIP_sockaddr_in);
+#else
+                *addrlen = sizeof(struct wolfIP_sockaddr_in);
+#endif
             }
             return sock_fd_open(s, MARK_TCP_SOCKET, (int)(newts - s->tcpsockets));
         }

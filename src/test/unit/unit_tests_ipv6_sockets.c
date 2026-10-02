@@ -1065,6 +1065,19 @@ START_TEST(test_sock6_tcp_listener_accepts_an_ipv6_connection)
     now += 100;
     wolfIP_poll(&s, now);
 
+    /* The SYN-ACK goes out over IPv6, from the address that was addressed. */
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    ck_assert_uint_eq(seg->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
+                      TCP_FLAG_SYN | TCP_FLAG_ACK);
+    ip6_hdr_get_src(&seg->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &local), 0);
+    /* Complete the handshake so the connection is ESTABLISHED before accept(). */
+    sock6_deliver_tcp(&s, &peer, &local, 40000, 8080, 0x99aabbcc + 1,
+                      ee32(seg->seq) + 1, TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+
     conn_fd = wolfIP_sock_accept(&s, listen_fd,
                                  (struct wolfIP_sockaddr *)&from, &fromlen);
     ck_assert_int_ge(conn_fd, 0);
@@ -1072,16 +1085,6 @@ START_TEST(test_sock6_tcp_listener_accepts_an_ipv6_connection)
     ck_assert_uint_eq(ee16(from.sin6_port), 40000);
     memcpy(got.addr, &from.sin6_addr, 16);
     ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
-
-    /* The SYN-ACK goes out over IPv6, from the address that was addressed. */
-    now += 100;
-    wolfIP_poll(&s, now);
-    seg = sock6_last_tcp(staging);
-    ck_assert_ptr_nonnull(seg);
-    ck_assert_uint_eq(seg->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
-                      TCP_FLAG_SYN | TCP_FLAG_ACK);
-    ip6_hdr_get_src(&seg->ip6, &got);
-    ck_assert_int_eq(ip6_cmp(&got, &local), 0);
 }
 END_TEST
 
@@ -2474,21 +2477,24 @@ START_TEST(test_sock6_tcp_listener_resets_stray_ack_from_another_peer)
                       TCP_FLAG_SYN, NULL, 0);
     now += 100;
     wolfIP_poll(&s, now);
-    conn_fd = wolfIP_sock_accept(&s, listen_fd,
-                                 (struct wolfIP_sockaddr *)&from, &fromlen);
-    ck_assert_int_ge(conn_fd, 0);
-    now += 100;
-    wolfIP_poll(&s, now);
     seg = sock6_last_tcp(staging);
     ck_assert_ptr_nonnull(seg);
     ck_assert_uint_eq(seg->flags & (TCP_FLAG_SYN | TCP_FLAG_ACK),
                       TCP_FLAG_SYN | TCP_FLAG_ACK);
+    /* Complete the handshake so the connection is ESTABLISHED before accept(). */
     sock6_deliver_tcp(&s, &peer, &local, 41100, 8200, 0x3001,
                       ee32(seg->seq) + 1, TCP_FLAG_ACK, NULL, 0);
     now += 100;
     wolfIP_poll(&s, now);
+    conn_fd = wolfIP_sock_accept(&s, listen_fd,
+                                 (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_ge(conn_fd, 0);
     ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(conn_fd)].sock.tcp.state,
                      TCP_ESTABLISHED);
+    /* Let the child flush any handshake ACK it owes, so the reset below is
+     * the last frame on the wire. */
+    now += 100;
+    wolfIP_poll(&s, now);
 
     /* Same ports, different peer: nothing here owns that connection, so the
      * listener must reset it. */
@@ -2560,11 +2566,16 @@ START_TEST(test_sock6_tcp_listener_revert_clears_the_ipv6_peer)
                       TCP_FLAG_SYN, NULL, 0);
     now += 100;
     wolfIP_poll(&s, now);
+    /* Complete the handshake so accept() has an ESTABLISHED connection. */
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    sock6_deliver_tcp(&s, &peer, &local, 41200, 8201, 0x5001,
+                      ee32(seg->seq) + 1, TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
     conn_fd = wolfIP_sock_accept(&s, listen_fd,
                                  (struct wolfIP_sockaddr *)&from, &fromlen);
     ck_assert_int_ge(conn_fd, 0);
-    now += 100;
-    wolfIP_poll(&s, now);
 
     /* accept() hands the connection to the child and reverts the listener:
      * no peer of any family may survive that. */
