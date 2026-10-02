@@ -260,6 +260,36 @@ void gem_dump_state(void)
 /* ---------------------------------------------------------------------
  * Public init
  * ------------------------------------------------------------------- */
+/* Set once a downshift has moved the reference clock off the platform's rate. */
+static int gem_ref_clk_downshifted = 0;
+
+/* Program the MAC for a resolved speed and duplex. Writes the whole field, not
+ * a relative clear: gem_link_resolve() can reach this more than once. */
+static void gem_set_mac_speed(int speed, int fd)
+{
+    uint32_t cfg = GEM_NWCFG;
+
+    cfg &= ~(NWCFG_1000 | NWCFG_SPEED100 | NWCFG_FDEN);
+    if (speed == 1000)
+        cfg |= NWCFG_1000;
+    else if (speed == 100)
+        cfg |= NWCFG_SPEED100;
+    if (fd)
+        cfg |= NWCFG_FDEN;
+    GEM_NWCFG = cfg;
+
+    /* Gigabit must not rewrite the clock until a downshift has moved it: that
+     * rate is the platform's, and under SGMII the serdes owns it. */
+    if (speed != 1000) {
+        gem_set_ref_clk(speed);
+        gem_ref_clk_downshifted = 1;
+    }
+    else if (gem_ref_clk_downshifted) {
+        gem_set_ref_clk(1000);
+        gem_ref_clk_downshifted = 0;
+    }
+}
+
 int amd_eth_init(struct wolfIP_ll_dev *ll)
 {
 #ifndef GEM_PHY_ADDR
@@ -462,21 +492,7 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
         return -11;
     }
 
-    /* If PHY ended up at 10/100, downshift the MAC and re-program the
-     * RGMII reference clock to match (no-op on SoCs where the platform
-     * firmware owns the GEM clock). */
-    if (speed != 1000) {
-        uint32_t cfg = GEM_NWCFG;
-        cfg &= ~NWCFG_1000;
-        if (speed == 100)
-            cfg |= NWCFG_SPEED100;
-        else
-            cfg &= ~NWCFG_SPEED100;
-        if (!fd)
-            cfg &= ~NWCFG_FDEN;
-        GEM_NWCFG = cfg;
-        gem_set_ref_clk(speed);
-    }
+    gem_set_mac_speed(speed, fd);
 
 #ifdef ZYNQMP_GEM_SGMII
     /* Bring up the PCS side. A MAC-to-PHY SGMII connection is normally a
@@ -543,4 +559,21 @@ int amd_eth_init(struct wolfIP_ll_dev *ll)
 
     link_up = (gem_phy_link_status(gem_phy_addr) == 1) ? 1 : 0;
     return (link_up << 8) | (int)gem_phy_addr;
+}
+
+int gem_link_resolve(void)
+{
+    int link;
+    int speed = 1000;
+    int fd = 1;
+
+    link = gem_phy_link_status(gem_phy_addr);
+    if (link <= 0) {
+        return link;
+    }
+    if (gem_phy_link_speed(gem_phy_addr, &speed, &fd) < 0) {
+        return -1;
+    }
+    gem_set_mac_speed(speed, fd);
+    return 1;
 }

@@ -24,6 +24,11 @@
  */
 int amd_eth_init(struct wolfIP_ll_dev *ll);
 
+/* Finishes bring-up when the PHY driver was built not to block on the link
+ * (GEM_PHY_*_TIMEOUT_MS = 0): poll until link up, which also programs the MAC
+ * speed. Returns 1 up, 0 down, < 0 on MDIO error. */
+int gem_link_resolve(void);
+
 /* MDIO helpers exposed for the PHY drivers. */
 int gem_mdio_read(uint8_t phy_addr, uint8_t reg, uint16_t *out);
 int gem_mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t value);
