@@ -51,6 +51,7 @@ static int sem_allocs;
 static int sem_frees;
 static tsocket_cb registered_cb;
 static void *registered_arg;
+static wolfIP_wake_cb registered_wake_cb;
 static int fake_internal_fd = MARK_TCP_SOCKET;
 static int close_calls;
 static int last_socket_domain;
@@ -259,6 +260,19 @@ void wolfIP_register_callback(struct wolfIP *s, int fd, tsocket_cb cb, void *arg
     (void)fd;
     registered_cb = cb;
     registered_arg = arg;
+}
+
+int wolfIP_sock_abort(struct wolfIP *s, int fd)
+{
+    (void)s; (void)fd;
+    return 0;
+}
+
+void wolfIP_set_wake_cb(struct wolfIP *s, wolfIP_wake_cb cb, void *arg)
+{
+    (void)s;
+    (void)arg;
+    registered_wake_cb = cb;
 }
 
 #include "../port/freeRTOS/bsd_socket.c"
