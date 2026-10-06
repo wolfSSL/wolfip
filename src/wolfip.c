@@ -248,6 +248,18 @@ struct wolfIP_icmp_packet;
 #define PKT_FLAG_RETRANS 0x08U
 #define PKT_FLAG_WAS_RETRANS 0x10U
 
+/* Ingress interface for a scoped (IPv6 link-local) datagram, carried in the
+ * high bits of pkt_desc.flags so the descriptor stays 16 bytes. The low 5
+ * bits are the PKT_FLAG_* lifecycle bits; bits 8-15 hold the interface index.
+ * Zero for IPv4 and for any queue that carries no scoped IPv6 source. */
+#define PKT_DESC_IFIDX_SHIFT 8
+#define PKT_DESC_IFIDX_MASK  0xFFU
+#define PKT_DESC_IFIDX(flags) \
+    (((flags) >> PKT_DESC_IFIDX_SHIFT) & PKT_DESC_IFIDX_MASK)
+#define PKT_DESC_SET_IFIDX(flags, ifidx) \
+    (((flags) & ~((uint32_t)PKT_DESC_IFIDX_MASK << PKT_DESC_IFIDX_SHIFT)) \
+     | ((((uint32_t)(ifidx)) & PKT_DESC_IFIDX_MASK) << PKT_DESC_IFIDX_SHIFT))
+
 #define TX_WRITABLE_THRESHOLD 1
 
 #define TCP_SACK_MAX_BLOCKS 4

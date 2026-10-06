@@ -2029,6 +2029,9 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
             continue;
         matched = 1;
         if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
+            struct pkt_desc *d = fifo_peek(&t->sock.udp.rxbuf);
+            if (d)
+                d->flags = PKT_DESC_SET_IFIDX(d->flags, if_idx);
             t->last_pkt_ttl = udp->ip6.hop_limit;
             t->events |= CB_EVENT_READABLE;
         }
@@ -2467,7 +2470,7 @@ static int udp6_recvfrom(struct wolfIP *s, struct tsocket *t, void *buf,
         if (addrlen && (*addrlen < want))
             return -WOLFIP_EINVAL;
         if (sock_addr_from_ip6(src_addr, &want, &src, ee16(udp->src_port),
-                               t->if_idx) != 0)
+                               PKT_DESC_IFIDX(desc->flags)) != 0)
             return -WOLFIP_EINVAL;
         if (addrlen)
             *addrlen = want;
