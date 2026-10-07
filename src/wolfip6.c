@@ -2064,7 +2064,10 @@ static void udp6_try_recv(struct wolfIP *s, unsigned int if_idx,
             continue;
         matched = 1;
         if (fifo_push(&t->sock.udp.rxbuf, udp, frame_len) == 0) {
-            struct pkt_desc *d = fifo_peek(&t->sock.udp.rxbuf);
+            /* Stamp the ingress interface on the descriptor just pushed,
+             * not on fifo_peek() (the head): with a non-empty queue the head
+             * is an earlier datagram and the new one would keep a zero scope. */
+            struct pkt_desc *d = fifo_last_desc(&t->sock.udp.rxbuf);
             if (d)
                 d->flags = PKT_DESC_SET_IFIDX(d->flags, if_idx);
             t->last_pkt_ttl = udp->ip6.hop_limit;

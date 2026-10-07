@@ -375,6 +375,19 @@ static struct pkt_desc *fifo_peek(struct fifo *f)
     return (struct pkt_desc *)((uint8_t *)f->data + f->tail);
 }
 
+#if WOLFIP_IPV6
+/* Return the descriptor of the frame most recently pushed (the tail), or
+ * NULL when nothing has been pushed yet. fifo_peek() returns the head, so a
+ * caller annotating the frame it just queued must reach the tail: the write
+ * position fifo_push() records in last_pos. Used only by udp6_try_recv. */
+static struct pkt_desc *fifo_last_desc(struct fifo *f)
+{
+    if (!f->last_valid)
+        return NULL;
+    return (struct pkt_desc *)((uint8_t *)f->data + f->last_pos);
+}
+#endif /* WOLFIP_IPV6 */
+
 /* Continue reading starting from a descriptor returned by fifo_peek */
 static struct pkt_desc *fifo_next(struct fifo *f, struct pkt_desc *desc)
 {
@@ -6570,7 +6583,11 @@ static void tcp_ack_len(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     }
     {
         struct pkt_desc *fresh_desc = NULL;
-        uint32_t ack_ip_len = transport_len;
+        /* The IP datagram length, not just the TCP segment: tcp_process_ts
+         * bounds option parsing against the full frame length (ETH + IP +
+         * TCP), as the data path does. Omitting the IP header left the
+         * timestamp option out of range and forced the coarse RTT sample. */
+        uint32_t ack_ip_len = IP_HEADER_LEN + transport_len;
         uint32_t ack_hdr_len = tcp_data_offset_bytes(tcp->hlen);
         uint32_t ack_frame_len = 0;
         /* Reclaim descriptors the peer has already accounted for: ACKED
