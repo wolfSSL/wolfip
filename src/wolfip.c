@@ -1749,6 +1749,14 @@ struct wolfIP {
      * milliseconds leaves last_tick + delay looking weeks into the future.
      * Timers are therefore armed only once the tick domain is known. */
     uint8_t tick_valid;
+#if WOLFIP_IPV6
+    /* RFC 4443 section 2.4(f): rate limit for the ICMPv6 errors this stack
+     * originates (see icmp6_error_rate_ok in wolfip6.c). Token bucket:
+     * icmp6_err_tokens refills one every ICMP6_ERR_REFILL_MS up to
+     * ICMP6_ERR_BUCKET_MAX. */
+    uint32_t icmp6_err_tokens;
+    uint64_t icmp6_err_refill;
+#endif
 #if WOLFIP_ENABLE_FORWARDING
     uint32_t route_generation;
     struct wolfIP_route_entry routes[WOLFIP_MAX_ROUTES];
@@ -9316,12 +9324,15 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
          * destination, not by the socket: a v4-mapped destination on an
          * AF_INET6 socket goes out as IPv4 (RFC 3493 s3.7) and falls
          * through to the code below unchanged. Only a real IPv6
-         * destination takes the IPv6 path. */
+         * destination takes the IPv6 path. A connected socket keeps the
+         * peer connect() set - POSIX: a connected sendto ignores
+         * dest_addr - so the destination is read only when not connected,
+         * matching the IPv4 path's !connected guard below. */
         if (ts->domain == AF_INET6) {
             ip6 dst6;
             uint16_t dport = 0;
 
-            if (dest_addr) {
+            if (dest_addr && !ts->sock.udp.connected) {
                 unsigned int scope6 = 0;
 
                 if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, &dport,
@@ -10960,6 +10971,12 @@ static int bind_port_in_use6(const struct tsocket *arr, int n,
         return 0;
     for (i = 0; i < n; i++) {
         const struct tsocket *tk = &arr[i];
+        /* A dual-stack socket bound to the wildcard through the IPv4 path
+         * never set bound_v6 or peer_is_v6, yet it holds :: in the IPv6
+         * space too: its bound_local_ip6 (the recorded ::) is the claim, so
+         * it conflicts with a v6-only or address-specific bind on the port. */
+        int dual_stack_wc = (tk->domain == AF_INET6) && (!tk->v6only) &&
+                (tk->bound != 0) && ip6_is_unspecified(&tk->bound_local_ip6);
 
         if (tk == self)
             continue;
@@ -10970,11 +10987,11 @@ static int bind_port_in_use6(const struct tsocket *arr, int n,
          * let an explicit bind land on top of a live connection's local
          * endpoint. Such a socket's address is in local_ip6, the bound
          * one's in bound_local_ip6. */
-        if (!tk->bound_v6 && !TSOCKET_IS_V6(tk))
+        if (!tk->bound_v6 && !TSOCKET_IS_V6(tk) && !dual_stack_wc)
             continue;
         {
-            const ip6 *held = tk->bound_v6 ? &tk->bound_local_ip6
-                                           : &tk->local_ip6;
+            const ip6 *held = (tk->bound_v6 || dual_stack_wc) ?
+                    &tk->bound_local_ip6 : &tk->local_ip6;
 
             if (!ip6_is_unspecified(held) && !ip6_is_unspecified(new_local) &&
                     (ip6_cmp(held, new_local) != 0))
@@ -11124,6 +11141,14 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
         {
             struct wolfIP_sockaddr_in sin4;
             int rc;
+
+            /* A dual-stack :: also owns the IPv6 wildcard space: a v6only
+             * or address-specific AF_INET6 socket on the same port is a
+             * conflict the IPv4 check below cannot see. A v4-mapped bind is
+             * IPv4-only and makes no such claim. */
+            if (ip6_is_unspecified(&a) &&
+                    bind_port_in_use6(arr, arr_len, ts, &a, port))
+                return -1;
 
             memset(&sin4, 0, sizeof(sin4));
             sin4.sin_family = AF_INET;
@@ -13150,6 +13175,11 @@ void wolfIP_init(struct wolfIP *s)
         s->ll_dev[i].mtu = LINK_MTU;
         s->ipconf[i].ll = wolfIP_ll_at(s, i);
     }
+#if WOLFIP_IPV6
+    /* Start the ICMPv6 error rate-limit bucket full: a fresh stack may burst
+     * ICMP6_ERR_BUCKET_MAX errors before the refill throttles it. */
+    s->icmp6_err_tokens = ICMP6_ERR_BUCKET_MAX;
+#endif
 #if WOLFIP_ENABLE_LOOPBACK
     if (s->if_count > WOLFIP_LOOPBACK_IF_IDX) {
         struct wolfIP_ll_dev *loop = wolfIP_ll_at(s, WOLFIP_LOOPBACK_IF_IDX);

@@ -95,6 +95,13 @@
 #define ICMP6_PARAM_NEXTHDR    1
 #define ICMP6_PARAM_OPTION     2
 
+/* RFC 4443 section 2.4(f): the stack MUST limit the rate of the ICMPv6
+ * errors it originates, so a flood of provoking packets (unmatched UDP,
+ * unknown next header) cannot make it answer one error per packet. Token
+ * bucket: ICMP6_ERR_BUCKET_MAX in burst, one token every ICMP6_ERR_REFILL_MS. */
+#define ICMP6_ERR_BUCKET_MAX   10
+#define ICMP6_ERR_REFILL_MS    100
+
 /* Type 128 is the first informational type. */
 #define ICMP6_INFORMATIONAL_MIN 128
 
@@ -1845,6 +1852,32 @@ static int icmp6_error_allowed(uint8_t out_type, uint8_t out_code,
  * budget is computed from 1280 downwards rather than from the payload up.
  * Unlike ICMPv4's fixed 8 bytes, this is deliberately as much as possible:
  * it is what lets the receiving node match the error to a connection. */
+/* RFC 4443 section 2.4(f): rate-limit the ICMPv6 errors this stack
+ * originates. Token bucket - ICMP6_ERR_BUCKET_MAX in burst, one token every
+ * ICMP6_ERR_REFILL_MS - so a sender cannot make the stack answer one error
+ * per packet it sends. Returns 1 when an error may go out, 0 when the bucket
+ * is empty. The tick is in milliseconds and wraps in 32 bits; the elapsed
+ * since the last refill is taken mod 2^32, which is correct for a refill
+ * interval far shorter than the wrap period. */
+static int icmp6_error_rate_ok(struct wolfIP *s)
+{
+    uint32_t now = (uint32_t)s->last_tick;
+    uint32_t elapsed = now - (uint32_t)s->icmp6_err_refill;
+    uint32_t add = elapsed / ICMP6_ERR_REFILL_MS;
+
+    if (add > 0) {
+        uint32_t tokens = s->icmp6_err_tokens + add;
+
+        s->icmp6_err_refill += (uint64_t)add * ICMP6_ERR_REFILL_MS;
+        s->icmp6_err_tokens = (tokens > ICMP6_ERR_BUCKET_MAX) ?
+                ICMP6_ERR_BUCKET_MAX : tokens;
+    }
+    if (s->icmp6_err_tokens == 0)
+        return 0;
+    s->icmp6_err_tokens--;
+    return 1;
+}
+
 static void icmp6_send_error(struct wolfIP *s, unsigned int if_idx,
                              const struct wolfIP_ip6_packet *orig,
                              uint32_t orig_frame_len, uint8_t type,
@@ -1874,6 +1907,8 @@ static void icmp6_send_error(struct wolfIP *s, unsigned int if_idx,
     if (!icmp6_error_allowed(type, code, orig->next_hdr, orig_type,
                              &orig_src, &orig_dst))
         return;
+    if (!icmp6_error_rate_ok(s))
+        return; /* RFC 4443 section 2.4(f): rate limit exhausted */
 
     /* The reply is sourced from the address the offending packet was sent
      * to when that is one of ours, so the peer recognises it; otherwise
