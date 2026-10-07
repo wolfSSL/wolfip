@@ -6472,7 +6472,12 @@ static void tcp_ack_len(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
     desc = fifo_peek(&t->sock.tcp.txbuf);
     while ((desc) && (desc->flags & PKT_FLAG_SENT)) {
         struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
-        uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+        /* ip.len is only set for IPv4 (ip_output_add_header); an IPv6 segment
+         * is promoted on the wire and keeps ip.len == 0, so read the length
+         * the way the send path does (desc->len fallback) or the subtraction
+         * below wraps and a not-yet-acked segment reads as acked. */
+        uint32_t seg_len = tcp_tx_desc_ip_len(t, desc, seg) -
+                (IP_HEADER_LEN + (seg->hlen >> 2));
         if (seg_len == 0) {
             if (desc == fifo_peek(&t->sock.tcp.txbuf)) {
                 /* fifo_pop() removes the oldest descriptor, which is the
@@ -6605,7 +6610,8 @@ static void tcp_ack_len(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
             struct wolfIP_tcp_seg *seg =
                     (struct wolfIP_tcp_seg *)(t->txmem + desc->pos + sizeof(*desc));
             uint32_t seg_len =
-                    ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+                    tcp_tx_desc_ip_len(t, desc, seg) -
+                    (IP_HEADER_LEN + (seg->hlen >> 2));
             if ((desc->flags & PKT_FLAG_ACKED) ||
                     ((desc->flags & PKT_FLAG_SENT) && (seg_len == 0))) {
                 struct pkt_desc *popped = fifo_pop(&t->sock.tcp.txbuf);
@@ -7820,7 +7826,8 @@ static void tcp_resync_inflight(struct wolfIP *s, struct tsocket *ts, uint64_t n
         struct pkt_desc *next;
         if (scan->flags & PKT_FLAG_SENT) {
             struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)(ts->txmem + scan->pos + sizeof(*scan));
-            uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            uint32_t seg_len = tcp_tx_desc_ip_len(ts, scan, seg) -
+                    (IP_HEADER_LEN + (seg->hlen >> 2));
             if (seg_len > 0) {
                 calc_in_flight += seg_len;
                 has_sent_payload = 1;
@@ -7866,7 +7873,8 @@ static struct pkt_desc *tcp_find_pending_retrans(struct tsocket *ts, struct pkt_
         if ((scan->flags & PKT_FLAG_RETRANS) && !(scan->flags & PKT_FLAG_SENT)) {
             struct wolfIP_tcp_seg *seg =
                 (struct wolfIP_tcp_seg *)(ts->txmem + scan->pos + sizeof(*scan));
-            uint32_t seg_len = ee16(seg->ip.len) - (IP_HEADER_LEN + (seg->hlen >> 2));
+            uint32_t seg_len = tcp_tx_desc_ip_len(ts, scan, seg) -
+                    (IP_HEADER_LEN + (seg->hlen >> 2));
             if (seg_len > 0)
                 return scan;
         }
