@@ -167,9 +167,11 @@ struct wolfIP_icmp_packet;
 #if WOLFIP_IPV6
 #define TSOCKET_IS_V6(t) ((t)->peer_is_v6)
 #define TSOCKET_IS_V6ONLY(t) (((t)->domain == AF_INET6) && (t)->v6only)
+#define TSOCKET_BOUND_V6(t) ((t)->bound_v6)
 #else
 #define TSOCKET_IS_V6(t) (0)
 #define TSOCKET_IS_V6ONLY(t) (0)
+#define TSOCKET_BOUND_V6(t) (0)
 #endif
 #define ETH_TYPE_IP 0x0800
 #define ETH_TYPE_ARP 0x0806
@@ -3641,14 +3643,15 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
          * src_port != 0 (a bound slot), not local_ip != 0: a socket bound
          * before any interface had an address snapshots local_ip == 0 and
          * must still receive once the address arrives. */
-        /* A socket that asked for IPv6 only takes no IPv4 traffic. It
-         * should have no IPv4 identity to match on either, since its bind
-         * never went through the IPv4 path - this is the second lock on the
-         * same door, because the cost of the first one being bypassed is
-         * delivering to an application that declared it would not parse
-         * these addresses. */
+        /* A socket that asked for IPv6 only takes no IPv4 traffic. A socket
+         * bound to a specific IPv6 address does too: neither went through the
+         * IPv4 bind path, so bound_local_ip == IPADDR_ANY means "no IPv4
+         * identity", not a wildcard. This is the second lock on the same door,
+         * because the cost of the first one being bypassed is delivering to an
+         * application that declared it would not parse these addresses. */
         int bound_match = (t->src_port != 0) &&
                 !TSOCKET_IS_V6ONLY(t) &&
+                !TSOCKET_BOUND_V6(t) &&
                 ((t->bound_local_ip == IPADDR_ANY) ||
                  (t->bound_local_ip == dst_ip));
         int addr_match;
@@ -6844,8 +6847,13 @@ static int tsocket_flow_bound_matches(const struct tsocket *t,
         return (ip6_is_unspecified(&t->bound_local_ip6) ||
                 (ip6_cmp(&t->bound_local_ip6, &flow->dst6) == 0)) ? 1 : 0;
     }
-    /* An IPv6-only socket takes no IPv4 traffic, mapped or otherwise. */
+    /* An IPv6-only socket takes no IPv4 traffic, mapped or otherwise. A
+     * socket bound to a specific IPv6 address does too: sock_bind6() leaves
+     * bound_local_ip == IPADDR_ANY, which means "no IPv4 identity", not a
+     * wildcard. */
     if ((t->domain == AF_INET6) && t->v6only)
+        return 0;
+    if (TSOCKET_BOUND_V6(t))
         return 0;
 #endif
     return ((t->bound_local_ip == IPADDR_ANY) ||
