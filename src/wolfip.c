@@ -3673,7 +3673,15 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
         }
 #ifdef IP_MULTICAST
         if (wolfIP_ip_is_multicast(dst_ip)) {
+            /* The group-membership match below bypasses bound_match and
+             * peer_match, so the IPv6 filters have to be re-asserted here:
+             * a v6only, IPv6-bound or IPv6-connected socket that joined an
+             * IPv4 group (setsockopt allows it) must still take no IPv4
+             * traffic. RFC 3493 s5.3. */
             addr_match = udp_socket_has_mcast(t, if_idx, dst_ip) &&
+                         !TSOCKET_IS_V6ONLY(t) &&
+                         !TSOCKET_BOUND_V6(t) &&
+                         !TSOCKET_IS_V6(t) &&
                          (t->sock.udp.connected == 0 ||
                           t->remote_ip == 0 || t->remote_ip == src_ip ||
                           t->remote_ip == dst_ip);
