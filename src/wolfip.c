@@ -9404,7 +9404,14 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             ip6 dst6;
             uint16_t dport = 0;
 
-            if (dest_addr && !ts->sock.udp.connected) {
+            if (ts->sock.udp.connected) {
+                /* A connected socket keeps the peer connect() set: POSIX says
+                 * a connected sendto ignores dest_addr, so the stored peer is
+                 * the destination. Drop the alias so the IPv4 body below does
+                 * not re-parse a sockaddr_in6 as a sockaddr_in (sin6_flowinfo
+                 * would read as the IPv4 address). */
+                sin = NULL;
+            } else if (dest_addr) {
                 unsigned int scope6 = 0;
 
                 if (sock_addr_to_ip6(dest_addr, addrlen, &dst6, &dport,

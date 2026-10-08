@@ -1391,6 +1391,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_udp_af_inet_socket_never_receives_ipv6);
     tcase_add_test(tc_proto, test_sock6_udp_connected_socket_filters_by_peer);
     tcase_add_test(tc_proto, test_sock6_udp_connected_v6_peer_rejects_ipv4);
+    tcase_add_test(tc_proto, test_sock6_udp_connected_v4mapped_sendto_ignores_sockaddr_in6);
 #ifdef IP_MULTICAST
     tcase_add_test(tc_proto, test_sock6_udp_v6_peer_joined_v4_mcast_rejects_ipv4);
     tcase_add_test(tc_proto, test_sock6_udp_unconnected_v6_sendto_keeps_v4_mcast);

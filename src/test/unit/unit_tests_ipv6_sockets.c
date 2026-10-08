@@ -733,6 +733,66 @@ START_TEST(test_sock6_udp_connected_v6_peer_rejects_ipv4)
 }
 END_TEST
 
+/* A connected AF_INET6 socket whose peer is v4-mapped sends as IPv4, and a
+ * connected sendto ignores dest_addr: the IPv4 body must use the stored peer,
+ * not re-parse a sockaddr_in6 (sin6_flowinfo would read as the IPv4 address,
+ * sending to an attacker-chosen host). */
+START_TEST(test_sock6_udp_connected_v4mapped_sendto_ignores_sockaddr_in6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 peer;
+    struct wolfIP_sockaddr_in6 dst6;
+    struct wolfIP_udp_datagram *sent;
+    uint8_t staged[LINK_MTU + ETH_HEADER_LEN];
+    const uint8_t peer_mac[6] = {0x02, 0xDD, 0, 0, 0, 1};
+    ip6 mapped;
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    /* Connect to a v4-mapped peer: the socket sends as IPv4. */
+    memset(&peer, 0, sizeof(peer));
+    peer.sin6_family = AF_INET6;
+    peer.sin6_port = ee16(7000);
+    ip6_set_v4mapped(&mapped, atoip4("192.168.10.5"));
+    memcpy(&peer.sin6_addr, mapped.addr, 16);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&peer,
+                                         sizeof(peer)), 0);
+
+    /* A connected sendto with a sockaddr_in6 whose flowinfo is a bogus v4
+     * address: the stored peer must win, not the flowinfo. */
+    memset(&dst6, 0, sizeof(dst6));
+    dst6.sin6_family = AF_INET6;
+    dst6.sin6_port = ee16(7001);
+    dst6.sin6_flowinfo = ee32(atoip4("192.168.10.6"));
+
+    /* The IPv4 peer has to be resolvable, or the datagram waits for ARP. */
+    arp_store_neighbor(&s, TEST_PRIMARY_IF, atoip4("192.168.10.5"),
+                       (uint8_t *)peer_mac);
+
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "hi", 2, 0,
+                                        (struct wolfIP_sockaddr *)&dst6,
+                                        sizeof(dst6)), 2);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN +
+                                 UDP_HEADER_LEN + 2));
+    memcpy(staged, last_frame_sent, last_frame_sent_size);
+    sent = (struct wolfIP_udp_datagram *)staged;
+    ck_assert_uint_eq(ee16(sent->ip.eth.type), ETH_TYPE_IP);
+    ck_assert_uint_eq(ee32(sent->ip.dst), atoip4("192.168.10.5"));
+    ck_assert_uint_eq(ee16(sent->dst_port), 7000);
+}
+END_TEST
+
 #ifdef IP_MULTICAST
 /* An IPv6-connected socket that joined an IPv4 multicast group must still
  * take no IPv4 traffic: the group-membership match bypasses bound_match and
