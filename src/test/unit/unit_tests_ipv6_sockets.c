@@ -696,6 +696,43 @@ START_TEST(test_sock6_udp_connected_socket_filters_by_peer)
 }
 END_TEST
 
+/* A connected AF_INET6 socket whose peer is IPv6 has no IPv4 peer to compare
+ * against, so the IPv4 demux must not deliver any IPv4 datagram to it: the
+ * mirror of the peer_is_v6 guard in udp6_try_recv. Without it, remote_ip == 0
+ * (no IPv4 peer) matched every IPv4 source on the connected port. */
+START_TEST(test_sock6_udp_connected_v6_peer_rejects_ipv4)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    uint32_t local_ip = 0x0A000001U;
+    uint32_t other_ip = 0x0A000002U;
+
+    sock6_setup(&s);
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 6989;
+    ts->local_ip = local_ip;
+    ts->dst_port = 6969;
+    ts->remote_ip = 0;
+    ts->peer_is_v6 = 1;
+    ts->sock.udp.connected = 1;
+
+    /* An IPv4 datagram from a foreign host on the connected port: refused. */
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.src = ee32(other_ip);
+    udp->ip.dst = ee32(local_ip);
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->src_port = ee16(6969);
+    udp->dst_port = ee16(6989);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+                 (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+}
+END_TEST
+
 /* IPv6 routers do not fragment and this stack does not fragment at the
  * source, so an oversized datagram is refused at sendto rather than
  * truncated on the way out. */

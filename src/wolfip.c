@@ -3625,8 +3625,13 @@ static void udp_try_recv(struct wolfIP *s, unsigned int if_idx,
          * required by protocols where the server's reply originates
          * from a different port than the one the request was sent to
          * (TFTP TID change, RFC 1350; certain DHCP relay setups). */
+        /* A connected socket whose peer is IPv6 has no IPv4 peer to compare
+         * against, so it takes no IPv4 datagram at all: the mirror of the
+         * peer_is_v6 guard in udp6_try_recv. Without it, remote_ip == 0 (no
+         * IPv4 peer) would match every IPv4 source on the connected port. */
         int peer_match = (t->sock.udp.connected == 0) ||
-                ((t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
+                (!TSOCKET_IS_V6(t) &&
+                 (t->dst_port == 0 || t->dst_port == ee16(udp->src_port)) &&
                  (t->remote_ip == 0 || t->remote_ip == src_ip));
         /* The local_ip==0 relaxation exists so the DHCP client socket can
          * receive OFFER/ACK before it owns an address. It must apply only to
