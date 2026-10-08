@@ -8989,6 +8989,17 @@ int wolfIP_sock_accept(struct wolfIP *s, int sockfd, struct wolfIP_sockaddr *add
         if (SOCKET_UNMARK(sockfd) >= MAX_TCPSOCKETS)
             return -WOLFIP_EINVAL;
         ts = &s->tcpsockets[SOCKET_UNMARK(sockfd)];
+#if WOLFIP_IPV6
+        /* An AF_INET6 listener reports a sockaddr_in6, larger than the
+         * sockaddr_in the entry check above allows. caller_len is the
+         * caller's buffer size (*addrlen is overwritten above); validate it
+         * here, before a child is dequeued, cloned, or SYN-ACKed, so a short
+         * buffer fails without consuming the connection or reverting the
+         * listener (which would wipe an in-flight handshake). */
+        if (addr && ts->domain == AF_INET6 &&
+                caller_len < (socklen_t)sizeof(struct wolfIP_sockaddr_in6))
+            return -WOLFIP_EINVAL;
+#endif
         newts = ts->sock.tcp.is_listener ? tcp_parked_ready(s, ts) : NULL;
         if (newts) {
             newts->sock.tcp.parked = 0;

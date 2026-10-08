@@ -1088,6 +1088,67 @@ START_TEST(test_sock6_tcp_listener_accepts_an_ipv6_connection)
 }
 END_TEST
 
+/* accept() on an AF_INET6 listener reports a sockaddr_in6; a buffer sized for
+ * sockaddr_in must be rejected before the connection is consumed, so a repeat
+ * accept() with a correctly-sized buffer still hands it over. */
+START_TEST(test_sock6_tcp_accept_short_addrlen_keeps_the_connection)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind_addr;
+    struct wolfIP_sockaddr_in6 from;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    socklen_t fromlen;
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    int listen_fd;
+    int conn_fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    listen_fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(listen_fd, 0);
+    sock6_addr(&bind_addr, S6_TEST_GLOBAL, 8080);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_fd,
+                                      (struct wolfIP_sockaddr *)&bind_addr,
+                                      sizeof(bind_addr)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_fd, 1), 0);
+
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    sock6_deliver_tcp(&s, &peer, &local, 40000, 8080, 0x99aabbcc, 0,
+                      TCP_FLAG_SYN, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    /* Complete the handshake so the connection is ESTABLISHED before accept(). */
+    sock6_deliver_tcp(&s, &peer, &local, 40000, 8080, 0x99aabbcc + 1,
+                      ee32(seg->seq) + 1, TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* A sockaddr_in-sized buffer is too small for the sockaddr_in6 the
+     * listener reports: reject without consuming the connection. */
+    fromlen = sizeof(struct wolfIP_sockaddr_in);
+    conn_fd = wolfIP_sock_accept(&s, listen_fd,
+                                 (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_eq(conn_fd, -WOLFIP_EINVAL);
+    /* The connection survived: the listener still holds it. */
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(listen_fd)].sock.tcp.state,
+                     TCP_ESTABLISHED);
+
+    /* A correctly-sized buffer still hands the connection over. */
+    fromlen = sizeof(from);
+    conn_fd = wolfIP_sock_accept(&s, listen_fd,
+                                 (struct wolfIP_sockaddr *)&from, &fromlen);
+    ck_assert_int_ge(conn_fd, 0);
+    ck_assert_uint_eq(from.sin6_family, AF_INET6);
+    ck_assert_uint_eq(ee16(from.sin6_port), 40000);
+}
+END_TEST
+
 /* The IPv6 header is 20 bytes larger, so the MSS derived from the same link
  * MTU must be 20 bytes smaller. */
 START_TEST(test_sock6_tcp_mss_accounts_for_the_40_byte_header)
