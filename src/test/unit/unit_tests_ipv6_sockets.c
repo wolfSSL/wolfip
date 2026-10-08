@@ -754,7 +754,7 @@ START_TEST(test_sock6_udp_v6_peer_joined_v4_mcast_rejects_ipv4)
     ts->dst_port = 0;
     ts->remote_ip = 0;
     ts->peer_is_v6 = 1;
-    ts->sock.udp.connected = 0;
+    ts->sock.udp.connected = 1;
     /* Joined an IPv4 group: setsockopt allows it on an IPv6 socket. */
     ts->sock.udp.mcast[0].group = mcast_group;
     ts->sock.udp.mcast[0].if_idx = TEST_PRIMARY_IF;
@@ -770,6 +770,45 @@ START_TEST(test_sock6_udp_v6_peer_joined_v4_mcast_rejects_ipv4)
     udp_try_recv(&s, TEST_PRIMARY_IF, udp,
                  (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+}
+END_TEST
+
+/* An unconnected socket that joined an IPv4 group must keep receiving it
+ * even after an IPv6 sendto() set peer_is_v6: the flag is just the last
+ * destination on an unconnected socket, and the multicast arm must gate the
+ * peer_is_v6 filter on connected, mirroring peer_match. */
+START_TEST(test_sock6_udp_unconnected_v6_sendto_keeps_v4_mcast)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t udp_buf[sizeof(struct wolfIP_udp_datagram) + 4];
+    struct wolfIP_udp_datagram *udp = (struct wolfIP_udp_datagram *)udp_buf;
+    uint32_t mcast_group = 0xE0000001U;
+
+    sock6_setup(&s);
+    ts = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    ts->src_port = 6989;
+    ts->local_ip = 0;
+    ts->dst_port = 0;
+    ts->remote_ip = 0;
+    ts->peer_is_v6 = 1; /* last sendto() went to an IPv6 destination */
+    ts->sock.udp.connected = 0;
+    /* Joined an IPv4 group: setsockopt allows it on an IPv6 socket. */
+    ts->sock.udp.mcast[0].group = mcast_group;
+    ts->sock.udp.mcast[0].if_idx = TEST_PRIMARY_IF;
+
+    /* An IPv4 multicast datagram to the joined group: accepted. */
+    memset(udp_buf, 0, sizeof(udp_buf));
+    udp->ip.src = ee32(0x0A000002U);
+    udp->ip.dst = ee32(mcast_group);
+    udp->ip.len = ee16(IP_HEADER_LEN + UDP_HEADER_LEN + 4);
+    udp->src_port = ee16(6969);
+    udp->dst_port = ee16(6989);
+    udp->len = ee16(UDP_HEADER_LEN + 4);
+    udp_try_recv(&s, TEST_PRIMARY_IF, udp,
+                 (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN + 4));
+    ck_assert_ptr_nonnull(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
 #endif /* IP_MULTICAST */

@@ -1393,6 +1393,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_udp_connected_v6_peer_rejects_ipv4);
 #ifdef IP_MULTICAST
     tcase_add_test(tc_proto, test_sock6_udp_v6_peer_joined_v4_mcast_rejects_ipv4);
+    tcase_add_test(tc_proto, test_sock6_udp_unconnected_v6_sendto_keeps_v4_mcast);
 #endif
     tcase_add_test(tc_proto, test_sock6_udp_oversize_datagram_is_refused);
     tcase_add_test(tc_proto, test_sock6_udp_unresolved_neighbour_holds_the_datagram);
