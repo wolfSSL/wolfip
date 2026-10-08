@@ -1005,6 +1005,66 @@ START_TEST(test_sock6_tcp_connect_completes_the_handshake)
 }
 END_TEST
 
+/* connect() with a v4-mapped address on an ESTABLISHED AF_INET6 TCP socket
+ * must be idempotent: the state guard runs before the IPv6 peer state is
+ * cleared, so the live connection keeps its IPv6 framing and peer. */
+START_TEST(test_sock6_tcp_established_connect_mapped_keeps_v6)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_tcp6_seg *seg;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 mapped;
+    uint32_t peer_seq = 0x11223344;
+    uint32_t our_isn;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    sock6_addr(&dst, S6_PEER, 80);
+
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    our_isn = ee32(seg->seq);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ip6_hdr_get_src(&seg->ip6, &local);
+    sock6_deliver_tcp(&s, &peer, &local, 80,
+                      s.tcpsockets[SOCKET_UNMARK(fd)].src_port,
+                      peer_seq, our_isn + 1,
+                      TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_ESTABLISHED);
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(fd)].peer_is_v6, 1);
+
+    /* A v4-mapped connect on the live connection: idempotent, framing kept. */
+    ip6_set_v4mapped(&mapped, atoip4("192.168.10.1"));
+    memset(&dst, 0, sizeof(dst));
+    dst.sin6_family = AF_INET6;
+    dst.sin6_port = ee16(9501);
+    memcpy(&dst.sin6_addr, mapped.addr, 16);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), 0);
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(fd)].peer_is_v6, 1);
+    ck_assert_int_eq(s.tcpsockets[SOCKET_UNMARK(fd)].sock.tcp.state,
+                     TCP_ESTABLISHED);
+}
+END_TEST
+
 /* Data in both directions over an established IPv6 connection. */
 START_TEST(test_sock6_tcp_carries_data_both_ways)
 {

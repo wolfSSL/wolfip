@@ -8736,6 +8736,18 @@ int wolfIP_sock_connect(struct wolfIP *s, int sockfd, const struct wolfIP_sockad
             }
             return -WOLFIP_EINVAL;
         }
+        /* A live TCP connection is a single peer: connect() on an
+         * ESTABLISHED/SYN_SENT socket is idempotent and must not move the
+         * framing, so check the state before the IPv6 peer state goes away.
+         * Mirrors tcp6_connect(), which guards state first. */
+        if (IS_SOCKET_TCP(sockfd)) {
+            if (ts->sock.tcp.state == TCP_ESTABLISHED)
+                return 0;
+            if (ts->sock.tcp.state == TCP_SYN_SENT)
+                return -WOLFIP_EAGAIN;
+            if (ts->sock.tcp.state != TCP_CLOSED)
+                return -WOLFIP_EINVAL;
+        }
         /* Moving to a v4-mapped peer moves the socket back to IPv4, so the
          * IPv6 peer state has to go with it: a socket left with peer_is_v6
          * set would take the IPv6 transmit path on its next send and address

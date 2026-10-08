@@ -1397,6 +1397,7 @@ Suite *wolf_suite(void)
 
     /* TCP over IPv6. */
     tcase_add_test(tc_proto, test_sock6_tcp_connect_completes_the_handshake);
+    tcase_add_test(tc_proto, test_sock6_tcp_established_connect_mapped_keeps_v6);
     tcase_add_test(tc_proto, test_sock6_tcp_carries_data_both_ways);
     tcase_add_test(tc_proto, test_sock6_tcp_listener_accepts_an_ipv6_connection);
     tcase_add_test(tc_proto, test_sock6_tcp_accept_short_addrlen_keeps_the_connection);
