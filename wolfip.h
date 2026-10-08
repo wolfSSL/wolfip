@@ -312,61 +312,6 @@ struct wolfIP_wifi_ops {
     int (*get_bssid)(struct wolfIP_ll_dev *ll, uint8_t out_bssid[6]);
 };
 
-/* Optional embedded-switch control surface.
- *
- * Populated only by drivers for parts with a multi-port switch that the CPU
- * shares, which is what Ethernet ring-redundancy protocols require. The
- * motivating case is DLR (Device Level Ring, ODVA CIP Networks Library
- * Vol. 2 chapter 9, also IEC 61784-2): a DLR node has two ports on one MAC,
- * and the ring supervisor breaks the loop by blocking ordinary traffic on
- * one of them while still passing ring-protocol frames.
- *
- * wolfIP does not implement DLR. This vtable, together with the L2 protocol
- * hook below, is the contract a third-party DLR implementation needs from
- * the stack and from the driver, so that adding one later requires no
- * changes to the core.
- *
- * A note on timing, because it constrains any such implementation: wolfIP's
- * poll loop is millisecond-granular (wolfIP_poll takes `now` in
- * milliseconds) and its timer heap is built on that. DLR beacon intervals
- * are sub-millisecond. A DLR implementation must therefore drive beacon
- * transmission and the beacon timeout from its own hardware timer; the
- * stack's timers are not suitable and this vtable does not pretend
- * otherwise.
- */
-struct wolfIP_switch_ops {
-    /* Number of external ports behind this interface (2 for a DLR node). */
-    int (*port_count)(struct wolfIP_ll_dev *ll);
-    /* Per-port link state: 1 up, 0 down, negative on error. A ring
-     * implementation needs the transition, not just the level, so drivers
-     * that can report link change events should do so via link_changed. */
-    int (*port_link_state)(struct wolfIP_ll_dev *ll, unsigned int port);
-    /* Register a callback invoked when a port's link state changes. This is
-     * what lets a ring detect a break in well under the beacon timeout. */
-    int (*set_link_change_cb)(struct wolfIP_ll_dev *ll,
-                              void (*cb)(void *ctx, unsigned int port,
-                                         int up),
-                              void *ctx);
-    /* Block or unblock ordinary traffic on a port. A blocked port must
-     * still pass frames whose ethertype has been claimed via
-     * wolfIP_register_l2_handler(), otherwise the ring protocol cannot see
-     * its own beacons across the block. */
-    int (*port_set_blocked)(struct wolfIP_ll_dev *ll, unsigned int port,
-                            int blocked);
-    /* Flush the switch's learned MAC address table, for the whole device or
-     * for one port. Required after a ring topology change, or traffic keeps
-     * being forwarded towards the broken segment. */
-    int (*flush_mac_table)(struct wolfIP_ll_dev *ll, int port_or_all);
-    /* Transmit a raw frame out of one specific port, bypassing normal
-     * forwarding. Ring protocols must be able to address each port
-     * individually; wolfIP's ordinary send path targets an interface. */
-    int (*send_on_port)(struct wolfIP_ll_dev *ll, unsigned int port,
-                        void *buf, uint32_t len);
-    /* Report which port a received frame arrived on, for the most recent
-     * frame handed to the stack. Negative if the driver cannot tell. */
-    int (*last_rx_port)(struct wolfIP_ll_dev *ll);
-};
-
 /* Struct to contain link-layer (ll) device description
  */
 struct wolfIP_ll_dev {
@@ -392,9 +337,6 @@ struct wolfIP_ll_dev {
     /* Optional Wi-Fi vtable. NULL on Ethernet ports. Appended last so adding
      * it does not shift the offsets of the pre-existing members. */
     const struct wolfIP_wifi_ops *wifi_ops;
-    /* Optional embedded-switch vtable. NULL on ordinary single-port drivers.
-     * Appended last, after wifi_ops, for the same ABI reason. */
-    const struct wolfIP_switch_ops *switch_ops;
 };
 
 /* Struct to contain an IP device configuration */
@@ -855,10 +797,6 @@ int wolfIP_register_eapol_handler(struct wolfIP *s,
  * ethertype and receives every frame carrying it, so that protocols the
  * stack does not implement can be layered on without editing the demux.
  *
- * The motivating consumer is a third-party DLR (Device Level Ring)
- * implementation, which claims ethertype 0x80E1 and drives the switch
- * through struct wolfIP_switch_ops. Nothing here is DLR-specific.
- *
  * `accept_macs` addresses the second half of the problem. The ingress path
  * filters on destination MAC before dispatch - unicast to us, broadcast,
  * and the IP multicast mappings - so a protocol using its own multicast
@@ -866,20 +804,18 @@ int wolfIP_register_eapol_handler(struct wolfIP *s,
  * destination MACs it wants delivered; `count` entries of 6 bytes each,
  * matched exactly. Pass NULL/0 to receive only unicast and broadcast.
  *
- * `frame`/`len` cover the whole Ethernet frame including the header, since
- * a ring protocol needs the source MAC and the ingress port. The ingress
- * port, when the driver can report it, comes from
- * switch_ops->last_rx_port().
+ * `frame`/`len` cover the whole Ethernet frame including the header, so a
+ * handler can see the source MAC and the full frame.
  *
  * Returns 0 on success, negative on bad arguments or when the table of
  * registered protocols is full. Pass a NULL handler to unregister.
  *
  * NOTE: this is the declared interface of a feature the stack does not
- * implement yet - see docs/dlr_integration.md. The definition exists, so
- * linking against it works, but it registers nothing and every call returns
- * -WOLFIP_ENOSYS. A consumer can therefore compile and link today and detect
- * at run time that the demux is not there, rather than meeting an undefined
- * symbol. The signature will not change when the table lands.
+ * implement yet. The definition exists, so linking against it works, but it
+ * registers nothing and every call returns -WOLFIP_ENOSYS. A consumer can
+ * therefore compile and link today and detect at run time that the demux is
+ * not there, rather than meeting an undefined symbol. The signature will not
+ * change when the table lands.
  */
 int wolfIP_register_l2_handler(struct wolfIP *s, uint16_t ethertype,
                                int (*handler)(void *ctx, unsigned int if_idx,

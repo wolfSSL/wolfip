@@ -1022,19 +1022,19 @@ END_TEST
 START_TEST(test_register_l2_handler_reports_not_implemented)
 {
     struct wolfIP s;
-    const uint8_t macs[6] = {0x01, 0x21, 0x6C, 0x00, 0x00, 0x01};
+    const uint8_t macs[6] = {0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E};
     int sentinel = 0x5A;
 
     wolfIP_init(&s);
-    ck_assert_int_eq(wolfIP_register_l2_handler(&s, 0x80E1, test_eapol_cb,
+    ck_assert_int_eq(wolfIP_register_l2_handler(&s, 0x86DD, test_eapol_cb,
                                                 &sentinel, macs, 1),
                      -WOLFIP_ENOSYS);
     /* Same answer for the unregister form and for a NULL stack: nothing is
      * stored either way, so no argument makes it succeed. */
-    ck_assert_int_eq(wolfIP_register_l2_handler(&s, 0x80E1, NULL, NULL,
+    ck_assert_int_eq(wolfIP_register_l2_handler(&s, 0x86DD, NULL, NULL,
                                                 NULL, 0),
                      -WOLFIP_ENOSYS);
-    ck_assert_int_eq(wolfIP_register_l2_handler(NULL, 0x80E1, NULL, NULL,
+    ck_assert_int_eq(wolfIP_register_l2_handler(NULL, 0x86DD, NULL, NULL,
                                                 NULL, 0),
                      -WOLFIP_ENOSYS);
     /* And it must not have quietly claimed the EAPOL slot on the way. */
