@@ -655,7 +655,11 @@ static unsigned int wolfIP_if_for_local_ip6(struct wolfIP *s,
  * be accepted", so it only considers sockets that did bind. An automatic
  * allocation has to avoid a port some other socket took automatically too,
  * and such a socket has no bind to show for it - only a local address and a
- * source port. */
+ * source port. The family test is the socket's domain, not its peer: an
+ * unconnected socket that allocated a port on its first sendto owns it for
+ * demultiplexing just as a connected one does, and peer_is_v6 follows
+ * connect() alone. A pure IPv4 socket's port is in the other family's space
+ * and never collides here. */
 static int port_in_use6(const struct tsocket *arr, int n,
                         const struct tsocket *self, const ip6 *local,
                         uint16_t port)
@@ -671,7 +675,7 @@ static int port_in_use6(const struct tsocket *arr, int n,
             continue;
         if (tk->src_port != port)
             continue;
-        if (!TSOCKET_IS_V6(tk) && !tk->bound_v6)
+        if (tk->domain == AF_INET)
             continue;
         /* Either side unspecified is a wildcard and collides with anything
          * on the port, as in the IPv4 test. */
@@ -1676,9 +1680,16 @@ static void icmp6_try_recv(struct wolfIP *s, unsigned int if_idx,
  * which it must, because that checksum covers the IPv6 pseudo-header and so
  * cannot be computed until the source address has been selected. That is
  * the one real difference from the IPv4 ICMP socket, where an application
- * can and often does checksum its own packet. */
+ * can and often does checksum its own packet.
+ *
+ * `dst` is this datagram's destination, decided by the caller: the sendto
+ * address when one was given, the connected peer for a plain send. It is
+ * not read from the socket, because the socket's peer is set by connect()
+ * alone - saving a sendto destination there would make the receive path
+ * filter replies against the last destination, and a ping to a second host
+ * would swallow the first host's answer. */
 static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
-                        const void *buf, size_t len)
+                        const void *buf, size_t len, const ip6 *dst)
 {
     struct wolfIP_icmp6_packet *icmp = (struct wolfIP_icmp6_packet *)frame;
     uint32_t frame_len;
@@ -1688,7 +1699,7 @@ static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
 
     if (len < ICMP6_ECHO_MIN_LEN)
         return -WOLFIP_EINVAL; /* type, code, checksum and the 4-byte word */
-    if (ip6_is_unspecified(&t->remote_ip6))
+    if (ip6_is_unspecified(dst))
         return -1;
 
     if (!ip6_is_unspecified(&t->bound_local_ip6)) {
@@ -1700,8 +1711,8 @@ static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
             return -WOLFIP_EINVAL;
         ip6_copy(&src, &t->bound_local_ip6);
     } else {
-        if_idx = ip6_egress_for(s, t, &t->remote_ip6);
-        if (ip6_select_source(s, if_idx, &t->remote_ip6, &src) != 0)
+        if_idx = ip6_egress_for(s, t, dst);
+        if (ip6_select_source(s, if_idx, dst, &src) != 0)
             return -1;
     }
     t->if_idx = (uint8_t)if_idx;
@@ -1737,7 +1748,7 @@ static int icmp6_sendto(struct wolfIP *s, struct tsocket *t, uint8_t *frame,
         icmp->data[1] = (uint8_t)(t->src_port & 0xFFu);
     }
     if (ip6_output_add_header(s, t->if_idx, &icmp->ip6, &t->local_ip6,
-                              &t->remote_ip6, IP6_NEXTHDR_ICMPV6,
+                              dst, IP6_NEXTHDR_ICMPV6,
                               (uint16_t)len, 0, NULL) != 0)
         return -1;
     if (fifo_push(&t->sock.udp.txbuf, frame, frame_len) < 0)

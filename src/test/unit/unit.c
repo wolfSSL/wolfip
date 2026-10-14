@@ -1420,6 +1420,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_icmp6_packet_too_big_and_time_exceeded_wire_format);
     tcase_add_test(tc_proto, test_icmp6_unknown_types_follow_the_error_split);
     tcase_add_test(tc_proto, test_icmp6_socket_echo_roundtrip);
+    tcase_add_test(tc_proto, test_icmp6_socket_ping_a_then_b_keeps_a_replies);
+    tcase_add_test(tc_proto, test_icmp6_socket_plain_send_requires_connect);
     tcase_add_test(tc_proto, test_icmp6_socket_filters_on_the_echo_identifier);
     tcase_add_test(tc_proto, test_icmp6_socket_receives_errors_regardless_of_identifier);
     tcase_add_test(tc_proto, test_icmp6_af_inet_icmp_socket_never_receives_icmpv6);

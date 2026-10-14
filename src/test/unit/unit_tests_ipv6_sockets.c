@@ -3484,4 +3484,99 @@ START_TEST(test_sock6_sendto_honours_the_destination_scope)
 }
 END_TEST
 
+/* The sendto destination is for this datagram only: the socket's peer is set
+ * by connect() alone, and the receive path filters replies against the peer.
+ * Saving a sendto destination as the peer made a ping to a second host
+ * swallow the first host's replies, because the filter compared against the
+ * last destination rather than a connected peer. */
+START_TEST(test_icmp6_socket_ping_a_then_b_keeps_a_replies)
+{
+    const uint8_t mac_a[6] = {0x02, 0xAA, 0x00, 0x00, 0x00, 0x01};
+    const uint8_t mac_b[6] = {0x02, 0xBB, 0x00, 0x00, 0x00, 0x01};
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_sockaddr_in6 from;
+    socklen_t fromlen = sizeof(from);
+    uint8_t req[12];
+    uint8_t buf[64];
+    uint64_t now = 0;
+    uint16_t sock_id;
+    ip6 local;
+    ip6 a;
+    ip6 b;
+    ip6 got;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_TEST_GLOBAL, &local), 0);
+    ck_assert_int_eq(atoip6("2001:db8:5::10", &a), 0);
+    ck_assert_int_eq(atoip6("2001:db8:5::11", &b), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &a, mac_a),
+                     0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, TEST_PRIMARY_IF, &b, mac_b),
+                     0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+
+    memset(req, 0, sizeof(req));
+    req[0] = ICMP6_ECHO_REQUEST;
+    req[6] = 0x00; req[7] = 0x01; /* sequence 1 */
+
+    /* Ping A. */
+    sock6_addr(&dst, "2001:db8:5::10", 0);
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, req, sizeof(req), 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), (int)sizeof(req));
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* Ping B. The sendto destination must not become the socket's peer. */
+    sock6_addr(&dst, "2001:db8:5::11", 0);
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, req, sizeof(req), 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), (int)sizeof(req));
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    sock_id = s.icmpsockets[SOCKET_UNMARK(fd)].src_port;
+    ck_assert_uint_ne(sock_id, 0);
+
+    /* A's reply arrives after B was pinged. It must still be delivered:
+     * matching is by the Echo identifier, and the peer filter applies only
+     * to the connected peer. */
+    sock6_deliver_icmp6_echo(&s, &a, &local, ICMP6_ECHO_REPLY, sock_id, 1);
+    ck_assert_int_gt(wolfIP_sock_recvfrom(&s, fd, buf, sizeof(buf), 0,
+                                          (struct wolfIP_sockaddr *)&from,
+                                          &fromlen), 0);
+    ck_assert_uint_eq(buf[0], ICMP6_ECHO_REPLY);
+    memcpy(got.addr, &from.sin6_addr, 16);
+    ck_assert_int_eq(ip6_cmp(&got, &a), 0);
+}
+END_TEST
+
+/* A plain send on an unconnected ICMPv6 socket has no destination: the peer
+ * is set by connect() alone, so there is nowhere for the datagram to go. */
+START_TEST(test_icmp6_socket_plain_send_requires_connect)
+{
+    struct wolfIP s;
+    uint8_t req[12];
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM,
+                            WI_IPPROTO_ICMPV6);
+    ck_assert_int_ge(fd, 0);
+    memset(req, 0, sizeof(req));
+    req[0] = ICMP6_ECHO_REQUEST;
+    ck_assert_int_eq(wolfIP_sock_send(&s, fd, req, sizeof(req), 0), -1);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */

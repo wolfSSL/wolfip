@@ -9546,23 +9546,27 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
                     return -1;
                 if (ts->v6only && !ip6_addr_is_wire_v6(&dst6))
                     return -1;
-                if (ip6_addr_is_wire_v6(&dst6)) {
-                    ip6_set_zone(s, ts, &dst6, scope6);
-                    ts->peer_is_v6 = 1;
-                    ip6_copy(&ts->remote_ip6, &dst6);
-                } else {
-                    ts->peer_is_v6 = 0;
-                    ts->remote_ip = ip6_is_v4mapped(&dst6) ?
-                            ip6_get_v4mapped(&dst6) : IPADDR_ANY;
+                if (!ip6_addr_is_wire_v6(&dst6)) {
+                    /* A v4-mapped destination on an ICMPv6 socket would mean
+                     * sending ICMPv4 from a socket the application opened for
+                     * ICMPv6, which are different protocols with different
+                     * type numbers. Refused rather than silently
+                     * reinterpreted. */
+                    return -WOLFIP_EINVAL;
                 }
+                /* Per-datagram addressing: the sendto destination is for
+                 * this datagram only and must not become the socket's peer.
+                 * The receive path filters replies against the peer, and a
+                 * peer that follows sendto() would make a ping to a second
+                 * host swallow the first host's replies. The peer is set
+                 * by connect() alone, as on the IPv4 path. */
+                ip6_set_zone(s, ts, &dst6, scope6);
+                return icmp6_sendto(s, ts, frame, buf, len, &dst6);
             }
-            if (ts->peer_is_v6)
-                return icmp6_sendto(s, ts, frame, buf, len);
-            /* A v4-mapped destination on an ICMPv6 socket would mean
-             * sending ICMPv4 from a socket the application opened for
-             * ICMPv6, which are different protocols with different type
-             * numbers. Refused rather than silently reinterpreted. */
-            return -WOLFIP_EINVAL;
+            /* Plain send: the connected peer, if there is one. */
+            if (!ts->peer_is_v6)
+                return -1;
+            return icmp6_sendto(s, ts, frame, buf, len, &ts->remote_ip6);
         }
 #endif
         /* Per-datagram addressing: an explicit sendto destination applies to
