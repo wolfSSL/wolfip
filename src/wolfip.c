@@ -12009,7 +12009,7 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
      * fragment set would let it bypass the L4 filters. The raw tap and the
      * IP filter above have already observed the datagram, which is the
      * granularity they need. */
-    if ((ee16(ip->flags_fo) & 0x2FFFU) != 0U)
+    if ((ee16(ip->flags_fo) & 0x3FFFU) != 0U)
         return;
     /* Drop source-routed (LSRR/SSRR) packets before either forwarding or
      * local-delivery dispatch. RFC 7126 (IP Security Considerations) 4.3.5

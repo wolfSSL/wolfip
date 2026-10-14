@@ -481,3 +481,64 @@ START_TEST(test_fwd_fragments_dropped_before_l4_filter)
     wolfIP_filter_set_tcp_mask(0);
 }
 END_TEST
+
+/* =========================================================================
+ * Fragment-drop mask covers the full 13-bit offset, not just the low 12
+ * =========================================================================
+ * A non-first fragment whose offset has only bit 12 set (flags_fo 0x1000,
+ * MF clear, offset 32768 bytes) must be dropped: it is a fragment by the
+ * non-zero offset, and the arrival drop must catch every offset bit. The
+ * mask is MF (0x2000) plus the 13-bit offset (0x1FFF) = 0x3FFF; a 0x2FFF
+ * mask would let 0x1000 through. */
+START_TEST(test_fwd_frag_offset_bit12_dropped)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+    static const uint8_t dest_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t *payload;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(fwd_filter_count_cb, NULL);
+    wolfIP_filter_set_tcp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+    wolfIP_filter_set_udp_mask(0);
+    wolfIP_filter_set_icmp_mask(0);
+    wolfIP_filter_set_ip_mask(0);
+    fwd_arp_store(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+    fwd_filter_notify_count = 0;
+    fwd_filter_last_dport = 0;
+    last_frame_sent_count = 0;
+
+    /* MF clear, offset bit 12 only: a non-first fragment the 0x2FFF mask
+     * would miss. The payload looks like a TCP header (dport 443) so a
+     * leak would fire the SENDING notify. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type  = ee16(ETH_TYPE_IP);
+    ip->ver_ihl   = 0x45;
+    ip->flags_fo  = ee16(0x1000U); /* MF=0, offset=0x1000 (bit 12) */
+    ip->ttl       = 64;
+    ip->proto     = WI_IPPROTO_TCP;
+    ip->len       = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ip->src       = ee32(src_ip);
+    ip->dst       = ee32(dest_ip);
+    payload = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    payload[0] = 0x00; payload[1] = 0x50; /* src port 80 */
+    payload[2] = 0x01; payload[3] = 0xBB; /* dst port 443 */
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Dropped at arrival: no relay, no TCP notification. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+    ck_assert_uint_eq(fwd_filter_notify_count, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_tcp_mask(0);
+}
+END_TEST

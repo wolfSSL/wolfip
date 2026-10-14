@@ -1922,6 +1922,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_bad_option_silent_drop);
     tcase_add_test(tc_proto, test_fwd_multicast_dest_bad_option_silent_drop);
     tcase_add_test(tc_proto, test_fwd_fragments_dropped_before_l4_filter);
+    tcase_add_test(tc_proto, test_fwd_frag_offset_bit12_dropped);
 #endif /* WOLFIP_ENABLE_FORWARDING */
 
     suite_add_tcase(s, tc_core);
