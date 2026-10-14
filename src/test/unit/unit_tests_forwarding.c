@@ -62,11 +62,12 @@ static void fwd_arp_store(struct wolfIP *s, unsigned int if_idx, ip4 ip,
 }
 
 /* =========================================================================
- * RFC 1812 4.3.2.7: non-first fragment, TTL=1 - silent drop
+ * Fragment, TTL=1 - silent drop
  * =========================================================================
- * A router must not generate an ICMP error for a non-first fragment: it
+ * Fragments are dropped at arrival, before the forwarding decision, so a
+ * TTL-expired fragment must not generate a Time Exceeded: the router
  * cannot validate what the fragment does not carry. The datagram is not
- * relayed (TTL expired) and no Time Exceeded is sent.
+ * relayed and no ICMP is sent.
  */
 START_TEST(test_fwd_nonfirst_frag_ttl1_silent_drop)
 {
@@ -105,13 +106,13 @@ START_TEST(test_fwd_nonfirst_frag_ttl1_silent_drop)
 END_TEST
 
 /* =========================================================================
- * RFC 1812 4.3.2.7 selectivity: first fragment, TTL=1 - Time Exceeded
+ * First fragment, TTL=1 - silent drop
  * =========================================================================
- * The same datagram's first fragment (offset 0) carries a valid transport
- * header, so the Time Exceeded reply is generated. Pairs with the
- * non-first-fragment silent drop above to prove the guard is selective.
+ * Fragments are dropped at arrival, before the forwarding decision, so
+ * even the first fragment of an expired datagram is dropped silently:
+ * no Time Exceeded, no relay.
  */
-START_TEST(test_fwd_first_frag_ttl1_sends_ttl_exceeded)
+START_TEST(test_fwd_first_frag_ttl1_silent_drop)
 {
     struct wolfIP s;
     uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 8];
@@ -142,12 +143,8 @@ START_TEST(test_fwd_first_frag_ttl1_sends_ttl_exceeded)
 
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
 
-    /* Time Exceeded quoting header + the 8 payload bytes present. */
-    ck_assert_uint_eq(last_frame_sent_count, 1);
-    ck_assert_uint_eq(last_frame_sent_size,
-            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8 + IP_HEADER_LEN + 8));
-    ck_assert_uint_eq(last_frame_sent[ETH_HEADER_LEN + IP_HEADER_LEN],
-            ICMP_TTL_EXCEEDED);
+    /* Silent: no Time Exceeded, no relay. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
 }
 END_TEST
 
@@ -185,7 +182,7 @@ START_TEST(test_fwd_zero_source_transit_ttl1_silent_drop)
     memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
     ip->eth.type  = ee16(ETH_TYPE_IP);
     ip->ver_ihl   = 0x45;
-    ip->flags_fo  = ee16(0x2000U); /* MF=1, offset=0 (first fragment) */
+    ip->flags_fo  = 0; /* not a fragment: must reach the forwarding RPF block */
     ip->ttl       = 1;
     ip->proto     = WI_IPPROTO_UDP;
     ip->len       = ee16(IP_HEADER_LEN + 8);
@@ -201,12 +198,11 @@ START_TEST(test_fwd_zero_source_transit_ttl1_silent_drop)
 END_TEST
 
 /* =========================================================================
- * RFC 1812 4.3.2.7: non-first fragment, DF set, larger than egress MTU
- * - silent drop
+ * Fragment, DF set, larger than egress MTU - silent drop
  * =========================================================================
- * The Fragmentation Needed reply is suppressed for a non-first fragment;
- * the datagram is dropped (it does not fit the egress and cannot be
- * fragmented further).
+ * Fragments are dropped at arrival, before the forwarding decision, so a
+ * DF fragment that does not fit the egress MTU must not generate a
+ * Fragmentation Needed: the datagram is simply dropped.
  */
 START_TEST(test_fwd_nonfirst_frag_df_oversize_silent_drop)
 {
@@ -247,14 +243,14 @@ START_TEST(test_fwd_nonfirst_frag_df_oversize_silent_drop)
 END_TEST
 
 /* =========================================================================
- * RFC 1812 4.3.2.7 selectivity: first fragment, DF set, larger than
- * egress MTU - Fragmentation Needed
+ * DF set, larger than egress MTU - Fragmentation Needed
  * =========================================================================
- * Pairs with the non-first-fragment silent drop above: the first fragment
- * carries a valid transport header, so the Fragmentation Needed reply is
- * generated.
+ * A DF datagram that does not fit the egress MTU is not a fragment (MF
+ * clear, offset zero), so it is not dropped at arrival: RFC 1812 4.3.2.4
+ * requires the Fragmentation Needed reply carrying the egress next-hop
+ * MTU.
  */
-START_TEST(test_fwd_first_frag_df_oversize_sends_frag_needed)
+START_TEST(test_fwd_df_oversize_sends_frag_needed)
 {
     struct wolfIP s;
     uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 580];
@@ -276,7 +272,7 @@ START_TEST(test_fwd_first_frag_df_oversize_sends_frag_needed)
     memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
     ip->eth.type  = ee16(ETH_TYPE_IP);
     ip->ver_ihl   = 0x45;
-    ip->flags_fo  = ee16(0x4000U); /* DF=1, offset=0 */
+    ip->flags_fo  = ee16(0x4000U); /* DF=1, offset=0: complete datagram, not a fragment */
     ip->ttl       = 64;
     ip->proto     = WI_IPPROTO_UDP;
     ip->len       = ee16(IP_HEADER_LEN + 580); /* 600 > egress MTU 576 */
@@ -300,11 +296,11 @@ START_TEST(test_fwd_first_frag_df_oversize_sends_frag_needed)
 END_TEST
 
 /* =========================================================================
- * RFC 1812 4.3.2.7: non-first fragment with a malformed IP option -
- * silent drop
+ * Fragment with a malformed IP option - silent drop
  * =========================================================================
- * The Parameter Problem reply is suppressed for a non-first fragment; the
- * datagram is dropped either way.
+ * Fragments are dropped at arrival, before the option policy below, so a
+ * fragment with a malformed IP option must not generate a Parameter
+ * Problem: the datagram is simply dropped.
  */
 START_TEST(test_fwd_nonfirst_frag_bad_option_silent_drop)
 {
@@ -401,16 +397,16 @@ START_TEST(test_fwd_multicast_dest_bad_option_silent_drop)
 END_TEST
 
 /* =========================================================================
- * RFC 1858: SENDING L4 filter hooks are not notified for a non-first
- * fragment
+ * RFC 1858: fragments are dropped at arrival, before the SENDING L4
+ * filter hooks
  * =========================================================================
- * The bytes at the IHL offset of a non-first fragment are payload, not a
- * transport header. Notifying the TCP/UDP hooks would let port-based
- * policy match on garbage. The non-first fragment is relayed without a
- * TCP notification; the first fragment of a TCP datagram is notified with
- * the real header's destination port.
+ * Relaying fragments lets a fragment set bypass port-based policy
+ * (RFC 1858): a first fragment shorter than a full TCP header is allowed
+ * by the length guard, and a non-first fragment carries no transport
+ * header to match. All fragments are now dropped at arrival, so neither
+ * fragment of a TCP datagram is relayed or reaches the TCP sending filter.
  */
-START_TEST(test_fwd_nonfirst_frag_l4_filter_not_notified)
+START_TEST(test_fwd_fragments_dropped_before_l4_filter)
 {
     struct wolfIP s;
     uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
@@ -454,12 +450,11 @@ START_TEST(test_fwd_nonfirst_frag_l4_filter_not_notified)
 
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
 
-    /* Relayed, and no TCP notification was generated from the payload. */
-    ck_assert_uint_eq(last_frame_sent_count, 1);
+    /* Dropped at arrival: no relay, no TCP notification. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
     ck_assert_uint_eq(fwd_filter_notify_count, 0);
 
-    /* First fragment of a TCP datagram: the notify fires with the real
-     * header's destination port. */
+    /* First fragment of the same TCP datagram: dropped the same way. */
     memset(frame, 0, sizeof(frame));
     memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
     memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
@@ -479,9 +474,69 @@ START_TEST(test_fwd_nonfirst_frag_l4_filter_not_notified)
     last_frame_sent_count = 0;
     ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
 
-    ck_assert_uint_eq(last_frame_sent_count, 1);
-    ck_assert_uint_eq(fwd_filter_notify_count, 1);
-    ck_assert_uint_eq(fwd_filter_last_dport, ee16(443));
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+    ck_assert_uint_eq(fwd_filter_notify_count, 0);
+
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_tcp_mask(0);
+}
+END_TEST
+
+/* =========================================================================
+ * Fragment-drop mask covers the full 13-bit offset, not just the low 12
+ * =========================================================================
+ * A non-first fragment whose offset has only bit 12 set (flags_fo 0x1000,
+ * MF clear, offset 32768 bytes) must be dropped: it is a fragment by the
+ * non-zero offset, and the arrival drop must catch every offset bit. The
+ * mask is MF (0x2000) plus the 13-bit offset (0x1FFF) = 0x3FFF; a 0x2FFF
+ * mask would let 0x1000 through. */
+START_TEST(test_fwd_frag_offset_bit12_dropped)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 primary_ip   = 0x0A000001U;
+    ip4 secondary_ip = 0xC0A80101U;
+    ip4 dest_ip      = 0xC0A80155U;
+    ip4 src_ip       = 0x0A000002U;
+    static const uint8_t dest_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t *payload;
+
+    setup_stack_with_two_ifaces(&s, primary_ip, secondary_ip);
+    wolfIP_filter_set_callback(fwd_filter_count_cb, NULL);
+    wolfIP_filter_set_tcp_mask(WOLFIP_FILT_MASK(WOLFIP_FILT_SENDING));
+    wolfIP_filter_set_udp_mask(0);
+    wolfIP_filter_set_icmp_mask(0);
+    wolfIP_filter_set_ip_mask(0);
+    fwd_arp_store(&s, TEST_SECOND_IF, dest_ip, dest_mac);
+    fwd_filter_notify_count = 0;
+    fwd_filter_last_dport = 0;
+    last_frame_sent_count = 0;
+
+    /* MF clear, offset bit 12 only: a non-first fragment the 0x2FFF mask
+     * would miss. The payload looks like a TCP header (dport 443) so a
+     * leak would fire the SENDING notify. */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type  = ee16(ETH_TYPE_IP);
+    ip->ver_ihl   = 0x45;
+    ip->flags_fo  = ee16(0x1000U); /* MF=0, offset=0x1000 (bit 12) */
+    ip->ttl       = 64;
+    ip->proto     = WI_IPPROTO_TCP;
+    ip->len       = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ip->src       = ee32(src_ip);
+    ip->dst       = ee32(dest_ip);
+    payload = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    payload[0] = 0x00; payload[1] = 0x50; /* src port 80 */
+    payload[2] = 0x01; payload[3] = 0xBB; /* dst port 443 */
+    fix_ip_checksum(ip);
+
+    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
+
+    /* Dropped at arrival: no relay, no TCP notification. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+    ck_assert_uint_eq(fwd_filter_notify_count, 0);
 
     wolfIP_filter_set_callback(NULL, NULL);
     wolfIP_filter_set_tcp_mask(0);

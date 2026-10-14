@@ -1021,7 +1021,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ip_recv_forward_arp_queue_and_flush);
     tcase_add_test(tc_proto, test_arp_flush_pending_ttl_expired);
     tcase_add_test(tc_proto, test_wolfip_forwarding_basic);
-    tcase_add_test(tc_proto, test_ip_recv_forwarding_relays_transit_fragments);
+    tcase_add_test(tc_proto, test_ip_recv_forwarding_drops_transit_fragments);
     tcase_add_test(tc_proto, test_ip_recv_forwarding_drops_local_fragment);
     tcase_add_test(tc_proto, test_wolfip_forwarding_ttl_expired);
     tcase_add_test(tc_proto, test_regression_forwarding_no_ttl_exceeded_for_icmp_error);
@@ -1915,13 +1915,14 @@ Suite *wolf_suite(void)
 #if WOLFIP_ENABLE_FORWARDING
     /* --- unit_tests_forwarding.c (router build) --- */
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_ttl1_silent_drop);
-    tcase_add_test(tc_proto, test_fwd_first_frag_ttl1_sends_ttl_exceeded);
+    tcase_add_test(tc_proto, test_fwd_first_frag_ttl1_silent_drop);
     tcase_add_test(tc_proto, test_fwd_zero_source_transit_ttl1_silent_drop);
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_df_oversize_silent_drop);
-    tcase_add_test(tc_proto, test_fwd_first_frag_df_oversize_sends_frag_needed);
+    tcase_add_test(tc_proto, test_fwd_df_oversize_sends_frag_needed);
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_bad_option_silent_drop);
     tcase_add_test(tc_proto, test_fwd_multicast_dest_bad_option_silent_drop);
-    tcase_add_test(tc_proto, test_fwd_nonfirst_frag_l4_filter_not_notified);
+    tcase_add_test(tc_proto, test_fwd_fragments_dropped_before_l4_filter);
+    tcase_add_test(tc_proto, test_fwd_frag_offset_bit12_dropped);
 #endif /* WOLFIP_ENABLE_FORWARDING */
 
     suite_add_tcase(s, tc_core);
