@@ -4373,18 +4373,17 @@ START_TEST(test_wolfip_forwarding_basic)
 }
 END_TEST
 
-/* Regression: a router must relay transit IP fragments without reassembly
- * (RFC 1812 5.2.6); ip_recv used to drop every fragment ahead of the
- * forwarding decision, so a router build relayed none of them. */
-START_TEST(test_ip_recv_forwarding_relays_transit_fragments)
+/* A router must NOT relay transit IP fragments: reassembly is not
+ * implemented, and relaying a fragment set lets it bypass the L4 filters
+ * (RFC 1858). Every fragment is dropped at arrival, before the forwarding
+ * decision. */
+START_TEST(test_ip_recv_forwarding_drops_transit_fragments)
 {
     struct wolfIP s;
     uint8_t frame_buf[64];
     struct wolfIP_ip_packet *frame = (struct wolfIP_ip_packet *)frame_buf;
-    struct wolfIP_ip_packet *fwd;
     uint8_t src_mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
     uint8_t iface1_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
-    uint8_t next_hop_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
     uint32_t dest_ip = 0xC0A80164; /* 192.168.1.100 */
     uint8_t initial_ttl = 64;
 
@@ -4393,9 +4392,6 @@ START_TEST(test_ip_recv_forwarding_relays_transit_fragments)
     mock_link_init_idx(&s, TEST_SECOND_IF, iface1_mac);
     wolfIP_ipconfig_set(&s, 0xC0A80001, 0xFFFFFF00, 0);
     wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101, 0xFFFFFF00, 0);
-    s.arp.neighbors[0].ip = dest_ip;
-    s.arp.neighbors[0].if_idx = TEST_SECOND_IF;
-    memcpy(s.arp.neighbors[0].mac, next_hop_mac, 6);
 
     /* First fragment: MF set, offset zero, 8 bytes of payload. */
     memset(frame_buf, 0, sizeof(frame_buf));
@@ -4418,13 +4414,8 @@ START_TEST(test_ip_recv_forwarding_relays_transit_fragments)
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
             ETH_HEADER_LEN + IP_HEADER_LEN + 8);
 
-    /* Relayed unchanged, TTL decremented, fragment field intact. */
-    ck_assert_uint_eq(last_frame_sent_size,
-            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8));
-    fwd = (struct wolfIP_ip_packet *)last_frame_sent;
-    ck_assert_mem_eq(fwd->eth.dst, next_hop_mac, 6);
-    ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
-    ck_assert_uint_eq(ee16(fwd->flags_fo), 0x2000U);
+    /* Dropped at arrival: nothing relayed, nothing delivered. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
 
     /* Non-first fragment: MF clear, offset non-zero. Same path. */
     memset(frame_buf, 0, sizeof(frame_buf));
@@ -4447,11 +4438,8 @@ START_TEST(test_ip_recv_forwarding_relays_transit_fragments)
     wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame,
             ETH_HEADER_LEN + IP_HEADER_LEN + 8);
 
-    ck_assert_uint_eq(last_frame_sent_size,
-            (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + 8));
-    fwd = (struct wolfIP_ip_packet *)last_frame_sent;
-    ck_assert_uint_eq(fwd->ttl, (uint8_t)(initial_ttl - 1));
-    ck_assert_uint_eq(ee16(fwd->flags_fo), 0x0001U);
+    /* Dropped at arrival: nothing relayed, nothing delivered. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
 }
 END_TEST
 

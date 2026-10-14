@@ -249,7 +249,7 @@ When forwarding is enabled, the optional static-route API is also compiled in
 route lookup performs longest-prefix matching across connected subnets and static
 routes together.
 
-### Deviations from RFC 791/1122: no IPv4 fragmentation
+### Deviations from RFC 791/1122/1812: no IPv4 fragmentation
 
 wolfIP is an endpoint stack first; the forwarding path deliberately omits IPv4
 fragmentation and reassembly. These are documented, intended deviations, not
@@ -261,8 +261,13 @@ bugs:
   carrying the egress next-hop MTU (RFC 1812 4.3.2.4); a DF-clear datagram
   that does not fit is **dropped silently** on transmit. Datagrams that fit
   the egress MTU are forwarded normally.
-- **No reassembly.** The IP input path drops every fragment (MF set or non-zero
-  fragment offset); the stack never reassembles fragmented datagrams.
+- **No reassembly, no fragment forwarding.** The IP input path drops every
+  fragment (MF set or non-zero fragment offset); the stack never reassembles
+  fragmented datagrams. This is a deliberate exception to RFC 1812 5.2.6,
+  which requires a router to forward a datagram without reassembly: wolfIP
+  drops fragments at arrival, in a router build included, so a fragment set
+  can never traverse the stack (and can never bypass the L4 filters,
+  RFC 1858).
 - **Locally generated UDP.** `wolfIP_sock_sendto()` fails with `-1` when the
   datagram does not fit the socket's IP MTU (headers excluded) — a clean error
   to the caller instead of a silent drop.
@@ -273,7 +278,9 @@ The practical consequence for a router build: keep every link's MTU at or
 above the largest datagram that traverses it (the usual 1500-byte Ethernet
 baseline). A higher-MTU upstream (e.g. jumbo frames) that injects datagrams
 larger than a downstream link's IP MTU will see them dropped at the egress
-(no Fragmentation Needed reply when the DF bit is clear). If your topology
+(no Fragmentation Needed reply when the DF bit is clear). Fragments arriving
+on any link are dropped at arrival (no reassembly, no forwarding), so a
+fragmented datagram can never cross the router. If your topology
 cannot guarantee that, IPv4 fragmentation is out of scope for wolfIP and a
 different stack is needed.
 
