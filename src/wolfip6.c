@@ -3007,6 +3007,13 @@ static void nd6_recv_ra(struct wolfIP *s, unsigned int if_idx,
     ip6 src;
     ip6 dst;
 
+    /* An interface that has not started IPv6 (or has stopped it) takes no
+     * Router Advertisements: all-nodes is local on every interface, so
+     * without the gate an RA would install a default router and form
+     * addresses on a plain IPv4 interface, and a stopped interface would
+     * quietly re-learn its configuration. */
+    if (!s->nd6.started[if_idx])
+        return;
     if (payload_len < 16u)
         return;
     ip6_hdr_get_src(pkt, &src);
@@ -3470,10 +3477,13 @@ int wolfIP_ipv6_start(struct wolfIP *s, unsigned int if_idx)
  *
  * Halts what the tick drives: router solicitation, and duplicate address
  * detection for anything still tentative, which is dropped because it never
- * completed. Addresses that had already passed detection are left alone and
- * are still defended by nd6_recv_ns(); remove them with wolfIP_ifaddr_del6()
- * if that is wanted. When no interface is left running, the tick releases
- * its slot in the shared timer heap. */
+ * completed. The RA-derived state - prefixes and default routers - goes with
+ * the advertisements: the interface no longer listens for them, so routing
+ * traffic through the configuration they installed would be carrying on
+ * with something the application has stopped. Addresses that had already
+ * passed detection are left alone and are still defended by nd6_recv_ns();
+ * remove them with wolfIP_ifaddr_del6() if that is wanted. When no interface
+ * is left running, the tick releases its slot in the shared timer heap. */
 int wolfIP_ipv6_stop(struct wolfIP *s, unsigned int if_idx)
 {
     unsigned int i;
@@ -3496,6 +3506,17 @@ int wolfIP_ipv6_stop(struct wolfIP *s, unsigned int if_idx)
             slot->used = 0;
             slot->dad_probes = 0;
         }
+    }
+
+    for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+        if (s->nd6.prefixes[i].used &&
+                (s->nd6.prefixes[i].if_idx == (uint8_t)if_idx))
+            s->nd6.prefixes[i].used = 0;
+    }
+    for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+        if (s->nd6.routers[i].used &&
+                (s->nd6.routers[i].if_idx == (uint8_t)if_idx))
+            s->nd6.routers[i].used = 0;
     }
 
     if (!nd6_has_work(s) && (s->nd6.tick_timer != NO_TIMER)) {

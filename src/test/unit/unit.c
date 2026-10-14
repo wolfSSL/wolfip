@@ -1324,6 +1324,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ra_ignores_oversized_prefix_information_option);
     tcase_add_test(tc_proto, test_ra_ignores_prefix_with_preferred_lifetime_above_valid);
     tcase_add_test(tc_proto, test_ra_zero_valid_lifetime_withdraws_prefix_immediately);
+    tcase_add_test(tc_proto, test_ra_on_a_never_started_interface_is_ignored);
     tcase_add_test(tc_proto, test_nd_static_neighbor_rejects_non_wire_addresses);
     tcase_add_test(tc_proto, test_ula_is_verified_by_dad_and_then_usable);
     tcase_add_test(tc_proto, test_ula_is_defended_and_survives_a_router_advertisement);
@@ -1334,6 +1335,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_stop_releases_the_timer_slot);
     tcase_add_test(tc_proto, test_nd_stop_drops_a_tentative_address);
     tcase_add_test(tc_proto, test_nd_restarts_after_being_stopped);
+    tcase_add_test(tc_proto, test_ra_after_stop_is_ignored);
     tcase_add_test(tc_proto, test_nd_stop_rejects_invalid_arguments);
     tcase_add_test(tc_proto, test_nd_slaac_address_deprecates_then_expires);
     tcase_add_test(tc_proto, test_nd_slaac_readvertisement_refreshes_the_address);

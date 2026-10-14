@@ -1107,6 +1107,37 @@ START_TEST(test_ra_zero_valid_lifetime_withdraws_prefix_immediately)
 }
 END_TEST
 
+/* An interface that has never started IPv6 takes no Router Advertisements:
+ * all-nodes is local on every interface, so without the gate an RA would
+ * install a default router and form addresses on a plain IPv4 interface.
+ * A stopped interface is the same case: it no longer listens. */
+START_TEST(test_ra_on_a_never_started_interface_is_ignored)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 offlink;
+    ip6 nexthop;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    /* IPv6 was never started: no link-local address at all. */
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 0);
+
+    /* A router advertisement arrives anyway. It must be ignored. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 7200u, 7200u, 4);
+    nd_advance(&s, &now, 1500);
+
+    /* No address was formed... */
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6), 0);
+    /* ...and no default router was installed: an off-link destination has
+     * no route. */
+    ck_assert_int_eq(atoip6("2001:db8:9::1", &offlink), 0);
+    ck_assert_int_lt(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &offlink,
+                                         &nexthop), 0);
+}
+END_TEST
+
 START_TEST(test_nd_static_neighbor_rejects_non_wire_addresses)
 {
     struct wolfIP s;
@@ -1430,6 +1461,41 @@ START_TEST(test_nd_restarts_after_being_stopped)
     nd_our_link_local(&s, &ll6);
     nd_advance(&s, &now, 1500);
     ck_assert_int_eq(nd_addr_state(&s, &ll6), WOLFIP_IFADDR_PREFERRED);
+}
+END_TEST
+
+/* A stopped interface takes no Router Advertisements: the configuration
+ * learned from them goes with wolfIP_ipv6_stop(), and a later advertisement
+ * must not quietly re-learn it. */
+START_TEST(test_ra_after_stop_is_ignored)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    unsigned int count_before;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    /* While started, an RA forms a SLAAC address. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 7200u, 7200u, 4);
+    nd_advance(&s, &now, 1500);
+    /* Link-local plus the SLAAC address. */
+    count_before = wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6);
+    ck_assert_uint_eq(count_before, 2);
+
+    /* Stop IPv6 on the interface. */
+    ck_assert_int_eq(wolfIP_ipv6_stop(&s, TEST_PRIMARY_IF), 0);
+
+    /* A second RA with a new prefix must be ignored: the interface is
+     * stopped, so it takes no advertisements. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:9:9::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 7200u, 7200u, 4);
+    nd_advance(&s, &now, 1500);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, TEST_PRIMARY_IF, AF_INET6),
+                      count_before);
 }
 END_TEST
 
