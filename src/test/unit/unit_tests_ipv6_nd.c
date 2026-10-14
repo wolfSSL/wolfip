@@ -1597,6 +1597,47 @@ START_TEST(test_nd_slaac_readvertisement_refreshes_the_address)
 }
 END_TEST
 
+/* A renewal that re-advertises a non-zero preferred lifetime revives an
+ * address the tick has deprecated (RFC 4862 section 5.5.3 (e)): the router
+ * has said the prefix is usable again, and the deprecation was only the
+ * previous advertisement's preferred lifetime running out. Without the
+ * revival a router that deprecates and later revokes the deprecation would
+ * leave the address deprecated for the rest of its valid lifetime. */
+START_TEST(test_nd_slaac_readvertisement_revives_a_deprecated_address)
+{
+    struct wolfIP s;
+    struct wolfIP_ll_dev *ll;
+    uint64_t now = 1000;
+    ip6 prefix;
+    ip6 iid;
+    ip6 formed;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    /* Preferred for 2s, valid for 5s. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 5u, 2u, 4);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::", &prefix), 0);
+    ip6_iid_from_mac(&iid, ll->mac);
+    ip6_make_addr(&formed, &prefix, 64, &iid);
+
+    /* Let the preferred lifetime run out: deprecated, still one of ours. */
+    nd_advance(&s, &now, 2500);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_DEPRECATED);
+
+    /* The router re-advertises the prefix with a healthy preferred
+     * lifetime: the deprecated address comes back to preferred. */
+    nd_send_ra_pio_raw(&s, NULL, "2001:db8:1:2::", 64,
+                       ND6_PREFIX_ONLINK | ND6_PREFIX_AUTO, 86400u, 86400u, 4);
+    ck_assert_int_eq(nd_addr_state(&s, &formed), WOLFIP_IFADDR_PREFERRED);
+}
+END_TEST
+
 /* RFC 4862 section 5.5.3 (e): an unauthenticated advertisement may raise a
  * valid lifetime freely, but may not cut it below two hours. Without that
  * floor a single forged Router Advertisement carrying a one-second lifetime

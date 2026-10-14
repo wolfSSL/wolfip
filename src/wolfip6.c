@@ -1334,6 +1334,14 @@ static void nd6_slaac_apply_lifetimes(struct wolfIP *s,
                 (uint32_t)(ND6_SLAAC_TWO_HOURS_MS / 1000u);
         }
     }
+    /* RFC 4862 section 5.5.3 (e): a renewal that re-advertises a non-zero
+     * preferred lifetime revives an address the tick has deprecated - the
+     * router has said the prefix is usable again, and the deprecation was
+     * only the previous advertisement's preferred lifetime running out.
+     * TENTATIVE is left to DAD, and preferred=0 keeps the state the tick set. */
+    if ((preferred != 0) &&
+            (slot->info.state == WOLFIP_IFADDR_DEPRECATED))
+        slot->info.state = WOLFIP_IFADDR_PREFERRED;
     slot->lifetime_ts = s->last_tick;
 }
 

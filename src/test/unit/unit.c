@@ -1339,6 +1339,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_stop_rejects_invalid_arguments);
     tcase_add_test(tc_proto, test_nd_slaac_address_deprecates_then_expires);
     tcase_add_test(tc_proto, test_nd_slaac_readvertisement_refreshes_the_address);
+    tcase_add_test(tc_proto, test_nd_slaac_readvertisement_revives_a_deprecated_address);
     tcase_add_test(tc_proto, test_nd_slaac_short_lifetime_cannot_cut_below_two_hours);
     tcase_add_test(tc_proto, test_nd_advertisement_can_revoke_router_status);
     tcase_add_test(tc_proto, test_nd_clock_rollback_does_not_strand_discovery);
