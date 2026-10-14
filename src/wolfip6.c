@@ -859,10 +859,13 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
 #define ND6_REACHABLE_TIME_MS      30000U
 #define ND6_DELAY_FIRST_PROBE_MS    5000U
 #define ND6_MAX_MULTICAST_SOLICIT      3U
-/* nd6_resolve() results. Zero is success (mac filled in); the two failures
- * are told apart because only one of them is worth waiting for. */
+/* nd6_resolve() results. Zero is success (mac filled in); the failures are
+ * told apart because only PENDING is worth waiting for: UNREACHABLE means
+ * address resolution gave up, and NO_ROUTE means the destination is neither
+ * on-link nor covered by a default router, which no retransmission will fix. */
 #define ND6_RESOLVE_PENDING     (-1)
 #define ND6_RESOLVE_UNREACHABLE (-2)
+#define ND6_RESOLVE_NO_ROUTE    (-3)
 #define ND6_MAX_UNICAST_SOLICIT        3U
 #define ND6_MAX_RTR_SOLICITATIONS      3U
 #define ND6_RTR_SOLICITATION_INTERVAL_MS 4000U
@@ -2190,7 +2193,7 @@ static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
         return 0;
     }
     if (nd6_select_nexthop(s, *tx_if, dst, &nexthop) != 0)
-        return ND6_RESOLVE_PENDING; /* no route */
+        return ND6_RESOLVE_NO_ROUTE; /* not on-link and no default router */
     if (nd6_lookup(s, *tx_if, &nexthop, mac) == 0)
         return 0;
 
@@ -2574,7 +2577,11 @@ static uint32_t tcp6_promote(const struct tsocket *t, const void *v4frame,
 
 /* Promote, address, resolve and transmit one TCP segment over IPv6.
  * Returns 0 on success, -WOLFIP_EAGAIN while address resolution is still in
- * flight so the caller holds the segment, or -1 on a hard failure. */
+ * flight so the caller holds the segment, or -1 on a hard failure. A
+ * destination with no route is a hard failure of a different kind: the
+ * segment can never leave, so the connection is aborted and the caller's
+ * socket is closed - the segment must not pin the head of the queue the way
+ * a held datagram does. */
 static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
                          const void *v4frame, uint32_t frame_len)
 {
@@ -2595,8 +2602,16 @@ static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
                               0, NULL) != 0)
         return -1;
     tx_if = ip6_egress_for(s, t, &t->remote_ip6);
-    if (nd6_resolve(s, &tx_if, &t->remote_ip6, mac) != 0)
-        return -WOLFIP_EAGAIN;
+    {
+        int rc = nd6_resolve(s, &tx_if, &t->remote_ip6, mac);
+
+        if (rc == ND6_RESOLVE_NO_ROUTE) {
+            tcp_abort(t);
+            return -1;
+        }
+        if (rc != 0)
+            return -WOLFIP_EAGAIN;
+    }
     t->if_idx = (uint8_t)tx_if;
 #ifdef ETHERNET
     if (!wolfIP_ll_is_non_ethernet(s, tx_if))

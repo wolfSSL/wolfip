@@ -15275,18 +15275,24 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
             if ((((const uint8_t *)ip)[ETH_HEADER_LEN] >> 4) == 6) {
                 int rc6 = flush_datagram6_one(s, t, desc, &tx_if);
 
-                if (rc6 == ND6_RESOLVE_UNREACHABLE) {
-                    /* Address resolution gave up (RFC 4861 section 7.2.2).
-                     * Holding the datagram would pin the head of the queue
-                     * for ever and stop every later one; drop it and carry
-                     * on, as an unreachable destination should. */
+                if ((rc6 == ND6_RESOLVE_UNREACHABLE) ||
+                        (rc6 == ND6_RESOLVE_NO_ROUTE)) {
+                    /* Address resolution gave up (RFC 4861 section 7.2.2),
+                     * or the destination is not on-link and no default
+                     * router is known: holding the datagram would pin the
+                     * head of the queue for ever and stop every later one.
+                     * Drop it and carry on, as an unreachable destination
+                     * should. The datagram is locally originated, so there
+                     * is no remote sender to notify: an RFC 4443 section
+                     * 3.1 error goes out on the wire to the packet's source,
+                     * which here is one of our own addresses. */
                     fifo_pop(&t->sock.udp.txbuf);
                     desc = fifo_peek(&t->sock.udp.txbuf);
                     tx_drained = 1;
                     continue;
                 }
                 if (rc6 < 0)
-                    break;      /* unresolved or unroutable: hold and retry */
+                    break;      /* resolution in flight: hold and retry */
                 fifo_pop(&t->sock.udp.txbuf);
                 desc = fifo_peek(&t->sock.udp.txbuf);
                 tx_drained = 1;

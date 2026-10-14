@@ -1401,6 +1401,7 @@ Suite *wolf_suite(void)
 #endif
     tcase_add_test(tc_proto, test_sock6_udp_oversize_datagram_is_refused);
     tcase_add_test(tc_proto, test_sock6_udp_unresolved_neighbour_holds_the_datagram);
+    tcase_add_test(tc_proto, test_sock6_udp_no_route_drops_and_drains_the_queue);
     tcase_add_test(tc_proto, test_sock6_udp_bad_checksum_is_dropped);
 
     /* TCP over IPv6. */
@@ -1413,6 +1414,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_tcp_segment_to_a_dead_port_is_reset);
     tcase_add_test(tc_proto, test_sock6_tcp_bad_checksum_is_dropped);
     tcase_add_test(tc_proto, test_sock6_tcp_af_inet_listener_ignores_ipv6);
+    tcase_add_test(tc_proto, test_sock6_tcp_no_route_aborts_the_connection);
 
     /* ICMPv6: error messages (RFC 4443) and sockets. */
     tcase_add_test(tc_proto, test_icmp6_udp_port_unreachable);

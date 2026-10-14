@@ -3579,4 +3579,91 @@ START_TEST(test_icmp6_socket_plain_send_requires_connect)
 }
 END_TEST
 
+/* A destination with no route drops the datagram at flush time: holding it
+ * would pin the head of the queue for ever and stop every later datagram,
+ * even ones to a neighbour that is perfectly resolvable. The datagram is
+ * locally originated, so there is no remote sender to notify - it is
+ * dropped, not reported. */
+START_TEST(test_sock6_udp_no_route_drops_and_drains_the_queue)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_udp6_datagram *sent;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 got;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    /* Outside our /64 and no default router: no route. */
+    sock6_addr(&dst, "2001:db8:9::1", 9999);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "x", 1, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 1);
+
+    mock_link_capture_reset();
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* Nothing went out: the datagram was dropped, not held. */
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+
+    /* The queue is drained: a datagram to a resolvable neighbour goes out.
+     * Before the fix it would have sat behind the held one and never left. */
+    sock6_addr(&dst, S6_PEER, 9999);
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, fd, "y", 1, 0,
+                                        (struct wolfIP_sockaddr *)&dst,
+                                        sizeof(dst)), 1);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    ck_assert_uint_eq(last_frame_sent_size,
+                      (uint32_t)(ETH_HEADER_LEN + IP6_HEADER_LEN +
+                                 UDP_HEADER_LEN + 1));
+    memcpy(staging, last_frame_sent, last_frame_sent_size);
+    sent = (struct wolfIP_udp6_datagram *)staging;
+    ck_assert_uint_eq(ip6_hdr_version(&sent->ip6), 6);
+    ck_assert_uint_eq(sent->ip6.next_hdr, IP6_NEXTHDR_UDP);
+    ip6_hdr_get_dst(&sent->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+}
+END_TEST
+
+/* A TCP connection whose destination has no route is aborted rather than
+ * pinning the head of the segment queue: the SYN can never leave, so the
+ * connection is released. */
+START_TEST(test_sock6_tcp_no_route_aborts_the_connection)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+
+    /* In progress, like every non-blocking connect. */
+    sock6_addr(&dst, "2001:db8:9::1", 80);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    now += 100;
+    wolfIP_poll(&s, now);
+
+    /* The socket is closed: the connection is gone, the queue released. */
+    ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(fd)].proto, 0);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */
