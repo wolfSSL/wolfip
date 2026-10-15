@@ -851,6 +851,41 @@ START_TEST(test_ra_assigns_a_global_address_and_a_default_router)
 }
 END_TEST
 
+START_TEST(test_ra_prefix_with_l_flag_clear_is_not_onlink)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    ip6 addr;
+    ip6 onlink;
+    ip6 router;
+    ip6 nexthop;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+
+    /* A statically configured address on the interface, whose prefix alone
+     * would make the subnet on-link via the configured-prefix fallback. */
+    ck_assert_int_eq(atoip6("2001:db8:1:2::5", &addr), 0);
+    ck_assert_int_eq(wolfIP_ipv6_addr_add(&s, TEST_PRIMARY_IF, &addr, 64), 0);
+    nd_advance(&s, &now, 1500);
+
+    /* The router advertises the same prefix with the L flag clear. RFC 5942
+     * section 4: the advertisement takes precedence over the configured
+     * prefix, so the prefix is not on-link and traffic for it goes to the
+     * router, not the destination directly. */
+    nd_send_ra(&s, "fe80::1", 1800, "2001:db8:1:2::", 64, 0, 7200, 255);
+    nd_advance(&s, &now, 1500);
+
+    ck_assert_int_eq(atoip6("fe80::1", &router), 0);
+    ck_assert_int_eq(atoip6("2001:db8:1:2::99", &onlink), 0);
+    ck_assert_int_eq(wolfIP_ipv6_nexthop(&s, TEST_PRIMARY_IF, &onlink,
+                                         &nexthop), 0);
+    ck_assert_int_eq(ip6_cmp(&nexthop, &router), 0);
+}
+END_TEST
+
 START_TEST(test_ra_from_a_non_link_local_source_is_ignored)
 {
     struct wolfIP s;

@@ -1551,12 +1551,12 @@ static int nd6_is_onlink(struct wolfIP *s, unsigned int if_idx,
     for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
         struct nd6_prefix *p = &s->nd6.prefixes[i];
 
-        if (!p->used || !p->onlink)
+        if (!p->used)
             continue;
         if (p->if_idx != (uint8_t)if_idx)
             continue;
         if (ip6_prefix_cmp(&p->prefix, dst, p->prefix_len) == 0)
-            return 1;
+            return p->onlink;
     }
     /* The prefix of an address configured on the interface.
      *

@@ -1316,6 +1316,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_ra_assigns_a_global_address_and_a_default_router);
     tcase_add_test(tc_proto, test_ra_from_a_non_link_local_source_is_ignored);
     tcase_add_test(tc_proto, test_ra_with_wrong_hop_limit_is_ignored);
+    tcase_add_test(tc_proto, test_ra_prefix_with_l_flag_clear_is_not_onlink);
     tcase_add_test(tc_proto, test_ra_ignores_a_link_local_prefix_option);
     tcase_add_test(tc_proto, test_ra_prefix_that_is_not_64_bits_forms_no_address);
     tcase_add_test(tc_proto, test_ra_with_zero_router_lifetime_is_not_a_default_route);
