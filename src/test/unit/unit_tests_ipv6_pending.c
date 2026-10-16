@@ -1,0 +1,281 @@
+/* unit_tests_ipv6_pending.c
+ *
+ * Copyright (C) 2026 wolfSSL Inc.
+ *
+ * This file is part of wolfIP TCP/IP stack.
+ *
+ * wolfIP is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * wolfIP is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
+ */
+
+/* =========================================================================
+ * Requirement-derived tests for IPv6 behaviour that is not implemented yet
+ * =========================================================================
+ *
+ * Each group is guarded by a named WOLFIP_IPV6_HAVE_* macro, all of which
+ * default to 0 in config.h. The phase that implements a feature flips its
+ * macro to 1 in the same commit, which switches these tests on. They are
+ * named macros rather than "#if 0" so that the amount of work still
+ * outstanding is greppable - `make unit-ipv6-pending-count` reports it.
+ *
+ * These tests are the specification. They were written from the low-level
+ * requirements before the code exists, so they also fix the API shape: the
+ * function names and signatures used below are the contract the
+ * implementation is expected to meet. Changing a name here is a deliberate
+ * interface decision, not a test fixup.
+ *
+ * Test names are descriptive and carry no requirement identifiers: the
+ * requirement documents are internal, and the mapping from requirement to
+ * test is maintained off-tree, keyed by test function name. Keep the names
+ * stable.
+ */
+
+#if WOLFIP_IPV6
+
+/* =========================================================================
+ * ICMPv6 - RFC 4443
+ * ========================================================================= */
+/* ICMPv6 (RFC 4443) is implemented: the Echo pair, the four error types,
+ * the section 2.4 suppression rules, the quoting bound and the error /
+ * informational split all have real tests in unit_tests_ipv6_icmp.c and
+ * unit_tests_ipv6_sockets.c.
+ *
+ * What is left is not an ICMPv6 gap but a forwarding one. Time Exceeded
+ * code 0 is raised when a hop limit reaches zero *in transit*, so it needs
+ * a forwarding path, and wolfIP forwards IPv4 only. The message itself is
+ * generated and tested; nothing in the stack can trigger it yet. */
+#if WOLFIP_IPV6_HAVE_FORWARDING
+
+START_TEST(test_icmp6_time_exceeded_on_hop_limit_zero_when_forwarding)
+{
+    /* Type 3 code 0 (RFC 4443 s3.3), raised while forwarding. A packet
+     * addressed to us at hop limit zero is accepted instead, which
+     * test_ip6_recv_accepts_hop_limit_zero already pins down. */
+    ck_abort_msg("pending: IPv6 forwarding");
+}
+END_TEST
+
+#endif /* WOLFIP_IPV6_HAVE_FORWARDING */
+
+/* =========================================================================
+ * Neighbor Discovery - RFC 4861
+ * ========================================================================= */
+#if WOLFIP_IPV6_HAVE_ND6
+
+
+
+
+
+
+
+START_TEST(test_nd6_cache_state_machine_transitions)
+{
+    /* RFC 4861 s7.3.2: INCOMPLETE, REACHABLE, STALE, DELAY, PROBE. */
+    ck_abort_msg("pending: ND cache state machine");
+}
+END_TEST
+
+START_TEST(test_nd6_cache_eviction_when_full)
+{
+    /* WOLFIP_ND6_CACHE_SIZE entries. Note the IPv4 ARP table silently
+     * refuses new entries when full rather than evicting; the IPv6 cache
+     * must not inherit that, or one burst of scan traffic locks out every
+     * real neighbour. */
+    ck_abort_msg("pending: ND cache eviction");
+}
+END_TEST
+
+START_TEST(test_nd6_queues_one_packet_per_pending_resolution)
+{
+    /* RFC 4861 s7.2.2: at least one packet is queued while resolution is
+     * in flight, and the queue is bounded. */
+    ck_abort_msg("pending: ND pending packet queue");
+}
+END_TEST
+
+
+
+
+START_TEST(test_nd6_prefix_option_with_length_over_128_is_ignored)
+{
+    /* RFC 4861 s4.6.2. A prefix length above 128 would otherwise index off
+     * the end of a 16-byte address. */
+    ck_abort_msg("pending: ND prefix option validation");
+}
+END_TEST
+
+
+
+#endif /* WOLFIP_IPV6_HAVE_ND6 */
+
+/* =========================================================================
+ * SLAAC and DAD - RFC 4862
+ * ========================================================================= */
+#if WOLFIP_IPV6_HAVE_SLAAC
+
+
+
+
+
+
+
+
+
+
+START_TEST(test_slaac_preferred_lifetime_expiry_deprecates_address)
+{
+    /* RFC 4862 s5.5.4: a deprecated address may still be used by existing
+     * connections but must not be chosen for new ones. */
+    ck_abort_msg("pending: SLAAC address deprecation");
+}
+END_TEST
+
+START_TEST(test_slaac_valid_lifetime_expiry_removes_address)
+{
+    ck_abort_msg("pending: SLAAC address expiry");
+}
+END_TEST
+
+START_TEST(test_slaac_lifetime_extension_is_bounded)
+{
+    /* RFC 4862 s5.5.3 (e): the two-hour rule. Without it an attacker can
+     * extend the lifetime of an address indefinitely with one forged RA. */
+    ck_abort_msg("pending: SLAAC two-hour rule");
+}
+END_TEST
+
+START_TEST(test_slaac_respects_the_address_table_limit)
+{
+    /* WOLFIP_IP6_ADDR_MAX per interface. A stream of RAs advertising
+     * distinct prefixes must not overflow the table. */
+    ck_abort_msg("pending: SLAAC address table bound");
+}
+END_TEST
+
+#endif /* WOLFIP_IPV6_HAVE_SLAAC */
+
+/* =========================================================================
+ * DHCPv6 client - RFC 8415
+ * ========================================================================= */
+#if WOLFIP_IPV6_HAVE_DHCP6
+
+START_TEST(test_dhcp6_solicit_goes_to_all_dhcp_servers_multicast)
+{
+    /* RFC 8415 s16: ff02::1:2, from a link-local source, UDP 546 to 547. */
+    ck_abort_msg("pending: DHCPv6 solicit");
+}
+END_TEST
+
+START_TEST(test_dhcp6_solicit_carries_client_id_and_ia_na)
+{
+    /* RFC 8415 s18.2.1 */
+    ck_abort_msg("pending: DHCPv6 solicit options");
+}
+END_TEST
+
+START_TEST(test_dhcp6_advertise_with_mismatched_transaction_id_is_ignored)
+{
+    /* RFC 8415 s16.3. Without this an off-path attacker can answer a
+     * request it never saw. */
+    ck_abort_msg("pending: DHCPv6 transaction id check");
+}
+END_TEST
+
+START_TEST(test_dhcp6_reply_assigns_the_offered_address)
+{
+    ck_abort_msg("pending: DHCPv6 reply handling");
+}
+END_TEST
+
+START_TEST(test_dhcp6_retransmission_uses_exponential_backoff)
+{
+    /* RFC 8415 s15: RT is doubled with randomisation, and clamped at MRT. */
+    ck_abort_msg("pending: DHCPv6 retransmission timing");
+}
+END_TEST
+
+START_TEST(test_dhcp6_renew_at_t1_and_rebind_at_t2)
+{
+    /* RFC 8415 s18.2.4 and s18.2.5 */
+    ck_abort_msg("pending: DHCPv6 renew and rebind");
+}
+END_TEST
+
+START_TEST(test_dhcp6_option_longer_than_the_message_is_rejected)
+{
+    /* An option whose declared length runs past the end of the datagram
+     * must abort parsing, not read beyond the buffer. */
+    ck_abort_msg("pending: DHCPv6 option bounds");
+}
+END_TEST
+
+START_TEST(test_dhcp6_message_larger_than_buffer_is_rejected)
+{
+    /* WOLFIP_DHCP6_BUF_SIZE */
+    ck_abort_msg("pending: DHCPv6 buffer bound");
+}
+END_TEST
+
+#endif /* WOLFIP_IPV6_HAVE_DHCP6 */
+
+/* =========================================================================
+ * Extension headers - RFC 8200 section 4
+ * ========================================================================= */
+#if WOLFIP_IPV6_HAVE_EXTHDR
+
+START_TEST(test_ip6_walks_hop_by_hop_and_destination_options)
+{
+    /* When extension header support lands, these two must be skipped to
+     * reach the upper-layer header. Until then ip6_recv rejects them, which
+     * test_ip6_recv_rejects_every_extension_header pins down. */
+    ck_abort_msg("pending: extension header chain walk");
+}
+END_TEST
+
+START_TEST(test_ip6_extension_header_chain_length_is_capped)
+{
+    /* An unbounded chain of tiny option headers is a denial of service.
+     * The walk must stop after a fixed number of headers. */
+    ck_abort_msg("pending: extension header chain cap");
+}
+END_TEST
+
+START_TEST(test_ip6_extension_header_with_zero_length_is_rejected)
+{
+    /* A header claiming zero total length makes the walk loop forever. */
+    ck_abort_msg("pending: extension header length validation");
+}
+END_TEST
+
+START_TEST(test_ip6_routing_header_type_zero_is_still_rejected)
+{
+    /* RFC 5095 deprecated routing header type 0 because it enabled traffic
+     * amplification. Enabling the chain walk must not resurrect it. */
+    ck_abort_msg("pending: routing header type 0 rejection");
+}
+END_TEST
+
+#endif /* WOLFIP_IPV6_HAVE_EXTHDR */
+
+/* =========================================================================
+ * Sockets and dual stack
+ * ========================================================================= */
+/* The socket layer is implemented. Creation, bind and the reported names,
+ * IPV6_V6ONLY and its enforcement, v4-mapped framing and peer reporting,
+ * dual-stack port sharing, the TCP MSS accounting for the larger header and
+ * the UDP size limit all have real tests in unit_tests_ipv6_sockets.c, and
+ * the OS ports have their own in test_ipv6_bsd.c and
+ * test_freertos_ipv6.c. */
+
+#endif /* WOLFIP_IPV6 */

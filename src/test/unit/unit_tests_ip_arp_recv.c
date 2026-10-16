@@ -1124,9 +1124,7 @@ END_TEST
 START_TEST(test_ip_recv_loopback_dst_on_non_loopback_dropped)
 {
     struct wolfIP s;
-    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
-    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
-    uint8_t *udp_hdr = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    struct tsocket *ctrl;
     struct tsocket *ts;
     ip4 local_ip  = 0x0A000001U;
     ip4 remote_ip = 0x0A000002U;
@@ -1136,33 +1134,33 @@ START_TEST(test_ip_recv_loopback_dst_on_non_loopback_dropped)
     mock_link_init(&s);
     wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
 
-    /* A wildcard socket on the destination port: the drop must happen in
-     * ip_recv, before any demux can see the datagram. */
+    /* Positive control on its own port: an otherwise identical datagram to
+     * an ordinary local address must be delivered. Without it, the drop
+     * assertion below would also pass if the frame were malformed, the
+     * socket misconfigured, or ip_recv rejecting everything. */
+    ctrl = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ctrl);
+    ctrl->src_port = 1234;
+    ctrl->local_ip = local_ip;
+
+    /* The socket under test is set to accept exactly the loopback
+     * destination, so if ip_recv let the frame through it would be
+     * delivered. Non-delivery can therefore only be ip_recv's martian
+     * filter, which is the behaviour this test is named for. */
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = 1234;
-    ts->local_ip = IPADDR_ANY;
+    ts->src_port = 1235;
+    ts->local_ip = loop_dst;
 
-    /* Inject from non-loopback interface to loopback destination */
-    memset(frame, 0, sizeof(frame));
-    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
-    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip->eth.type = ee16(ETH_TYPE_IP);
-    ip->ver_ihl  = 0x45;
-    ip->ttl      = 64;
-    ip->proto    = WI_IPPROTO_UDP;
-    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
-    ip->src      = ee32(remote_ip);
-    ip->dst      = ee32(loop_dst);
-    fix_ip_checksum(ip);
-    udp_hdr[0] = 0x27; udp_hdr[1] = 0x0F; /* src port 9999 */
-    udp_hdr[2] = 0x04; udp_hdr[3] = 0xD2; /* dst port 1234 */
-    udp_hdr[4] = 0x00; udp_hdr[5] = UDP_HEADER_LEN;
-    /* csum left 0: validation is skipped, the drop is upstream of it. */
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+                      9999, 1234, NULL, 0);
+    ck_assert_ptr_nonnull(fifo_peek(&ctrl->sock.udp.rxbuf));
 
-    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
-
-    /* Must be dropped - loopback addresses must not arrive on wire */
+    /* RFC 5735 section 4 / RFC 6890: 127/8 is host loopback and must never
+     * appear on the wire. Delivered through the real ingress path, so
+     * ip_recv actually runs. */
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, loop_dst,
+                      9999, 1235, NULL, 0);
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
     ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0);
 }
@@ -1176,42 +1174,38 @@ END_TEST
 START_TEST(test_ip_recv_loopback_src_on_non_loopback_dropped)
 {
     struct wolfIP s;
-    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + UDP_HEADER_LEN];
-    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
-    uint8_t *udp_hdr = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    struct tsocket *ctrl;
     struct tsocket *ts;
     ip4 local_ip  = 0x0A000001U;
-    ip4 loop_src  = 0x7F000002U;  /* 127.0.0.2 as source */
+    ip4 remote_ip = 0x0A000002U;
+    ip4 loop_src  = 0x7F000001U;  /* 127.0.0.1 */
 
     wolfIP_init(&s);
     mock_link_init(&s);
     wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
 
+    /* Positive control: same destination, ordinary source. */
+    ctrl = udp_new_socket(&s);
+    ck_assert_ptr_nonnull(ctrl);
+    ctrl->src_port = 1234;
+    ctrl->local_ip = local_ip;
+
     ts = udp_new_socket(&s);
     ck_assert_ptr_nonnull(ts);
-    ts->src_port = 1234;
-    ts->local_ip = IPADDR_ANY;
+    ts->src_port = 1235;
+    ts->local_ip = local_ip;
 
-    /* Loopback source, valid local destination: the symmetric source
-     * check in ip_recv must drop it. */
-    memset(frame, 0, sizeof(frame));
-    memcpy(ip->eth.dst, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
-    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
-    ip->eth.type = ee16(ETH_TYPE_IP);
-    ip->ver_ihl  = 0x45;
-    ip->ttl      = 64;
-    ip->proto    = WI_IPPROTO_UDP;
-    ip->len      = ee16(IP_HEADER_LEN + UDP_HEADER_LEN);
-    ip->src      = ee32(loop_src);
-    ip->dst      = ee32(local_ip);
-    fix_ip_checksum(ip);
-    udp_hdr[0] = 0x27; udp_hdr[1] = 0x0F; /* src port 9999 */
-    udp_hdr[2] = 0x04; udp_hdr[3] = 0xD2; /* dst port 1234 */
-    udp_hdr[4] = 0x00; udp_hdr[5] = UDP_HEADER_LEN;
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+                      9999, 1234, NULL, 0);
+    ck_assert_ptr_nonnull(fifo_peek(&ctrl->sock.udp.rxbuf));
 
-    ip_recv(&s, TEST_PRIMARY_IF, ip, (uint32_t)sizeof(frame));
-
+    /* Only the source changes. The symmetric source check is what stops an
+     * off-link attacker forging src=127.0.0.1 to impersonate locally
+     * originated traffic to higher-layer code. */
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, loop_src, local_ip,
+                      9999, 1235, NULL, 0);
     ck_assert_ptr_eq(fifo_peek(&ts->sock.udp.rxbuf), NULL);
+    ck_assert_uint_eq(ts->events & CB_EVENT_READABLE, 0);
 }
 END_TEST
 
@@ -1829,12 +1823,33 @@ START_TEST(test_ip_recv_dest_matches_secondary_iface_ip_is_local)
     ts->src_port = 1234;
     ts->local_ip = secondary_ip;  /* listening on secondary IP */
 
-    /* Inject on primary iface, dst=secondary IP → local, not forwarded */
-    inject_udp_datagram(&s, TEST_PRIMARY_IF, remote_src, secondary_ip,
-                        9999, 1234, NULL, 0);
+    /* Arrives on the primary interface addressed to the *secondary*
+     * interface's own IP. Delivered through the real ingress path so that
+     * ip_recv's is_local decision is the thing under test: the packet must
+     * be delivered locally and must not be forwarded. */
+    last_frame_sent_size = 0;
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, remote_src, secondary_ip,
+                      9999, 1234, NULL, 0);
 
-    /* Must be delivered locally */
     ck_assert_int_ne(ts->events & CB_EVENT_READABLE, 0);
+    ck_assert_uint_eq((uint32_t)last_frame_sent_size, 0u);
+
+    /* Control for the assertion above: an address on the same subnet that
+     * is NOT ours does leave the stack (as a forwarded frame, or as the ARP
+     * request that precedes one). Without this, "nothing was sent" would
+     * also hold if the setup were simply incapable of forwarding.
+     *
+     * Note this test asserts the observable contract - delivered locally,
+     * not forwarded - rather than any single internal decision. The stack
+     * reaches that outcome by two independent routes: ip_recv's is_local
+     * check, and wolfIP_forward_interface() declining a destination that is
+     * one of our own addresses. Defeating either one alone leaves the
+     * behaviour correct. */
+    wolfIP_poll(&s, 2000); /* past the 1/s ARP request rate limit */
+    last_frame_sent_size = 0;
+    recv_udp_datagram(&s, TEST_PRIMARY_IF, remote_src, secondary_ip + 0x31U,
+                      9999, 1234, NULL, 0);
+    ck_assert_uint_gt((uint32_t)last_frame_sent_size, 0u);
 }
 END_TEST
 

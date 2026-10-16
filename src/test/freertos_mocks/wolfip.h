@@ -19,6 +19,7 @@ typedef void (*tsocket_cb)(int fd, uint16_t event, void *arg);
 typedef void (*wolfIP_wake_cb)(void *arg);
 
 #define AF_INET 2
+#define AF_INET6 10
 #define IPSTACK_SOCK_STREAM 1
 #define IPSTACK_SOCK_DGRAM 2
 

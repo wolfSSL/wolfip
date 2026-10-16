@@ -1,0 +1,183 @@
+name: wolfIP IPv6
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  ipv6-unit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential check gcovr libwolfssl-dev \
+                                  radvd tcpdump iputils-ping
+
+      # The IPv6 addressing layer lives in wolfip6.h, which is included
+      # unconditionally, so it is already covered by the default `make unit`
+      # in linux.yml. This job covers everything that needs the IPv6 stack
+      # itself compiled in.
+      - name: Unit tests with IPv6 enabled
+        run: |
+          make clean
+          make unit-ipv6
+          ./build/test/unit
+
+      # The interface identifier override is a compile-time option, so both
+      # of its states are exercised: the run above covers the calls
+      # reporting -ENOSYS with it off, this covers the override itself.
+      - name: Unit tests with the IID override enabled
+        run: |
+          make clean
+          make unit-ipv6-iid
+          ./build/test/unit
+
+      # WOLFIP_IP6_ADDR_MAX equals the shared per-interface budget at its
+      # default, so nothing can tell which of the two refused an address.
+      # This build sets the IPv6 limit below the shared one, which is the
+      # only configuration where that knob is observable.
+      - name: Unit tests with a tighter IPv6 address limit
+        run: |
+          make clean
+          make unit-ipv6-addrmax
+          ./build/test/unit
+
+      - name: Unit tests with IPv6 enabled (ASan)
+        run: |
+          make clean
+          make unit-ipv6-asan
+          ./build/test/unit
+
+      - name: Unit tests with IPv6 enabled (UBSan)
+        run: |
+          make clean
+          make unit-ipv6-ubsan
+          ./build/test/unit
+
+      # The IPv4-only build must be completely unaffected by the IPv6 work.
+      # This is the regression that matters most.
+      #
+      # Builds the library and the unit tests rather than the full `make`.
+      # The default target also builds the ESP, wolfGuard and supplicant
+      # example binaries, which need a wolfSSL built from source with the
+      # right options - linux.yml installs one from the nightly snapshot for
+      # exactly that reason. Against the apt libwolfssl-dev used here,
+      # src/wolfesp.c fails on an undeclared wc_ForceZero, which has nothing
+      # to do with IPv6 and is already covered by linux.yml.
+      - name: IPv4-only build is unchanged
+        run: |
+          make clean
+          make libwolfip.so
+          make unit
+          ./build/test/unit
+
+      # wolfip.h declares the IPv6 entry points whatever the build, because
+      # it is included before config.h and cannot see WOLFIP_IPV6. This links
+      # a consumer of the IPv4-only library against all of them, which the
+      # unit binary cannot do: it #includes src/wolfip.c, so a declaration
+      # with no definition would never show up there.
+      - name: IPv6 API links against the IPv4-only library
+        run: make ipv6-api-link-test
+
+      - name: Library builds with IPv6 enabled
+        run: |
+          make clean
+          make libwolfip.so EXTRA_CFLAGS="-DWOLFIP_IPV6=1"
+
+      # Every board port ships its own config.h with the same include guard
+      # and replaces the one at the top of the tree, so a macro defined only
+      # there is invisible to a port build. This compiles wolfip.c against
+      # each port's configuration, which is what the embedded jobs would
+      # otherwise be the first to notice.
+      - name: wolfip.c builds against every port config
+        run: |
+          set -e
+          for c in src/port/*/config.h; do
+            d=$(mktemp -d)
+            cp "$c" "$d/config.h"
+            echo "-- $(dirname $c)"
+            gcc -w -I"$d" -I. -D_GNU_SOURCE -c src/wolfip.c -o /dev/null
+          done
+
+      # Regression guard for the wc_ForceZero declaration in wolfip.h. This
+      # object is what failed here before: it compiles against whichever
+      # wolfSSL the distribution packages, whose header chain differs from
+      # the source build linux.yml uses, so it is the one environment that
+      # catches a missing include.
+      - name: ESP object builds against the packaged wolfSSL
+        run: make build/esp/wolfip.o
+
+      # Enforced, like the src/wolfip.c gate in wolfip-autocov.yml. Every
+      # function in the IPv6 sources must be reached by the unit tests: an
+      # unreached one is either untested or dead, and both are worth
+      # failing on. Line coverage stays informational - some lines are
+      # defensive branches that need a malformed packet to reach.
+      - name: IPv6 coverage report
+        run: |
+          make clean
+          make autocov-ipv6-check
+
+      # AF_INET6 through the OS port layers, which is the API an application
+      # actually calls. The POSIX shim is mostly a pass-through, so what
+      # these cover is the part that is not - getaddrinfo(), which builds
+      # the sockaddr itself - plus the family reaching the stack unmangled.
+      - name: AF_INET6 through the POSIX BSD socket port
+        run: make ipv6-bsd-test
+
+      - name: AF_INET6 through the FreeRTOS BSD socket port
+        run: make freertos-ipv6-test
+
+      # End-to-end against the Linux stack over a TAP device. Needs root for
+      # the device, and captures to a pcap so a CI failure can be opened in
+      # wireshark from the artifacts.
+      - name: ICMPv6 echo end to end
+        run: |
+          make clean
+          make build/test-ipv6-ping
+          sudo ./build/test-ipv6-ping --selftest
+
+      # The same exchange over a point-to-point tun device: no Ethernet
+      # header, no link-layer address, so the ingress demux is the version
+      # nibble alone and the interface identifier is supplied rather than
+      # derived from a MAC. Both scopes are pinged, because the link-local
+      # one is the one that depends on the identifier being what we set.
+      - name: ICMPv6 echo end to end over a point-to-point link
+        run: |
+          make build/test-ipv6-ptp
+          sudo ./build/test-ipv6-ptp --selftest
+
+      - name: SLAAC end to end (advertisement injected by the test)
+        run: |
+          make build/test-ipv6-slaac
+          sudo ./build/test-ipv6-slaac --selftest
+
+      # The same again, but the Router Advertisement comes from radvd. This
+      # is the one that proves interoperability with a real router
+      # implementation rather than with a frame this repository wrote.
+      - name: SLAAC end to end (radvd)
+        run: sudo ./build/test-ipv6-slaac --selftest --with-radvd
+
+      - name: Duplicate address detection collision
+        run: sudo ./build/test-ipv6-slaac --dad-collision
+
+      - name: Upload captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipv6-pcaps
+          path: "*.pcap"
+          if-no-files-found: ignore
+
+      # Surfaces how much requirement-derived test material is still switched
+      # off, so the pending set cannot quietly rot.
+      - name: Pending requirement tests
+        run: make unit-ipv6-pending-count
