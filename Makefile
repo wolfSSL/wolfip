@@ -1081,17 +1081,13 @@ build/http/%.o: build/http/%.c
 	@echo "[CC] $<"
 	@$(CC) $(CFLAGS) -c $< -o $@
 
-build/certs/ca_cert.c:
-	@echo "[MKCERTS] `dirname $@`"
-	@tools/certs/mkcerts.sh
+# A pattern rule tells make that one mkcerts.sh run writes all three files.
+build/%/ca_cert.c build/%/server_key.c build/%/server_cert.c:
+	@echo "[MKCERTS] build/$*"
+	@tools/certs/mkcerts.sh build/$*
 
-build/certs/server_key.c:
-	@echo "[MKCERTS] `dirname $@`"
-	@tools/certs/mkcerts.sh
-
-build/certs/server_cert.c:
-	@echo "[MKCERTS] `dirname $@`"
-	@tools/certs/mkcerts.sh
+# Named as targets so make does not treat them as intermediate files.
+build/certs/ca_cert.c build/certs/server_key.c build/certs/server_cert.c:
 
 build/certs/server_key.o: build/certs/server_key.c
 	@mkdir -p `dirname $@` || true
