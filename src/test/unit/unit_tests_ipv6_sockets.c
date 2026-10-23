@@ -2451,6 +2451,42 @@ START_TEST(test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6)
 }
 END_TEST
 
+/* A full timer heap leaves the SYN with no retransmit timer: the IPv6 connect
+ * arm must roll back to CLOSED with the SYN dequeued, as the IPv4 arm does,
+ * rather than park the socket in SYN_SENT where every later connect() reports
+ * EAGAIN forever. */
+START_TEST(test_sock6_tcp_connect_timer_heap_full_rolls_back)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_timer t = {0};
+    struct tsocket *ts;
+    uint64_t now = 0;
+    int fd;
+    int i;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    t.cb = tcp_rto_cb;
+    for (i = 0; i < MAX_TIMERS; i++) {
+        t.arg = (void *)(intptr_t)i;
+        t.expires = s.last_tick + 100000 + i;
+        if (timers_binheap_insert(&s.timers, t) < 0)
+            break;
+    }
+    sock6_addr(&dst, S6_PEER, 80);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(fifo_len(&ts->sock.tcp.txbuf), 0);
+}
+END_TEST
+
 /* IPV6_V6ONLY has to hold on the receive path too. A socket that asked for
  * IPv6 only must not be handed IPv4 datagrams, and must not reserve the
  * IPv4 port either - it does not occupy that address space. */

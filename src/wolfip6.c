@@ -2737,7 +2737,13 @@ static int tcp6_connect(struct wolfIP *s, struct tsocket *t, const ip6 *dst,
         return -1;
     }
     t->sock.tcp.ctrl_rto_retries = 0;
-    tcp_ctrl_rto_start(t, s->last_tick);
+    if (tcp_ctrl_rto_start(t, s->last_tick) < 0) {
+        /* No timer slot: a SYN_SENT socket with no retransmit timer would
+         * never recover from a lost SYN. Same rollback as the IPv4 arm. */
+        fifo_init(&t->sock.tcp.txbuf, t->txmem, TXBUF_SIZE);
+        t->sock.tcp.state = TCP_CLOSED;
+        return -WOLFIP_EAGAIN;
+    }
     return -WOLFIP_EAGAIN; /* in progress, as the IPv4 arm reports it */
 }
 
