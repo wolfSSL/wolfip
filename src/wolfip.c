@@ -91,15 +91,28 @@ struct wolfIP_tcp_seg;
 struct wolfIP_udp_datagram;
 struct wolfIP_icmp_packet;
 
+#ifdef IP_MULTICAST
+#ifndef WOLFIP_UDP_MCAST_MEMBERSHIPS
+#define WOLFIP_UDP_MCAST_MEMBERSHIPS 4
+#endif
+#define WOLFIP_MCAST_MEMBERSHIPS (MAX_UDPSOCKETS * WOLFIP_UDP_MCAST_MEMBERSHIPS)
+/* Each membership can hold a query-response timer and a join-repeat timer.
+ * An on-link querier can keep the former pending for up to ~53 minutes, so
+ * they get slots of their own instead of competing with TCP, DHCP and DNS. */
+#define WOLFIP_MCAST_TIMERS (WOLFIP_MCAST_MEMBERSHIPS * 2)
+#else
+#define WOLFIP_MCAST_TIMERS 0
+#endif
+
 /* Fixed size binary heap: each element is a timer. */
 #if WOLFIP_IPV6
 /* Neighbor Discovery drives duplicate address detection, router
  * solicitation retries and every cache expiry from a single periodic tick,
  * so it needs one slot rather than one per address. The spare few are for
  * the heap not to be exactly full when DHCP, DNS and TCP are all armed. */
-#define MAX_TIMERS ((MAX_TCPSOCKETS * 3) + 4)
+#define MAX_TIMERS ((MAX_TCPSOCKETS * 3) + 4 + WOLFIP_MCAST_TIMERS)
 #else
-#define MAX_TIMERS (MAX_TCPSOCKETS * 3)
+#define MAX_TIMERS ((MAX_TCPSOCKETS * 3) + WOLFIP_MCAST_TIMERS)
 #endif
 
 /* Constants */
@@ -214,12 +227,6 @@ struct wolfIP_icmp_packet;
 #endif
 #define TCP_RTO_MAX_BACKOFF 15U  /* Max retries before closing; also clamps shift */
 
-#ifdef IP_MULTICAST
-#ifndef WOLFIP_UDP_MCAST_MEMBERSHIPS
-#define WOLFIP_UDP_MCAST_MEMBERSHIPS 4
-#endif
-#define WOLFIP_MCAST_MEMBERSHIPS (MAX_UDPSOCKETS * WOLFIP_UDP_MCAST_MEMBERSHIPS)
-#endif
 #define TCP_RTO_MIN_MS 1000U
 #define TCP_RTO_MAX_MS 60000U
 #define TCP_RTO_G_MS 1U

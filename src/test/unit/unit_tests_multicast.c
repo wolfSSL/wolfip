@@ -497,6 +497,64 @@ START_TEST(test_multicast_igmp_query_report_heap_full_rearmed_on_poll)
 }
 END_TEST
 
+/* A long-window General Query arms one report timer per membership; the shared heap must still hold
+ * the whole MAX_TCPSOCKETS * 3 budget the TCP, DHCP and DNS timers are sized for. */
+START_TEST(test_multicast_igmp_query_does_not_starve_other_timers)
+{
+    struct wolfIP s;
+    int sd[MAX_UDPSOCKETS];
+    struct wolfIP_ip_mreq mreq;
+    struct wolfIP_timer t = {0};
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN];
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    uint8_t *igmp = frame + ETH_HEADER_LEN + IP_HEADER_LEN;
+    unsigned int free_slots = 0;
+    int i, j;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    for (i = 0; i < MAX_UDPSOCKETS; i++) {
+        sd[i] = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+        ck_assert_int_gt(sd[i], 0);
+        for (j = 0; j < WOLFIP_UDP_MCAST_MEMBERSHIPS; j++) {
+            multicast_mreq(&mreq, 0xE9010300U + (uint32_t)(i * 16 + j), IPADDR_ANY);
+            ck_assert_int_eq(wolfIP_sock_setsockopt(&s, sd[i], WOLFIP_SOL_IP,
+                    WOLFIP_IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)), 0);
+        }
+    }
+    /* Let every join repeat report fire so only query responses stay armed. */
+    wolfIP_poll(&s, 1001);
+    wolfIP_poll(&s, 20000);
+
+    /* General query, Max Resp Code 0xFF (= 3,174,400 ms). */
+    memset(frame, 0, sizeof(frame));
+    memcpy(ip->eth.dst, "\x01\x00\x5e\x00\x00\x01", 6);
+    memcpy(ip->eth.src, "\x02\x00\x00\x00\x00\x01", 6);
+    ip->eth.type = ee16(ETH_TYPE_IP);
+    ip->ver_ihl = 0x45;
+    ip->ttl = 1;
+    ip->proto = WI_IPPROTO_IGMP;
+    ip->len = ee16(IP_HEADER_LEN + IGMPV3_QUERY_MIN_LEN);
+    ip->src = ee32(0x0A000001U);
+    ip->dst = ee32(IGMP_ALL_HOSTS);
+    igmp[0] = IGMP_TYPE_MEMBERSHIP_QUERY;
+    igmp[1] = 0xFF;
+    put_be16(igmp + 2, ip_checksum_buf(igmp, IGMPV3_QUERY_MIN_LEN));
+    fix_ip_checksum(ip);
+    wolfIP_recv_ex(&s, TEST_PRIMARY_IF, frame, sizeof(frame));
+
+    /* Count what is left for everything else. */
+    for (i = 0; i < (int)(MAX_TIMERS + 1); i++) {
+        t.expires = s.last_tick + 4000000U + (uint64_t)i;
+        if (timers_binheap_insert(&s.timers, t) == 0)
+            break;
+        free_slots++;
+    }
+    ck_assert_uint_ge(free_slots, MAX_TCPSOCKETS * 3);
+}
+END_TEST
+
 /* A deferred query response owed across a tick-source rollback is re-armed at a deadline in the new tick domain. */
 START_TEST(test_multicast_igmp_query_report_rearmed_after_tick_rollback)
 {
