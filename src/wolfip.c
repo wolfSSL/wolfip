@@ -1992,6 +1992,14 @@ static inline uint32_t tcp_tx_payload_cap(const struct tsocket *t)
 
     if (t && t->proto == WI_IPPROTO_TCP) {
         uint32_t peer_mss = (uint32_t)t->sock.tcp.peer_mss;
+        /* RFC 6691: the peer MSS excludes TCP options; the sender must
+         * reduce the data length by the options it includes. */
+        if (t->sock.tcp.ts_enabled && peer_mss > 0) {
+            if (peer_mss > TCP_OPTIONS_LEN)
+                peer_mss -= TCP_OPTIONS_LEN;
+            else
+                peer_mss = 1;
+        }
         if (peer_mss > 0 && peer_mss < cap)
             cap = peer_mss;
     }

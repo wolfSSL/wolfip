@@ -3735,6 +3735,37 @@ START_TEST(test_transport_capacity_helpers_cover_guard_paths)
 }
 END_TEST
 
+/* RFC 6691 section 2: the peer's MSS excludes TCP options, so the sender must
+ * shrink the data length by the options it adds (the 12-byte timestamp). */
+START_TEST(test_tcp_tx_payload_cap_subtracts_ts_option_from_peer_mss)
+{
+    struct wolfIP s;
+    struct tsocket ts;
+    struct wolfIP_ll_dev *ll;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ll->mtu = LINK_MTU;
+
+    memset(&ts, 0, sizeof(ts));
+    ts.proto = WI_IPPROTO_TCP;
+    ts.S = &s;
+    ts.if_idx = TEST_PRIMARY_IF;
+
+    ts.sock.tcp.peer_mss = 1400U;
+    ts.sock.tcp.ts_enabled = 0;
+    ck_assert_uint_eq(tcp_tx_payload_cap(&ts), 1400U);
+    ts.sock.tcp.ts_enabled = 1;
+    ck_assert_uint_eq(tcp_tx_payload_cap(&ts), 1400U - TCP_OPTIONS_LEN);
+
+    /* PPPoE-style peer MSS 1452: options + payload must stay within it. */
+    ts.sock.tcp.peer_mss = 1452U;
+    ck_assert_uint_le(tcp_tx_payload_cap(&ts) + TCP_OPTIONS_LEN, 1452U);
+}
+END_TEST
+
 START_TEST(test_tx_has_writable_space_icmp_accepts_minimal_packet)
 {
     struct tsocket ts;
