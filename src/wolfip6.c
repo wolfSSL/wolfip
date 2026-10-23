@@ -1081,10 +1081,9 @@ static int nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
 /* Send a Neighbor Solicitation for `target`.
  *
  * There is no rate limit here, unlike arp_request()'s one per second per
- * interface. The only caller is duplicate address detection, which is
- * already paced by dad_due. When address resolution is driven from the
- * transmit path it will be able to ask for the same neighbour repeatedly,
- * and will need a throttle at that point.
+ * interface. The callers pace themselves: duplicate address detection
+ * (nd6_tick_cb) by dad_due, and nd6_resolve() on the transmit path by
+ * ND6_RETRANS_TIMER_MS and the per-entry probe count.
  *
  * `src` is the source address: a real address of ours for ordinary address
  * resolution, or the unspecified address during duplicate address detection.
