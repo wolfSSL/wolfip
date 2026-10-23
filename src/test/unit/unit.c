@@ -850,6 +850,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_flush_tcp_tx_popped_tail_wrap_gap_no_phantom_frames);
     tcase_add_test(tc_utils, test_tcp_ack_parked_zero_desc_keeps_rtt_sample);
     tcase_add_test(tc_utils, test_flush_tcp_tx_sends_pure_ack_behind_window_blocked_data);
+    tcase_add_test(tc_utils, test_flush_tcp_tx_refreshes_timestamp_option);
     tcase_add_test(tc_utils, test_flush_tcp_tx_fin_ack_stays_behind_window_blocked_data);
     tcase_add_test(tc_utils, test_flush_tcp_tx_fin_held_behind_blocked_data_after_ack);
     tcase_add_test(tc_utils, test_tcp_first_unsent_seq_skips_pending_retransmit);

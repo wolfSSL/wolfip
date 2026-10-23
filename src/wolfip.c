@@ -14983,6 +14983,46 @@ static int socket_events_pending(struct wolfIP *s)
     return 0;
 }
 
+/* Segments are queued with the Timestamp option built at queue time. By the
+ * time one is sent, or retransmitted, later segments (pure ACKs jumped past a
+ * window-blocked data segment, earlier retransmissions) may already have moved
+ * the peer's TS.Recent beyond that TSval, and PAWS (RFC 7323 section 5) would
+ * discard it; TSecr would likewise hold the queued segment's FIFO delay in the
+ * peer's RTT sample. Refresh TSval/TSecr on every transmission. */
+static void tcp_tx_refresh_ts(struct tsocket *ts, struct wolfIP_tcp_seg *tcp)
+{
+    uint8_t *opt = (uint8_t *)tcp->data;
+    uint32_t optlen = ((uint32_t)(tcp->hlen >> 2) > TCP_HEADER_LEN) ?
+        ((uint32_t)(tcp->hlen >> 2) - TCP_HEADER_LEN) : 0;
+    uint32_t off = 0;
+
+    if (!ts->sock.tcp.ts_enabled || (tcp->flags & TCP_FLAG_SYN))
+        return;
+    while (off < optlen) {
+        uint8_t kind = opt[off];
+        uint8_t olen;
+        if (kind == TCP_OPTION_EOO)
+            break;
+        if (kind == TCP_OPTION_NOP) {
+            off++;
+            continue;
+        }
+        if (off + 1 >= optlen)
+            break;
+        olen = opt[off + 1];
+        if (olen < 2 || off + olen > optlen)
+            break;
+        if (kind == TCP_OPTION_TS && olen == TCP_OPTION_TS_LEN) {
+            uint32_t val = ee32((uint32_t)(ts->S->last_tick & 0xFFFFFFFFU));
+            uint32_t ecr = ts->sock.tcp.last_ts;
+            memcpy(opt + off + 2, &val, sizeof(val));
+            memcpy(opt + off + 6, &ecr, sizeof(ecr));
+            break;
+        }
+        off += olen;
+    }
+}
+
 static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
 {
     int i;
@@ -15067,6 +15107,7 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                     size = seg_ip_len;
                     tcp->ack = ee32(ts->sock.tcp.ack);
                     tcp->win = ee16(tcp_adv_win(ts, 1));
+                    tcp_tx_refresh_ts(ts, tcp);
                     if (seg_payload_len == 0 && tcp->flags == TCP_FLAG_ACK) {
                         /* A pure ACK sent ahead of queued data must carry the
                          * first unsent sequence, not SND.NXT: an out-of-window

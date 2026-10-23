@@ -7719,6 +7719,83 @@ START_TEST(test_flush_tcp_tx_sends_pure_ack_behind_window_blocked_data)
 }
 END_TEST
 
+/* A data segment queued with a Timestamp option must carry the TSval/TSecr of
+ * the moment it is transmitted, not those of the moment it was queued: a later
+ * pure ACK may already have advanced the peer's TS.Recent, and PAWS would then
+ * reject the stale TSval (RFC 7323 section 5). */
+START_TEST(test_flush_tcp_tx_refreshes_timestamp_option)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 12 + 8];
+    struct wolfIP_tcp_seg *q = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *qts;
+    struct wolfIP_tcp_seg *sent;
+    struct tcp_opt_ts *sts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.ts_recent_valid = 1;
+    ts->sock.tcp.last_ts = ee32(5000); /* peer's newest TSval, echoed as TSecr */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data segment queued "earlier": TSval 100, TSecr 7. */
+    memset(buf, 0, sizeof(buf));
+    q->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 12 + 8);
+    q->hlen = (TCP_HEADER_LEN + 12) << 2;
+    q->flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+    q->seq = ee32(1000);
+    q->ack = ee32(100);
+    q->src_port = ee16(1234);
+    q->dst_port = ee16(4321);
+    qts = (struct tcp_opt_ts *)q->data;
+    qts->opt = TCP_OPTION_TS;
+    qts->len = TCP_OPTION_TS_LEN;
+    qts->val = ee32(100);
+    qts->ecr = ee32(7);
+    qts->pad = 0x01;
+    qts->eoo = 0x01;
+    memset((uint8_t *)q->data + 12, 0xAB, 8);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, q, sizeof(buf)), 0);
+    ts->sock.tcp.seq = 1008;
+
+    mock_link_capture_reset();
+    (void)wolfIP_poll(&s, 4000);
+
+    ck_assert_uint_ge(last_frame_sent_count, 1);
+    sent = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(sent->seq), 1000);
+    sts = (struct tcp_opt_ts *)sent->data;
+    ck_assert_uint_eq(sts->opt, TCP_OPTION_TS);
+    ck_assert_uint_eq(ee32(sts->val), 4000);
+    ck_assert_uint_eq(sts->ecr, ee32(5000));
+}
+END_TEST
+
 START_TEST(test_flush_tcp_tx_fin_ack_stays_behind_window_blocked_data)
 {
     struct wolfIP s;
