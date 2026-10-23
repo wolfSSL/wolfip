@@ -4366,7 +4366,7 @@ static uint8_t tcp_merge_sack_blocks(struct tcp_sack_block *blocks, uint8_t coun
 static void tcp_rebuild_rx_sack(struct tsocket *t, uint32_t trig_seq,
         uint32_t trig_len)
 {
-    struct tcp_sack_block blocks[TCP_OOO_MAX_SEGS];
+    struct tcp_sack_block blocks[TCP_OOO_MAX_SEGS + 1];
     uint8_t i, count = 0;
 
     /* RFC 2018 model:
@@ -4382,6 +4382,13 @@ static void tcp_rebuild_rx_sack(struct tsocket *t, uint32_t trig_seq,
         blocks[count].left = t->sock.tcp.ooo[i].seq;
         blocks[count].right = tcp_seq_inc(t->sock.tcp.ooo[i].seq,
                 t->sock.tcp.ooo[i].len);
+        count++;
+    }
+    /* RFC 2018 sec.8: the triggering segment is reported even when it could not
+     * be cached. If it is cached it lies inside a block above and merges away. */
+    if (trig_len != 0U) {
+        blocks[count].left = trig_seq;
+        blocks[count].right = tcp_seq_inc(trig_seq, trig_len);
         count++;
     }
     count = tcp_merge_sack_blocks(blocks, count);
@@ -5611,8 +5618,15 @@ static void tcp_recv_len(struct tsocket *t, struct wolfIP_tcp_seg *seg,
     } else if (tcp_seq_lt(t->sock.tcp.ack, seq)) {
         /* Hole detected: segment starts above ACK, so cache it as OOO and
          * immediately ACK with SACK blocks describing what we already have. */
-        (void)tcp_store_ooo_segment(t, payload, seq, seg_len);
+        int stored = tcp_store_ooo_segment(t, payload, seq, seg_len);
+        /* RFC 2018 sec.8: a segment that could not be cached must still be the
+         * first SACK block of its ACK. Report it just for this ACK, then drop
+         * it again since the data is not held. */
+        if (stored < 0)
+            tcp_rebuild_rx_sack(t, seq, seg_len);
         tcp_send_ack(t);
+        if (stored < 0)
+            tcp_rebuild_rx_sack(t, 0, 0);
     }
 }
 

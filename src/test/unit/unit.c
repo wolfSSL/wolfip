@@ -829,6 +829,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_recv_tracks_holes_and_sack_blocks);
     tcase_add_test(tc_utils, test_tcp_rebuild_rx_sack_right_edge_wraps);
     tcase_add_test(tc_utils, test_tcp_rebuild_rx_sack_triggering_block_first);
+    tcase_add_test(tc_utils, test_tcp_recv_ooo_table_full_reports_discarded_segment_first);
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_trim_and_promote);
     tcase_add_test(tc_utils, test_tcp_consume_ooo_wrap_drop_fully_acked);
     tcase_add_test(tc_utils, test_tcp_store_ooo_overlap_does_not_exhaust_cache);
