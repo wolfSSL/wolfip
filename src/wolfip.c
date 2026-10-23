@@ -16027,7 +16027,8 @@ int wolfIP_route_add(struct wolfIP *s, unsigned int if_idx, ip4 prefix,
     free_slot->prefix_len = prefix_len;
     free_slot->prefix = prefix;
     free_slot->gateway = gateway;
-    free_slot->order = s->route_generation++;
+    /* Start at 1: order 0 is reserved for connected subnets. */
+    free_slot->order = ++s->route_generation;
     return 0;
 }
 

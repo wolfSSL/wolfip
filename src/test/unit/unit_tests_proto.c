@@ -4421,6 +4421,27 @@ START_TEST(test_wolfip_route_table_connected_subnet_beats_broader_static_route)
     ck_assert_uint_eq(nexthop, 0xC0A80163U);
 }
 END_TEST
+
+/* A static route with the same prefix length as a connected subnet must lose
+ * to it even when it is the very first route ever added and sits on a lower
+ * interface index. */
+START_TEST(test_wolfip_route_table_connected_subnet_beats_equal_prefix_first_static_route)
+{
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0A000001U, 0xFF000000U, 0x0A0000FEU);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0xC0A801FEU);
+
+    ck_assert_int_eq(wolfIP_route_add(&s, TEST_PRIMARY_IF, 0xC0A80100U, 24U, 0x0A0000FEU), 0);
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0xC0A80163U, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(nexthop, 0xC0A80163U);
+}
+END_TEST
 #endif
 
 START_TEST(test_wolfip_dns_server_get_returns_value_and_validates_args)

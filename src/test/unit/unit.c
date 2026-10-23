@@ -185,6 +185,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_route_table_default_route_delete_and_fallback);
     tcase_add_test(tc_utils, test_wolfip_route_table_update_replaces_gateway_without_duplication);
     tcase_add_test(tc_utils, test_wolfip_route_table_connected_subnet_beats_broader_static_route);
+    tcase_add_test(tc_utils, test_wolfip_route_table_connected_subnet_beats_equal_prefix_first_static_route);
 #endif
     tcase_add_test(tc_utils, test_wolfip_dns_server_get_returns_value_and_validates_args);
     tcase_add_test(tc_utils, test_wolfip_poll_executes_timers_and_callbacks);
