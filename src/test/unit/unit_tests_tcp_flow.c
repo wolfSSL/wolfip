@@ -7851,6 +7851,76 @@ START_TEST(test_flush_tcp_tx_refreshes_timestamp_option)
 }
 END_TEST
 
+/* Queue eight 1000-byte segments on an established connection whose cwnd has
+ * grown to the full peer window (8*SMSS) and count how many go out in one
+ * poll at time "now". The initial window for this peer is 4*SMSS. */
+static uint32_t flush_tcp_tx_burst_after(uint64_t now)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 1000];
+    struct wolfIP_tcp_seg *q = (struct wolfIP_tcp_seg *)buf;
+    uint32_t smss;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    smss = tcp_cc_mss(ts);
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = smss * 8;
+    ts->sock.tcp.peer_rwnd = smss * 8;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    for (i = 0; i < 8; i++) {
+        memset(buf, 0, sizeof(buf));
+        q->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1000);
+        q->hlen = TCP_HEADER_LEN << 2;
+        q->flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+        q->seq = ee32(1000 + (uint32_t)i * 1000);
+        q->ack = ee32(100);
+        q->src_port = ee16(1234);
+        q->dst_port = ee16(4321);
+        ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, q, sizeof(buf)), 0);
+    }
+    ts->sock.tcp.seq = 1000 + 8 * 1000;
+
+    mock_link_capture_reset();
+    (void)wolfIP_poll(&s, now);
+    return last_frame_sent_count;
+}
+
+/* RFC 5681 s4.1: after an idle period longer than the RTO the sender should
+ * restart from min(IW, cwnd) rather than release a full grown cwnd at once. */
+START_TEST(test_flush_tcp_tx_idle_restart_window)
+{
+    /* Idle for 5000 ms >> RTO (200 ms): restart window of 4*SMSS, so only
+     * five of the eight 1000-byte segments fit. */
+    ck_assert_uint_eq(flush_tcp_tx_burst_after(5000), 5);
+    /* Within one RTO of the last transmission the grown cwnd is kept. */
+    ck_assert_uint_eq(flush_tcp_tx_burst_after(100), 8);
+}
+END_TEST
+
 START_TEST(test_flush_tcp_tx_fin_ack_stays_behind_window_blocked_data)
 {
     struct wolfIP s;

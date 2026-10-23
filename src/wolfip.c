@@ -1318,6 +1318,9 @@ struct tcpsocket {
              tmr_persist, seq, ack, last, bytes_in_flight, snd_una,
              recovery_point;
     uint32_t srtt, rttvar;
+    /* Time (ms, truncated) the last data segment was sent, for the RFC 5681
+     * 4.1 restart window after an idle period. */
+    uint32_t last_data_tx;
     uint32_t last_early_rexmit_ack;
     /* Right edge of the receive window last advertised (SWS avoidance). */
     uint32_t rcv_edge;
@@ -15184,6 +15187,21 @@ static void flush_tcp_tx(struct wolfIP *s, uint64_t now)
                 if (ack_jump && !(seg_payload_len == 0 &&
                                   tcp->flags == TCP_FLAG_ACK))
                     break;
+                /* RFC 5681 4.1: after more than an RTO without sending data,
+                 * restart from min(IW, cwnd) instead of bursting a cwnd
+                 * grown before the idle period. */
+                if (!is_retrans && seg_payload_len > 0 && in_flight == 0 &&
+                        (uint32_t)now - ts->sock.tcp.last_data_tx >
+                        ts->sock.tcp.rto) {
+                    uint32_t iw = tcp_initial_cwnd(ts->sock.tcp.peer_rwnd,
+                            tcp_cc_mss(ts));
+                    if (ts->sock.tcp.cwnd > iw) {
+                        ts->sock.tcp.cwnd = iw;
+                        ts->sock.tcp.cwnd_count = 0;
+                        if (snd_wnd > iw)
+                            snd_wnd = iw;
+                    }
+                }
                 if (is_retrans || seg_payload_len == 0 ||
                         (in_flight < snd_wnd && seg_payload_len <= (snd_wnd - in_flight))) {
                     struct wolfIP_timer new_tmr = {};
@@ -15302,6 +15320,7 @@ tcp_seg_sent:
                         }
                     } else {
                         uint32_t payload_len = size - (IP_HEADER_LEN + (tcp->hlen >> 2));
+                        ts->sock.tcp.last_data_tx = (uint32_t)now;
                         if (ts->sock.tcp.tmr_rto != NO_TIMER) {
                             timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
                             ts->sock.tcp.tmr_rto = NO_TIMER;
