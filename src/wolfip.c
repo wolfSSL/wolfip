@@ -11803,6 +11803,16 @@ static void icmp_input(struct wolfIP *s, unsigned int if_idx, struct wolfIP_ip_p
     icmp_try_recv(s, if_idx, icmp, len);
 }
 
+/* Head of a UDP socket's RX queue, or NULL if empty. dispatch_events() clears
+ * the READABLE event before invoking the callback and UDP recvfrom does not
+ * raise it again, so the stack's own consumers drain the queue themselves. */
+static struct pkt_desc *udp_rx_head(struct wolfIP *s, int sd)
+{
+    if (sd <= 0 || SOCKET_UNMARK(sd) >= MAX_UDPSOCKETS)
+        return NULL;
+    return fifo_peek(&s->udpsockets[SOCKET_UNMARK(sd)].sock.udp.rxbuf);
+}
+
 #if WOLFIP_ENABLE_DHCP
 static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
@@ -12640,16 +12650,6 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
         return 0;
     }
     return -1;
-}
-
-/* Head of a UDP socket's RX queue, or NULL if empty. dispatch_events() clears
- * the READABLE event before invoking the callback and UDP recvfrom does not
- * raise it again, so the stack's own consumers drain the queue themselves. */
-static struct pkt_desc *udp_rx_head(struct wolfIP *s, int sd)
-{
-    if (sd <= 0 || SOCKET_UNMARK(sd) >= MAX_UDPSOCKETS)
-        return NULL;
-    return fifo_peek(&s->udpsockets[SOCKET_UNMARK(sd)].sock.udp.rxbuf);
 }
 
 static int dhcp_poll(struct wolfIP *s)
