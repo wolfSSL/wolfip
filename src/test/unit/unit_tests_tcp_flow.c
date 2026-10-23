@@ -2685,6 +2685,61 @@ START_TEST(test_tcp_ack_data_segments_not_counted_as_dup_acks)
 }
 END_TEST
 
+/* RFC 5681 s2: a duplicate ACK has the SYN and FIN bits both off, so
+ * payload-less FIN|ACK segments must not reach the fast-retransmit
+ * threshold. */
+START_TEST(test_tcp_ack_fin_segments_not_counted_as_dup_acks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg pseg;
+    uint32_t seq = 1000;
+    int i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
+    ts->sock.tcp.last_peer_win = 65535;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&pseg, 0, sizeof(pseg));
+    pseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    pseg.hlen = TCP_HEADER_LEN << 2;
+    pseg.flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
+    pseg.win = ee16(65535);
+    pseg.ack = ee32(seq);
+    pseg.seq = ee32(500);
+    for (i = 0; i < 3; i++)
+        tcp_ack(ts, &pseg);
+
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+    ck_assert_int_eq(ts->sock.tcp.fast_recovery, 0);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, seq);
+}
+END_TEST
+
 /* RFC 6298 §5.5: on a retransmission timeout the new RTO is min(2*RTO, G)
  * with G the maximum timer value, 64 s. With a 2 s base RTO and six
  * backoff doublings the uncapped interval would be 128 s; the re-armed

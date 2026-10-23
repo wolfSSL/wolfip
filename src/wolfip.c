@@ -6741,6 +6741,9 @@ static void tcp_ack_len(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
             return;
         if (win_changed)
             return;
+        /* RFC 5681 s2: the SYN and FIN bits must both be off. */
+        if (tcp->flags & (TCP_FLAG_SYN | TCP_FLAG_FIN))
+            return;
         if (t->sock.tcp.dup_acks < 255)
             t->sock.tcp.dup_acks++;
         if (t->sock.tcp.peer_sack_count > 0 &&
