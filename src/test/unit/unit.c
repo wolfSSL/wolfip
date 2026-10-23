@@ -1427,6 +1427,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_tcp_bad_checksum_is_dropped);
     tcase_add_test(tc_proto, test_sock6_tcp_af_inet_listener_ignores_ipv6);
     tcase_add_test(tc_proto, test_sock6_tcp_no_route_aborts_the_connection);
+    tcase_add_test(tc_proto, test_sock6_tcp_no_route_abort_of_established_does_not_recurse);
 
     /* ICMPv6: error messages (RFC 4443) and sockets. */
     tcase_add_test(tc_proto, test_icmp6_udp_port_unreachable);

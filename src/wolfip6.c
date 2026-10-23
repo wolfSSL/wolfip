@@ -2581,7 +2581,9 @@ static uint32_t tcp6_promote(const struct tsocket *t, const void *v4frame,
  * destination with no route is a hard failure of a different kind: the
  * segment can never leave, so the connection is aborted and the caller's
  * socket is closed - the segment must not pin the head of the queue the way
- * a held datagram does. */
+ * a held datagram does. A reset needs no abort of its own: it is what
+ * tcp_abort() sends while tearing down, and aborting again from here would
+ * recurse for ever, so it is just dropped. */
 static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
                          const void *v4frame, uint32_t frame_len)
 {
@@ -2606,7 +2608,9 @@ static int tcp6_send_seg(struct wolfIP *s, struct tsocket *t,
         int rc = nd6_resolve(s, &tx_if, &t->remote_ip6, mac);
 
         if (rc == ND6_RESOLVE_NO_ROUTE) {
-            tcp_abort(t);
+            if (!(((const struct wolfIP_tcp_seg *)v4frame)->flags &
+                  TCP_FLAG_RST))
+                tcp_abort(t);
             return -1;
         }
         if (rc != 0)

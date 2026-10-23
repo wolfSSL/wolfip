@@ -3730,4 +3730,33 @@ START_TEST(test_sock6_tcp_no_route_aborts_the_connection)
 }
 END_TEST
 
+/* Aborting a synchronized connection sends a reset first. When the peer has
+ * no route that reset can never leave either, and it must not re-enter the
+ * abort from tcp6_send_seg: the socket is still synchronized at that point,
+ * so the abort would send another reset, and so on until the stack ran out. */
+START_TEST(test_sock6_tcp_no_route_abort_of_established_does_not_recurse)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->peer_is_v6 = 1;
+    ts->src_port = 40000;
+    ts->dst_port = 80;
+    ck_assert_int_eq(atoip6("2001:db8:9::1", &ts->remote_ip6), 0);
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, fd), 0);
+    ck_assert_uint_eq(ts->proto, 0);
+}
+END_TEST
+
 #endif /* WOLFIP_IPV6 */
