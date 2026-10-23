@@ -1585,6 +1585,11 @@ struct arp_neighbor {
     uint64_t ts;
 };
 
+/* Minimum spacing between ARP requests on one interface, whatever the target. */
+#ifndef ARP_REQUEST_MIN_GAP_MS
+#define ARP_REQUEST_MIN_GAP_MS 100U
+#endif
+
 #ifndef ARP_PENDING_TTL_MS
 #define ARP_PENDING_TTL_MS 5000U
 #endif
@@ -13061,6 +13066,7 @@ static void arp_pending_record(struct wolfIP *s, unsigned int if_idx, ip4 ip)
 static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
 {
     struct arp_packet arp;
+    int i;
     struct wolfIP_ll_dev *ll = wolfIP_ll_at(s, if_idx);
     struct ipconf *conf;
 
@@ -13070,13 +13076,25 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
     if (!conf)
         return;
 
-    /* One request per second per interface. last_arp == 0 means "never
-     * sent" (fresh boot, or a tick-source restart that reset the limiter),
-     * so the first request is never held back by the window. */
+    /* Throttle per target (one request per second for each tip), plus a
+     * short per-interface gap that bounds the aggregate rate. A single
+     * per-interface window would let the first unresolvable neighbor in
+     * transmit order win every window and starve all other targets.
+     * last_arp == 0 means "never sent" (fresh boot, or a tick-source
+     * restart that reset the limiter), so the first request is never held
+     * back by the window. */
     if (s->arp.last_arp[if_idx] != 0 &&
-            s->arp.last_arp[if_idx] + 1000 > s->last_tick) {
-        wolfIP_poll_by(s, s->arp.last_arp[if_idx] + 1000);
+            s->arp.last_arp[if_idx] + ARP_REQUEST_MIN_GAP_MS > s->last_tick) {
+        wolfIP_poll_by(s, s->arp.last_arp[if_idx] + ARP_REQUEST_MIN_GAP_MS);
         return;
+    }
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        struct arp_pending_req *p = &s->arp.pending[i];
+        if (p->ip == tip && p->if_idx == (uint8_t)if_idx &&
+                s->last_tick >= p->ts && p->ts + 1000 > s->last_tick) {
+            wolfIP_poll_by(s, p->ts + 1000);
+            return;
+        }
     }
     /* Store tick+1 so a request sent at tick 0 is distinguishable from
      * "never sent" (last_arp == 0). */

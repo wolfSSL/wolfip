@@ -3180,6 +3180,9 @@ START_TEST(test_arp_request_throttle)
     mock_link_init(&s);
     s.last_tick = 1000;
     s.arp.last_arp[TEST_PRIMARY_IF] = 880;
+    s.arp.pending[0].ip = target_ip;
+    s.arp.pending[0].if_idx = TEST_PRIMARY_IF;
+    s.arp.pending[0].ts = 879;
     last_frame_sent_size = 0;
     arp_request(&s, TEST_PRIMARY_IF, target_ip);
     ck_assert_int_eq(last_frame_sent_size, 0);

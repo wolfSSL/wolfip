@@ -2221,13 +2221,13 @@ START_TEST(test_arp_request_rate_limited)
     s.last_tick = 5000;
     arp_request(&s, TEST_PRIMARY_IF, 0x0A000002U);
     last_frame_sent_size = 0;
-    /* A second request within 1000 ticks is suppressed. */
+    /* A second request for the same target within 1000 ticks is suppressed. */
     s.last_tick = 5500;
-    arp_request(&s, TEST_PRIMARY_IF, 0x0A000003U);
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000002U);
     ck_assert_uint_eq(last_frame_sent_size, 0U);
     /* After the rate-limit window elapses, the request fires again. */
     s.last_tick = 6500;
-    arp_request(&s, TEST_PRIMARY_IF, 0x0A000003U);
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000002U);
     ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
 }
 END_TEST

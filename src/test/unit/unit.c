@@ -1607,6 +1607,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_arp_recv_reply_overwrite_blocked_when_no_pending);
     tcase_add_test(tc_core, test_arp_request_rate_limited);
     tcase_add_test(tc_core, test_arp_request_first_not_rate_limited);
+    tcase_add_test(tc_core, test_arp_request_throttle_per_target);
     tcase_add_test(tc_core, test_arp_tick_restart_resets_rate_limit);
 #ifdef IP_MULTICAST
     tcase_add_test(tc_core, test_close_releases_multicast);

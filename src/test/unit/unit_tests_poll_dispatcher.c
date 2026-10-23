@@ -1841,9 +1841,9 @@ START_TEST(test_poll_returns_arp_retry_deadline)
     ck_assert_int_eq(wolfIP_sock_sendto(&s, udp_sd, payload, sizeof(payload),
             0, (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
             (int)sizeof(payload));
-    /* The request goes out at 2000; the next one is allowed at 3001. */
+    /* The request goes out at 2000; the next one is allowed at 3000. */
     ck_assert_int_eq(wolfIP_poll(&s, 2000), WOLFIP_POLL_MAX_WAIT_MS);
-    ck_assert_int_eq(wolfIP_poll(&s, 2500), 501);
+    ck_assert_int_eq(wolfIP_poll(&s, 2500), 500);
 }
 END_TEST
 
