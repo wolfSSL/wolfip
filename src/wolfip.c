@@ -14949,7 +14949,8 @@ static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
             *id = DNS_ID_NONE;
             return -22;
         }
-        if (tok_len + label_len + 1 > MAX_DNS_NAME_LEN) {
+        /* +1 for the root terminator appended after the last label. */
+        if (tok_len + label_len + 2 > MAX_DNS_NAME_LEN) {
             dns_abort_query(s);
             *id = DNS_ID_NONE;
             return -22;

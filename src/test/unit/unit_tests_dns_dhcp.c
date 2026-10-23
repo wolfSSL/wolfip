@@ -3861,6 +3861,45 @@ START_TEST(test_dns_send_query_rejects_empty_labels)
 }
 END_TEST
 
+/* RFC 1035 §3.1: an encoded name, including the root terminator, is at most
+ * 255 octets. 63+63+63+61 chars plus 3 dots encodes to 255 and is accepted;
+ * one more char encodes to 256 and must be rejected with state rolled back. */
+START_TEST(test_dns_send_query_rejects_256_octet_encoded_name)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    char name[256];
+    size_t labels[4] = { 63, 63, 63, 61 };
+    size_t pos = 0;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+
+    for (i = 0; i < 4; i++) {
+        memset(name + pos, 'a', labels[i]);
+        pos += labels[i];
+        if (i < 3)
+            name[pos++] = '.';
+    }
+    name[pos] = '\0';
+    ck_assert_uint_eq(strlen(name), 253);
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), 0);
+    ck_assert_uint_eq(s.dns_query_len,
+            sizeof(struct dns_header) + 255 + sizeof(struct dns_question));
+    dns_abort_query(&s);
+
+    /* Last label one char longer: 256 octets encoded. */
+    name[pos++] = 'a';
+    name[pos] = '\0';
+    ck_assert_uint_eq(strlen(name), 254);
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
+}
+END_TEST
+
 /* RFC 1035 §3.4.1: A RDATA is exactly a 32-bit address. An A RR whose
  * RDLENGTH is not 4 is malformed and must not be accepted as the answer;
  * the query stays outstanding for the retry/timeout path. */
