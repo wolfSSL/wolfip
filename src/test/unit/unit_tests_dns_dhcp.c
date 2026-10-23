@@ -3502,7 +3502,7 @@ START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
 
     dns_schedule_timer(&s);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
-    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2290U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2490U);
 
     timer_id = s.dns_timer;
     dns_cancel_timer(&s);
@@ -3513,6 +3513,25 @@ START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
     dns_schedule_timer(&s);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
     ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 4100U);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+/* RFC 1035 s4.2.1: the first retransmission must not fire before 2 s. */
+START_TEST(test_dns_schedule_timer_initial_not_below_2s)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.last_tick = 100U;
+    s.dns_retry_count = 0;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 0U;
+
+    dns_schedule_timer(&s);
+    ck_assert_int_ne(s.dns_timer, NO_TIMER);
+    ck_assert_uint_ge(find_timer_expiry(&s, s.dns_timer), 100U + 2000U);
 
     test_rand_override_enabled = 0;
 }
@@ -3551,7 +3570,7 @@ START_TEST(test_dns_send_query_schedules_timeout)
     ck_assert_uint_ne(id, 0U);
     ck_assert_uint_eq(s.dns_id, id);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
-    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2290U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2490U);
     test_rand_override_enabled = 0;
 }
 END_TEST

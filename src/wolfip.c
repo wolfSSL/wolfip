@@ -14282,7 +14282,7 @@ void wolfIP_recv_ex(struct wolfIP *s, unsigned int if_idx, void *buf, uint32_t l
 #define MAX_DNS_NAME_LEN 255
 #define MAX_DNS_LABEL_LEN 63
 #define DNS_QUERY_TIMEOUT 2000U
-#define DNS_QUERY_TIMEOUT_INITIAL 1800U
+#define DNS_QUERY_TIMEOUT_INITIAL 2000U
 #define DNS_QUERY_TIMEOUT_INITIAL_JITTER 391U
 #ifndef DNS_QUERY_RETRIES
 #define DNS_QUERY_RETRIES 3
@@ -14517,8 +14517,8 @@ static int dns_schedule_timer(struct wolfIP *s)
     if (!s)
         return -1;
     if (s->dns_retry_count == 0) {
-        /* RFC 1035 recommends a 2s initial retransmission interval. On embedded
-         * targets, add a small 0..390 ms random offset to 1800 ms so many
+        /* RFC 1035 recommends a 2s minimum retransmission interval. On embedded
+         * targets, add a small 0..390 ms random offset to 2000 ms so many
          * devices do not synchronize their first retry after a shared loss. */
         interval = DNS_QUERY_TIMEOUT_INITIAL +
                 (wolfIP_getrandom() % DNS_QUERY_TIMEOUT_INITIAL_JITTER);
