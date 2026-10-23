@@ -1014,9 +1014,9 @@ static int nd6_neighbor_index(struct wolfIP *s, unsigned int if_idx,
 /* Insert or refresh an entry. `mac` may be NULL to create an INCOMPLETE
  * entry for an address whose link-layer address is still unknown.
  *
- * Unlike arp_store_neighbor(), which silently refuses when the table is
- * full, this evicts the oldest entry. A full table that cannot be reclaimed
- * means one burst of scan traffic locks out every real neighbour. */
+ * When the table is full this evicts the oldest entry. A full table that
+ * cannot be reclaimed means one burst of scan traffic locks out every real
+ * neighbour. */
 static int nd6_store_neighbor(struct wolfIP *s, unsigned int if_idx,
                               const ip6 *addr, const uint8_t *mac,
                               uint8_t state, int is_router)
