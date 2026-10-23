@@ -6172,17 +6172,14 @@ static int ip_output_add_header(struct tsocket *t, struct wolfIP_ip_packet *ip,
 #include "src/wolfip6.c"
 #endif /* WOLFIP_IPV6 */
 
-/* Process timestamp option, calculate RTT */
-static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
-        uint32_t frame_len)
+/* Parse the timestamp option and update TS.Recent. Returns 0 and fills *po
+ * when the option is present, -1 otherwise. */
+static int tcp_update_ts_recent(struct tsocket *t,
+        const struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
+        struct tcp_parsed_opts *po)
 {
-    struct tcp_parsed_opts po;
-    uint32_t sample;
-
-    if (!t->S)
-        return -1;
-    tcp_parse_options(tcp, frame_len, &po);
-    if (!po.ts_found)
+    tcp_parse_options(tcp, frame_len, po);
+    if (!po->ts_found)
         return -1;
     /* RFC 7323 section 4.3 rule (2): TS.Recent is replaced only when the
      * segment's TSval is not older than the stored one and the segment's
@@ -6201,11 +6198,27 @@ static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
      * so compare in host order as tcp_paws_check does: byte-swapped
      * values are not ordered. */
     if (!t->sock.tcp.ts_recent_valid ||
-            (!tcp_seq_lt(po.ts_val, ee32(t->sock.tcp.last_ts)) &&
+            (!tcp_seq_lt(po->ts_val, ee32(t->sock.tcp.last_ts)) &&
              tcp_seq_leq(ee32(tcp->seq), t->sock.tcp.ack))) {
-        t->sock.tcp.last_ts = ee32(po.ts_val);
+        t->sock.tcp.last_ts = ee32(po->ts_val);
         t->sock.tcp.ts_recent_valid = 1;
     }
+    return 0;
+}
+
+/* Process timestamp option, calculate RTT. RFC 7323 section 4.1: the TSecr
+ * RTT sample is valid only for an ACK that advances SND.UNA, so callers must
+ * use it only from that path; tcp_update_ts_recent() alone is for the rest. */
+static int tcp_process_ts(struct tsocket *t, const struct wolfIP_tcp_seg *tcp,
+        uint32_t frame_len)
+{
+    struct tcp_parsed_opts po;
+    uint32_t sample;
+
+    if (!t->S)
+        return -1;
+    if (tcp_update_ts_recent(t, tcp, frame_len, &po) < 0)
+        return -1;
     if (po.ts_ecr == 0)
         return -1; /* No echoed timestamp; fall back to coarse RTT. */
     if (po.ts_ecr > t->S->last_tick)
@@ -7533,8 +7546,10 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                         tcp_ack(t, tcp);
                     /* tcp_ack may have closed the socket via close_socket();
                      * skip timestamp processing if socket was destroyed. */
-                    if (t->sock.tcp.state != TCP_CLOSED)
-                        tcp_process_ts(t, tcp, frame_len);
+                    if (t->sock.tcp.state != TCP_CLOSED) {
+                        struct tcp_parsed_opts po;
+                        (void)tcp_update_ts_recent(t, tcp, frame_len, &po);
+                    }
                 }
             }
             else if ((t->sock.tcp.state == TCP_ESTABLISHED) ||
@@ -7580,7 +7595,10 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     tcp_ack(t, tcp);
                 if (t->sock.tcp.state == TCP_CLOSED)
                     continue;
-                tcp_process_ts(t, tcp, frame_len);
+                {
+                    struct tcp_parsed_opts po;
+                    (void)tcp_update_ts_recent(t, tcp, frame_len, &po);
+                }
                 if (tcplen > 0) {
                     if ((t->sock.tcp.state == TCP_LAST_ACK) || (t->sock.tcp.state == TCP_CLOSING) ||
                         (t->sock.tcp.state == TCP_CLOSED))

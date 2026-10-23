@@ -7605,6 +7605,122 @@ START_TEST(test_regression_paws_rejects_stale_timestamp)
 }
 END_TEST
 
+/* Build an ESTABLISHED socket and feed it one in-order peer segment that
+ * carries TSval/TSecr and ACKs "ack". RFC 7323 section 4.1: TSecr may update
+ * the RTT average only if SND.UNA is increased. */
+static struct tsocket *rttm_setup(struct wolfIP *s, uint32_t tsecr,
+        uint32_t ack, const uint8_t *payload, uint32_t plen)
+{
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + TCP_OPTIONS_LEN + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *tsopt;
+    uint32_t tcp_hlen = TCP_HEADER_LEN + TCP_OPTIONS_LEN;
+
+    wolfIP_init(s);
+    mock_link_init(s);
+    wolfIP_ipconfig_set(s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s->arp.neighbors[0].ip = 0x0A000002U;
+    s->arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s->arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s->tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    if (ack != 1000) {
+        /* One 8-byte data segment in flight, sent at tick 90. */
+        struct pkt_desc *d;
+        ck_assert_int_eq(enqueue_tcp_tx(ts, 8, (TCP_FLAG_ACK | TCP_FLAG_PSH)), 0);
+        ts->sock.tcp.seq = 1008;
+        (void)wolfIP_poll(s, 90);
+        d = fifo_peek(&ts->sock.tcp.txbuf);
+        ck_assert_ptr_nonnull(d);
+        ck_assert_int_ne(d->flags & PKT_FLAG_SENT, 0);
+    }
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + tcp_hlen + plen);
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->hlen = (uint8_t)(tcp_hlen << 2);
+    seg->flags = TCP_FLAG_ACK;
+    seg->seq = ee32(100);
+    seg->ack = ee32(ack);
+    seg->win = ee16(65535);
+    tsopt = (struct tcp_opt_ts *)seg->data;
+    tsopt->opt = TCP_OPTION_TS;
+    tsopt->len = TCP_OPTION_TS_LEN;
+    tsopt->val = ee32(2000);
+    tsopt->ecr = ee32(tsecr);
+    tsopt->pad = TCP_OPTION_NOP;
+    tsopt->eoo = TCP_OPTION_NOP;
+    if (plen)
+        memcpy(seg->data + TCP_OPTIONS_LEN, payload, plen);
+    fix_tcp_checksums(seg);
+
+    s->last_tick = 100;
+    tcp_input(s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + tcp_hlen + plen));
+    return ts;
+}
+
+/* A peer data segment that does not advance SND.UNA must not feed the RTT
+ * estimator: its TSecr echoes our last TSval and, after an idle gap, the
+ * "sample" would include the gap. */
+START_TEST(test_tcp_input_ts_no_rtt_sample_without_snd_una_advance)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t payload[4] = {1, 2, 3, 4};
+
+    ts = rttm_setup(&s, 10, 1000, payload, sizeof(payload));
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 1000);
+    ck_assert_uint_eq(ts->sock.tcp.ack, 104); /* data was accepted */
+    ck_assert_int_eq(ts->sock.tcp.rto_initialized, 0);
+}
+END_TEST
+
+/* An ACK that advances SND.UNA yields exactly one RTT sample from TSecr. */
+START_TEST(test_tcp_input_ts_single_rtt_sample_per_ack)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+
+    ts = rttm_setup(&s, 90, 1008, NULL, 0);
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 1008);
+    ck_assert_int_eq(ts->sock.tcp.rto_initialized, 1);
+    /* One sample of 10 ms: SRTT = R, RTTVAR = R/2 (a second identical
+     * sample would decay RTTVAR to 3R/8). */
+    ck_assert_uint_eq(ts->sock.tcp.srtt, 10U << 3);
+    ck_assert_uint_eq(ts->sock.tcp.rttvar, 10U << 1);
+}
+END_TEST
+
 /* RFC 7323 §5.2: TSval ordering is modulo 2^32, so after wrap a low
  * TSval can still be newer than TS.Recent. PAWS must not reject such
  * segments just because the raw unsigned value is smaller. */

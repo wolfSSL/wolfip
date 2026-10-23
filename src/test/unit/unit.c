@@ -1137,6 +1137,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_regression_fast_recovery_cwnd_ssthresh_rfc5681);
     tcase_add_test(tc_proto, test_regression_paws_rejects_stale_timestamp);
     tcase_add_test(tc_proto, test_regression_paws_accepts_wrapped_newer_timestamp);
+    tcase_add_test(tc_proto, test_tcp_input_ts_no_rtt_sample_without_snd_una_advance);
+    tcase_add_test(tc_proto, test_tcp_input_ts_single_rtt_sample_per_ack);
     tcase_add_test(tc_proto, test_regression_paws_drops_segment_without_timestamp_option);
     tcase_add_test(tc_proto, test_regression_paws_preempts_acceptability_for_replayed_segment);
     tcase_add_test(tc_proto, test_regression_paws_drops_last_ack_segment_without_timestamp_option);
