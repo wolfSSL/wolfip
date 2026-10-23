@@ -11719,6 +11719,7 @@ static int dhcp_send_discover(struct wolfIP *s);
 static int dhcp_send_request(struct wolfIP *s);
 #ifdef ETHERNET
 static int dhcp_send_dad_probe(struct wolfIP *s);
+static int dhcp_send_arp_announce(struct wolfIP *s);
 static void dhcp_dad_conflict(struct wolfIP *s);
 #endif
 static void dhcp_timer_cb(void *arg);
@@ -11989,6 +11990,7 @@ static void dhcp_timer_cb(void *arg)
                 s->dhcp_dad_probes = 0;
                 s->dhcp_state = DHCP_BOUND;
                 dhcp_schedule_timer_at(s, s->dhcp_renew_at);
+                dhcp_send_arp_announce(s);
             }
             break;
 #endif
@@ -13201,6 +13203,38 @@ static int dhcp_send_dad_probe(struct wolfIP *s)
     memcpy(arp.sma, ll->mac, 6);
     arp.sip    = ee32(IPADDR_ANY); /* RFC 4331: sender IP is 0.0.0.0 */
     memset(arp.tma, 0, 6);
+    arp.tip    = ee32(primary->ip);
+    return wolfIP_ll_send_frame(s, WOLFIP_PRIMARY_IF_IDX, &arp,
+                                sizeof(struct arp_packet));
+}
+
+/* RFC 2131 §3.2: once the leased address is verified, broadcast an ARP
+ * reply (sender = target = our address) to clear stale cache entries for
+ * it on the subnet. Best effort; a lost announcement is not retried. */
+static int dhcp_send_arp_announce(struct wolfIP *s)
+{
+    struct arp_packet arp;
+    struct wolfIP_ll_dev *ll;
+    struct ipconf *primary;
+
+    ll = wolfIP_ll_at(s, WOLFIP_PRIMARY_IF_IDX);
+    if (!ll || ll->non_ethernet)
+        return -1;
+    primary = wolfIP_ipconf_at(s, WOLFIP_PRIMARY_IF_IDX);
+    if (!primary || primary->ip == IPADDR_ANY)
+        return -1;
+
+    memset(&arp, 0, sizeof(arp));
+    eth_output_add_header(s, WOLFIP_PRIMARY_IF_IDX, NULL, &arp.eth,
+                          ETH_TYPE_ARP);
+    arp.htype  = ee16(1); /* Ethernet */
+    arp.ptype  = ee16(0x0800);
+    arp.hlen   = 6;
+    arp.plen   = 4;
+    arp.opcode = ee16(ARP_REPLY);
+    memcpy(arp.sma, ll->mac, 6);
+    arp.sip    = ee32(primary->ip);
+    memset(arp.tma, 0xFF, 6);
     arp.tip    = ee32(primary->ip);
     return wolfIP_ll_send_frame(s, WOLFIP_PRIMARY_IF_IDX, &arp,
                                 sizeof(struct arp_packet));

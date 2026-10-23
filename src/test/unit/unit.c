@@ -2006,6 +2006,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dhcp_parse_ack_dns_already_set_skipped);
     tcase_add_test(tc_core, test_dhcp_parse_ack_inner_pad_bytes_skipped);
     tcase_add_test(tc_core, test_dhcp_dad_probe_wire_format);
+    tcase_add_test(tc_core, test_dhcp_dad_complete_announces_address);
     tcase_add_test(tc_core, test_dhcp_dad_conflict_releases_and_rediscover);
     tcase_add_test(tc_core, test_dhcp_dad_request_claiming_candidate_conflict);
     tcase_add_test(tc_core, test_dhcp_dad_probe_for_candidate_conflict);
