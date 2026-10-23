@@ -6470,20 +6470,15 @@ static int tcp_mark_unsacked_for_retransmit(struct tsocket *t, uint32_t ack)
     }
 }
 
-/* Check whether the ack acknowledges something we have actually sent */
-static int tcp_ack_acceptable(const struct tsocket *t, uint32_t ack)
+/* Check whether the ack acknowledges something we have actually sent: seq
+ * runs ahead of SND.NXT by queued data, so bound by the transmitted edge. */
+static int tcp_ack_acceptable(struct tsocket *t, uint32_t ack)
 {
-    uint32_t max_ack = t->sock.tcp.seq;
-    if (t->sock.tcp.state == TCP_FIN_WAIT_1 ||
-            t->sock.tcp.state == TCP_FIN_WAIT_2 ||
-            t->sock.tcp.state == TCP_CLOSING ||
-            t->sock.tcp.state == TCP_LAST_ACK)
-        max_ack = tcp_seq_inc(max_ack, 1);
-    return tcp_seq_leq(ack, max_ack);
+    return tcp_seq_leq(ack, tcp_snd_nxt(t));
 }
 
 /* Check whether the segment is entitled to update the peer receive window */
-static int tcp_window_update_ok(const struct tsocket *t,
+static int tcp_window_update_ok(struct tsocket *t,
         const struct wolfIP_tcp_seg *tcp, uint32_t tcplen)
 {
     uint32_t seg_ack = ee32(tcp->ack);

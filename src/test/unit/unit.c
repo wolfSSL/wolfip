@@ -1807,6 +1807,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tcp_input_established_out_of_window_sends_ack);
     tcase_add_test(tc_core, test_tcp_input_established_no_ack_dropped);
     tcase_add_test(tc_core, test_tcp_input_established_ack_beyond_snd_nxt_keeps_txqueue);
+    tcase_add_test(tc_core, test_tcp_input_established_ack_of_queued_unsent_data_ignored);
     tcase_add_test(tc_core, test_tcp_input_established_ack_beyond_snd_nxt_sends_ack);
     tcase_add_test(tc_core, test_tcp_input_fin_wait_1_ack_beyond_snd_nxt_no_transition);
     tcase_add_test(tc_core, test_tcp_input_established_fin_ooo_no_close_wait);

@@ -1028,6 +1028,49 @@ START_TEST(test_tcp_input_established_ack_beyond_snd_nxt_keeps_txqueue)
 }
 END_TEST
 
+/* F-15311: seq runs ahead by queued-but-unsent data; an ACK covering that
+ * data is above SND.NXT and must not advance SND.UNA. */
+START_TEST(test_tcp_input_established_ack_of_queued_unsent_data_ignored)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct pkt_desc *desc;
+    ip4 local_ip   = 0x0A000001U;
+    ip4 remote_ip  = 0x0A0000A1U;
+    uint16_t lport = 9013, rport = 40014;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = setup_established_socket(&s, local_ip, remote_ip, lport, rport);
+    ts->sock.tcp.snd_una = 200;
+    ts->sock.tcp.seq = 400;
+    ts->sock.tcp.bytes_in_flight = 100;
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    segbuf.seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 100);
+    segbuf.seg.hlen = TCP_HEADER_LEN << 2;
+    segbuf.seg.seq = ee32(200);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+    /* Second segment is queued but has not been transmitted. */
+    segbuf.seg.seq = ee32(300);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, remote_ip, local_ip,
+        rport, lport, 100, 400, TCP_FLAG_ACK);
+
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, 200U);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ck_assert_int_ne(desc->flags & PKT_FLAG_SENT, 0);
+}
+END_TEST
+
 /* ESTABLISHED ACK above SND.NXT is answered with a challenge ACK */
 START_TEST(test_tcp_input_established_ack_beyond_snd_nxt_sends_ack)
 {
@@ -2920,6 +2963,9 @@ START_TEST(test_last_ack_final_ack_delivers_close_event)
     wolfIP_register_callback(&s, sd, test_socket_cb, &callback_arg);
     socket_cb_calls = 0;
     socket_cb_last_events = 0;
+
+    /* Transmit the queued FIN: an ACK can only cover transmitted data. */
+    (void)wolfIP_poll(&s, 1);
 
     /* Peer's final ACK acks our FIN (ack == 121): tcp_ack() LAST_ACK branch
      * transitions to TCP_CLOSED and calls close_socket(). */
