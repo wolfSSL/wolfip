@@ -1763,4 +1763,64 @@ START_TEST(test_vlan_delete_purges_arp_neighbor_cache)
 }
 END_TEST
 
+#if WOLFIP_IF_MULTICONF
+START_TEST(test_vlan_delete_purges_ifaddr_aliases)
+{
+    struct wolfIP s;
+    unsigned int sub100 = 0xFFFFFFFFu, sub200 = 0xFFFFFFFFu;
+    const ip4 primary = 0x0A0A6402U; /* 10.10.100.2 */
+    const ip4 alias = 0x0A0A6403U;   /* 10.10.100.3 */
+    unsigned int found_if = 0;
+
+    setup_vlan_stack(&s);
+    ck_assert_int_eq(wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0,
+                                        &sub100), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, sub100, primary, 24), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, sub100, alias, 24), 0);
+    ck_assert_int_eq(wolfIP_ifaddr_is_local4(&s, alias, &found_if), 1);
+    ck_assert_uint_eq(found_if, sub100);
+
+    ck_assert_int_eq(wolfIP_vlan_delete(&s, sub100), 0);
+    /* The alias must not stay local on the freed index. */
+    ck_assert_int_eq(wolfIP_ifaddr_is_local4(&s, alias, NULL), 0);
+
+    /* A new VLAN reusing the slot must start with no addresses. */
+    ck_assert_int_eq(wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 200, 0, 0,
+                                        &sub200), 0);
+    ck_assert_uint_eq(sub200, sub100);
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, sub200, AF_INET), 0);
+}
+END_TEST
+#endif /* WOLFIP_IF_MULTICONF */
+
+#if WOLFIP_IPV6
+START_TEST(test_vlan_delete_purges_nd6_state)
+{
+    struct wolfIP s;
+    unsigned int sub100 = 0xFFFFFFFFu, sub200 = 0xFFFFFFFFu;
+    static const uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t mac[6];
+    ip6 peer;
+
+    setup_vlan_stack(&s);
+    ck_assert_int_eq(atoip6("fe80::1", &peer), 0);
+    ck_assert_int_eq(wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0,
+                                        &sub100), 0);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, sub100), 0);
+    ck_assert_int_eq(wolfIP_nd6_neighbor_add(&s, sub100, &peer, peer_mac), 0);
+    ck_assert_int_eq(wolfIP_nd6_lookup(&s, sub100, &peer, mac), 0);
+    ck_assert_uint_gt(wolfIP_ifaddr_count(&s, sub100, AF_INET6), 0);
+
+    ck_assert_int_eq(wolfIP_vlan_delete(&s, sub100), 0);
+    ck_assert_int_eq(wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 200, 0, 0,
+                                        &sub200), 0);
+    ck_assert_uint_eq(sub200, sub100);
+
+    ck_assert_uint_eq(wolfIP_ifaddr_count(&s, sub200, AF_INET6), 0);
+    ck_assert_int_ne(wolfIP_nd6_lookup(&s, sub200, &peer, mac), 0);
+    ck_assert_uint_eq(s.nd6.started[sub200], 0);
+}
+END_TEST
+#endif /* WOLFIP_IPV6 */
+
 #endif /* WOLFIP_VLAN */

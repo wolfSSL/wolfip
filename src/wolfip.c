@@ -13650,6 +13650,45 @@ int wolfIP_vlan_delete(struct wolfIP *s, unsigned int if_idx)
         }
         s->arp.last_arp[if_idx] = 0;
     }
+#if WOLFIP_IF_MULTICONF
+    /* Drop the IPv4 aliases and IPv6 addresses held on this slot, as the
+     * primary address was just wiped above. Otherwise they would stay local
+     * on the dead index and be inherited by the next VLAN created here. */
+    {
+        int i;
+        for (i = 0; i < (int)WOLFIP_IFADDR_MAX; i++) {
+            if (s->ifaddr[i].used &&
+                    s->ifaddr[i].info.if_idx == (uint8_t)if_idx)
+                s->ifaddr[i].used = 0;
+        }
+    }
+#endif
+#if WOLFIP_IPV6
+    /* Same for Neighbor Discovery state keyed by this index. */
+    {
+        int i;
+        for (i = 0; i < WOLFIP_ND6_CACHE_SIZE; i++) {
+            if (s->nd6.neighbors[i].state != 0 &&
+                    s->nd6.neighbors[i].if_idx == (uint8_t)if_idx)
+                memset(&s->nd6.neighbors[i], 0, sizeof(s->nd6.neighbors[i]));
+        }
+        for (i = 0; i < WOLFIP_ND6_PREFIX_MAX; i++) {
+            if (s->nd6.prefixes[i].used &&
+                    s->nd6.prefixes[i].if_idx == (uint8_t)if_idx)
+                s->nd6.prefixes[i].used = 0;
+        }
+        for (i = 0; i < WOLFIP_ND6_ROUTER_MAX; i++) {
+            if (s->nd6.routers[i].used &&
+                    s->nd6.routers[i].if_idx == (uint8_t)if_idx)
+                s->nd6.routers[i].used = 0;
+        }
+        s->nd6.started[if_idx] = 0;
+        s->nd6.rs_left[if_idx] = 0;
+        s->nd6.rs_due[if_idx] = 0;
+        s->nd6.iid_valid[if_idx] = 0;
+        memset(s->nd6.iid[if_idx], 0, sizeof(s->nd6.iid[if_idx]));
+    }
+#endif
     return 0;
 }
 
