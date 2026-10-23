@@ -13154,6 +13154,26 @@ static int dhcp_send_dad_probe(struct wolfIP *s)
 }
 #endif /* WOLFIP_ENABLE_DHCP */
 
+/* True when the (network order) ARP target is the primary address of this
+ * interface or, with WOLFIP_IF_MULTICONF, one of its IPv4 aliases. */
+static int arp_tip_is_ours(struct wolfIP *s, unsigned int if_idx,
+        const struct ipconf *conf, uint32_t tip)
+{
+    if (conf->ip != IPADDR_ANY && tip == ee32(conf->ip))
+        return 1;
+#if WOLFIP_IF_MULTICONF
+    {
+        unsigned int owner = 0;
+        if (wolfIP_ifaddr_is_local4(s, ee32(tip), &owner) && owner == if_idx)
+            return 1;
+    }
+#else
+    (void)s;
+    (void)if_idx;
+#endif
+    return 0;
+}
+
 static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
 {
     struct arp_packet *arp = (struct arp_packet *)buf;
@@ -13200,16 +13220,17 @@ static void arp_recv(struct wolfIP *s, unsigned int if_idx, void *buf, int len)
     /* An unconfigured interface (no assigned address) must not answer
      * ARP requests: matching tip against a zero conf->ip would let a
      * request for 0.0.0.0 be answered by advertising 0.0.0.0. */
-    if (arp->opcode == ee16(ARP_REQUEST) && conf->ip != IPADDR_ANY &&
-            arp->tip == ee32(conf->ip)) {
+    if (arp->opcode == ee16(ARP_REQUEST) &&
+            arp_tip_is_ours(s, if_idx, conf, arp->tip)) {
         uint32_t sender_ip = arp->sip;
+        uint32_t target_ip = arp->tip;
         uint8_t sender_mac[6];
         memcpy(sender_mac, arp->sma, 6);
         arp->opcode = ee16(ARP_REPLY);
         memcpy(arp->tma, arp->sma, 6);
         memcpy(arp->sma, ll->mac, 6);
         arp->tip = arp->sip;
-        arp->sip = ee32(conf->ip);
+        arp->sip = target_ip;
         {
             ip4 sip = ee32(sender_ip);
             /* Validate sender IP before caching: reject broadcast,
