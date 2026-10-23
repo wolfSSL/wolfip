@@ -5811,9 +5811,9 @@ START_TEST(test_tcp_listen_requires_matching_local_ip)
                        listen_port, 100, 0, 0);
     ck_assert_uint_eq(listener->last_pkt_ttl, ttl_before);
 
-    /* (2) A segment for the bound address still matches (not over-restricted). */
+    /* (2) A SYN for the bound address still matches (not over-restricted). */
     inject_tcp_segment(&s, TEST_SECOND_IF, 0x0A0000A2U, secondary_ip, 40000,
-                       listen_port, 200, 0, 0);
+                       listen_port, 200, 0, TCP_FLAG_SYN);
     ck_assert_uint_eq(listener->last_pkt_ttl, 64);
 }
 END_TEST

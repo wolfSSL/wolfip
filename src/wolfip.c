@@ -7061,6 +7061,17 @@ static void tcp_ack(struct tsocket *t, const struct wolfIP_tcp_seg *tcp)
                     (uint32_t)(ip_len - IP_HEADER_LEN) : 0u);
 }
 
+/* Record the arrival interface and TTL only for a segment that has passed
+ * the acceptability checks of its state: the 4-tuple alone is not secret, so
+ * an off-path segment must not steer the egress/MTU choice or the reported
+ * received TTL. */
+static void tcp_commit_rx_path(struct tsocket *t, unsigned int if_idx,
+                               const struct ip_flow *flow)
+{
+    t->if_idx = (uint8_t)if_idx;
+    t->last_pkt_ttl = flow->ttl;
+}
+
 static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                            struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
                            const struct ip_flow *flow)
@@ -7146,7 +7157,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                  * address; a wildcard listener accepts any local address.
                  * The SYN path already enforces this for SYNs, but without it
                  * here a non-SYN segment for a different local IP on the same
-                 * host overwrites the listener's if_idx/last_pkt_ttl/peer_rwnd
+                 * host overwrites the listener's peer_rwnd
                  * and sets matched, which corrupts listener MTU/TTL
                  * bookkeeping and suppresses the RFC 793 unmatched RST.
                  * bound_local_ip (not local_ip) is the discriminator: a
@@ -7165,8 +7176,6 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
             }
-            t->if_idx = (uint8_t)if_idx;
-            t->last_pkt_ttl = flow->ttl;
             matched = 1;
             /* Validate minimum TCP header length (data offset). */
             if (tcp_data_offset_bytes(tcp->hlen) < TCP_HEADER_LEN) {
@@ -7365,6 +7374,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                         continue;
 
                     t->if_idx = (uint8_t)dst_if;
+                    t->last_pkt_ttl = flow->ttl;
                     t->sock.tcp.state = TCP_SYN_RCVD;
                     t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
                     t->sock.tcp.seq = wolfIP_getrandom();
@@ -7388,6 +7398,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                          * window is one segment. */
                         int syn_lost = (t->sock.tcp.ctrl_rto_retries > 0);
 
+                        tcp_commit_rx_path(t, if_idx, flow);
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
@@ -7447,6 +7458,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     /* RFC 5681 s3.1: after a lost SYN/ACK the initial window
                      * is one segment. */
                     syn_lost = (t->sock.tcp.ctrl_rto_retries > 0);
+                    tcp_commit_rx_path(t, if_idx, flow);
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
                     if (t->sock.tcp.parked) {
@@ -7542,6 +7554,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                         tcp_send_ack(t);
                         continue;
                     }
+                    tcp_commit_rx_path(t, if_idx, flow);
                     if (flow->is_v6)
                         tcp_ack_len(t, tcp, flow->transport_len);
                     else
@@ -7591,6 +7604,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     continue;
                 }
 
+                tcp_commit_rx_path(t, if_idx, flow);
                 if (flow->is_v6)
                     tcp_ack_len(t, tcp, flow->transport_len);
                 else

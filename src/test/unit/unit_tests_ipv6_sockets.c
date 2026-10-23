@@ -3283,9 +3283,9 @@ START_TEST(test_sock6_specific_listener_ignores_another_local_address)
     ck_assert_uint_eq(listener->last_pkt_ttl, 0);
     ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
 
-    /* The same segment to the bound address does reach it. */
-    sock6_deliver_tcp(&s, &peer, &bound, 42000, 8300, 0x1000, 0x2000,
-                      TCP_FLAG_ACK, NULL, 0);
+    /* A SYN to the bound address does reach it. */
+    sock6_deliver_tcp(&s, &peer, &bound, 42000, 8300, 0x1000, 0,
+                      TCP_FLAG_SYN, NULL, 0);
     now += 100;
     wolfIP_poll(&s, now);
     ck_assert_uint_ne(listener->last_pkt_ttl, 0);

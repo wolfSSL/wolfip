@@ -1784,7 +1784,7 @@ START_TEST(test_regression_tcp_input_sets_last_pkt_ttl)
     seg.dst_port = ee16(ts->src_port);
     seg.src_port = ee16(ts->dst_port);
     seg.seq = ee32(100);
-    seg.ack = ee32(50);
+    seg.ack = ee32(0);
     seg.hlen = TCP_HEADER_LEN << 2;
     seg.flags = TCP_FLAG_ACK;
     fix_tcp_checksums(&seg);
@@ -4854,6 +4854,59 @@ START_TEST(test_tcp_input_local_ip_mismatch_preserves_if_idx)
     ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
     ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 100);
     ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
+}
+END_TEST
+
+START_TEST(test_tcp_input_unacceptable_segment_preserves_if_idx_and_ttl)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+
+    setup_stack_with_two_ifaces(&s, 0x0A000001U, 0xC0A80001U);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = IPADDR_ANY;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_SECOND_IF;
+    ts->last_pkt_ttl = 7;
+
+    /* Off-path segment with the right 4-tuple arriving on another interface:
+     * its SEQ is far outside the receive window, so it is unacceptable. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(0x0A000001U);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.seq = ee32(0x40000000U);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(ts->last_pkt_ttl, 7);
+
+    /* An acceptable segment on the same path still records it. */
+    seg.seq = ee32(ts->sock.tcp.ack);
+    fix_tcp_checksums(&seg);
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_uint_eq(ts->if_idx, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(ts->last_pkt_ttl, 64);
 }
 END_TEST
 
