@@ -259,6 +259,125 @@ START_TEST(test_tcp_input_header_len_below_min_dropped)
 }
 END_TEST
 
+/* Data offset (60 bytes) larger than the IP payload (20 bytes): the segment is
+ * malformed and must be dropped before ACK/SACK processing, which would
+ * otherwise parse option bytes lying beyond the received frame. */
+START_TEST(test_tcp_input_data_offset_exceeds_ip_len_dropped)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 40];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+    uint32_t left = ee32(102);
+    uint32_t right = ee32(104);
+    uint32_t seq = 100;
+    uint32_t ack = 100;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = seq;
+    ts->sock.tcp.snd_una = ack;
+    ts->sock.tcp.seq = ack + 10;
+    ts->sock.tcp.bytes_in_flight = 10;
+    ts->sock.tcp.sack_permitted = 1;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = 1000;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg->ip.src = ee32(ts->remote_ip);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(ts->dst_port);
+    seg->seq = ee32(seq);
+    seg->ack = ee32(ack);
+    seg->flags = TCP_FLAG_ACK;
+    seg->hlen = 0xF0; /* 60-byte header, but ip.len covers only 20 bytes */
+    seg->win = ee16(5);
+    /* Well-formed SACK option lying past the received frame. */
+    seg->data[0] = TCP_OPTION_NOP;
+    seg->data[1] = TCP_OPTION_NOP;
+    seg->data[2] = TCP_OPTION_SACK;
+    seg->data[3] = 10;
+    memcpy(&seg->data[4], &left, sizeof(left));
+    memcpy(&seg->data[8], &right, sizeof(right));
+    fix_tcp_checksums(seg);
+
+    last_frame_sent_size = 0;
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+    ck_assert_uint_eq(ts->sock.tcp.peer_rwnd, 1000U);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, ack);
+    ck_assert_uint_eq(ts->sock.tcp.peer_sack_count, 0);
+}
+END_TEST
+
+START_TEST(test_tcp_input_listen_data_offset_exceeds_ip_len_dropped)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[sizeof(struct wolfIP_tcp_seg) + 40];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)buf;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_LISTEN;
+    ts->src_port = 1234;
+    ts->local_ip = 0x0A000001U;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 0);
+
+    memset(buf, 0, sizeof(buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.ttl = 64;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg->ip.src = ee32(0x0A000002U);
+    seg->ip.dst = ee32(ts->local_ip);
+    seg->dst_port = ee16(ts->src_port);
+    seg->src_port = ee16(4321);
+    seg->seq = ee32(100);
+    seg->flags = TCP_FLAG_SYN;
+    seg->hlen = 0xF0;
+    seg->data[0] = TCP_OPTION_MSS;
+    seg->data[1] = TCP_OPTION_MSS_LEN;
+    seg->data[2] = 0x02;
+    seg->data[3] = 0x00;
+    fix_tcp_checksums(seg);
+
+    last_frame_sent_size = 0;
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_LISTEN);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
 START_TEST(test_tcp_input_fin_wait_2_fin_with_payload_queues)
 {
     struct wolfIP s;

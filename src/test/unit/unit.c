@@ -894,6 +894,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_payload_out_of_order_no_transition);
     tcase_add_test(tc_utils, test_tcp_input_fin_wait_1_fin_payload_ack_mismatch_no_transition);
     tcase_add_test(tc_utils, test_tcp_input_header_len_below_min_dropped);
+    tcase_add_test(tc_utils, test_tcp_input_data_offset_exceeds_ip_len_dropped);
+    tcase_add_test(tc_utils, test_tcp_input_listen_data_offset_exceeds_ip_len_dropped);
     tcase_add_test(tc_utils, test_socket_from_fd_invalid);
     tcase_add_test(tc_utils, test_socket_from_fd_valid);
     tcase_add_test(tc_utils, test_sock_close_tcp_fin_wait_1_repeated_close_keeps_fin_wait_2_path);
