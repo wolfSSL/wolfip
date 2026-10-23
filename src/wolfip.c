@@ -7072,6 +7072,31 @@ static void tcp_commit_rx_path(struct tsocket *t, unsigned int if_idx,
     t->last_pkt_ttl = flow->ttl;
 }
 
+/* A reset takes its source address from the destination of the segment it
+ * answers, so it may only be sent when that destination is one of our own
+ * unicast addresses: answering anything else would make the stack a
+ * reflector, and the reset would carry a broadcast or forged source. */
+static int tcp_reset_dst_is_local(struct wolfIP *S, unsigned int if_idx,
+                                  const struct ip_flow *flow)
+{
+    int dst_match = 0;
+
+#if WOLFIP_IPV6
+    if (flow->is_v6) {
+        (void)wolfIP_if_for_local_ip6(S, if_idx, &flow->dst6, &dst_match);
+        return dst_match && !ip6_is_multicast(&flow->dst6);
+    }
+#else
+    (void)if_idx;
+#endif
+    if ((flow->dst == IPADDR_ANY) ||
+            wolfIP_ip_is_broadcast(S, flow->dst) ||
+            wolfIP_ip_is_multicast(flow->dst))
+        return 0;
+    (void)wolfIP_if_for_local_ip(S, flow->dst, &dst_match);
+    return dst_match;
+}
+
 static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                            struct wolfIP_tcp_seg *tcp, uint32_t frame_len,
                            const struct ip_flow *flow)
@@ -7191,7 +7216,8 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                 if (tcp->flags & TCP_FLAG_RST)
                     continue;
                 if (tcp->flags & TCP_FLAG_ACK) {
-                    if (!tcp_listen_ack_matches_child_socket(S, t, tcp, flow))
+                    if (!tcp_listen_ack_matches_child_socket(S, t, tcp, flow) &&
+                            tcp_reset_dst_is_local(S, if_idx, flow))
                         tcp_reset_reply_flow(S, if_idx, tcp, flow);
                     continue;
                 }
@@ -7677,26 +7703,10 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
         }
     }
     if (!matched) {
-        int dst_match = 0;
-
         /* A segment to a port nobody holds is answered with a reset, but
-         * only when the destination really is ours: answering anything else
-         * would make the stack a reflector. */
-#if WOLFIP_IPV6
-        if (flow->is_v6) {
-            (void)wolfIP_if_for_local_ip6(S, if_idx, &flow->dst6, &dst_match);
-            if (dst_match && !ip6_is_multicast(&flow->dst6))
-                tcp_reset_reply_flow(S, if_idx, tcp, flow);
-            return;
-        }
-#endif
-        if ((flow->dst != IPADDR_ANY) &&
-                !wolfIP_ip_is_broadcast(S, flow->dst) &&
-                !wolfIP_ip_is_multicast(flow->dst)) {
-            (void)wolfIP_if_for_local_ip(S, flow->dst, &dst_match);
-            if (dst_match)
-                tcp_reset_reply_flow(S, if_idx, tcp, flow);
-        }
+         * only when the destination really is ours. */
+        if (tcp_reset_dst_is_local(S, if_idx, flow))
+            tcp_reset_reply_flow(S, if_idx, tcp, flow);
     }
 }
 

@@ -5042,6 +5042,38 @@ START_TEST(test_tcp_input_listen_synack_sends_rst_and_stays_listen)
 }
 END_TEST
 
+START_TEST(test_tcp_input_listen_ack_non_local_dst_no_rst)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = 0;
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+        (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    /* ACK to a broadcast and to an address that is not ours: no reset may be
+     * sourced from either. */
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0xFFFFFFFFU,
+            4321, 1234, 77, 101, TCP_FLAG_ACK);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0xC0A80163U,
+            4321, 1234, 77, 101, TCP_FLAG_ACK);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+}
+END_TEST
+
 START_TEST(test_tcp_input_listen_accept_final_ack_does_not_send_rst)
 {
     struct wolfIP s;
