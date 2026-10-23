@@ -1898,9 +1898,14 @@ static inline uint32_t wolfIP_ll_frame_mtu(const struct wolfIP_ll_dev *ll)
 #if WOLFIP_VLAN
     if (ll && ll->vlan_active && ll->vlan_parent) {
         uint32_t pmtu = wolfIP_ll_frame_mtu(ll->vlan_parent);
-        return (pmtu > WOLFIP_VLAN_TAG_LEN)
+        pmtu = (pmtu > WOLFIP_VLAN_TAG_LEN)
                ? (pmtu - WOLFIP_VLAN_TAG_LEN)
                : 0U;
+        /* A non-zero ll->mtu (wolfIP_mtu_set) further lowers the sub-interface
+         * MTU; it can never exceed what the parent can carry. */
+        if (ll->mtu != 0 && ll->mtu < pmtu)
+            pmtu = ll->mtu;
+        return pmtu;
     }
 #endif
     if (!ll || ll->mtu == 0)

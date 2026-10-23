@@ -2285,6 +2285,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_vlan_rx_eth_filter_deny_subif_blocks_arp_poisoning);
     tcase_add_test(tc_proto, test_vlan_rx_unfiltered_arp_reply_learns_neighbor);
     tcase_add_test(tc_proto, test_vlan_mtu_inherited);
+    tcase_add_test(tc_proto, test_vlan_mtu_set_applies_to_subif);
     tcase_add_test(tc_proto, test_vlan_delete_purges_arp_neighbor_cache);
 #if WOLFIP_IF_MULTICONF
     tcase_add_test(tc_proto, test_vlan_delete_purges_ifaddr_aliases);

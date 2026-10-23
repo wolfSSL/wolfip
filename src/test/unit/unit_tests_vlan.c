@@ -1728,6 +1728,38 @@ START_TEST(test_vlan_mtu_inherited)
 }
 END_TEST
 
+/* F-14561: wolfIP_mtu_set() on a VLAN sub-interface must lower that
+ * sub-interface's MTU, while never exceeding parent MTU - 4. */
+START_TEST(test_vlan_mtu_set_applies_to_subif)
+{
+    struct wolfIP s;
+    unsigned int sub_idx = 0xFFFFFFFFu;
+    uint32_t mtu = 0, parent_mtu = 0;
+
+    setup_vlan_stack(&s);
+    ck_assert_int_eq(wolfIP_vlan_create(&s, TEST_PRIMARY_IF, 100, 0, 0, &sub_idx), 0);
+    ck_assert_int_eq(wolfIP_mtu_get(&s, TEST_PRIMARY_IF, &parent_mtu), 0);
+
+    ck_assert_int_eq(wolfIP_mtu_set(&s, sub_idx, 600U), 0);
+    ck_assert_int_eq(wolfIP_mtu_get(&s, sub_idx, &mtu), 0);
+    ck_assert_uint_eq(mtu, 600U);
+
+    /* Parent is unaffected. */
+    ck_assert_int_eq(wolfIP_mtu_get(&s, TEST_PRIMARY_IF, &mtu), 0);
+    ck_assert_uint_eq(mtu, parent_mtu);
+
+    /* Resetting to default falls back to the parent-derived value. */
+    ck_assert_int_eq(wolfIP_mtu_set(&s, sub_idx, 0), 0);
+    ck_assert_int_eq(wolfIP_mtu_get(&s, sub_idx, &mtu), 0);
+    ck_assert_uint_eq(mtu, parent_mtu - 4U);
+
+    /* Larger than parent allows: still capped at parent MTU - 4. */
+    ck_assert_int_eq(wolfIP_mtu_set(&s, sub_idx, LINK_MTU), 0);
+    ck_assert_int_eq(wolfIP_mtu_get(&s, sub_idx, &mtu), 0);
+    ck_assert_uint_eq(mtu, parent_mtu - 4U);
+}
+END_TEST
+
 /* F-4948: deleting a VLAN sub-interface must purge the ARP neighbor cache for
  * that slot. ARP entries are keyed only by (ip, if_idx) with no VID, and
  * wolfIP_vlan_create reuses the freed slot, so without a purge a new VLAN on
