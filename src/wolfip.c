@@ -11427,6 +11427,16 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                 else
                     ts->local_ip = IPADDR_ANY;
             }
+            /* Port 0 asks for an ephemeral port, as connect()/sendto() do. */
+            if (new_port == 0) {
+                new_port = port_alloc_random(s->tcpsockets, MAX_TCPSOCKETS, ts,
+                                             bind_ip, 1024);
+                if (new_port == 0) {
+                    ts->local_ip = prev_ip;
+                    ts->if_idx = prev_if_idx;
+                    return -1;
+                }
+            }
             if (bind_port_in_use(s->tcpsockets, MAX_TCPSOCKETS, ts,
                                  bind_ip, new_port)) {
                 ts->local_ip = prev_ip;
@@ -11470,6 +11480,16 @@ int wolfIP_sock_bind(struct wolfIP *s, int sockfd, const struct wolfIP_sockaddr 
                     ts->local_ip = primary->ip;
                 else
                     ts->local_ip = IPADDR_ANY;
+            }
+            /* Port 0 asks for an ephemeral port, as connect()/sendto() do. */
+            if (new_port == 0) {
+                new_port = port_alloc_random(s->udpsockets, MAX_UDPSOCKETS, ts,
+                                             bind_ip, 1024);
+                if (new_port == 0) {
+                    ts->local_ip = prev_ip;
+                    ts->if_idx = prev_if_idx;
+                    return -1;
+                }
             }
             if (bind_port_in_use(s->udpsockets, MAX_UDPSOCKETS, ts,
                                  bind_ip, new_port)) {

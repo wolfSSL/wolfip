@@ -2189,6 +2189,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_tx_has_writable_space_unknown_proto);
     tcase_add_test(tc_core, test_tx_has_writable_space_null);
     tcase_add_test(tc_core, test_bind_port_in_use_port_zero);
+    tcase_add_test(tc_core, test_bind_port_zero_allocates_ephemeral_port);
     tcase_add_test(tc_core, test_arp_pending_record_refresh_existing);
     tcase_add_test(tc_core, test_arp_pending_record_replaces_oldest);
     tcase_add_test(tc_core, test_arp_pending_match_and_clear_expires_stale);

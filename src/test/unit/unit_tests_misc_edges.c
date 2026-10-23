@@ -580,6 +580,42 @@ START_TEST(test_bind_port_in_use_port_zero)
 }
 END_TEST
 
+/* bind() to port 0 must allocate an ephemeral port so that a listener never
+ * answers SYNs to reserved port 0 and a UDP socket can receive. */
+START_TEST(test_bind_port_zero_allocates_ephemeral_port)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_sockaddr_in out;
+    socklen_t outlen;
+    int tfd, ufd;
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0a000001U, 0xffffff00U, 0);
+    tfd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, 0);
+    ufd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_ge(tfd, 0);
+    ck_assert_int_ge(ufd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tfd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, tfd, 1), 0);
+    memset(&out, 0, sizeof(out));
+    outlen = sizeof(out);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, tfd,
+                (struct wolfIP_sockaddr *)&out, &outlen), 0);
+    ck_assert_uint_ge(ee16(out.sin_port), 1024);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, ufd, (struct wolfIP_sockaddr *)&sin,
+                                      sizeof(sin)), 0);
+    memset(&out, 0, sizeof(out));
+    outlen = sizeof(out);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, ufd,
+                (struct wolfIP_sockaddr *)&out, &outlen), 0);
+    ck_assert_uint_ge(ee16(out.sin_port), 1024);
+}
+END_TEST
+
 /* =====================================================================
  * arp_pending_record -- refresh existing entry, replace oldest
  * ===================================================================== */
@@ -1357,7 +1393,12 @@ START_TEST(test_tcp_connect_wildcard_zero_avoids_specific_bound_port)
     ck_assert_int_eq(wolfIP_sock_bind(&s, fd_a, (struct wolfIP_sockaddr *)&sin,
                                       sizeof(sin)), 0);
 
-    /* Wildcard :0: no port yet, the claim is the whole port space. */
+    /* Force the allocator's first candidate to 8080. */
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 8080;
+
+    /* Wildcard :0: bind() allocates the port now; the claim is the whole
+     * port space, so 8080 on 10.0.1.1 is not free. */
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_port = 0;
@@ -1365,10 +1406,6 @@ START_TEST(test_tcp_connect_wildcard_zero_avoids_specific_bound_port)
     ck_assert_int_eq(wolfIP_sock_bind(&s, fd_b, (struct wolfIP_sockaddr *)&sin,
                                       sizeof(sin)), 0);
     tsb = &s.tcpsockets[SOCKET_UNMARK(fd_b)];
-
-    /* Force the allocator's first candidate to 8080. */
-    test_rand_override_enabled = 1;
-    test_rand_override_value = 8080;
 
     /* Connect through the primary interface: the egress address is
      * 10.0.0.1, but the wildcard claim still covers 10.0.1.1:8080. */
