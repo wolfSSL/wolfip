@@ -2428,6 +2428,29 @@ static int wolfIP_route_lookup_internal(struct wolfIP *s, ip4 dest,
         best_if = WOLFIP_PRIMARY_IF_IDX;
 
     if (dest == IPADDR_ANY || wolfIP_ip_is_broadcast(s, dest)) {
+        /* Limited broadcast keeps the primary; a subnet-directed broadcast
+         * leaves via the interface that owns that subnet (primary wins a tie). */
+        if (dest != IPADDR_ANY && dest != 0xFFFFFFFFU) {
+            unsigned int owner = s->if_count;
+
+            for (i = 0; i < s->if_count; i++) {
+                const struct ipconf *conf = wolfIP_ipconf_at(s, i);
+
+                if (!conf || conf->ip == IPADDR_ANY ||
+                        conf->mask == 0 || conf->mask == 0xFFFFFFFFU)
+                    continue;
+                if (dest != ((conf->ip & conf->mask) | ~conf->mask))
+                    continue;
+                if (i == best_if) {
+                    owner = i;
+                    break;
+                }
+                if (owner == s->if_count)
+                    owner = i;
+            }
+            if (owner < s->if_count)
+                best_if = owner;
+        }
         if (if_idx)
             *if_idx = best_if;
         if (nexthop)

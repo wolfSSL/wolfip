@@ -4335,6 +4335,30 @@ START_TEST(test_wolfip_ipconfig_ex_per_interface)
 }
 END_TEST
 
+START_TEST(test_wolfip_route_lookup_directed_broadcast_uses_owning_interface)
+{
+    struct wolfIP s;
+    unsigned int if_idx = 0U;
+    ip4 nexthop = 0U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set_ex(&s, TEST_PRIMARY_IF, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_ipconfig_set_ex(&s, TEST_SECOND_IF, 0xC0A80101U, 0xFFFFFF00U, 0);
+
+    /* Directed broadcast of the secondary subnet leaves via the secondary. */
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0xC0A801FFU, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(nexthop, 0xC0A801FFU);
+
+    /* Primary subnet broadcast and limited broadcast keep the primary. */
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0x0A0000FFU, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_PRIMARY_IF);
+    ck_assert_int_eq(wolfIP_route_lookup(&s, 0xFFFFFFFFU, &if_idx, &nexthop), 0);
+    ck_assert_uint_eq(if_idx, TEST_PRIMARY_IF);
+}
+END_TEST
+
 #if WOLFIP_ENABLE_FORWARDING
 START_TEST(test_wolfip_route_table_longest_prefix_match)
 {

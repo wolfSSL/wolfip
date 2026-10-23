@@ -180,6 +180,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_zero_window_and_overlap_cases);
     tcase_add_test(tc_utils, test_tcp_segment_acceptable_counts_syn_in_segment_length);
     tcase_add_test(tc_utils, test_wolfip_ipconfig_ex_per_interface);
+    tcase_add_test(tc_utils, test_wolfip_route_lookup_directed_broadcast_uses_owning_interface);
 #if WOLFIP_ENABLE_FORWARDING
     tcase_add_test(tc_utils, test_wolfip_route_table_longest_prefix_match);
     tcase_add_test(tc_utils, test_wolfip_route_table_default_route_delete_and_fallback);
