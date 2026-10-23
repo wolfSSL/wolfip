@@ -7524,6 +7524,67 @@ START_TEST(test_tcp_fin_in_close_wait_does_not_advance_ack)
 }
 END_TEST
 
+/* RFC 9293 section 3.10.7.4: in CLOSE_WAIT the peer's FIN has been
+ * received, so segment text is ignored. Data sent after the FIN must not
+ * be queued, advance the receive ACK, or raise a readable event after the
+ * application has already seen end-of-stream. */
+START_TEST(test_tcp_data_after_fin_in_close_wait_ignored)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    uint32_t rcv_nxt;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+    rcv_nxt = lsn->sock.tcp.ack;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg->ip.src = ee32(lsn->remote_ip);
+    seg->ip.dst = ee32(lsn->local_ip);
+    seg->dst_port = ee16(lsn->src_port);
+    seg->src_port = ee16(lsn->dst_port);
+    seg->seq = ee32(rcv_nxt);
+    seg->ack = ee32(lsn->sock.tcp.snd_una);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_CLOSE_WAIT);
+    ck_assert_uint_eq(lsn->sock.tcp.ack, rcv_nxt + 1);
+    lsn->events &= ~CB_EVENT_READABLE;
+
+    /* Data after the FIN, at the new RCV.NXT. */
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    seg->seq = ee32(rcv_nxt + 1);
+    seg->flags = TCP_FLAG_ACK;
+    memcpy(seg->data, "late", 4);
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_CLOSE_WAIT);
+    ck_assert_uint_eq(lsn->sock.tcp.ack, rcv_nxt + 1);
+    ck_assert_uint_eq(queue_len(&lsn->sock.tcp.rxbuf), 0);
+    ck_assert_uint_eq(lsn->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
 /* When the timer heap is full, tcp_ctrl_rto_start must not mark the
  * control RTO active: an active flag with no timer behind it would never
  * fire and would suppress every other timeout. */

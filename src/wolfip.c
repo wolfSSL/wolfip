@@ -7598,7 +7598,11 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     if ((t->sock.tcp.state == TCP_LAST_ACK) || (t->sock.tcp.state == TCP_CLOSING) ||
                         (t->sock.tcp.state == TCP_CLOSED))
                         return;
-                    {
+                    if (t->sock.tcp.state == TCP_CLOSE_WAIT) {
+                        /* RFC 9293 section 3.10.7.4: the peer's FIN was
+                         * already received, so segment text is ignored. */
+                        tcp_send_ack(t);
+                    } else {
                             if (flow->is_v6)
                                 tcp_recv_len(t, tcp, tcplen);
                             else

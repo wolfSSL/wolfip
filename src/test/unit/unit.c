@@ -711,6 +711,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_revert_drains_connection_state);
     tcase_add_test(tc_utils, test_tcp_listener_preaccept_close_rto_retransmits_finack);
     tcase_add_test(tc_utils, test_tcp_fin_in_close_wait_does_not_advance_ack);
+    tcase_add_test(tc_utils, test_tcp_data_after_fin_in_close_wait_ignored);
     tcase_add_test(tc_utils, test_tcp_listener_revert_restores_option_baseline);
     tcase_add_test(tc_utils, test_tcp_parse_sack_wraparound_block_accepted);
     tcase_add_test(tc_utils, test_tcp_parse_options_stops_on_truncated_or_invalid_option_length);
