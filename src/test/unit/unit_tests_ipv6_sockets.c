@@ -2487,6 +2487,34 @@ START_TEST(test_sock6_tcp_connect_timer_heap_full_rolls_back)
 }
 END_TEST
 
+/* An explicitly bound source port is kept by connect(), whatever its value.
+ * The IPv4 arm never touches a bound port; the IPv6 arm must not shift a
+ * privileged one up by 1024 either. */
+START_TEST(test_sock6_tcp_connect_keeps_bound_low_port)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind6;
+    struct wolfIP_sockaddr_in6 dst;
+    struct tsocket *ts;
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    sock6_addr(&bind6, NULL, 600);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd, (struct wolfIP_sockaddr *)&bind6,
+                                      sizeof(bind6)), 0);
+    sock6_addr(&dst, S6_PEER, 80);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->src_port, 600);
+}
+END_TEST
+
 /* IPV6_V6ONLY has to hold on the receive path too. A socket that asked for
  * IPv6 only must not be handed IPv4 datagrams, and must not reserve the
  * IPv4 port either - it does not occupy that address space. */

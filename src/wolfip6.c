@@ -2727,8 +2727,6 @@ static int tcp6_connect(struct wolfIP *s, struct tsocket *t, const ip6 *dst,
             return -WOLFIP_EAGAIN;
         }
     }
-    if (t->src_port < 1024)
-        t->src_port = (uint16_t)(t->src_port + 1024);
     t->dst_port = dport;
     t->sock.tcp.seq = wolfIP_getrandom();
     t->sock.tcp.snd_una = t->sock.tcp.seq;
