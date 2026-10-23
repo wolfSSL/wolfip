@@ -496,6 +496,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_dhcp_poll_reply_wrong_chaddr_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_zero_yiaddr_rejected);
     tcase_add_test(tc_utils, test_dhcp_poll_offer_defers_commit_until_ack);
+    tcase_add_test(tc_utils, test_dhcp_callback_drains_queued_datagrams);
     tcase_add_test(tc_utils, test_regression_dhcp_nak_deconfigures_address_during_renew_and_rebind);
     tcase_add_test(tc_utils, test_dns_callback_ptr_response);
     tcase_add_test(tc_utils, test_udp_try_recv_short_frame);
@@ -2110,6 +2111,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_core, test_dns_callback_zero_ancount_no_delivery);
     tcase_add_test(tc_core, test_dns_callback_aaaa_answer_skipped_for_a_query);
     tcase_add_test(tc_core, test_dns_callback_qr_without_rd_is_accepted);
+    tcase_add_test(tc_core, test_dns_callback_drains_queued_datagrams);
     tcase_add_test(tc_core, test_dns_callback_truncated_answer_delivered);
     tcase_add_test(tc_core, test_dns_callback_rr_rdlen_truncated_aborts_query);
     tcase_add_test(tc_core, test_dns_callback_bad_question_name_aborts_query);

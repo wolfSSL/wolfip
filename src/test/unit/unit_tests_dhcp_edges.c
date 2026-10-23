@@ -2440,6 +2440,55 @@ START_TEST(test_dhcp_poll_reply_wrong_chaddr_rejected)
 }
 END_TEST
 
+/* dispatch_events() clears the READABLE event before the callback runs and
+ * UDP recvfrom never raises it again, so two datagrams queued in one poll
+ * step produce a single event. The callback must drain the queue: a stale or
+ * foreign datagram ahead of the real OFFER may not strand it. */
+START_TEST(test_dhcp_callback_drains_queued_datagrams)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    uint32_t xid = 0x12345678U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ts = dhcp_edges_rx_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    s.dhcp_xid = xid;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(xid);
+    msg.yiaddr = ee32(0x0A000064U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    /* First datagram: foreign chaddr, dropped. Second: the valid OFFER. */
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+
+    dhcp_callback(s.dhcp_udp_sd, CB_EVENT_READABLE, &s);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(s.dhcp_ip, 0x0A000064U);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.udp.rxbuf));
+}
+END_TEST
+
 /* An OFFER with yiaddr 0.0.0.0 must be rejected: no broken configuration
  * may be committed to the interface. */
 START_TEST(test_dhcp_poll_offer_zero_yiaddr_rejected)

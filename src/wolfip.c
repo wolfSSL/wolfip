@@ -12548,6 +12548,16 @@ static int dhcp_parse_ack(struct wolfIP *s, struct dhcp_msg *msg, uint32_t msg_l
     return -1;
 }
 
+/* Head of a UDP socket's RX queue, or NULL if empty. dispatch_events() clears
+ * the READABLE event before invoking the callback and UDP recvfrom does not
+ * raise it again, so the stack's own consumers drain the queue themselves. */
+static struct pkt_desc *udp_rx_head(struct wolfIP *s, int sd)
+{
+    if (sd <= 0 || SOCKET_UNMARK(sd) >= MAX_UDPSOCKETS)
+        return NULL;
+    return fifo_peek(&s->udpsockets[SOCKET_UNMARK(sd)].sock.udp.rxbuf);
+}
+
 static int dhcp_poll(struct wolfIP *s)
 {
     struct wolfIP_sockaddr_in sin;
@@ -12705,11 +12715,17 @@ static int dhcp_send_request(struct wolfIP *s)
 static void dhcp_callback(int sockfd, uint16_t ev, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
+    struct pkt_desc *head;
     (void)sockfd;
     (void)ev;
     if (!s)
         return;
-    dhcp_poll(s);
+    /* Keep reading while each pass consumes a datagram and more remain. */
+    do {
+        head = udp_rx_head(s, s->dhcp_udp_sd);
+        dhcp_poll(s);
+    } while (head && (udp_rx_head(s, s->dhcp_udp_sd) != NULL) &&
+             (udp_rx_head(s, s->dhcp_udp_sd) != head));
 }
 
 static int dhcp_send_discover(struct wolfIP *s)
@@ -14697,7 +14713,7 @@ static void dns_timeout_cb(void *arg)
     }
 }
 
-void dns_callback(int dns_sd, uint16_t ev, void *arg)
+static void dns_callback_one(int dns_sd, uint16_t ev, void *arg)
 {
     struct wolfIP *s = (struct wolfIP *)arg;
     char buf[MAX_DNS_RESPONSE];
@@ -14799,6 +14815,24 @@ void dns_callback(int dns_sd, uint16_t ev, void *arg)
                 dns_abort_query(s);
         }
     }
+}
+
+void dns_callback(int dns_sd, uint16_t ev, void *arg)
+{
+    struct wolfIP *s = (struct wolfIP *)arg;
+    struct pkt_desc *head;
+
+    if (!s)
+        return;
+    /* Keep reading while the query is outstanding, each pass consumes a
+     * datagram and more remain (e.g. a stale reply ahead of the real one). */
+    do {
+        head = udp_rx_head(s, dns_sd);
+        dns_callback_one(dns_sd, ev, arg);
+    } while ((ev & CB_EVENT_READABLE) && head && s->dns_id != 0 &&
+             s->dns_udp_sd == dns_sd &&
+             (udp_rx_head(s, dns_sd) != NULL) &&
+             (udp_rx_head(s, dns_sd) != head));
 }
 
 static int dns_send_query(struct wolfIP *s, const char *dname, uint16_t *id,
