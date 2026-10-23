@@ -726,6 +726,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_tcp_input_rst_exact_seq_closes);
     tcase_add_test(tc_utils, test_tcp_input_syn_listen_mismatch);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_established);
+    tcase_add_test(tc_utils, test_tcp_input_handshake_after_lost_syn_uses_one_segment_cwnd);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_ack_invalid_ack_rejected);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_high_seq_valid_ack_establishes);
     tcase_add_test(tc_utils, test_tcp_input_syn_rcvd_high_seq_data_held_ooo);

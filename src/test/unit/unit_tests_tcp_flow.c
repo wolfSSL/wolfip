@@ -3357,6 +3357,72 @@ START_TEST(test_tcp_input_syn_rcvd_ack_established)
 }
 END_TEST
 
+/* RFC 5681 s3.1: if the SYN or SYN/ACK was lost, the initial window after the
+ * correctly transmitted SYN must be one segment of at most SMSS bytes. */
+START_TEST(test_tcp_input_handshake_after_lost_syn_uses_one_segment_cwnd)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg ackseg;
+    int tcp_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+    wolfIP_filter_set_tcp_mask(0);
+
+    /* Active open: SYN retransmitted once before the SYN-ACK arrives. */
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.ctrl_rto_retries = 1;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U, 4321, 1234, 10, 101, (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, tcp_cc_mss(ts));
+
+    /* Passive open: SYN-ACK retransmitted once before the final ACK. */
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5678);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, tcp_sd, 1), 0);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 5678);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    ts->sock.tcp.ctrl_rto_retries = 1;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ip.ver_ihl = 0x45;
+    ackseg.ip.proto = WI_IPPROTO_TCP;
+    ackseg.ip.ttl = 64;
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ackseg.ip.src = ee32(ts->remote_ip);
+    ackseg.ip.dst = ee32(ts->local_ip);
+    ackseg.dst_port = ee16(ts->src_port);
+    ackseg.src_port = ee16(ts->dst_port);
+    ackseg.seq = ee32(ts->sock.tcp.ack);
+    ackseg.ack = ee32(ts->sock.tcp.seq + 1);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&ackseg);
+    tcp_input(&s, TEST_PRIMARY_IF, &ackseg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, tcp_cc_mss(ts));
+}
+END_TEST
+
 START_TEST(test_tcp_input_syn_rcvd_ack_invalid_ack_rejected)
 {
     struct wolfIP s;

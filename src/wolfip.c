@@ -7355,6 +7355,10 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                     /* Only reached for a SYN-ACK whose ACK number was
                      * acceptable (the check above RSTs the bad ones). */
                     if (tcp->flags == (TCP_FLAG_SYN | TCP_FLAG_ACK)) {
+                        /* RFC 5681 s3.1: after a lost SYN the initial
+                         * window is one segment. */
+                        int syn_lost = (t->sock.tcp.ctrl_rto_retries > 0);
+
                         t->sock.tcp.state = TCP_ESTABLISHED;
                         tcp_ctrl_rto_stop(t);
                         t->sock.tcp.ack = tcp_seq_inc(ee32(tcp->seq), 1);
@@ -7362,7 +7366,8 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                         t->sock.tcp.snd_una = t->sock.tcp.seq;
                         t->sock.tcp.recovery_point = t->sock.tcp.snd_una;
                         t->sock.tcp.fast_recovery = 0;
-                        t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
+                        t->sock.tcp.cwnd = syn_lost ? tcp_cc_mss(t) :
+                            tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
                         t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                         if (tx_has_writable_space(t))
                             t->events |= CB_EVENT_WRITABLE;
@@ -7392,6 +7397,7 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                 }
                 if (tcp->flags & TCP_FLAG_ACK)  {
                     uint32_t expected_ack = tcp_seq_inc(t->sock.tcp.snd_una, 1);
+                    int syn_lost;
                     /* RFC 9293 section 3.10.7.4: the sequence acceptability
                      * test (Table 6) applies before the final-ACK transition.
                      * A segment that begins above RCV.NXT but inside the
@@ -7409,6 +7415,9 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                         tcp_reset_reply_flow(S, if_idx, tcp, flow);
                         continue;
                     }
+                    /* RFC 5681 s3.1: after a lost SYN/ACK the initial window
+                     * is one segment. */
+                    syn_lost = (t->sock.tcp.ctrl_rto_retries > 0);
                     t->sock.tcp.state = TCP_ESTABLISHED;
                     tcp_ctrl_rto_stop(t);
                     if (t->sock.tcp.parked) {
@@ -7433,7 +7442,8 @@ static void tcp_input_flow(struct wolfIP *S, unsigned int if_idx,
                      * filled. */
                     t->sock.tcp.seq = ee32(tcp->ack);
                     t->sock.tcp.snd_una = t->sock.tcp.seq;
-                    t->sock.tcp.cwnd = tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
+                    t->sock.tcp.cwnd = syn_lost ? tcp_cc_mss(t) :
+                        tcp_initial_cwnd(t->sock.tcp.peer_rwnd, tcp_cc_mss(t));
                     t->sock.tcp.ssthresh = tcp_initial_ssthresh(t->sock.tcp.peer_rwnd);
                     if (tx_has_writable_space(t))
                         t->events |= CB_EVENT_WRITABLE;
