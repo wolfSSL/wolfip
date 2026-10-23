@@ -9887,7 +9887,9 @@ int wolfIP_sock_sendto(struct wolfIP *s, int sockfd, const void *buf, size_t len
             return -WOLFIP_EINVAL;
         if_idx = raw_route_for_ip(s, rs, dst_ip, use_dontroute);
         rs->if_idx = (uint8_t)if_idx;
-        if (total_len > LINK_MTU)
+        /* wolfIP_ll_xmit() rejects frames above the egress frame MTU, which
+         * would leave the descriptor stuck at the FIFO head forever. */
+        if (total_len > wolfIP_frame_mtu(s, if_idx))
             return -WOLFIP_EINVAL;
         if (fifo_space(&rs->txbuf) < total_len)
             return -WOLFIP_EAGAIN;

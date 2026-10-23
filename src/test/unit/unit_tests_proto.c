@@ -8949,6 +8949,51 @@ START_TEST(test_regression_raw_socket_tx_eagain_keeps_descriptor)
 }
 END_TEST
 
+/* F-14516: a raw sendto larger than the egress interface frame MTU must be
+ * rejected at admission; otherwise wolfIP_ll_xmit() fails it forever and the
+ * undeliverable descriptor wedges the raw TX FIFO. */
+START_TEST(test_regression_raw_socket_sendto_checks_interface_mtu)
+{
+    struct wolfIP s;
+    int sd;
+    uint8_t payload[1490];
+    uint8_t small[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    struct wolfIP_sockaddr_in sin;
+    uint32_t dst_ip = 0x0A00000CU;
+    uint8_t nh_mac[6] = {0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    ck_assert_int_eq(wolfIP_mtu_set(&s, TEST_PRIMARY_IF, 1514), 0);
+
+    s.arp.neighbors[0].ip = dst_ip;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac, nh_mac, sizeof(nh_mac));
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(dst_ip);
+    memset(payload, 0xA5, sizeof(payload));
+
+    /* 14 + 20 + 1490 = 1524 > 1514: must not be admitted. */
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            -WOLFIP_EINVAL);
+
+    /* A following small datagram still flows. */
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, small, sizeof(small), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin)),
+            (int)sizeof(small));
+    wolfIP_poll(&s, 0);
+    ck_assert_uint_eq(mock_sent_frames_count, 1U);
+}
+END_TEST
+
 START_TEST(test_raw_socket_sendto_short_addrlen_returns_einval)
 {
     struct wolfIP s;
