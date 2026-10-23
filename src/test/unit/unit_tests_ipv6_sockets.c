@@ -1595,6 +1595,99 @@ static void sock6_deliver_icmp6_msg(struct wolfIP *s, const ip6 *src,
     sock6_deliver_icmp6_msg_on(s, TEST_PRIMARY_IF, src, dst, type, code);
 }
 
+/* An ICMPv6 Packet Too Big quoting a segment of an established connection,
+ * delivered through the ingress path. */
+static void sock6_deliver_ptb(struct wolfIP *s, const ip6 *router,
+                              const ip6 *local, const ip6 *peer,
+                              uint16_t local_port, uint16_t peer_port,
+                              uint32_t mtu)
+{
+    uint8_t body[8 + IP6_HEADER_LEN + 8];
+    uint8_t *q = &body[8];
+
+    memset(body, 0, sizeof(body));
+    body[0] = ICMP6_PACKET_TOO_BIG;
+    body[4] = (uint8_t)(mtu >> 24);
+    body[5] = (uint8_t)(mtu >> 16);
+    body[6] = (uint8_t)(mtu >> 8);
+    body[7] = (uint8_t)mtu;
+    q[0] = 0x60;
+    q[4] = 0;
+    q[5] = 8;
+    q[6] = IP6_NEXTHDR_TCP;
+    q[7] = 64;
+    memcpy(&q[8], local->addr, 16);
+    memcpy(&q[24], peer->addr, 16);
+    q[40] = (uint8_t)(local_port >> 8);
+    q[41] = (uint8_t)local_port;
+    q[42] = (uint8_t)(peer_port >> 8);
+    q[43] = (uint8_t)peer_port;
+    sock6_deliver_icmp6_body(s, router, local, body, sizeof(body));
+}
+
+/* RFC 4443 section 2.4 (d): an ICMPv6 error is passed to the upper layer, and
+ * RFC 8201 has TCP lower its segment size on Packet Too Big, as the IPv4
+ * Fragmentation Needed arm does. Without it a path narrower than the link
+ * drops every full-size segment for good. The reported MTU is never taken
+ * below the IPv6 minimum of 1280. */
+START_TEST(test_sock6_tcp_packet_too_big_lowers_peer_mss)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_tcp6_seg *seg;
+    struct tsocket *t;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 other;
+    uint32_t our_isn;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    t = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    sock6_addr(&dst, S6_PEER, 80);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6("2001:db8:5::77", &other), 0);
+
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    our_isn = ee32(seg->seq);
+    ip6_hdr_get_src(&seg->ip6, &local);
+    sock6_deliver_tcp(&s, &peer, &local, 80, t->src_port, 0x11223344,
+                      our_isn + 1, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(t->sock.tcp.state, TCP_ESTABLISHED);
+    t->sock.tcp.peer_mss = 1440;
+
+    /* A report about some other connection changes nothing. */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 81, 1400);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1440);
+
+    /* 1400 - 40 (IPv6) - 20 (TCP). */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 80, 1400);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1340);
+
+    /* A larger MTU never raises it again. */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 80, 1480);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1340);
+
+    /* Below the IPv6 minimum link MTU the estimate stops at 1280. */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 80, 600);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1280 - 60);
+}
+END_TEST
+
 /* An Echo Request or Reply with a chosen identifier and sequence. */
 static void sock6_deliver_icmp6_echo(struct wolfIP *s, const ip6 *src,
                                      const ip6 *dst, uint8_t type,

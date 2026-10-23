@@ -720,6 +720,63 @@ static uint16_t port_alloc_random6(const struct tsocket *arr, int n,
 static void nd6_input(struct wolfIP *s, unsigned int if_idx,
                       struct wolfIP_ip6_packet *pkt, uint32_t payload_len);
 
+/* Apply a Packet Too Big to the TCP connection it quotes, the counterpart of
+ * the Fragmentation Needed arm of icmp_try_deliver_tcp_error(). RFC 4443
+ * section 2.4 (d) has the upper layer told about an error, and RFC 8201 has
+ * TCP shrink its segments to the reported MTU - never below the IPv6 minimum
+ * of 1280, which also bounds what a spoofed message can do. The quoted
+ * packet must be TCP directly after the IPv6 header: no extension header
+ * chain is walked here. Other error types are not applied to TCP. */
+static void icmp6_try_deliver_tcp_error(struct wolfIP *s,
+                                        const struct wolfIP_icmp6_packet *icmp)
+{
+    uint32_t payload_len = ee16(icmp->ip6.payload_len);
+    const uint8_t *quote = icmp->data + 4;
+    uint32_t mtu;
+    uint16_t src_port, dst_port, new_mss;
+    ip6 qsrc, qdst;
+    int i;
+
+    if (icmp->type != ICMP6_PACKET_TOO_BIG)
+        return;
+    /* ICMPv6 header, MTU word, the quoted IPv6 header and the TCP ports and
+     * sequence number. */
+    if (payload_len < (8U + IP6_HEADER_LEN + 8U))
+        return;
+    if (quote[6] != IP6_NEXTHDR_TCP)
+        return;
+    memcpy(qsrc.addr, quote + 8, sizeof(qsrc.addr));
+    memcpy(qdst.addr, quote + 24, sizeof(qdst.addr));
+    memcpy(&src_port, quote + IP6_HEADER_LEN, sizeof(src_port));
+    memcpy(&dst_port, quote + IP6_HEADER_LEN + 2, sizeof(dst_port));
+    src_port = ee16(src_port);
+    dst_port = ee16(dst_port);
+    mtu = ((uint32_t)icmp->data[0] << 24) | ((uint32_t)icmp->data[1] << 16) |
+          ((uint32_t)icmp->data[2] << 8) | (uint32_t)icmp->data[3];
+    if (mtu < IP6_MIN_MTU)
+        mtu = IP6_MIN_MTU;
+    if (mtu > 0xFFFFU)
+        mtu = 0xFFFFU;
+    new_mss = (uint16_t)(mtu - (IP6_HEADER_LEN + TCP_HEADER_LEN));
+
+    for (i = 0; i < MAX_TCPSOCKETS; i++) {
+        struct tsocket *t = &s->tcpsockets[i];
+
+        if (t->proto != WI_IPPROTO_TCP || !t->peer_is_v6)
+            continue;
+        if (t->sock.tcp.state == TCP_CLOSED || t->sock.tcp.state == TCP_LISTEN)
+            continue;
+        if (ip6_cmp(&t->local_ip6, &qsrc) != 0 ||
+                ip6_cmp(&t->remote_ip6, &qdst) != 0)
+            continue;
+        if (t->src_port != src_port || t->dst_port != dst_port)
+            continue;
+        if (t->sock.tcp.peer_mss == 0 || new_mss < t->sock.tcp.peer_mss)
+            t->sock.tcp.peer_mss = new_mss;
+        break;
+    }
+}
+
 /* ICMPv6 receive path. Deliberately laid out like icmp_input() above it:
  * length checks, then the checksum, then one arm per message type, with the
  * echo reply built in place over the request.
@@ -784,6 +841,7 @@ static void icmp6_input(struct wolfIP *s, unsigned int if_idx,
      * traffic it never asked for. */
     if (icmp6_type_is_error(icmp->type) ||
             (icmp->type == ICMP6_ECHO_REPLY)) {
+        icmp6_try_deliver_tcp_error(s, icmp);
         icmp6_try_recv(s, if_idx, icmp, len);
         return;
     }

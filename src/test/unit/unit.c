@@ -1437,6 +1437,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_tcp_listener_accepts_an_ipv6_connection);
     tcase_add_test(tc_proto, test_sock6_tcp_accept_short_addrlen_keeps_the_connection);
     tcase_add_test(tc_proto, test_sock6_tcp_mss_accounts_for_the_40_byte_header);
+    tcase_add_test(tc_proto, test_sock6_tcp_packet_too_big_lowers_peer_mss);
     tcase_add_test(tc_proto, test_sock6_tcp_segment_to_a_dead_port_is_reset);
     tcase_add_test(tc_proto, test_sock6_tcp_bad_checksum_is_dropped);
     tcase_add_test(tc_proto, test_sock6_tcp_af_inet_listener_ignores_ipv6);
