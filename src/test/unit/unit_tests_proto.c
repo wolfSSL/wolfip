@@ -4033,6 +4033,67 @@ START_TEST(test_tcp_adv_win_clamps_and_applies_window_scale)
 }
 END_TEST
 
+/* RFC 9293 3.8.6.2.2 (MUST-39): after the receive buffer filled up and a zero
+ * window was advertised, small application reads must not reopen the window
+ * (SWS avoidance); only once min(RCV.BUFF/2, MSS) is free does it advance. */
+START_TEST(test_tcp_recv_sws_avoidance_holds_window_edge)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    static uint8_t data[RXBUF_SIZE];
+    uint8_t rd[2048];
+    uint32_t thresh;
+    ip4 local_ip = 0x0A000001U;
+    ip4 remote_ip = 0x0A0000A1U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, local_ip, 0xFFFFFF00U, 0);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->local_ip = local_ip;
+    ts->remote_ip = remote_ip;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->sock.tcp.ack = 1000;
+    ts->sock.tcp.seq = 2000;
+    ts->sock.tcp.snd_una = 2000;
+    ts->sock.tcp.peer_mss = 1460;
+    ts->sock.tcp.tmr_rto = NO_TIMER;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+
+    /* Peer fills the whole receive buffer; we advertise a zero window. */
+    memset(data, 0x5a, sizeof(data));
+    ck_assert_int_eq(queue_insert(&ts->sock.tcp.rxbuf, data,
+        ts->sock.tcp.ack, RXBUF_SIZE - 1), 0);
+    ts->sock.tcp.ack += RXBUF_SIZE - 1;
+    ck_assert_uint_eq(tcp_adv_win(ts, 1), 0U);
+
+    thresh = RXBUF_SIZE / 2;
+    if (thresh > 1460U)
+        thresh = 1460U;
+
+    /* A 1-byte read frees no useful space: no window update. */
+    ck_assert_int_eq(wolfIP_sock_recv(&s, MARK_TCP_SOCKET | 0, rd, 1, 0), 1);
+    ck_assert_ptr_eq(fifo_peek(&ts->sock.tcp.txbuf), NULL);
+    ck_assert_uint_eq(ts->sock.tcp.ack_retry_pending, 0U);
+    ck_assert_uint_eq(tcp_adv_win(ts, 1), 0U);
+
+    /* Reading up to the threshold reopens the window. */
+    ck_assert_int_eq(wolfIP_sock_recv(&s, MARK_TCP_SOCKET | 0, rd,
+        thresh - 1, 0), (int)(thresh - 1));
+    ck_assert(fifo_peek(&ts->sock.tcp.txbuf) != NULL ||
+              ts->sock.tcp.ack_retry_pending);
+    ck_assert_uint_eq(tcp_adv_win(ts, 1), thresh);
+}
+END_TEST
+
 START_TEST(test_tcp_segment_acceptable_zero_window_and_overlap_cases)
 {
     struct tsocket ts;

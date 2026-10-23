@@ -1319,6 +1319,9 @@ struct tcpsocket {
              recovery_point;
     uint32_t srtt, rttvar;
     uint32_t last_early_rexmit_ack;
+    /* Right edge of the receive window last advertised (SWS avoidance). */
+    uint32_t rcv_edge;
+    uint8_t rcv_edge_valid;
     uint8_t rto_initialized;
     uint8_t dup_acks;
     uint8_t fast_recovery;
@@ -4136,14 +4139,47 @@ static struct tsocket *tcp_new_socket(struct wolfIP *s)
     return NULL;
 }
 
-static uint16_t tcp_adv_win(const struct tsocket *t, uint8_t apply_wscale)
+/* Receiver-side SWS avoidance (RFC 9293 3.8.6.2.2, MUST-39): the right window
+ * edge advertised last is kept fixed as the application drains the receive
+ * buffer, and only advances once min(RCV.BUFF/2, Eff.snd.MSS) bytes are free
+ * beyond it. Only tracked in states that accept data. */
+static int tcp_rcv_edge_tracked(const struct tsocket *t)
+{
+    return t->sock.tcp.state == TCP_ESTABLISHED ||
+           t->sock.tcp.state == TCP_FIN_WAIT_1 ||
+           t->sock.tcp.state == TCP_FIN_WAIT_2 ||
+           t->sock.tcp.state == TCP_CLOSE_WAIT;
+}
+
+static uint16_t tcp_calc_win(const struct tsocket *t, uint8_t apply_wscale)
 {
     uint32_t space = queue_space((struct queue *)&t->sock.tcp.rxbuf);
     uint8_t shift = (apply_wscale && t->sock.tcp.ws_enabled) ? t->sock.tcp.rcv_wscale : 0;
-    uint32_t win = space >> shift;
+    uint32_t win;
+    if (t->sock.tcp.rcv_edge_valid && tcp_rcv_edge_tracked(t)) {
+        uint32_t held = t->sock.tcp.rcv_edge - t->sock.tcp.ack;
+        if (held <= space) {
+            uint32_t thresh = t->sock.tcp.rxbuf.size / 2;
+            if (t->sock.tcp.peer_mss != 0 && t->sock.tcp.peer_mss < thresh)
+                thresh = t->sock.tcp.peer_mss;
+            if (space - held < thresh)
+                space = held;
+        }
+    }
+    win = space >> shift;
     if (win > 0xFFFF)
         win = 0xFFFF;
     return (uint16_t)win;
+}
+
+/* Window to put in an outgoing segment; records the advertised right edge. */
+static uint16_t tcp_adv_win(struct tsocket *t, uint8_t apply_wscale)
+{
+    uint16_t win = tcp_calc_win(t, apply_wscale);
+    uint8_t shift = (apply_wscale && t->sock.tcp.ws_enabled) ? t->sock.tcp.rcv_wscale : 0;
+    t->sock.tcp.rcv_edge_valid = tcp_rcv_edge_tracked(t);
+    t->sock.tcp.rcv_edge = t->sock.tcp.ack + ((uint32_t)win << shift);
+    return win;
 }
 
 static int tcp_segment_acceptable(const struct tsocket *t,
@@ -9845,10 +9881,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
             if (queue_len(&ts->sock.tcp.rxbuf) == 0)
                 return 0;
             {
-                uint16_t win_before = tcp_adv_win(ts, 1);
+                uint16_t win_before = tcp_calc_win(ts, 1);
                 int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
                 if (ret > 0) {
-                    uint16_t win_after = tcp_adv_win(ts, 1);
+                    uint16_t win_after = tcp_calc_win(ts, 1);
                     if (queue_len(&ts->sock.tcp.rxbuf) > 0) {
                         ts->events |= CB_EVENT_READABLE;
                         if (ts->callback)
@@ -9862,10 +9898,10 @@ int wolfIP_sock_recvfrom(struct wolfIP *s, int sockfd, void *buf, size_t len, in
         } else if (ts->sock.tcp.state == TCP_ESTABLISHED ||
                 ts->sock.tcp.state == TCP_FIN_WAIT_1 ||
                 ts->sock.tcp.state == TCP_FIN_WAIT_2) {
-            uint16_t win_before = tcp_adv_win(ts, 1);
+            uint16_t win_before = tcp_calc_win(ts, 1);
             int ret = queue_pop(&ts->sock.tcp.rxbuf, buf, len);
             if (ret > 0) {
-                uint16_t win_after = tcp_adv_win(ts, 1);
+                uint16_t win_after = tcp_calc_win(ts, 1);
                 if (queue_len(&ts->sock.tcp.rxbuf) > 0) {
                     ts->events |= CB_EVENT_READABLE;
                     if (ts->callback)
