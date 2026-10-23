@@ -15504,13 +15504,18 @@ static void flush_raw_tx(struct wolfIP *s)
                 if (loop)
                     memcpy(r->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
-                if (!IS_IP_BCAST(nexthop) &&
-                        (arp_lookup(s, tx_if, nexthop, r->nexthop_mac) < 0)) {
-                    arp_request(s, tx_if, nexthop);
-                    break;
-                } else if (IS_IP_BCAST(nexthop)) {
+#ifdef IP_MULTICAST
+                if (wolfIP_ip_is_multicast(dst_ip)) {
+                    mcast_ip_to_eth(dst_ip, r->nexthop_mac);
+                } else
+#endif
+                    if (!wolfIP_ip_is_broadcast(s, nexthop) &&
+                            arp_lookup(s, tx_if, nexthop, r->nexthop_mac) < 0) {
+                        arp_request(s, tx_if, nexthop);
+                        break;
+                    }
+                if (wolfIP_ip_is_broadcast(s, nexthop))
                     memset(r->nexthop_mac, 0xFF, 6);
-                }
             }
 #else
             nexthop = dst_ip;

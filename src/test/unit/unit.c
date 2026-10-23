@@ -1903,6 +1903,7 @@ Suite *wolf_suite(void)
 #if WOLFIP_RAWSOCKETS
     tcase_add_test(tc_core, test_poll_tx_raw_sends_on_arp_hit);
     tcase_add_test(tc_core, test_poll_tx_raw_arp_miss_emits_request);
+    tcase_add_test(tc_core, test_poll_tx_raw_directed_broadcast_uses_bcast_mac);
     tcase_add_test(tc_core, test_poll_tx_raw_dst_zero_skips_descriptor);
     tcase_add_test(tc_core, test_poll_tx_raw_filter_blocks_send);
     tcase_add_test(tc_core, test_poll_tx_raw_loopback_path);

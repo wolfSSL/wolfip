@@ -1460,6 +1460,38 @@ START_TEST(test_poll_tx_raw_arp_miss_emits_request)
 }
 END_TEST
 
+START_TEST(test_poll_tx_raw_directed_broadcast_uses_bcast_mac)
+{
+    struct wolfIP s;
+    int sd;
+    uint8_t payload[8];
+    struct wolfIP_sockaddr_in sin;
+    static const uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    last_frame_sent_size = 0;
+
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_RAW, WI_IPPROTO_UDP);
+    ck_assert_int_ge(sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(0x0A0000FFU); /* subnet-directed broadcast */
+    memset(payload, 0, sizeof(payload));
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+                (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+
+    (void)wolfIP_poll(&s, 2000);
+    /* Must be sent as IPv4 to the broadcast MAC, not held for ARP. */
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    ck_assert_uint_eq(last_frame_sent[12], 0x08);
+    ck_assert_uint_eq(last_frame_sent[13], 0x00);
+    ck_assert_int_eq(memcmp(last_frame_sent, bcast, 6), 0);
+}
+END_TEST
+
 START_TEST(test_poll_tx_raw_dst_zero_skips_descriptor)
 {
     struct wolfIP s;
