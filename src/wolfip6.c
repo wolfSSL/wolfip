@@ -1,6 +1,7 @@
 /* wolfip6.c
  *
- * IPv6 header encapsulation and parsing for the wolfIP TCP/IP stack.
+ * IPv6 support for the wolfIP TCP/IP stack: IPv6 header handling, ICMPv6,
+ * Neighbor Discovery/SLAAC, and UDP/TCP over IPv6.
  *
  * Copyright (C) 2026 wolfSSL Inc.
  *
@@ -26,11 +27,13 @@
  * not a separate translation unit: struct wolfIP and the checksum, Ethernet
  * and link-layer helpers it needs are all static symbols inside wolfip.c.
  *
- * Scope of this file today is deliberately narrow: the IPv6 header itself.
- * Parsing and validation on receive, encapsulation on transmit, and the
- * upper-layer checksum that both need. ICMPv6, Neighbor Discovery, SLAAC and
- * DHCPv6 are not here yet; the receive path classifies what it cannot handle
- * and reports a distinct reason rather than pretending to process it.
+ * This file holds the IPv6 side of the stack: header parsing and validation
+ * on receive, encapsulation on transmit and the upper-layer checksum; ICMPv6
+ * (echo, error generation and relay, ICMPv6 sockets); Neighbor Discovery with
+ * DAD, and Router Advertisement handling with SLAAC address formation; and
+ * UDP and TCP over IPv6. DHCPv6 is not implemented. The receive path
+ * classifies what it cannot handle and reports a distinct reason rather than
+ * pretending to process it.
  */
 
 /* ---------------------------------------------------------------------- */
