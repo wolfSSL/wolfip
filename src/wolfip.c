@@ -15648,7 +15648,7 @@ static void flush_datagram_tx(struct wolfIP *s, struct tsocket *socks,
                     memcpy(t->nexthop_mac, loop->mac, 6);
             } else if (!wolfIP_ll_is_non_ethernet(s, tx_if)) {
 #ifdef IP_MULTICAST
-                if (is_udp && wolfIP_ip_is_multicast(desc_dst)) {
+                if (wolfIP_ip_is_multicast(desc_dst)) {
                     mcast_ip_to_eth(desc_dst, t->nexthop_mac);
                 } else
 #endif

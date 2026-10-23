@@ -1103,4 +1103,41 @@ START_TEST(test_multicast_getsockopt_ttl_loop_accepts_uint8)
 }
 END_TEST
 
+/* An ICMP datagram socket sending to a group must use the RFC 1112 multicast
+ * MAC, not ARP/gateway resolution (which would never resolve, or unicast the
+ * frame to the router). */
+START_TEST(test_multicast_icmp_sendto_uses_multicast_mac)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    uint8_t payload[ICMP_HEADER_LEN] = {0};
+    uint8_t exp_mac[6];
+    ip4 group = 0xE0000001U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000002U, 0xFFFFFF00U, 0);
+    s.last_tick = 1;
+    sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_ICMP);
+    ck_assert_int_gt(sd, 0);
+    ts = &s.icmpsockets[SOCKET_UNMARK(sd)];
+
+    payload[0] = ICMP_ECHO_REQUEST;
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = ee32(group);
+    ck_assert_int_eq(wolfIP_sock_sendto(&s, sd, payload, sizeof(payload), 0,
+            (struct wolfIP_sockaddr *)&sin, sizeof(sin)), (int)sizeof(payload));
+
+    last_frame_sent_size = 0;
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_uint_eq(fifo_len(&ts->sock.udp.txbuf), 0U);
+    ck_assert_uint_gt(last_frame_sent_size, 0U);
+    mcast_ip_to_eth(group, exp_mac);
+    ck_assert_int_eq(memcmp(last_frame_sent, exp_mac, 6), 0);
+}
+END_TEST
+
 #endif /* IP_MULTICAST */
