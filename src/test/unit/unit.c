@@ -615,6 +615,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_wolfip_ip_is_broadcast_variants);
     tcase_add_test(tc_utils, test_wolfip_ip_is_broadcast_skips_unsuitable_configs);
     tcase_add_test(tc_utils, test_wolfip_ip_is_broadcast_skips_zero_mask);
+    tcase_add_test(tc_utils, test_wolfip_ip_is_broadcast_skips_slash31);
     tcase_add_test(tc_utils, test_tcp_rto_cb_resets_flags_and_arms_timer);
     tcase_add_test(tc_utils, test_tcp_rto_cb_no_pending_resets_backoff);
     tcase_add_test(tc_utils, test_tcp_rto_cb_skips_unsent_desc);

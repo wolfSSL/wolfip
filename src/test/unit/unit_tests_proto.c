@@ -3866,6 +3866,25 @@ START_TEST(test_wolfip_ip_is_broadcast_skips_zero_mask)
 }
 END_TEST
 
+START_TEST(test_wolfip_ip_is_broadcast_skips_slash31)
+{
+    struct wolfIP s;
+
+    /* RFC 3021: both addresses of a /31 are hosts, none is a broadcast. */
+    wolfIP_init(&s);
+    s.if_count = 1;
+    s.ipconf[0].ip = 0x0A000000U;
+    s.ipconf[0].mask = 0xFFFFFFFEU;
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A000000U), 0);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A000001U), 0);
+
+    s.ipconf[0].ip = 0x0A000001U;
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A000000U), 0);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0x0A000001U), 0);
+    ck_assert_int_eq(wolfIP_ip_is_broadcast(&s, 0xFFFFFFFFU), 1);
+}
+END_TEST
+
 #if WOLFIP_ENABLE_LOOPBACK
 START_TEST(test_wolfip_loopback_defaults)
 {

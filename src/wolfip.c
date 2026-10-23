@@ -2377,7 +2377,8 @@ static int wolfIP_ip_is_broadcast(const struct wolfIP *s, ip4 addr)
 
         if (conf->ip == IPADDR_ANY)
             continue;
-        if (conf->mask == 0 || conf->mask == 0xFFFFFFFFU)
+        /* /31 (RFC 3021) and /32 have no directed broadcast address. */
+        if (conf->mask == 0 || conf->mask >= 0xFFFFFFFEU)
             continue;
 
         directed_bcast = (conf->ip & conf->mask) | (~conf->mask);
