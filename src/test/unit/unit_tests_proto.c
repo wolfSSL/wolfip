@@ -4097,6 +4097,40 @@ START_TEST(test_tcp_recv_sws_avoidance_holds_window_edge)
 }
 END_TEST
 
+/* RFC 9293 3.8.6 (SHLD-14): a receiver SHOULD NOT shrink the window. With a
+ * non-zero window scale, accepting a number of bytes that is not a multiple of
+ * 2^shift must not make the rounded advertised window pull the right edge left. */
+START_TEST(test_tcp_adv_win_scaled_right_edge_does_not_shrink)
+{
+    struct tsocket ts;
+    static uint8_t data[8];
+    uint32_t edge;
+
+    memset(&ts, 0, sizeof(ts));
+    ts.sock.tcp.state = TCP_ESTABLISHED;
+    ts.sock.tcp.ack = 1000;
+    ts.sock.tcp.peer_mss = 1460;
+    ts.sock.tcp.ws_enabled = 1;
+    ts.sock.tcp.rcv_wscale = 2;
+    queue_init(&ts.sock.tcp.rxbuf, ts.rxmem, RXBUF_SIZE, ts.sock.tcp.ack);
+
+    (void)tcp_adv_win(&ts, 1);
+    edge = ts.sock.tcp.rcv_edge;
+
+    memset(data, 0x5a, sizeof(data));
+    ck_assert_int_eq(queue_insert(&ts.sock.tcp.rxbuf, data, ts.sock.tcp.ack, 1), 0);
+    ts.sock.tcp.ack += 1;
+    (void)tcp_adv_win(&ts, 1);
+    ck_assert(!tcp_seq_lt(ts.sock.tcp.rcv_edge, edge));
+    edge = ts.sock.tcp.rcv_edge;
+
+    ck_assert_int_eq(queue_insert(&ts.sock.tcp.rxbuf, data, ts.sock.tcp.ack, 3), 0);
+    ts.sock.tcp.ack += 3;
+    (void)tcp_adv_win(&ts, 1);
+    ck_assert(!tcp_seq_lt(ts.sock.tcp.rcv_edge, edge));
+}
+END_TEST
+
 START_TEST(test_tcp_segment_acceptable_zero_window_and_overlap_cases)
 {
     struct tsocket ts;

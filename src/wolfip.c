@@ -4167,8 +4167,13 @@ static uint16_t tcp_calc_win(const struct tsocket *t, uint8_t apply_wscale)
             uint32_t thresh = t->sock.tcp.rxbuf.size / 2;
             if (t->sock.tcp.peer_mss != 0 && t->sock.tcp.peer_mss < thresh)
                 thresh = t->sock.tcp.peer_mss;
-            if (space - held < thresh)
+            if (space - held < thresh) {
                 space = held;
+                /* Round up to the scale granularity so the advertised right
+                 * edge is not pulled left (RFC 9293 3.8.6, SHLD-14). */
+                if (shift)
+                    space = (space + (1U << shift) - 1U) & ~((1U << shift) - 1U);
+            }
         }
     }
     win = space >> shift;
