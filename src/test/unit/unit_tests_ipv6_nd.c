@@ -466,6 +466,83 @@ START_TEST(test_nd_na_without_override_may_not_replace_a_known_mac)
 }
 END_TEST
 
+START_TEST(test_nd_stale_entry_is_probed_and_dropped_when_unanswered)
+{
+    struct wolfIP s;
+    struct nd6_msg *ns;
+    uint64_t now = 1000;
+    uint8_t mac[6];
+    unsigned int tx_if = TEST_PRIMARY_IF;
+    ip6 peer;
+    ip6 got;
+    int idx;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    ck_assert_int_eq(atoip6("fe80::2", &peer), 0);
+    (void)nd6_store_neighbor(&s, TEST_PRIMARY_IF, &peer, nd_peer_mac,
+                             ND6_STALE, 0);
+    idx = nd6_neighbor_index(&s, TEST_PRIMARY_IF, &peer);
+
+    /* RFC 4861 section 7.3.3: a STALE entry is still used, but sending to
+     * it starts the delay before reachability is probed. */
+    ck_assert_int_eq(nd6_resolve(&s, &tx_if, &peer, mac), 0);
+    ck_assert_mem_eq(mac, nd_peer_mac, 6);
+    ck_assert_int_eq(s.nd6.neighbors[idx].state, ND6_DELAY);
+
+    /* After DELAY_FIRST_PROBE_TIME the probe is a unicast solicitation to
+     * the cached address, not a multicast one. */
+    last_frame_sent_size = 0;
+    nd_advance(&s, &now, 5500);
+    ck_assert_int_eq(s.nd6.neighbors[idx].state, ND6_PROBE);
+    ck_assert_ptr_nonnull(nd_sent());
+    ns = (struct nd6_msg *)last_frame_sent;
+    ck_assert_uint_eq(ns->type, ICMP6_NEIGHBOR_SOLICIT);
+    ck_assert_mem_eq(ns->ip6.eth.dst, nd_peer_mac, 6);
+    ip6_hdr_get_dst(&ns->ip6, &got);
+    ck_assert_int_eq(ip6_cmp(&got, &peer), 0);
+
+    /* MAX_UNICAST_SOLICIT unanswered probes delete the entry, so the next
+     * send resolves it afresh instead of using a dead address forever. */
+    nd_advance(&s, &now, 5000);
+    ck_assert_int_lt(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &peer, mac), 0);
+}
+END_TEST
+
+START_TEST(test_nd_probe_answered_makes_a_stale_entry_reachable)
+{
+    struct wolfIP s;
+    uint64_t now = 1000;
+    uint8_t mac[6];
+    unsigned int tx_if = TEST_PRIMARY_IF;
+    ip6 ll6;
+    ip6 peer;
+    int idx;
+
+    nd_setup(&s);
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(wolfIP_ipv6_start(&s, TEST_PRIMARY_IF), 0);
+    nd_advance(&s, &now, 1500);
+    nd_our_link_local(&s, &ll6);
+    ck_assert_int_eq(atoip6("fe80::2", &peer), 0);
+    (void)nd6_store_neighbor(&s, TEST_PRIMARY_IF, &peer, nd_peer_mac,
+                             ND6_STALE, 0);
+    idx = nd6_neighbor_index(&s, TEST_PRIMARY_IF, &peer);
+
+    ck_assert_int_eq(nd6_resolve(&s, &tx_if, &peer, mac), 0);
+    nd_advance(&s, &now, 5500);
+    ck_assert_int_eq(s.nd6.neighbors[idx].state, ND6_PROBE);
+
+    nd_send_na(&s, &peer, &ll6, &peer, ND6_NA_SOLICITED | ND6_NA_OVERRIDE,
+               nd_peer_mac, 255, nd_peer_mac);
+    ck_assert_int_eq(s.nd6.neighbors[idx].state, ND6_REACHABLE);
+    nd_advance(&s, &now, 5000);
+    ck_assert_int_eq(wolfIP_nd6_lookup(&s, TEST_PRIMARY_IF, &peer, mac), 0);
+}
+END_TEST
+
 START_TEST(test_nd_messages_with_wrong_hop_limit_are_refused)
 {
     struct wolfIP s;

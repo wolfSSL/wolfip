@@ -1324,6 +1324,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_nd_na_resolves_an_incomplete_entry);
     tcase_add_test(tc_proto, test_nd_na_without_target_lla_resolves_nothing);
     tcase_add_test(tc_proto, test_nd_na_without_override_may_not_replace_a_known_mac);
+    tcase_add_test(tc_proto, test_nd_stale_entry_is_probed_and_dropped_when_unanswered);
+    tcase_add_test(tc_proto, test_nd_probe_answered_makes_a_stale_entry_reachable);
     tcase_add_test(tc_proto, test_nd_messages_with_wrong_hop_limit_are_refused);
     tcase_add_test(tc_proto, test_nd_na_from_unspecified_source_is_refused);
     tcase_add_test(tc_proto, test_nd_na_for_a_foreign_destination_is_refused);

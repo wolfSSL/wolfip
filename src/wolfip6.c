@@ -1091,9 +1091,15 @@ static int nd6_lookup(struct wolfIP *s, unsigned int if_idx, const ip6 *addr,
  * resolution, or the unspecified address during duplicate address detection.
  * RFC 4861 section 4.3 forbids the Source Link-Layer Address option when the
  * source is unspecified, which is exactly the DAD case - there is no address
- * to advertise yet. */
+ * to advertise yet.
+ *
+ * `unicast_mac` is NULL for address resolution, which goes to the target's
+ * solicited-node group. Neighbor Unreachability Detection probes pass the
+ * cached link-layer address instead, and the solicitation then goes to the
+ * target itself (RFC 4861 section 7.2.2). */
 static void nd6_send_ns(struct wolfIP *s, unsigned int if_idx,
-                        const ip6 *target, const ip6 *src)
+                        const ip6 *target, const ip6 *src,
+                        const uint8_t *unicast_mac)
 {
     uint8_t frame[LINK_MTU];
     struct nd6_msg *ns = (struct nd6_msg *)frame;
@@ -1126,8 +1132,13 @@ static void nd6_send_ns(struct wolfIP *s, unsigned int if_idx,
 
     /* Solicitations go to the target's solicited-node group, so only the
      * handful of nodes sharing its low 24 bits are interrupted. */
-    ip6_set_solicited_node(&dst, target);
-    ip6_mcast_to_eth(&dst, mac);
+    if (unicast_mac != NULL) {
+        ip6_copy(&dst, target);
+        memcpy(mac, unicast_mac, 6);
+    } else {
+        ip6_set_solicited_node(&dst, target);
+        ip6_mcast_to_eth(&dst, mac);
+    }
     ip6_output_add_header(s, if_idx, &ns->ip6, src, &dst, IP6_NEXTHDR_ICMPV6,
                           payload_len, ND6_HOP_LIMIT, mac);
     wolfIP_ll_send_frame(s, if_idx, frame,
@@ -2195,15 +2206,25 @@ static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
     }
     if (nd6_select_nexthop(s, *tx_if, dst, &nexthop) != 0)
         return ND6_RESOLVE_NO_ROUTE; /* not on-link and no default router */
-    if (nd6_lookup(s, *tx_if, &nexthop, mac) == 0)
+    if (nd6_lookup(s, *tx_if, &nexthop, mac) == 0) {
+        /* RFC 4861 section 7.3.3: the first packet sent to a STALE entry
+         * starts the delay before its reachability is probed. The packet
+         * itself still goes out with the cached address. */
+        idx = nd6_neighbor_index(s, *tx_if, &nexthop);
+        if ((idx >= 0) && (s->nd6.neighbors[idx].state == ND6_STALE)) {
+            s->nd6.neighbors[idx].state = ND6_DELAY;
+            s->nd6.neighbors[idx].ts = s->last_tick;
+            nd6_arm_tick(s);
+        }
         return 0;
+    }
 
     if (ip6_select_source(s, *tx_if, &nexthop, &src) != 0)
         return ND6_RESOLVE_PENDING; /* nothing to solicit from yet */
     idx = nd6_neighbor_index(s, *tx_if, &nexthop);
     if (idx < 0) {
         nd6_store_neighbor(s, *tx_if, &nexthop, NULL, ND6_INCOMPLETE, 0);
-        nd6_send_ns(s, *tx_if, &nexthop, &src);
+        nd6_send_ns(s, *tx_if, &nexthop, &src, NULL);
         nd6_arm_tick(s);
         return ND6_RESOLVE_PENDING;
     }
@@ -2222,7 +2243,7 @@ static int nd6_resolve(struct wolfIP *s, unsigned int *tx_if, const ip6 *dst,
     if ((s->last_tick - s->nd6.neighbors[idx].ts) >= ND6_RETRANS_TIMER_MS) {
         s->nd6.neighbors[idx].ts = s->last_tick;
         s->nd6.neighbors[idx].probes++;
-        nd6_send_ns(s, *tx_if, &nexthop, &src);
+        nd6_send_ns(s, *tx_if, &nexthop, &src, NULL);
     }
     return ND6_RESOLVE_PENDING;
 }
@@ -3352,7 +3373,8 @@ static void nd6_tick_cb(void *arg)
 
             slot->dad_probes--;
             ip6_set_unspecified(&unspec);
-            nd6_send_ns(s, slot->info.if_idx, &slot->info.v6, &unspec);
+            nd6_send_ns(s, slot->info.if_idx, &slot->info.v6, &unspec,
+                        NULL);
             slot->dad_due = s->last_tick + ND6_RETRANS_TIMER_MS;
         } else {
             /* RFC 4862 section 5.4.4: no answer within the retransmit
@@ -3421,6 +3443,27 @@ static void nd6_tick_cb(void *arg)
                 ((s->last_tick - n->ts) > (ND6_RETRANS_TIMER_MS *
                                            ND6_MAX_MULTICAST_SOLICIT))) {
             n->state = 0; /* resolution gave up */
+        }
+        /* Neighbor Unreachability Detection (RFC 4861 section 7.3.3): a
+         * DELAY entry that nobody confirmed is probed with unicast
+         * solicitations, and one that never answers is dropped so the next
+         * send resolves it again from scratch. */
+        if (((n->state == ND6_DELAY) &&
+                ((s->last_tick - n->ts) >= ND6_DELAY_FIRST_PROBE_MS)) ||
+                ((n->state == ND6_PROBE) &&
+                ((s->last_tick - n->ts) >= ND6_RETRANS_TIMER_MS))) {
+            ip6 src;
+
+            if ((n->state == ND6_PROBE) &&
+                    (n->probes >= ND6_MAX_UNICAST_SOLICIT)) {
+                n->state = 0;
+                continue;
+            }
+            n->state = ND6_PROBE;
+            n->ts = s->last_tick;
+            n->probes++;
+            if (ip6_select_source(s, n->if_idx, &n->addr, &src) == 0)
+                nd6_send_ns(s, n->if_idx, &n->addr, &src, n->mac);
         }
     }
 
