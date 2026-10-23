@@ -397,6 +397,72 @@ START_TEST(test_fwd_multicast_dest_bad_option_silent_drop)
 END_TEST
 
 /* =========================================================================
+ * RFC 1812 4.3.2.7: multicast destination - no Time Exceeded / Frag Needed
+ * =========================================================================
+ * No ICMP error may be sent in response to a datagram addressed to an IP
+ * multicast destination, so an expiring TTL or a DF datagram larger than the
+ * egress MTU is dropped silently, like the Parameter Problem case above.
+ */
+static void fwd_multicast_error_setup(struct wolfIP *s, uint8_t *frame,
+        uint32_t frame_len, uint16_t flags_fo, uint8_t ttl, uint16_t ip_len)
+{
+    struct wolfIP_ip_packet *ip = (struct wolfIP_ip_packet *)frame;
+    ip4 gw_ip = 0xC0A801FEU;
+    static const uint8_t gw_mac[6] = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25};
+
+    setup_stack_with_two_ifaces(s, 0x0A000001U, 0xC0A80101U);
+    wolfIP_filter_set_callback(NULL, NULL);
+    ck_assert_int_eq(wolfIP_route_add(s, TEST_SECOND_IF, 0x00000000U, 0,
+                                      gw_ip), 0);
+    s->ll_dev[TEST_SECOND_IF].mtu = 590;
+    fwd_arp_store(s, TEST_SECOND_IF, gw_ip, gw_mac);
+    last_frame_sent_count = 0;
+
+    memset(frame, 0, frame_len);
+    memcpy(ip->eth.dst, s->ll_dev[TEST_PRIMARY_IF].mac, 6);
+    memcpy(ip->eth.src, "\x01\x02\x03\x04\x05\x06", 6);
+    ip->eth.type  = ee16(ETH_TYPE_IP);
+    ip->ver_ihl   = 0x45;
+    ip->flags_fo  = ee16(flags_fo);
+    ip->ttl       = ttl;
+    ip->proto     = WI_IPPROTO_UDP;
+    ip->len       = ee16(ip_len);
+    ip->src       = ee32(0x0A000002U);
+    ip->dst       = ee32(0xE0000001U); /* 224.0.0.1 */
+    fix_ip_checksum(ip);
+}
+
+START_TEST(test_fwd_multicast_dest_ttl_expired_silent_drop)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 8];
+
+    fwd_multicast_error_setup(&s, frame, sizeof(frame), 0, 1,
+            IP_HEADER_LEN + 8);
+    ip_recv(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)frame,
+            (uint32_t)sizeof(frame));
+
+    /* Silent: no Time Exceeded, no relay. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+START_TEST(test_fwd_multicast_dest_df_oversize_silent_drop)
+{
+    struct wolfIP s;
+    uint8_t frame[ETH_HEADER_LEN + IP_HEADER_LEN + 580];
+
+    fwd_multicast_error_setup(&s, frame, sizeof(frame), 0x4000U, 64,
+            IP_HEADER_LEN + 580);
+    ip_recv(&s, TEST_PRIMARY_IF, (struct wolfIP_ip_packet *)frame,
+            (uint32_t)sizeof(frame));
+
+    /* Silent: no Fragmentation Needed, no relay. */
+    ck_assert_uint_eq(last_frame_sent_count, 0);
+}
+END_TEST
+
+/* =========================================================================
  * RFC 1858: fragments are dropped at arrival, before the SENDING L4
  * filter hooks
  * =========================================================================

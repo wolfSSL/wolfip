@@ -2303,6 +2303,8 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_fwd_df_oversize_sends_frag_needed);
     tcase_add_test(tc_proto, test_fwd_nonfirst_frag_bad_option_silent_drop);
     tcase_add_test(tc_proto, test_fwd_multicast_dest_bad_option_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_multicast_dest_ttl_expired_silent_drop);
+    tcase_add_test(tc_proto, test_fwd_multicast_dest_df_oversize_silent_drop);
     tcase_add_test(tc_proto, test_fwd_fragments_dropped_before_l4_filter);
     tcase_add_test(tc_proto, test_fwd_frag_offset_bit12_dropped);
 #endif /* WOLFIP_ENABLE_FORWARDING */

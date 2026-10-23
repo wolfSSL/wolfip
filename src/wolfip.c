@@ -14060,7 +14060,10 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                     return;
                 }
                 if (ip->ttl <= 1) {
-                    wolfIP_send_ttl_exceeded(s, if_idx, ip);
+                    /* RFC 1812 4.3.2.7: no ICMP error for a multicast
+                     * destination. */
+                    if (!wolfIP_ip_is_multicast(dest))
+                        wolfIP_send_ttl_exceeded(s, if_idx, ip);
                     return;
                 }
                 /* A datagram larger than the egress IP MTU cannot be relayed.
@@ -14071,7 +14074,9 @@ static inline void ip_recv(struct wolfIP *s, unsigned int if_idx,
                 if (ee16(ip->len) >
                         (wolfIP_frame_mtu(s, (unsigned int)out_if) - ETH_HEADER_LEN) &&
                         (ee16(ip->flags_fo) & 0x4000U) != 0U) {
-                    wolfIP_send_frag_needed(s, if_idx, (unsigned int)out_if, ip);
+                    if (!wolfIP_ip_is_multicast(dest))
+                        wolfIP_send_frag_needed(s, if_idx,
+                                (unsigned int)out_if, ip);
                     return;
                 }
                 if (!wolfIP_forward_prepare(s, out_if, next_hop, mac,
