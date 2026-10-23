@@ -682,6 +682,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_utils, test_sock_abort_queued_data_rst_at_snd_una);
     tcase_add_test(tc_utils, test_sock_abort_preaccept_listener_stops_listening);
     tcase_add_test(tc_utils, test_sock_abort_after_data_rto_rst_covers_sent_data);
+    tcase_add_test(tc_utils, test_tcp_flush_new_data_keeps_running_rto);
     tcase_add_test(tc_utils, test_sock_abort_fin_behind_unacked_data_covers_fin);
     tcase_add_test(tc_utils, test_sock_abort_requeued_fin_covers_fin);
     tcase_add_test(tc_utils, test_sock_abort_close_wait_resets_peer);

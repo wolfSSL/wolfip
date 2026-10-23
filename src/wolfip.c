@@ -15397,15 +15397,24 @@ tcp_seg_sent:
                     } else {
                         uint32_t payload_len = size - (IP_HEADER_LEN + (tcp->hlen >> 2));
                         ts->sock.tcp.last_data_tx = (uint32_t)now;
-                        if (ts->sock.tcp.tmr_rto != NO_TIMER) {
-                            timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
-                            ts->sock.tcp.tmr_rto = NO_TIMER;
+                        /* RFC 6298 5.1: a running data RTO keeps its deadline
+                         * for new data; only a retransmission restarts it.
+                         * Timers shared with other roles are swapped out. */
+                        if (is_retrans || ts->sock.tcp.ctrl_rto_active ||
+                                ts->sock.tcp.fin_wait_2_timeout_active ||
+                                ts->sock.tcp.preaccept_timeout_active) {
+                            if (ts->sock.tcp.tmr_rto != NO_TIMER) {
+                                timer_binheap_cancel(&s->timers, ts->sock.tcp.tmr_rto);
+                                ts->sock.tcp.tmr_rto = NO_TIMER;
+                            }
                         }
-                        new_tmr.cb = tcp_rto_cb;
-                        new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
-                                ts->sock.tcp.rto_backoff);
-                        new_tmr.arg = ts;
-                        ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
+                        if (ts->sock.tcp.tmr_rto == NO_TIMER) {
+                            new_tmr.cb = tcp_rto_cb;
+                            new_tmr.expires = now + tcp_backoff_rto_ms(ts->sock.tcp.rto,
+                                    ts->sock.tcp.rto_backoff);
+                            new_tmr.arg = ts;
+                            ts->sock.tcp.tmr_rto = timers_binheap_insert(&s->timers, new_tmr);
+                        }
                         if (!is_retrans) {
                             in_flight += payload_len;
                             ts->sock.tcp.bytes_in_flight += payload_len;

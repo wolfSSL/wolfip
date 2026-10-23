@@ -6590,6 +6590,37 @@ START_TEST(test_sock_abort_after_data_rto_rst_covers_sent_data)
 }
 END_TEST
 
+/* RFC 6298 5.1: sending new data while the RTO timer runs must not push the
+ * deadline of the oldest unacknowledged segment. */
+START_TEST(test_tcp_flush_new_data_keeps_running_rto)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    uint32_t armed_expires;
+    uint8_t payload[100];
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    memset(payload, 0x5A, sizeof(payload));
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    armed_expires = llk_timer_expires(&s, ts->sock.tcp.tmr_rto);
+    ck_assert_uint_ne(armed_expires, 0);
+
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    (void)wolfIP_poll(&s, 300);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 2 * sizeof(payload));
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(llk_timer_expires(&s, ts->sock.tcp.tmr_rto),
+                      armed_expires);
+}
+END_TEST
+
 /* A FIN sent behind unacked data stays in the FIFO, flagged sent. */
 START_TEST(test_sock_abort_fin_behind_unacked_data_covers_fin)
 {
