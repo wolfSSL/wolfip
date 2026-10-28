@@ -142,6 +142,44 @@ START_TEST(test_sock6_bind_and_getsockname_roundtrip)
 }
 END_TEST
 
+/* bind() to port 0 on an IPv6 address allocates an ephemeral port, as the
+ * IPv4 path does, instead of listening on reserved port 0. */
+START_TEST(test_sock6_bind_port_zero_allocates_ephemeral_port)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 sin6;
+    struct wolfIP_sockaddr_in6 got;
+    socklen_t len;
+    int tfd, ufd;
+
+    sock6_setup(&s);
+    tfd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ufd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(tfd, 0);
+    ck_assert_int_ge(ufd, 0);
+
+    sock6_addr(&sin6, S6_TEST_GLOBAL, 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tfd, (struct wolfIP_sockaddr *)&sin6,
+                                      sizeof(sin6)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, tfd, 1), 0);
+    memset(&got, 0, sizeof(got));
+    len = sizeof(got);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, tfd,
+                                             (struct wolfIP_sockaddr *)&got,
+                                             &len), 0);
+    ck_assert_uint_ge(ee16(got.sin6_port), 1024);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, ufd, (struct wolfIP_sockaddr *)&sin6,
+                                      sizeof(sin6)), 0);
+    memset(&got, 0, sizeof(got));
+    len = sizeof(got);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, ufd,
+                                             (struct wolfIP_sockaddr *)&got,
+                                             &len), 0);
+    ck_assert_uint_ge(ee16(got.sin6_port), 1024);
+}
+END_TEST
+
 /* An address that is not configured on any interface cannot be bound, the
  * same rule the IPv4 path applies. */
 START_TEST(test_sock6_bind_to_a_foreign_address_is_refused)

@@ -11261,6 +11261,22 @@ static int sock_bind6(struct wolfIP *s, int sockfd, struct tsocket *ts,
     }
     if (!match)
         return -1; /* not one of ours, or still tentative */
+    /* Port 0 asks for an ephemeral port, as on the IPv4 path. */
+    if (port == 0) {
+        uint16_t scanned;
+        port = (uint16_t)(wolfIP_getrandom() & 0xFFFF);
+        if (port < 1024)
+            port = (uint16_t)(1024 + (port % (0x10000 - 1024)));
+        for (scanned = 0; scanned < (uint16_t)(0x10000 - 1024); scanned++) {
+            if (!bind_port_in_use6(arr, arr_len, ts, addr, port))
+                break;
+            port++;
+            if (port < 1024)
+                port = 1024;
+        }
+        if (scanned == (uint16_t)(0x10000 - 1024))
+            return -1;
+    }
     if (bind_port_in_use6(arr, arr_len, ts, addr, port))
         return -1;
     ts->if_idx = (uint8_t)if_idx;

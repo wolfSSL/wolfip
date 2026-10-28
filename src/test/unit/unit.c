@@ -1405,6 +1405,7 @@ Suite *wolf_suite(void)
     tcase_add_test(tc_proto, test_sock6_stream_and_dgram_are_created);
     tcase_add_test(tc_proto, test_sock6_icmpv6_socket_requires_the_icmpv6_protocol);
     tcase_add_test(tc_proto, test_sock6_bind_and_getsockname_roundtrip);
+    tcase_add_test(tc_proto, test_sock6_bind_port_zero_allocates_ephemeral_port);
     tcase_add_test(tc_proto, test_sock6_bind_to_a_foreign_address_is_refused);
     tcase_add_test(tc_proto, test_sock6_wildcard_bind_reports_the_unspecified_address);
     tcase_add_test(tc_proto, test_sock6_v4_mapped_bind_is_reported_as_mapped);
