@@ -13267,6 +13267,24 @@ static void arp_request(struct wolfIP *s, unsigned int if_idx, ip4 tip)
             return;
         }
     }
+    /* Do not evict a pending entry still inside its 1s window: that would
+     * drop its throttle and let it be asked again after only the short
+     * per-interface gap. Wait until some slot frees up instead. */
+    {
+        uint64_t next_free = (uint64_t)-1;
+        for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+            struct arp_pending_req *p = &s->arp.pending[i];
+            if (p->ip == IPADDR_ANY || s->last_tick < p->ts ||
+                    p->ts + 1000 <= s->last_tick)
+                break;
+            if (p->ts + 1000 < next_free)
+                next_free = p->ts + 1000;
+        }
+        if (i == WOLFIP_ARP_PENDING_MAX) {
+            wolfIP_poll_by(s, next_free);
+            return;
+        }
+    }
     /* Store tick+1 so a request sent at tick 0 is distinguishable from
      * "never sent" (last_arp == 0). */
     s->arp.last_arp[if_idx] = s->last_tick + 1;
