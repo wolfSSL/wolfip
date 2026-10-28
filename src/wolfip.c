@@ -5662,15 +5662,10 @@ static void tcp_recv_len(struct tsocket *t, struct wolfIP_tcp_seg *seg,
     } else if (tcp_seq_lt(t->sock.tcp.ack, seq)) {
         /* Hole detected: segment starts above ACK, so cache it as OOO and
          * immediately ACK with SACK blocks describing what we already have. */
-        int stored = tcp_store_ooo_segment(t, payload, seq, seg_len);
-        /* RFC 2018 sec.8: a segment that could not be cached must still be the
-         * first SACK block of its ACK. Report it just for this ACK, then drop
-         * it again since the data is not held. */
-        if (stored < 0)
-            tcp_rebuild_rx_sack(t, seq, seg_len);
+        /* A segment that could not be cached is not SACKed: the sender
+         * would treat it as received and skip fast retransmit for it. */
+        (void)tcp_store_ooo_segment(t, payload, seq, seg_len);
         tcp_send_ack(t);
-        if (stored < 0)
-            tcp_rebuild_rx_sack(t, 0, 0);
     }
 }
 

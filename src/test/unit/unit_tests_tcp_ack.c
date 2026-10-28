@@ -4905,10 +4905,9 @@ START_TEST(test_tcp_rebuild_rx_sack_triggering_block_first)
 }
 END_TEST
 
-/* F-16033: RFC 2018 sec.8 - a segment that cannot be cached (OOO table full)
- * must still be reported in the first SACK block of the ACK it triggers, but
- * must not linger in rx_sack for later ACKs since the data is not held. */
-START_TEST(test_tcp_recv_ooo_table_full_reports_discarded_segment_first)
+/* A segment that cannot be cached (OOO table full) must not be SACKed: the
+ * sender would mark it received and wait for an RTO to resend it. */
+START_TEST(test_tcp_recv_ooo_table_full_does_not_sack_discarded_segment)
 {
     struct wolfIP s;
     struct tsocket *ts;
@@ -4918,7 +4917,7 @@ START_TEST(test_tcp_recv_ooo_table_full_reports_discarded_segment_first)
     struct wolfIP_tcp_seg *ackseg;
     uint32_t seqs[5] = {110, 120, 130, 140, 150};
     uint32_t left, right;
-    int off, i;
+    int off, i, nblk;
 
     wolfIP_init(&s);
     ts = &s.tcpsockets[0];
@@ -4947,12 +4946,14 @@ START_TEST(test_tcp_recv_ooo_table_full_reports_discarded_segment_first)
     ackseg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
     off = tcp_option_find(ackseg, TCP_OPTION_SACK);
     ck_assert_int_ge(off, 0);
-    memcpy(&left, ackseg->data + off + 2, sizeof(left));
-    memcpy(&right, ackseg->data + off + 6, sizeof(right));
-    ck_assert_uint_eq(ee32(left), 150);
-    ck_assert_uint_eq(ee32(right), 151);
+    nblk = (ackseg->data[off + 1] - 2) / 8;
+    for (i = 0; i < nblk; i++) {
+        memcpy(&left, ackseg->data + off + 2 + 8 * i, sizeof(left));
+        memcpy(&right, ackseg->data + off + 6 + 8 * i, sizeof(right));
+        ck_assert(!(ee32(left) <= 150 && ee32(right) > 150));
+    }
 
-    /* The discarded segment is not retained for later ACKs. */
+    /* The discarded segment is not retained for later ACKs either. */
     for (i = 0; i < ts->sock.tcp.rx_sack_count; i++)
         ck_assert_uint_ne(ts->sock.tcp.rx_sack[i].left, 150);
 }
