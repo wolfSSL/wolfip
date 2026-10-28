@@ -3502,7 +3502,7 @@ START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
 
     dns_schedule_timer(&s);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
-    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2290U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2490U);
 
     timer_id = s.dns_timer;
     dns_cancel_timer(&s);
@@ -3513,6 +3513,25 @@ START_TEST(test_dns_schedule_timer_initial_jitter_and_cancel)
     dns_schedule_timer(&s);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
     ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 4100U);
+
+    test_rand_override_enabled = 0;
+}
+END_TEST
+
+/* RFC 1035 s4.2.1: the first retransmission must not fire before 2 s. */
+START_TEST(test_dns_schedule_timer_initial_not_below_2s)
+{
+    struct wolfIP s;
+
+    wolfIP_init(&s);
+    s.last_tick = 100U;
+    s.dns_retry_count = 0;
+    test_rand_override_enabled = 1;
+    test_rand_override_value = 0U;
+
+    dns_schedule_timer(&s);
+    ck_assert_int_ne(s.dns_timer, NO_TIMER);
+    ck_assert_uint_ge(find_timer_expiry(&s, s.dns_timer), 100U + 2000U);
 
     test_rand_override_enabled = 0;
 }
@@ -3551,7 +3570,7 @@ START_TEST(test_dns_send_query_schedules_timeout)
     ck_assert_uint_ne(id, 0U);
     ck_assert_uint_eq(s.dns_id, id);
     ck_assert_int_ne(s.dns_timer, NO_TIMER);
-    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2290U);
+    ck_assert_uint_eq(find_timer_expiry(&s, s.dns_timer), 2490U);
     test_rand_override_enabled = 0;
 }
 END_TEST
@@ -3839,6 +3858,45 @@ START_TEST(test_dns_send_query_rejects_empty_labels)
     ck_assert_uint_ne(s.dns_id, 0);
     dns_abort_query(&s);
     ck_assert_uint_eq(s.dns_id, 0);
+}
+END_TEST
+
+/* RFC 1035 §3.1: an encoded name, including the root terminator, is at most
+ * 255 octets. 63+63+63+61 chars plus 3 dots encodes to 255 and is accepted;
+ * one more char encodes to 256 and must be rejected with state rolled back. */
+START_TEST(test_dns_send_query_rejects_256_octet_encoded_name)
+{
+    struct wolfIP s;
+    uint16_t id = 0;
+    char name[256];
+    size_t labels[4] = { 63, 63, 63, 61 };
+    size_t pos = 0;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x08080808U;
+
+    for (i = 0; i < 4; i++) {
+        memset(name + pos, 'a', labels[i]);
+        pos += labels[i];
+        if (i < 3)
+            name[pos++] = '.';
+    }
+    name[pos] = '\0';
+    ck_assert_uint_eq(strlen(name), 253);
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), 0);
+    ck_assert_uint_eq(s.dns_query_len,
+            sizeof(struct dns_header) + 255 + sizeof(struct dns_question));
+    dns_abort_query(&s);
+
+    /* Last label one char longer: 256 octets encoded. */
+    name[pos++] = 'a';
+    name[pos] = '\0';
+    ck_assert_uint_eq(strlen(name), 254);
+    ck_assert_int_eq(dns_send_query(&s, name, &id, DNS_A), -22);
+    ck_assert_uint_eq(s.dns_id, 0);
+    ck_assert_uint_eq(id, DNS_ID_NONE);
 }
 END_TEST
 

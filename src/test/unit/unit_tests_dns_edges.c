@@ -247,6 +247,56 @@ START_TEST(test_dns_callback_qr_without_rd_is_accepted)
 }
 END_TEST
 
+/* dispatch_events() clears READABLE before the callback and UDP recvfrom never
+ * re-raises it, so a stale reply queued ahead of the real one (e.g. the answer
+ * to a retransmitted query) yields a single event. The callback must drain
+ * the queue instead of stranding the matching reply. */
+START_TEST(test_dns_callback_drains_queued_datagrams)
+{
+    struct wolfIP s;
+    uint8_t response[128];
+    int pos;
+    struct dns_rr *rr;
+    uint8_t a_rdata[4] = {0x0A, 0x00, 0x00, 0x02};
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dns_server = 0x0A000001U;
+    arm_dns_query(&s, 0x3333, dns_qname_example_com,
+                  (int)sizeof(dns_qname_example_com), DNS_A);
+    dns_lookup_calls = 0;
+    dns_lookup_ip    = 0;
+    s.dns_lookup_cb  = test_dns_lookup_cb;
+    s.dns_udp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_DGRAM, WI_IPPROTO_UDP);
+    ck_assert_int_gt(s.dns_udp_sd, 0);
+
+    pos = build_dns_a_response_header(response, sizeof(response),
+                                      (uint16_t)(s.dns_id + 1), 0x8180, 1, 1, NULL);
+    response[pos++] = 0xC0;
+    response[pos++] = (uint8_t)sizeof(struct dns_header);
+    rr = (struct dns_rr *)(response + pos);
+    rr->type     = ee16(DNS_A);
+    rr->class    = ee16(DNS_CLASS_IN);
+    rr->ttl      = ee32(60);
+    rr->rdlength = ee16((uint16_t)sizeof(a_rdata));
+    pos += (int)sizeof(struct dns_rr);
+    memcpy(&response[pos], a_rdata, sizeof(a_rdata));
+    pos += (int)sizeof(a_rdata);
+
+    /* Stale reply (wrong ID) first, then the matching one. */
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)],
+                   response, (uint16_t)pos, DNS_PORT);
+    response[0] = (uint8_t)(s.dns_id >> 8);
+    response[1] = (uint8_t)(s.dns_id & 0xFF);
+    enqueue_udp_rx(&s.udpsockets[SOCKET_UNMARK(s.dns_udp_sd)],
+                   response, (uint16_t)pos, DNS_PORT);
+
+    dns_callback(s.dns_udp_sd, CB_EVENT_READABLE, &s);
+    ck_assert_int_eq(dns_lookup_calls, 1);
+    ck_assert_uint_eq(dns_lookup_ip, 0x0A000002U);
+}
+END_TEST
+
 /* A truncated response still delivers the complete A record in its answer section */
 START_TEST(test_dns_callback_truncated_answer_delivered)
 {

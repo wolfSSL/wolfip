@@ -142,6 +142,44 @@ START_TEST(test_sock6_bind_and_getsockname_roundtrip)
 }
 END_TEST
 
+/* bind() to port 0 on an IPv6 address allocates an ephemeral port, as the
+ * IPv4 path does, instead of listening on reserved port 0. */
+START_TEST(test_sock6_bind_port_zero_allocates_ephemeral_port)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 sin6;
+    struct wolfIP_sockaddr_in6 got;
+    socklen_t len;
+    int tfd, ufd;
+
+    sock6_setup(&s);
+    tfd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ufd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_DGRAM, 0);
+    ck_assert_int_ge(tfd, 0);
+    ck_assert_int_ge(ufd, 0);
+
+    sock6_addr(&sin6, S6_TEST_GLOBAL, 0);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tfd, (struct wolfIP_sockaddr *)&sin6,
+                                      sizeof(sin6)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, tfd, 1), 0);
+    memset(&got, 0, sizeof(got));
+    len = sizeof(got);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, tfd,
+                                             (struct wolfIP_sockaddr *)&got,
+                                             &len), 0);
+    ck_assert_uint_ge(ee16(got.sin6_port), 1024);
+
+    ck_assert_int_eq(wolfIP_sock_bind(&s, ufd, (struct wolfIP_sockaddr *)&sin6,
+                                      sizeof(sin6)), 0);
+    memset(&got, 0, sizeof(got));
+    len = sizeof(got);
+    ck_assert_int_eq(wolfIP_sock_getsockname(&s, ufd,
+                                             (struct wolfIP_sockaddr *)&got,
+                                             &len), 0);
+    ck_assert_uint_ge(ee16(got.sin6_port), 1024);
+}
+END_TEST
+
 /* An address that is not configured on any interface cannot be bound, the
  * same rule the IPv4 path applies. */
 START_TEST(test_sock6_bind_to_a_foreign_address_is_refused)
@@ -1595,6 +1633,99 @@ static void sock6_deliver_icmp6_msg(struct wolfIP *s, const ip6 *src,
     sock6_deliver_icmp6_msg_on(s, TEST_PRIMARY_IF, src, dst, type, code);
 }
 
+/* An ICMPv6 Packet Too Big quoting a segment of an established connection,
+ * delivered through the ingress path. */
+static void sock6_deliver_ptb(struct wolfIP *s, const ip6 *router,
+                              const ip6 *local, const ip6 *peer,
+                              uint16_t local_port, uint16_t peer_port,
+                              uint32_t mtu)
+{
+    uint8_t body[8 + IP6_HEADER_LEN + 8];
+    uint8_t *q = &body[8];
+
+    memset(body, 0, sizeof(body));
+    body[0] = ICMP6_PACKET_TOO_BIG;
+    body[4] = (uint8_t)(mtu >> 24);
+    body[5] = (uint8_t)(mtu >> 16);
+    body[6] = (uint8_t)(mtu >> 8);
+    body[7] = (uint8_t)mtu;
+    q[0] = 0x60;
+    q[4] = 0;
+    q[5] = 8;
+    q[6] = IP6_NEXTHDR_TCP;
+    q[7] = 64;
+    memcpy(&q[8], local->addr, 16);
+    memcpy(&q[24], peer->addr, 16);
+    q[40] = (uint8_t)(local_port >> 8);
+    q[41] = (uint8_t)local_port;
+    q[42] = (uint8_t)(peer_port >> 8);
+    q[43] = (uint8_t)peer_port;
+    sock6_deliver_icmp6_body(s, router, local, body, sizeof(body));
+}
+
+/* RFC 4443 section 2.4 (d): an ICMPv6 error is passed to the upper layer, and
+ * RFC 8201 has TCP lower its segment size on Packet Too Big, as the IPv4
+ * Fragmentation Needed arm does. Without it a path narrower than the link
+ * drops every full-size segment for good. The reported MTU is never taken
+ * below the IPv6 minimum of 1280. */
+START_TEST(test_sock6_tcp_packet_too_big_lowers_peer_mss)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_tcp6_seg *seg;
+    struct tsocket *t;
+    uint8_t staging[LINK_MTU];
+    uint64_t now = 0;
+    ip6 peer;
+    ip6 local;
+    ip6 other;
+    uint32_t our_isn;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    t = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    sock6_addr(&dst, S6_PEER, 80);
+    ck_assert_int_eq(atoip6(S6_PEER, &peer), 0);
+    ck_assert_int_eq(atoip6("2001:db8:5::77", &other), 0);
+
+    mock_link_capture_reset();
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    now += 100;
+    wolfIP_poll(&s, now);
+    seg = sock6_last_tcp(staging);
+    ck_assert_ptr_nonnull(seg);
+    our_isn = ee32(seg->seq);
+    ip6_hdr_get_src(&seg->ip6, &local);
+    sock6_deliver_tcp(&s, &peer, &local, 80, t->src_port, 0x11223344,
+                      our_isn + 1, TCP_FLAG_SYN | TCP_FLAG_ACK, NULL, 0);
+    now += 100;
+    wolfIP_poll(&s, now);
+    ck_assert_int_eq(t->sock.tcp.state, TCP_ESTABLISHED);
+    t->sock.tcp.peer_mss = 1440;
+
+    /* A report about some other connection changes nothing. */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 81, 1400);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1440);
+
+    /* 1400 - 40 (IPv6) - 20 (TCP). */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 80, 1400);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1340);
+
+    /* A larger MTU never raises it again. */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 80, 1480);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1340);
+
+    /* Below the IPv6 minimum link MTU the estimate stops at 1280. */
+    sock6_deliver_ptb(&s, &other, &local, &peer, t->src_port, 80, 600);
+    ck_assert_uint_eq(t->sock.tcp.peer_mss, 1280 - 60);
+}
+END_TEST
+
 /* An Echo Request or Reply with a chosen identifier and sequence. */
 static void sock6_deliver_icmp6_echo(struct wolfIP *s, const ip6 *src,
                                      const ip6 *dst, uint8_t type,
@@ -2451,6 +2582,70 @@ START_TEST(test_sock6_tcp_syn_sent_reset_is_framed_as_ipv6)
 }
 END_TEST
 
+/* A full timer heap leaves the SYN with no retransmit timer: the IPv6 connect
+ * arm must roll back to CLOSED with the SYN dequeued, as the IPv4 arm does,
+ * rather than park the socket in SYN_SENT where every later connect() reports
+ * EAGAIN forever. */
+START_TEST(test_sock6_tcp_connect_timer_heap_full_rolls_back)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 dst;
+    struct wolfIP_timer t = {0};
+    struct tsocket *ts;
+    uint64_t now = 0;
+    int fd;
+    int i;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    t.cb = tcp_rto_cb;
+    for (i = 0; i < MAX_TIMERS; i++) {
+        t.arg = (void *)(intptr_t)i;
+        t.expires = s.last_tick + 100000 + i;
+        if (timers_binheap_insert(&s.timers, t) < 0)
+            break;
+    }
+    sock6_addr(&dst, S6_PEER, 80);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    ck_assert_int_eq(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_CLOSED);
+    ck_assert_uint_eq(fifo_len(&ts->sock.tcp.txbuf), 0);
+}
+END_TEST
+
+/* An explicitly bound source port is kept by connect(), whatever its value.
+ * The IPv4 arm never touches a bound port; the IPv6 arm must not shift a
+ * privileged one up by 1024 either. */
+START_TEST(test_sock6_tcp_connect_keeps_bound_low_port)
+{
+    struct wolfIP s;
+    struct wolfIP_sockaddr_in6 bind6;
+    struct wolfIP_sockaddr_in6 dst;
+    struct tsocket *ts;
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    sock6_addr(&bind6, NULL, 600);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, fd, (struct wolfIP_sockaddr *)&bind6,
+                                      sizeof(bind6)), 0);
+    sock6_addr(&dst, S6_PEER, 80);
+    ck_assert_int_eq(wolfIP_sock_connect(&s, fd,
+                                         (struct wolfIP_sockaddr *)&dst,
+                                         sizeof(dst)), -WOLFIP_EAGAIN);
+    ck_assert_uint_eq(ts->src_port, 600);
+}
+END_TEST
+
 /* IPV6_V6ONLY has to hold on the receive path too. A socket that asked for
  * IPv6 only must not be handed IPv4 datagrams, and must not reserve the
  * IPv4 port either - it does not occupy that address space. */
@@ -3219,9 +3414,9 @@ START_TEST(test_sock6_specific_listener_ignores_another_local_address)
     ck_assert_uint_eq(listener->last_pkt_ttl, 0);
     ck_assert_int_eq(listener->sock.tcp.state, TCP_LISTEN);
 
-    /* The same segment to the bound address does reach it. */
-    sock6_deliver_tcp(&s, &peer, &bound, 42000, 8300, 0x1000, 0x2000,
-                      TCP_FLAG_ACK, NULL, 0);
+    /* A SYN to the bound address does reach it. */
+    sock6_deliver_tcp(&s, &peer, &bound, 42000, 8300, 0x1000, 0,
+                      TCP_FLAG_SYN, NULL, 0);
     now += 100;
     wolfIP_poll(&s, now);
     ck_assert_uint_ne(listener->last_pkt_ttl, 0);
@@ -3663,6 +3858,35 @@ START_TEST(test_sock6_tcp_no_route_aborts_the_connection)
 
     /* The socket is closed: the connection is gone, the queue released. */
     ck_assert_uint_eq(s.tcpsockets[SOCKET_UNMARK(fd)].proto, 0);
+}
+END_TEST
+
+/* Aborting a synchronized connection sends a reset first. When the peer has
+ * no route that reset can never leave either, and it must not re-enter the
+ * abort from tcp6_send_seg: the socket is still synchronized at that point,
+ * so the abort would send another reset, and so on until the stack ran out. */
+START_TEST(test_sock6_tcp_no_route_abort_of_established_does_not_recurse)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint64_t now = 0;
+    int fd;
+
+    sock6_setup(&s);
+    sock6_ready(&s, &now);
+
+    fd = wolfIP_sock_socket(&s, AF_INET6, IPSTACK_SOCK_STREAM, 0);
+    ck_assert_int_ge(fd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(fd)];
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->peer_is_v6 = 1;
+    ts->src_port = 40000;
+    ts->dst_port = 80;
+    ck_assert_int_eq(atoip6("2001:db8:9::1", &ts->remote_ip6), 0);
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+
+    ck_assert_int_eq(wolfIP_sock_abort(&s, fd), 0);
+    ck_assert_uint_eq(ts->proto, 0);
 }
 END_TEST
 

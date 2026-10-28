@@ -522,6 +522,67 @@ START_TEST(test_arp_request_first_not_rate_limited)
 }
 END_TEST
 
+START_TEST(test_arp_request_throttle_per_target)
+{
+    struct wolfIP s;
+    const ip4 dead = 0x0A000002U;
+    const ip4 live = 0x0A000003U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    /* A request for an unresolvable neighbor goes out. */
+    s.last_tick = 1000;
+    last_frame_sent_size = 0;
+    arp_request(&s, TEST_PRIMARY_IF, dead);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+
+    /* Shortly after, a request for a different target must not be starved
+     * by the dead neighbor's window; the dead one stays throttled. */
+    s.last_tick = 1200;
+    last_frame_sent_size = 0;
+    arp_request(&s, TEST_PRIMARY_IF, dead);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    arp_request(&s, TEST_PRIMARY_IF, live);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    ck_assert_uint_eq(((struct arp_packet *)last_frame_sent)->tip, ee32(live));
+}
+END_TEST
+
+/* With more unresolved targets than pending slots, an entry still inside
+ * its 1s window must not be evicted, or it loses its throttle. */
+START_TEST(test_arp_request_full_pending_table_keeps_throttle)
+{
+    struct wolfIP s;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    for (i = 0; i < WOLFIP_ARP_PENDING_MAX; i++) {
+        s.last_tick = 1000 + (uint64_t)i * (ARP_REQUEST_MIN_GAP_MS + 1);
+        last_frame_sent_size = 0;
+        arp_request(&s, TEST_PRIMARY_IF, 0x0A000010U + (ip4)i);
+        ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    }
+    /* Table full, every entry still throttled: one more target waits. */
+    s.last_tick += ARP_REQUEST_MIN_GAP_MS + 1;
+    last_frame_sent_size = 0;
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000020U);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    /* The first target is still throttled too. */
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000010U);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+
+    /* Once the oldest window expires, its slot can be reused. */
+    s.last_tick = 2000;
+    arp_request(&s, TEST_PRIMARY_IF, 0x0A000020U);
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+}
+END_TEST
+
 START_TEST(test_arp_tick_restart_resets_rate_limit)
 {
     struct wolfIP s;

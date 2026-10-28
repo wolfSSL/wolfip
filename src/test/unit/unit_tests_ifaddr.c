@@ -628,6 +628,50 @@ START_TEST(test_ifaddr_tcp_wildcard_listener_accepts_connections_to_an_alias)
 }
 END_TEST
 
+START_TEST(test_ifaddr_arp_request_for_an_alias_is_answered)
+{
+    struct wolfIP s;
+    struct arp_packet req;
+    struct arp_packet *rep;
+    uint8_t req_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+
+    ifaddr_setup(&s);
+    ck_assert_int_eq(wolfIP_ifaddr_add4(&s, TEST_PRIMARY_IF, IFA_IP_B, 24), 0);
+
+    memset(&req, 0, sizeof(req));
+    req.htype = ee16(1);
+    req.ptype = ee16(0x0800);
+    req.hlen = 6;
+    req.plen = 4;
+    req.opcode = ee16(ARP_REQUEST);
+    req.sip = ee32(0xC0A80002U);
+    memcpy(req.sma, req_mac, 6);
+    req.tip = ee32(IFA_IP_B);
+
+    last_frame_sent_size = 0;
+    arp_recv(&s, TEST_PRIMARY_IF, &req, sizeof(req));
+    wolfIP_poll(&s, 1000);
+
+    /* RFC 826: the alias is the target, so it is answered and is the sender
+     * protocol address of the reply. */
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    rep = (struct arp_packet *)last_frame_sent;
+    ck_assert_int_eq(rep->opcode, ee16(ARP_REPLY));
+    ck_assert_uint_eq(rep->sip, ee32(IFA_IP_B));
+    ck_assert_mem_eq(rep->sma, s.ll_dev[TEST_PRIMARY_IF].mac, 6);
+    ck_assert_mem_eq(rep->tma, req_mac, 6);
+    ck_assert_uint_eq(rep->tip, ee32(0xC0A80002U));
+
+    /* An address that is not configured here is still ignored. */
+    last_frame_sent_size = 0;
+    req.opcode = ee16(ARP_REQUEST);
+    req.tip = ee32(IFA_IP_C);
+    arp_recv(&s, TEST_PRIMARY_IF, &req, sizeof(req));
+    wolfIP_poll(&s, 1001);
+    ck_assert_uint_eq(last_frame_sent_size, 0);
+}
+END_TEST
+
 #endif /* WOLFIP_IF_MULTICONF */
 
 /* =========================================================================

@@ -4905,6 +4905,60 @@ START_TEST(test_tcp_rebuild_rx_sack_triggering_block_first)
 }
 END_TEST
 
+/* A segment that cannot be cached (OOO table full) must not be SACKed: the
+ * sender would mark it received and wait for an RTO to resend it. */
+START_TEST(test_tcp_recv_ooo_table_full_does_not_sack_discarded_segment)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 1];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg *ackseg;
+    uint32_t seqs[5] = {110, 120, 130, 140, 150};
+    uint32_t left, right;
+    int off, i, nblk;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.sack_permitted = 1;
+    ts->sock.tcp.ack = 100;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, 100);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    for (i = 0; i < 5; i++) {
+        memset(seg, 0, sizeof(seg_buf));
+        seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1);
+        seg->hlen = TCP_HEADER_LEN << 2;
+        seg->seq = ee32(seqs[i]);
+        seg->data[0] = 'x';
+        tcp_recv(ts, seg);
+        if (i < 4)
+            (void)fifo_pop(&ts->sock.tcp.txbuf);
+    }
+    /* The fifth island did not fit the 4-slot OOO table. */
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    ackseg = (struct wolfIP_tcp_seg *)(ts->txmem + desc->pos + sizeof(*desc));
+    off = tcp_option_find(ackseg, TCP_OPTION_SACK);
+    ck_assert_int_ge(off, 0);
+    nblk = (ackseg->data[off + 1] - 2) / 8;
+    for (i = 0; i < nblk; i++) {
+        memcpy(&left, ackseg->data + off + 2 + 8 * i, sizeof(left));
+        memcpy(&right, ackseg->data + off + 6 + 8 * i, sizeof(right));
+        ck_assert(!(ee32(left) <= 150 && ee32(right) > 150));
+    }
+
+    /* The discarded segment is not retained for later ACKs either. */
+    for (i = 0; i < ts->sock.tcp.rx_sack_count; i++)
+        ck_assert_uint_ne(ts->sock.tcp.rx_sack[i].left, 150);
+}
+END_TEST
+
 START_TEST(test_tcp_consume_ooo_wrap_trim_and_promote)
 {
     struct wolfIP s;

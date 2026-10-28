@@ -1818,6 +1818,44 @@ START_TEST(test_dhcp_dad_probe_wire_format)
 }
 END_TEST
 
+/* RFC 2131 3.2: when DAD completes the client broadcasts an ARP reply
+ * announcing the new address (sender IP = target IP = leased address). */
+START_TEST(test_dhcp_dad_complete_announces_address)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct wolfIP_ll_dev *ll;
+    struct arp_packet *arp;
+    struct ipconf *primary;
+    uint32_t server_ip = 0x0A000001U;
+    uint32_t client_ip = 0x0A000064U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    s.dhcp_xid = 0xDA05U;
+    s.dhcp_state = DHCP_REQUEST_SENT;
+    s.last_tick = 1000U;
+    primary = wolfIP_primary_ipconf(&s);
+    ck_assert_ptr_nonnull(primary);
+    primary->ip = client_ip;
+
+    build_full_ack(&s, &msg, server_ip, client_ip, 0xFFFFFF00U,
+                   server_ip, 0x08080808U, 120U);
+    ll = wolfIP_getdev_ex(&s, TEST_PRIMARY_IF);
+    ck_assert_ptr_nonnull(ll);
+    ck_assert_int_eq(dhcp_parse_ack(&s, &msg, sizeof(msg)), 0);
+    dhcp_test_complete_dad(&s);
+
+    ck_assert_uint_eq(last_frame_sent_size, sizeof(struct arp_packet));
+    arp = (struct arp_packet *)last_frame_sent;
+    ck_assert_int_eq(arp->opcode, ee16(ARP_REPLY));
+    ck_assert_mem_eq(arp->eth.dst, "\xff\xff\xff\xff\xff\xff", 6);
+    ck_assert_int_eq(arp->sip, ee32(client_ip));
+    ck_assert_int_eq(arp->tip, ee32(client_ip));
+    ck_assert_mem_eq(arp->sma, ll->mac, 6);
+}
+END_TEST
+
 /* A DAD probe answered by a host other than us is a conflict: the address
  * is released, a DECLINE is sent (when a DHCP socket exists), and the
  * client restarts at DISCOVER. */
@@ -2282,8 +2320,9 @@ START_TEST(test_dhcp_dad_probe_count_len_returning_driver)
 
     dhcp_test_complete_dad(&s);
 
-    /* RFC 4331: exactly 3 probes, then BOUND. */
-    ck_assert_uint_eq(dad_len_send_count, DHCP_DAD_PROBES);
+    /* RFC 4331: exactly 3 probes, then BOUND, then one RFC 2131 ARP
+     * announcement of the verified address. */
+    ck_assert_uint_eq(dad_len_send_count, DHCP_DAD_PROBES + 1U);
 }
 END_TEST
 
@@ -2398,6 +2437,55 @@ START_TEST(test_dhcp_poll_reply_wrong_chaddr_rejected)
     ck_assert_uint_eq(s.dhcp_ip, 0U);
     ck_assert_uint_eq(s.dhcp_server_ip, 0U);
     ck_assert_uint_eq(wolfIP_primary_ipconf(&s)->ip, 0U);
+}
+END_TEST
+
+/* dispatch_events() clears the READABLE event before the callback runs and
+ * UDP recvfrom never raises it again, so two datagrams queued in one poll
+ * step produce a single event. The callback must drain the queue: a stale or
+ * foreign datagram ahead of the real OFFER may not strand it. */
+START_TEST(test_dhcp_callback_drains_queued_datagrams)
+{
+    struct wolfIP s;
+    struct dhcp_msg msg;
+    struct dhcp_option *opt;
+    struct tsocket *ts;
+    uint32_t xid = 0x12345678U;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    ts = dhcp_edges_rx_socket(&s);
+    ck_assert_ptr_nonnull(ts);
+    s.dhcp_xid = xid;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.op = BOOT_REPLY;
+    msg.hlen = 6;
+    msg.magic = ee32(DHCP_MAGIC);
+    msg.xid = ee32(xid);
+    msg.yiaddr = ee32(0x0A000064U);
+    opt = (struct dhcp_option *)msg.options;
+    opt->code = DHCP_OPTION_MSG_TYPE;
+    opt->len = 1;
+    opt->data[0] = DHCP_OFFER;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 3);
+    opt->code = DHCP_OPTION_SERVER_ID;
+    opt->len = 4;
+    opt->data[0] = 0x0A;
+    opt->data[3] = 0x01;
+    opt = (struct dhcp_option *)((uint8_t *)opt + 6);
+    opt->code = DHCP_OPTION_END;
+
+    s.dhcp_state = DHCP_DISCOVER_SENT;
+    /* First datagram: foreign chaddr, dropped. Second: the valid OFFER. */
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+    memcpy(msg.chaddr, wolfIP_ll_at(&s, WOLFIP_PRIMARY_IF_IDX)->mac, 6);
+    enqueue_udp_rx(ts, &msg, sizeof(msg), DHCP_SERVER_PORT);
+
+    dhcp_callback(s.dhcp_udp_sd, CB_EVENT_READABLE, &s);
+    ck_assert_int_eq(s.dhcp_state, DHCP_REQUEST_SENT);
+    ck_assert_uint_eq(s.dhcp_ip, 0x0A000064U);
+    ck_assert_ptr_null(fifo_peek(&ts->sock.udp.rxbuf));
 }
 END_TEST
 

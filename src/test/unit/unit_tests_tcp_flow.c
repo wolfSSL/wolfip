@@ -1784,7 +1784,7 @@ START_TEST(test_regression_tcp_input_sets_last_pkt_ttl)
     seg.dst_port = ee16(ts->src_port);
     seg.src_port = ee16(ts->dst_port);
     seg.seq = ee32(100);
-    seg.ack = ee32(50);
+    seg.ack = ee32(0);
     seg.hlen = TCP_HEADER_LEN << 2;
     seg.flags = TCP_FLAG_ACK;
     fix_tcp_checksums(&seg);
@@ -2685,6 +2685,61 @@ START_TEST(test_tcp_ack_data_segments_not_counted_as_dup_acks)
 }
 END_TEST
 
+/* RFC 5681 s2: a duplicate ACK has the SYN and FIN bits both off, so
+ * payload-less FIN|ACK segments must not reach the fast-retransmit
+ * threshold. */
+START_TEST(test_tcp_ack_fin_segments_not_counted_as_dup_acks)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct tcp_seg_buf segbuf;
+    struct wolfIP_tcp_seg *seg;
+    struct pkt_desc *desc;
+    struct wolfIP_tcp_seg pseg;
+    uint32_t seq = 1000;
+    int i;
+
+    wolfIP_init(&s);
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.ssthresh = TCP_MSS * 8;
+    ts->sock.tcp.snd_una = seq;
+    ts->sock.tcp.seq = seq + TCP_MSS;
+    ts->sock.tcp.bytes_in_flight = TCP_MSS;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 8;
+    ts->sock.tcp.last_peer_win = 65535;
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    memset(&segbuf, 0, sizeof(segbuf));
+    seg = &segbuf.seg;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + TCP_MSS);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->seq = ee32(seq);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, &segbuf, sizeof(segbuf)), 0);
+    desc = fifo_peek(&ts->sock.tcp.txbuf);
+    ck_assert_ptr_nonnull(desc);
+    desc->flags |= PKT_FLAG_SENT;
+
+    memset(&pseg, 0, sizeof(pseg));
+    pseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    pseg.hlen = TCP_HEADER_LEN << 2;
+    pseg.flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
+    pseg.win = ee16(65535);
+    pseg.ack = ee32(seq);
+    pseg.seq = ee32(500);
+    for (i = 0; i < 3; i++)
+        tcp_ack(ts, &pseg);
+
+    ck_assert_uint_eq(ts->sock.tcp.dup_acks, 0);
+    ck_assert_int_eq(ts->sock.tcp.fast_recovery, 0);
+    ck_assert_uint_eq(ts->sock.tcp.snd_una, seq);
+}
+END_TEST
+
 /* RFC 6298 §5.5: on a retransmission timeout the new RTO is min(2*RTO, G)
  * with G the maximum timer value, 64 s. With a 2 s base RTO and six
  * backoff doublings the uncapped interval would be 128 s; the re-armed
@@ -3299,6 +3354,72 @@ START_TEST(test_tcp_input_syn_rcvd_ack_established)
     fix_tcp_checksums(&ackseg);
     tcp_input(&s, TEST_PRIMARY_IF, &ackseg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
     ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+}
+END_TEST
+
+/* RFC 5681 s3.1: if the SYN or SYN/ACK was lost, the initial window after the
+ * correctly transmitted SYN must be one segment of at most SMSS bytes. */
+START_TEST(test_tcp_input_handshake_after_lost_syn_uses_one_segment_cwnd)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_sockaddr_in sin;
+    struct wolfIP_tcp_seg ackseg;
+    int tcp_sd;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    wolfIP_filter_set_callback(NULL, NULL);
+    wolfIP_filter_set_mask(0);
+    wolfIP_filter_set_tcp_mask(0);
+
+    /* Active open: SYN retransmitted once before the SYN-ACK arrives. */
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ts->sock.tcp.state = TCP_SYN_SENT;
+    ts->sock.tcp.seq = 100;
+    ts->sock.tcp.ctrl_rto_retries = 1;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0x0A000001U, 4321, 1234, 10, 101, (TCP_FLAG_SYN | TCP_FLAG_ACK));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, tcp_cc_mss(ts));
+
+    /* Passive open: SYN-ACK retransmitted once before the final ACK. */
+    tcp_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(tcp_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(5678);
+    sin.sin_addr.s_addr = ee32(0x0A000001U);
+    ck_assert_int_eq(wolfIP_sock_bind(&s, tcp_sd, (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, tcp_sd, 1), 0);
+    inject_tcp_syn(&s, TEST_PRIMARY_IF, 0x0A000001U, 5678);
+    ts = &s.tcpsockets[SOCKET_UNMARK(tcp_sd)];
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_SYN_RCVD);
+    ts->sock.tcp.ctrl_rto_retries = 1;
+
+    memset(&ackseg, 0, sizeof(ackseg));
+    ackseg.ip.ver_ihl = 0x45;
+    ackseg.ip.proto = WI_IPPROTO_TCP;
+    ackseg.ip.ttl = 64;
+    ackseg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    ackseg.ip.src = ee32(ts->remote_ip);
+    ackseg.ip.dst = ee32(ts->local_ip);
+    ackseg.dst_port = ee16(ts->src_port);
+    ackseg.src_port = ee16(ts->dst_port);
+    ackseg.seq = ee32(ts->sock.tcp.ack);
+    ackseg.ack = ee32(ts->sock.tcp.seq + 1);
+    ackseg.hlen = TCP_HEADER_LEN << 2;
+    ackseg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&ackseg);
+    tcp_input(&s, TEST_PRIMARY_IF, &ackseg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->sock.tcp.cwnd, tcp_cc_mss(ts));
 }
 END_TEST
 
@@ -4736,6 +4857,59 @@ START_TEST(test_tcp_input_local_ip_mismatch_preserves_if_idx)
 }
 END_TEST
 
+START_TEST(test_tcp_input_unacceptable_segment_preserves_if_idx_and_ttl)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    struct wolfIP_tcp_seg seg;
+
+    setup_stack_with_two_ifaces(&s, 0x0A000001U, 0xC0A80001U);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = IPADDR_ANY;
+    ts->remote_ip = 0x0A000002U;
+    ts->if_idx = TEST_SECOND_IF;
+    ts->last_pkt_ttl = 7;
+
+    /* Off-path segment with the right 4-tuple arriving on another interface:
+     * its SEQ is far outside the receive window, so it is unacceptable. */
+    memset(&seg, 0, sizeof(seg));
+    seg.ip.ver_ihl = 0x45;
+    seg.ip.ttl = 64;
+    seg.ip.proto = WI_IPPROTO_TCP;
+    seg.ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg.ip.src = ee32(ts->remote_ip);
+    seg.ip.dst = ee32(0x0A000001U);
+    seg.dst_port = ee16(ts->src_port);
+    seg.src_port = ee16(ts->dst_port);
+    seg.seq = ee32(0x40000000U);
+    seg.hlen = TCP_HEADER_LEN << 2;
+    seg.flags = TCP_FLAG_ACK;
+    fix_tcp_checksums(&seg);
+
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(ts->sock.tcp.state, TCP_ESTABLISHED);
+    ck_assert_uint_eq(ts->if_idx, TEST_SECOND_IF);
+    ck_assert_uint_eq(ts->last_pkt_ttl, 7);
+
+    /* An acceptable segment on the same path still records it. */
+    seg.seq = ee32(ts->sock.tcp.ack);
+    fix_tcp_checksums(&seg);
+    tcp_input(&s, TEST_PRIMARY_IF, &seg, (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_uint_eq(ts->if_idx, TEST_PRIMARY_IF);
+    ck_assert_uint_eq(ts->last_pkt_ttl, 64);
+}
+END_TEST
+
 START_TEST(test_tcp_input_unmatched_ack_sends_rst)
 {
     struct wolfIP s;
@@ -4865,6 +5039,38 @@ START_TEST(test_tcp_input_listen_synack_sends_rst_and_stays_listen)
     ck_assert_uint_eq(rst->flags, TCP_FLAG_RST);
     ck_assert_uint_eq(ee32(rst->seq), 101U);
     ck_assert_uint_eq(ee32(rst->ack), 0U);
+}
+END_TEST
+
+START_TEST(test_tcp_input_listen_ack_non_local_dst_no_rst)
+{
+    struct wolfIP s;
+    int listen_sd;
+    struct wolfIP_sockaddr_in sin;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+
+    listen_sd = wolfIP_sock_socket(&s, AF_INET, IPSTACK_SOCK_STREAM, WI_IPPROTO_TCP);
+    ck_assert_int_gt(listen_sd, 0);
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_port = ee16(1234);
+    sin.sin_addr.s_addr = 0;
+    ck_assert_int_eq(wolfIP_sock_bind(&s, listen_sd,
+        (struct wolfIP_sockaddr *)&sin, sizeof(sin)), 0);
+    ck_assert_int_eq(wolfIP_sock_listen(&s, listen_sd, 1), 0);
+
+    /* ACK to a broadcast and to an address that is not ours: no reset may be
+     * sourced from either. */
+    last_frame_sent_size = 0;
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0xFFFFFFFFU,
+            4321, 1234, 77, 101, TCP_FLAG_ACK);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
+    inject_tcp_segment(&s, TEST_PRIMARY_IF, 0x0A000002U, 0xC0A80163U,
+            4321, 1234, 77, 101, TCP_FLAG_ACK);
+    ck_assert_uint_eq(last_frame_sent_size, 0U);
 }
 END_TEST
 
@@ -6469,6 +6675,37 @@ START_TEST(test_sock_abort_after_data_rto_rst_covers_sent_data)
 }
 END_TEST
 
+/* RFC 6298 5.1: sending new data while the RTO timer runs must not push the
+ * deadline of the oldest unacknowledged segment. */
+START_TEST(test_tcp_flush_new_data_keeps_running_rto)
+{
+    struct wolfIP s;
+    int sd;
+    struct tsocket *ts;
+    uint32_t armed_expires;
+    uint8_t payload[100];
+
+    sd = llk_accepted_child(&s);
+    ck_assert_int_ge(sd, 0);
+    ts = &s.tcpsockets[SOCKET_UNMARK(sd)];
+    memset(payload, 0x5A, sizeof(payload));
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    (void)wolfIP_poll(&s, 2);
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    armed_expires = llk_timer_expires(&s, ts->sock.tcp.tmr_rto);
+    ck_assert_uint_ne(armed_expires, 0);
+
+    ck_assert_int_eq(wolfIP_sock_send(&s, sd, payload, sizeof(payload), 0),
+                     (int)sizeof(payload));
+    (void)wolfIP_poll(&s, 300);
+    ck_assert_uint_eq(ts->sock.tcp.bytes_in_flight, 2 * sizeof(payload));
+    ck_assert_int_ne(ts->sock.tcp.tmr_rto, NO_TIMER);
+    ck_assert_uint_eq(llk_timer_expires(&s, ts->sock.tcp.tmr_rto),
+                      armed_expires);
+}
+END_TEST
+
 /* A FIN sent behind unacked data stays in the FIFO, flagged sent. */
 START_TEST(test_sock_abort_fin_behind_unacked_data_covers_fin)
 {
@@ -7372,6 +7609,67 @@ START_TEST(test_tcp_fin_in_close_wait_does_not_advance_ack)
 }
 END_TEST
 
+/* RFC 9293 section 3.10.7.4: in CLOSE_WAIT the peer's FIN has been
+ * received, so segment text is ignored. Data sent after the FIN must not
+ * be queued, advance the receive ACK, or raise a readable event after the
+ * application has already seen end-of-stream. */
+START_TEST(test_tcp_data_after_fin_in_close_wait_ignored)
+{
+    struct wolfIP s;
+    int fd;
+    struct tsocket *lsn;
+    uint8_t seg_buf[sizeof(struct wolfIP_tcp_seg) + 4];
+    struct wolfIP_tcp_seg *seg = (struct wolfIP_tcp_seg *)seg_buf;
+    uint32_t rcv_nxt;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, LLK_LOCAL_IP, LLK_NET_MASK, 0);
+    fd = llk_open_listener(&s);
+    lsn = &s.tcpsockets[SOCKET_UNMARK(fd)];
+
+    llk_keep_arp_fresh(&s, LLK_ATT_IP);
+
+    llk_attacker_syn(&s, LLK_ATT_IP, 41000, 1, 0);
+    llk_complete_handshake(&s, lsn, LLK_ATT_IP, 41000, 1);
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_ESTABLISHED);
+    rcv_nxt = lsn->sock.tcp.ack;
+
+    memset(seg_buf, 0, sizeof(seg_buf));
+    seg->ip.ver_ihl = 0x45;
+    seg->ip.proto = WI_IPPROTO_TCP;
+    seg->ip.ttl = 64;
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN);
+    seg->ip.src = ee32(lsn->remote_ip);
+    seg->ip.dst = ee32(lsn->local_ip);
+    seg->dst_port = ee16(lsn->src_port);
+    seg->src_port = ee16(lsn->dst_port);
+    seg->seq = ee32(rcv_nxt);
+    seg->ack = ee32(lsn->sock.tcp.snd_una);
+    seg->hlen = TCP_HEADER_LEN << 2;
+    seg->flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN));
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_CLOSE_WAIT);
+    ck_assert_uint_eq(lsn->sock.tcp.ack, rcv_nxt + 1);
+    lsn->events &= ~CB_EVENT_READABLE;
+
+    /* Data after the FIN, at the new RCV.NXT. */
+    seg->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 4);
+    seg->seq = ee32(rcv_nxt + 1);
+    seg->flags = TCP_FLAG_ACK;
+    memcpy(seg->data, "late", 4);
+    fix_tcp_checksums(seg);
+    tcp_input(&s, TEST_PRIMARY_IF, seg,
+              (uint32_t)(ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 4));
+    ck_assert_int_eq(lsn->sock.tcp.state, TCP_CLOSE_WAIT);
+    ck_assert_uint_eq(lsn->sock.tcp.ack, rcv_nxt + 1);
+    ck_assert_uint_eq(queue_len(&lsn->sock.tcp.rxbuf), 0);
+    ck_assert_uint_eq(lsn->events & CB_EVENT_READABLE, 0);
+}
+END_TEST
+
 /* When the timer heap is full, tcp_ctrl_rto_start must not mark the
  * control RTO active: an active flag with no timer behind it would never
  * fire and would suppress every other timeout. */
@@ -7716,6 +8014,153 @@ START_TEST(test_flush_tcp_tx_sends_pure_ack_behind_window_blocked_data)
     /* The ACK carries the first unsent sequence (1000), not SND.NXT (1008). */
     ack_seg = (struct wolfIP_tcp_seg *)(ts->txmem + ack_desc->pos + sizeof(*ack_desc));
     ck_assert_uint_eq(ee32(ack_seg->seq), 1000);
+}
+END_TEST
+
+/* A data segment queued with a Timestamp option must carry the TSval/TSecr of
+ * the moment it is transmitted, not those of the moment it was queued: a later
+ * pure ACK may already have advanced the peer's TS.Recent, and PAWS would then
+ * reject the stale TSval (RFC 7323 section 5). */
+START_TEST(test_flush_tcp_tx_refreshes_timestamp_option)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 12 + 8];
+    struct wolfIP_tcp_seg *q = (struct wolfIP_tcp_seg *)buf;
+    struct tcp_opt_ts *qts;
+    struct wolfIP_tcp_seg *sent;
+    struct tcp_opt_ts *sts;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = TCP_MSS * 4;
+    ts->sock.tcp.peer_rwnd = TCP_MSS * 4;
+    ts->sock.tcp.ts_enabled = 1;
+    ts->sock.tcp.ts_recent_valid = 1;
+    ts->sock.tcp.last_ts = ee32(5000); /* peer's newest TSval, echoed as TSecr */
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    /* Data segment queued "earlier": TSval 100, TSecr 7. */
+    memset(buf, 0, sizeof(buf));
+    q->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 12 + 8);
+    q->hlen = (TCP_HEADER_LEN + 12) << 2;
+    q->flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+    q->seq = ee32(1000);
+    q->ack = ee32(100);
+    q->src_port = ee16(1234);
+    q->dst_port = ee16(4321);
+    qts = (struct tcp_opt_ts *)q->data;
+    qts->opt = TCP_OPTION_TS;
+    qts->len = TCP_OPTION_TS_LEN;
+    qts->val = ee32(100);
+    qts->ecr = ee32(7);
+    qts->pad = 0x01;
+    qts->eoo = 0x01;
+    memset((uint8_t *)q->data + 12, 0xAB, 8);
+    ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, q, sizeof(buf)), 0);
+    ts->sock.tcp.seq = 1008;
+
+    mock_link_capture_reset();
+    (void)wolfIP_poll(&s, 4000);
+
+    ck_assert_uint_ge(last_frame_sent_count, 1);
+    sent = (struct wolfIP_tcp_seg *)last_frame_sent;
+    ck_assert_uint_eq(ee32(sent->seq), 1000);
+    sts = (struct tcp_opt_ts *)sent->data;
+    ck_assert_uint_eq(sts->opt, TCP_OPTION_TS);
+    ck_assert_uint_eq(ee32(sts->val), 4000);
+    ck_assert_uint_eq(sts->ecr, ee32(5000));
+}
+END_TEST
+
+/* Queue eight 1000-byte segments on an established connection whose cwnd has
+ * grown to the full peer window (8*SMSS) and count how many go out in one
+ * poll at time "now". The initial window for this peer is 4*SMSS. */
+static uint32_t flush_tcp_tx_burst_after(uint64_t now)
+{
+    struct wolfIP s;
+    struct tsocket *ts;
+    uint8_t buf[ETH_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + 1000];
+    struct wolfIP_tcp_seg *q = (struct wolfIP_tcp_seg *)buf;
+    uint32_t smss;
+    int i;
+
+    wolfIP_init(&s);
+    mock_link_init(&s);
+    wolfIP_ipconfig_set(&s, 0x0A000001U, 0xFFFFFF00U, 0);
+    s.arp.neighbors[0].ip = 0x0A000002U;
+    s.arp.neighbors[0].if_idx = TEST_PRIMARY_IF;
+    memcpy(s.arp.neighbors[0].mac,
+           (uint8_t[]){0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}, 6);
+
+    ts = &s.tcpsockets[0];
+    memset(ts, 0, sizeof(*ts));
+    ts->proto = WI_IPPROTO_TCP;
+    ts->S = &s;
+    ts->if_idx = TEST_PRIMARY_IF;
+    smss = tcp_cc_mss(ts);
+    ts->sock.tcp.state = TCP_ESTABLISHED;
+    ts->sock.tcp.ack = 100;
+    ts->sock.tcp.seq = 1000;
+    ts->sock.tcp.snd_una = 1000;
+    ts->sock.tcp.rto = 200;
+    ts->sock.tcp.cwnd = smss * 8;
+    ts->sock.tcp.peer_rwnd = smss * 8;
+    ts->src_port = 1234;
+    ts->dst_port = 4321;
+    ts->local_ip = 0x0A000001U;
+    ts->remote_ip = 0x0A000002U;
+    queue_init(&ts->sock.tcp.rxbuf, ts->rxmem, RXBUF_SIZE, ts->sock.tcp.ack);
+    fifo_init(&ts->sock.tcp.txbuf, ts->txmem, TXBUF_SIZE);
+
+    for (i = 0; i < 8; i++) {
+        memset(buf, 0, sizeof(buf));
+        q->ip.len = ee16(IP_HEADER_LEN + TCP_HEADER_LEN + 1000);
+        q->hlen = TCP_HEADER_LEN << 2;
+        q->flags = TCP_FLAG_ACK | TCP_FLAG_PSH;
+        q->seq = ee32(1000 + (uint32_t)i * 1000);
+        q->ack = ee32(100);
+        q->src_port = ee16(1234);
+        q->dst_port = ee16(4321);
+        ck_assert_int_eq(fifo_push(&ts->sock.tcp.txbuf, q, sizeof(buf)), 0);
+    }
+    ts->sock.tcp.seq = 1000 + 8 * 1000;
+
+    mock_link_capture_reset();
+    (void)wolfIP_poll(&s, now);
+    return last_frame_sent_count;
+}
+
+/* RFC 5681 s4.1: after an idle period longer than the RTO the sender should
+ * restart from min(IW, cwnd) rather than release a full grown cwnd at once. */
+START_TEST(test_flush_tcp_tx_idle_restart_window)
+{
+    /* Idle for 5000 ms >> RTO (200 ms): restart window of 4*SMSS, so only
+     * five of the eight 1000-byte segments fit. */
+    ck_assert_uint_eq(flush_tcp_tx_burst_after(5000), 5);
+    /* Within one RTO of the last transmission the grown cwnd is kept. */
+    ck_assert_uint_eq(flush_tcp_tx_burst_after(100), 8);
 }
 END_TEST
 
