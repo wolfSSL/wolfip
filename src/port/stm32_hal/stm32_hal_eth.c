@@ -24,6 +24,9 @@
 #include "stm32_hal_eth.h"
 #include "main.h"
 #include <string.h>
+#ifdef WOLFIP_USE_FREERTOS
+#include "bsd_socket.h"
+#endif
 
 /*
  * Supported STM32 families for automatic RMII/MII configuration:
@@ -117,16 +120,26 @@ int stm32_hal_eth_configure_interface(void)
 #endif
 }
 
-/* RX buffer for HAL ETH - must be 32-byte aligned for DMA on STM32H5/H7 */
+/* RX buffers for HAL ETH - must be 32-byte aligned for DMA on STM32H5/H7.
+ * HAL_ETH_ReadData() hands a descriptor back to the DMA with a fresh buffer
+ * before it returns the frame, so one more buffer than descriptors keeps the
+ * buffer being copied out of the DMA's reach. This relies on the HAL detaching
+ * every descriptor it consumes, in ring order, which it only does while
+ * HAL_ETH_RxLinkCallback() keeps *pStart set. */
 #define ETH_RX_BUFFER_SIZE 1536
-static uint8_t rx_buffer[ETH_RX_BUFFER_SIZE] __attribute__((aligned(32)));
+#define ETH_RX_BUFFER_CNT  (ETH_RX_DESC_CNT + 1)
+static uint8_t rx_buffers[ETH_RX_BUFFER_CNT][ETH_RX_BUFFER_SIZE]
+    __attribute__((aligned(32)));
+static uint32_t rx_buffer_next = 0;
 
-/* Track if we have a pending received frame */
-static volatile uint8_t rx_frame_pending = 0;
-static volatile uint32_t rx_frame_length = 0;
+/* Frame returned by the last HAL_ETH_ReadData() */
+static uint8_t *rx_frame_buf = NULL;
+static uint32_t rx_frame_length = 0;
+static uint32_t rx_frame_segs = 0;
 
-/* Flag set by RX complete interrupt - avoids blocking HAL_ETH_ReadData calls */
-static volatile uint8_t rx_data_available = 0;
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+    #define ETH_DCACHE_ENABLED() ((SCB->CCR & SCB_CCR_DC_Msk) != 0U)
+#endif
 
 /**
  * @brief HAL ETH RX allocation callback
@@ -134,46 +147,58 @@ static volatile uint8_t rx_data_available = 0;
  */
 void HAL_ETH_RxAllocateCallback(uint8_t **buff)
 {
-    *buff = rx_buffer;
+    *buff = rx_buffers[rx_buffer_next];
+    rx_buffer_next = (rx_buffer_next + 1) % ETH_RX_BUFFER_CNT;
 }
 
 /**
  * @brief HAL ETH RX link callback
- * Called by HAL when a complete frame has been received
+ * Called by HAL for each descriptor of a received frame
  */
 void HAL_ETH_RxLinkCallback(void **pStart, void **pEnd, uint8_t *buff, uint16_t Length)
 {
-    (void)pStart;
     (void)pEnd;
-    (void)buff;
 
-    rx_frame_length = Length;
-    rx_frame_pending = 1;
+    if (*pStart == NULL) {
+        *pStart = buff;
+        rx_frame_buf = buff;
+        rx_frame_length = Length;
+        rx_frame_segs = 1;
+    }
+    else {
+        rx_frame_segs++;
+    }
 }
 
 /**
  * @brief HAL ETH RX Complete Callback
  * Called by HAL from ETH IRQ handler when a frame has been received.
- * This requires ETH global interrupt to be enabled in CubeMX NVIC settings.
+ * With the FreeRTOS port, wakes the poll task. The RX interrupt is left
+ * enabled: masking it here races the HAL handler, which clears RI and NIS
+ * only while RIE is set, and a frame landing in between leaves NIS stuck
+ * with nothing to clear it.
  */
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth_ptr)
 {
     (void)heth_ptr;
-    rx_data_available = 1;
+#ifdef WOLFIP_USE_FREERTOS
+    wolfip_freertos_notify_from_isr();
+#endif
 }
 
 /**
  * @brief Poll for received Ethernet frames
  *
- * Uses hybrid approach: primarily interrupt-driven but also polls periodically
- * to catch any missed interrupts. This ensures reliable reception across all
- * STM32 families while avoiding the blocking behavior of polling every cycle.
+ * Returns one frame per call; wolfIP keeps calling until it returns 0, so
+ * every frame already in the RX ring is delivered in one poll cycle. A frame
+ * that spans several descriptors does not fit one RX buffer and is dropped.
  */
 static int hal_eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 {
-    uint32_t frame_len = 0;
+    uint32_t frame_len;
+    uint32_t segs;
+    uint32_t i;
     void *payload = NULL;
-    static uint32_t poll_count = 0;
 
     (void)dev;
 
@@ -182,27 +207,30 @@ static int hal_eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
         return 0;
     }
 
-    poll_count++;
-
-    /* Check for data: either interrupt flagged it, or periodic poll (every 100 cycles) */
-    if (rx_data_available || (poll_count % 100) == 0) {
-        rx_data_available = 0;
-
-        if (HAL_ETH_ReadData(&heth, &payload) == HAL_OK) {
-            if (rx_frame_pending && rx_frame_length > 0) {
-                frame_len = rx_frame_length;
-                if (frame_len > len) {
-                    frame_len = len;
-                }
-                memcpy(frame, rx_buffer, frame_len);
-                rx_frame_pending = 0;
-                rx_frame_length = 0;
-                return (int)frame_len;
-            }
+    for (i = 0; ; i++) {
+        if (i == ETH_RX_DESC_CNT ||
+                HAL_ETH_ReadData(&heth, &payload) != HAL_OK) {
+            return 0;
+        }
+        segs = rx_frame_segs;
+        rx_frame_segs = 0;
+        if (segs == 1) {
+            break;
         }
     }
 
-    return 0;
+    frame_len = rx_frame_length;
+    if (frame_len > len) {
+        frame_len = len;
+    }
+#ifdef ETH_DCACHE_ENABLED
+    if (ETH_DCACHE_ENABLED()) {
+        SCB_InvalidateDCache_by_Addr((uint32_t *)rx_frame_buf,
+            (int32_t)ETH_RX_BUFFER_SIZE);
+    }
+#endif
+    memcpy(frame, rx_frame_buf, frame_len);
+    return (int)frame_len;
 }
 
 /**
@@ -218,6 +246,12 @@ static int hal_eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     if (len == 0 || len > ETH_RX_BUFFER_SIZE) {
         return -1;
     }
+
+#ifdef ETH_DCACHE_ENABLED
+    if (ETH_DCACHE_ENABLED()) {
+        SCB_CleanDCache_by_Addr((uint32_t *)frame, (int32_t)len);
+    }
+#endif
 
     /* Configure TX buffer */
     tx_buffer.buffer = frame;

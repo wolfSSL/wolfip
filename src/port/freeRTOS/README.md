@@ -93,7 +93,7 @@ close(fd);
 
 - `int wolfip_freertos_socket_init(struct wolfIP *ipstack, UBaseType_t poll_task_priority, uint16_t poll_task_stack_words);`
 - `int socket_last_error(void);`
-- `void wolfip_freertos_notify_from_isr(void);` - call from a link driver's receive interrupt so an arriving frame is serviced at once instead of after up to `WOLFIP_FREERTOS_POLL_MAX_MS`. Does nothing before `wolfip_freertos_socket_init()`. Only call it from interrupts at or below `configMAX_SYSCALL_INTERRUPT_PRIORITY`. Each call ends the poll task's sleep, so under sustained receive load it can starve lower-priority tasks; mask the RX interrupt in the ISR and re-enable it from `ll->poll` once the RX ring is drained.
+- `void wolfip_freertos_notify_from_isr(void);` - call from a link driver's receive interrupt so an arriving frame is serviced at once instead of after up to `WOLFIP_FREERTOS_POLL_MAX_MS`. Does nothing before `wolfip_freertos_socket_init()`. Only call it from interrupts at or below `configMAX_SYSCALL_INTERRUPT_PRIORITY`. Each call ends the poll task's sleep, so under sustained receive load it can starve lower-priority tasks; mask the RX interrupt in the ISR and re-enable it from `ll->poll` once the RX ring is drained. The STM32 HAL driver (`src/port/stm32_hal`) calls it from its RX interrupt when built with `WOLFIP_USE_FREERTOS`, but leaves the interrupt unmasked: the HAL IRQ handler clears the RX status only while the RX interrupt is enabled, so masking it from the RX callback can leave the interrupt asserted.
 - Socket calls:
   - `socket`, `bind`, `listen`, `accept`, `connect`, `close`
   - `send`, `sendto`, `recv`, `recvfrom`
