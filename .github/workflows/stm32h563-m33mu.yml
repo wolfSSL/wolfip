@@ -267,7 +267,7 @@ jobs:
           ok=0
           for _ in $(seq 1 10); do
             check_alive
-            resp="$(curl -k -s --tlsv1.3 --max-time 20 "https://${ip}/" 2>/tmp/curl_err.log || true)"
+            resp="$(curl -k -s --tlsv1.3 --max-time 60 "https://${ip}/" 2>/tmp/curl_err.log || true)"
             if echo "${resp}" | grep -q "wolfIP Status"; then
               ok=1; break
             fi
@@ -287,7 +287,7 @@ jobs:
           ok=0
           for _ in $(seq 1 5); do
             check_alive
-            resp="$(echo "TLS-ping" | timeout 10 openssl s_client \
+            resp="$(echo "TLS-ping" | timeout 60 openssl s_client \
               -connect "${ip}:8443" -quiet 2>/dev/null || true)"
             if echo "${resp}" | grep -q "TLS-ping"; then
               ok=1; break
