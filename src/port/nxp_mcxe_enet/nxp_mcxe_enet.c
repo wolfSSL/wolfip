@@ -190,7 +190,9 @@ int nxp_mcxe_enet_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
         }
         SDK_DelayAtLeastUs(PHY_LINK_POLL_US, sysclk);
     }
-    if (link && autoneg)
+    if (!link)
+        return -3;
+    else if (autoneg)
         (void)PHY_GetLinkSpeedDuplex(&g_phy, &speed, &duplex);
 
     ENET_GetDefaultConfig(&config);
@@ -210,7 +212,7 @@ int nxp_mcxe_enet_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 
     if (ENET_Init(ENET, &g_handle, &config, &buffers, (uint8_t *)mac,
             sysclk) != kStatus_Success) {
-        return -3;
+        return -4;
     }
     g_running = 1;
     ENET_ActiveRead(ENET);
