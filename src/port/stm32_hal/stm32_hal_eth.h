@@ -106,6 +106,10 @@
  *   several descriptors and is dropped
  * - On Cortex-M7 with the D-cache enabled, RX buffers are invalidated and
  *   TX frames cleaned around each DMA transfer
+ * - With STM32_HAL_ETH_TX_BOUNCE, TX frames are copied into a static buffer
+ *   before transmission, so the caller's stack may be in memory the DMA
+ *   cannot reach (DTCM, CCM). Default on STM32H7R/S; turn it off there with
+ *   STM32_HAL_ETH_NO_TX_BOUNCE
  * - Assumes CubeMX generates `heth` and `TxConfig` as extern globals
  */
 

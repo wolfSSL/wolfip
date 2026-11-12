@@ -233,6 +233,19 @@ static int hal_eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     return (int)frame_len;
 }
 
+/* wolfIP builds outgoing frames on the caller's stack. Sending from a static
+ * buffer keeps the DMA off that stack, which it cannot reach when the stack
+ * is in core-coupled memory (DTCM, CCM). On by default for STM32H7R/S, where
+ * the vendor linker scripts put the main stack in DTCM. Like rx_buffers, the
+ * buffer must be linked into memory the DMA can reach. */
+#if defined(STM32H7RS) && !defined(STM32_HAL_ETH_NO_TX_BOUNCE) && \
+    !defined(STM32_HAL_ETH_TX_BOUNCE)
+    #define STM32_HAL_ETH_TX_BOUNCE
+#endif
+#ifdef STM32_HAL_ETH_TX_BOUNCE
+static uint8_t tx_frame[ETH_RX_BUFFER_SIZE] __attribute__((aligned(32)));
+#endif
+
 /**
  * @brief Send an Ethernet frame
  */
@@ -246,6 +259,11 @@ static int hal_eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     if (len == 0 || len > ETH_RX_BUFFER_SIZE) {
         return -1;
     }
+
+#ifdef STM32_HAL_ETH_TX_BOUNCE
+    memcpy(tx_frame, frame, len);
+    frame = tx_frame;
+#endif
 
 #ifdef ETH_DCACHE_ENABLED
     if (ETH_DCACHE_ENABLED()) {
