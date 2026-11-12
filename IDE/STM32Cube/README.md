@@ -152,6 +152,18 @@ HAL_MPU_ConfigRegion(&MPU_InitStruct);
 
 A stricter alternative is a 4 GB no-access background region with only the memories in use and the peripheral range (`0x40000000`-`0x5FFFFFFF`) opened.
 
+### BusFault in an atomic operation on STM32H7R/S
+
+Symptom: a precise BusFault (`CFSR.PRECISERR`, with `BFAR` pointing at the variable) in `__atomic_fetch_add` or another atomic, for example in wolfSSL built with `FREERTOS`.
+
+Cause: the MPU region covering the AXI SRAM is marked Shareable. Atomics compile to `LDREX`/`STREX`, and an exclusive access to Shareable memory faults on this family. Set `IsShareable = MPU_ACCESS_NOT_SHAREABLE` for that region.
+
+Shareable memory is also not held in the Cortex-M7 D-cache, so a Shareable AXI SRAM region runs uncached even with the D-cache enabled.
+
+### Task stacks in DTCM or CCM
+
+wolfIP builds outgoing frames on the stack of the task that sends them, and the Ethernet DMA cannot read core-coupled memory. With `STM32_HAL_ETH_TX_BOUNCE` defined, `stm32_hal_eth.c` copies each frame into a static buffer before transmitting, so the stack may be placed anywhere. It is on by default for STM32H7R/S, whose vendor linker scripts put the main stack in DTCM; define `STM32_HAL_ETH_NO_TX_BOUNCE` there to turn it off. Without it, every stack that wolfIP transmits from must be in memory the Ethernet DMA can reach. The driver's own RX and TX buffers are static data, so the section they are linked into (`.bss` by default) must be in DMA-reachable memory as well.
+
 ## Using TLS with wolfIP
 
 To use TLS (HTTPS, secure sockets):
