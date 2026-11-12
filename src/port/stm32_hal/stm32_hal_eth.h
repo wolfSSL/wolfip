@@ -77,10 +77,11 @@
  * 1. **ETH Peripheral** (Connectivity -> ETH)
  *    - Mode: RMII (or MII depending on your board's PHY)
  *
- * 2. **NVIC Settings** (System Core -> NVIC) - CRITICAL
- *    - ETH global interrupt: **ENABLED** for prompt frame notification
- *    - Without it, frames are still detected by the periodic RX poll
- *      (every 100th poll) but with added latency
+ * 2. **NVIC Settings** (System Core -> NVIC)
+ *    - ETH global interrupt: **ENABLED** (required by HAL_ETH_Start_IT)
+ *    - With the FreeRTOS port, build with WOLFIP_USE_FREERTOS so the RX
+ *      interrupt wakes the poll task; the ETH interrupt priority must then
+ *      be at or below configMAX_SYSCALL_INTERRUPT_PRIORITY
  *
  * 3. **GPIO Configuration**
  *    - CubeMX auto-configures correct pins for NUCLEO boards
@@ -98,8 +99,13 @@
  *
  * ## Implementation Notes
  *
- * - Uses hybrid RX: interrupt-driven (HAL_ETH_Start_IT) + periodic polling
- * - DMA buffers are 32-byte aligned (required for STM32H5/H7)
+ * - Each poll drains every frame waiting in the RX ring
+ * - DMA buffers are 32-byte aligned (required for STM32H5/H7), one per RX
+ *   descriptor plus one
+ * - Set heth.Init.RxBuffLen to 1536: a frame longer than RxBuffLen spans
+ *   several descriptors and is dropped
+ * - On Cortex-M7 with the D-cache enabled, RX buffers are invalidated and
+ *   TX frames cleaned around each DMA transfer
  * - Assumes CubeMX generates `heth` and `TxConfig` as extern globals
  */
 

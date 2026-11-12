@@ -82,6 +82,8 @@ uint32_t wolfIP_getrandom(void)
 
 **Alternative: Use DHCP** instead of static IP by enabling DHCP in Software Packs -> wolfIP settings.
 
+**With FreeRTOS:** when wolfIP runs under the FreeRTOS port (`src/port/freeRTOS`), define `WOLFIP_USE_FREERTOS` so the ETH RX interrupt wakes the poll task through `wolfip_freertos_notify_from_isr()`. The ETH interrupt priority must be at or below `configMAX_SYSCALL_INTERRUPT_PRIORITY`.
+
 ### Step 4: Build and Test
 
 1. Build the project

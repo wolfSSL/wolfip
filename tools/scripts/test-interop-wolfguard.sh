@@ -115,8 +115,12 @@ if command -v apt-get &>/dev/null; then
     apt-get install -y -qq \
         build-essential autoconf automake libtool pkg-config \
         linux-headers-"$KERNEL_VERSION" \
-        linux-modules-extra-"$KERNEL_VERSION" \
         iproute2 socat kmod git check tcpdump 2>&1 | tail -1
+    # Ubuntu's 7.0 kernels ship udp_tunnel in linux-modules and have no
+    # linux-modules-extra package
+    if apt-cache show linux-modules-extra-"$KERNEL_VERSION" >/dev/null 2>&1; then
+        apt-get install -y -qq linux-modules-extra-"$KERNEL_VERSION" 2>&1 | tail -1
+    fi
 elif command -v dnf &>/dev/null; then
     dnf install -y -q \
         gcc make autoconf automake libtool pkgconfig \
