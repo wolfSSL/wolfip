@@ -125,6 +125,33 @@ void HAL_ETH_MspInit(ETH_HandleTypeDef* heth)
 }
 ```
 
+### Freeze with no fault on STM32H7R/S with the D-cache enabled
+
+Symptom: under load, most easily with TLS, the MCU stops completely. No fault handler runs and the debugger can no longer halt the core or read memory. Disabling the D-cache makes it go away.
+
+Cause: `0x25000000`-`0x25FFFFFF` is the GFXMMU virtual-buffer window. The GFXMMU clock is off unless the application enables it, and a read in that window then never completes. With the D-cache enabled the Cortex-M7 issues speculative reads to Normal memory. With `MPU_PRIVILEGED_DEFAULT` the default memory map applies outside your MPU regions, and in that map this window is Normal memory, so a speculative read can land there. The CubeMX background region (`SubRegionDisable = 0x87`) only covers `0x60000000`-`0xDFFFFFFF`.
+
+To confirm, read `0x25000000` from the debugger on an idle board: the board stops responding.
+
+Fix: make the window inaccessible in `MPU_Config()`, using a free region number:
+
+```c
+MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+MPU_InitStruct.Number = MPU_REGION_NUMBER6;
+MPU_InitStruct.BaseAddress = 0x25000000;
+MPU_InitStruct.Size = MPU_REGION_SIZE_16MB;
+MPU_InitStruct.SubRegionDisable = 0x0;
+MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+MPU_InitStruct.AccessPermission = MPU_REGION_NO_ACCESS;
+MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+MPU_InitStruct.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+HAL_MPU_ConfigRegion(&MPU_InitStruct);
+```
+
+A stricter alternative is a 4 GB no-access background region with only the memories in use and the peripheral range (`0x40000000`-`0x5FFFFFFF`) opened.
+
 ## Using TLS with wolfIP
 
 To use TLS (HTTPS, secure sockets):

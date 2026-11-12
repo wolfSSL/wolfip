@@ -106,6 +106,9 @@
  *   several descriptors and is dropped
  * - On Cortex-M7 with the D-cache enabled, RX buffers are invalidated and
  *   TX frames cleaned around each DMA transfer
+ * - STM32H7R/S with the D-cache enabled: make 0x25000000-0x25FFFFFF (the
+ *   unclocked GFXMMU window) no-access in the MPU, or a speculative read
+ *   there stalls the bus with no fault; see IDE/STM32Cube/README.md
  * - Assumes CubeMX generates `heth` and `TxConfig` as extern globals
  */
 
