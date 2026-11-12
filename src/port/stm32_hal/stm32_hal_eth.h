@@ -110,9 +110,6 @@
  *   before transmission, so the caller's stack may be in memory the DMA
  *   cannot reach (DTCM, CCM). Default on STM32H7R/S; turn it off there with
  *   STM32_HAL_ETH_NO_TX_BOUNCE
- * - STM32H7R/S with the D-cache enabled: make 0x25000000-0x25FFFFFF (the
- *   unclocked GFXMMU window) no-access in the MPU, or a speculative read
- *   there stalls the bus with no fault; see IDE/STM32Cube/README.md
  * - Assumes CubeMX generates `heth` and `TxConfig` as extern globals
  */
 
