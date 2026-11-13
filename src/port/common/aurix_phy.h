@@ -42,10 +42,12 @@
 #define AURIX_PHY_ANLPAR    0x05u
 
 #define AURIX_BMCR_RESET        (1u << 15)
+#define AURIX_BMCR_SPEED_100    (1u << 13)
 #define AURIX_BMCR_ANEG_EN      (1u << 12)
 #define AURIX_BMCR_POWER_DOWN   (1u << 11)
 #define AURIX_BMCR_ISOLATE      (1u << 10)
 #define AURIX_BMCR_ANEG_RESTART (1u << 9)
+#define AURIX_BMCR_FULL_DUPLEX  (1u << 8)
 #define AURIX_BMSR_ANEG_DONE    (1u << 5)
 #define AURIX_BMSR_LINK         (1u << 2)
 #define AURIX_ANAR_10_100       0x01E1u
@@ -138,11 +140,11 @@ static inline int aurix_phy_start_autoneg(uint8_t addr)
     return AURIX_MDIO_WRITE(addr, AURIX_PHY_BMCR, bmcr);
 }
 
-/* Returns 1 with the negotiated mode, 0 with no link, or -1 on an MDIO
- * failure. */
+/* Returns 1 with the link mode, 0 with no link, or -1 on an MDIO failure. */
 static inline int aurix_phy_link(uint8_t addr, int *speed_100, int *full_duplex)
 {
     uint16_t bmsr = 0u;
+    uint16_t bmcr;
     uint16_t anar;
     uint16_t anlpar;
     uint16_t common;
@@ -152,8 +154,20 @@ static inline int aurix_phy_link(uint8_t addr, int *speed_100, int *full_duplex)
         AURIX_MDIO_READ(addr, AURIX_PHY_BMSR, &bmsr) != 0) {
         return -1;
     }
-    if ((bmsr & AURIX_BMSR_LINK) == 0u || (bmsr & AURIX_BMSR_ANEG_DONE) == 0u) {
+    if ((bmsr & AURIX_BMSR_LINK) == 0u) {
         return 0;
+    }
+    /* A forced PHY never sets ANEG_DONE; BMCR holds its mode. */
+    if ((bmsr & AURIX_BMSR_ANEG_DONE) == 0u) {
+        if (AURIX_MDIO_READ(addr, AURIX_PHY_BMCR, &bmcr) != 0) {
+            return -1;
+        }
+        if ((bmcr & AURIX_BMCR_ANEG_EN) != 0u) {
+            return 0;
+        }
+        *speed_100   = (bmcr & AURIX_BMCR_SPEED_100) != 0u;
+        *full_duplex = (bmcr & AURIX_BMCR_FULL_DUPLEX) != 0u;
+        return 1;
     }
     if (AURIX_MDIO_READ(addr, AURIX_PHY_ANAR, &anar) != 0 ||
         AURIX_MDIO_READ(addr, AURIX_PHY_ANLPAR, &anlpar) != 0) {
