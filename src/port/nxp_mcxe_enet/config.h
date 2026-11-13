@@ -30,12 +30,18 @@
 #define ETHERNET
 #define LINK_MTU                1536
 
-/* Sized for the 124 KB of SRAM_U shared with the TFTP receive buffer */
 #define MAX_TCPSOCKETS          2
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         1
+/* Every socket has one receive and one transmit buffer, so each extra
+ * LINK_MTU on both costs 5 * 2 * LINK_MTU (15 KB). One MTU each keeps TCP to
+ * one segment in flight; the application may raise them when it has RAM. */
+#ifndef RXBUF_SIZE
 #define RXBUF_SIZE              LINK_MTU
+#endif
+#ifndef TXBUF_SIZE
 #define TXBUF_SIZE              LINK_MTU
+#endif
 
 #define MAX_NEIGHBORS           4
 #define WOLFIP_ARP_PENDING_MAX  2
