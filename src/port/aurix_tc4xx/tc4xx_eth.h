@@ -46,7 +46,7 @@ int tc4xx_eth_link_update(void);
 int tc4xx_eth_mdio_read(uint8_t phy_addr, uint8_t reg, uint16_t *value);
 int tc4xx_eth_mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t value);
 
-/* PHY address in use, or -1 before tc4xx_eth_init() found one. */
+/* PHY address in use, or -1 until tc4xx_eth_init() has brought up the MAC. */
 int tc4xx_eth_phy_addr(void);
 
 /* Cumulative since init; rx_dropped counts errored and oversize frames.
