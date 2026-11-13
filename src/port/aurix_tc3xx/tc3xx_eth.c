@@ -455,6 +455,7 @@ int tc3xx_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     if (ll == NULL || s_started) {
         return TC3XX_ETH_EINVAL;
     }
+    s_phy_addr = -1;
     if (mac == NULL) {
         mac = default_mac;
     }
@@ -474,12 +475,12 @@ int tc3xx_eth_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     if (aurix_phy_reset((uint8_t)phy) != 0) {
         return TC3XX_ETH_EIO;
     }
-    s_phy_addr = phy;
 
     if (!refclk_present()) {
         return TC3XX_ETH_ENOCLK;
     }
     mac_init(mac);
+    s_phy_addr = phy;
 
     if (aurix_phy_start_autoneg((uint8_t)phy) != 0) {
         return TC3XX_ETH_EIO;
