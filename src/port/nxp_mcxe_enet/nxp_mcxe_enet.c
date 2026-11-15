@@ -79,6 +79,12 @@
 #define TX_TIMEOUT_US           5000U   /* a maximum frame at 10 Mbit/s */
 
 #define ENET_ALIGN16            __attribute__((aligned(16)))
+/* Frame buffers. The RM asks for 16-byte alignment, but then enet dma gets
+ * stuck with receive FIFO overflow (UDP flood at line rate).
+ * 32 seems to work, but using 64 like other nxp enets */
+#define ENET_BUF_ALIGN          __attribute__((aligned(64)))
+/* Keeps every buffer of the arrays below aligned */
+typedef char enet_buf_size_check[((ENET_BUF_SIZE % 64U) == 0U) ? 1 : -1];
 
 /* Legacy buffer descriptor, little-endian with ECR[DBSWP] set */
 struct enet_bd {
@@ -91,8 +97,8 @@ struct enet_bd {
  * outside the code cache (SRAM_U). */
 static struct enet_bd g_rx_bd[ENET_RX_BD_NUM] ENET_ALIGN16;
 static struct enet_bd g_tx_bd[ENET_TX_BD_NUM] ENET_ALIGN16;
-static uint8_t g_rx_buf[ENET_RX_BD_NUM][ENET_BUF_SIZE] ENET_ALIGN16;
-static uint8_t g_tx_buf[ENET_TX_BD_NUM][ENET_BUF_SIZE] ENET_ALIGN16;
+static uint8_t g_rx_buf[ENET_RX_BD_NUM][ENET_BUF_SIZE] ENET_BUF_ALIGN;
+static uint8_t g_tx_buf[ENET_TX_BD_NUM][ENET_BUF_SIZE] ENET_BUF_ALIGN;
 
 static uint32_t g_rx_idx;
 static uint32_t g_tx_idx;

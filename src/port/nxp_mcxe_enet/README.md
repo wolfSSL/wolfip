@@ -43,6 +43,8 @@ wolfIP hands the driver its own buffers: `poll()` must fill the buffer it is giv
 
 `config.h` defaults `RXBUF_SIZE` and `TXBUF_SIZE` to one `LINK_MTU`, which allows one TCP segment in flight. Each socket carries one buffer of each, so with the 5 sockets of this configuration every extra `LINK_MTU` on both costs 15 KB. The wolfBoot test-app sets both to 9216 (6 segments) and places the wolfIP state, 124.5 KB, in SRAM_L.
 
+The receive buffers must be 32-byte aligned, although the RM asks for 16: with a buffer at 16 mod 32, a UDP flood at line rate stops the receive DMA until the MAC is reset. The driver aligns the frame buffers to 64 bytes, like most other nxp enet drivers use.
+
 Descriptors and ring buffers, and every wolfIP buffer the MAC or the eDMA reads or writes, must be outside the code cache, e.g. in SRAM_U. The system MPU is disabled at init so that the ENET and eDMA bus masters can reach them.
 
 An application that uses the ENET interrupts must place its vector table at a 1 KB aligned address.
