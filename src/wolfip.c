@@ -246,7 +246,9 @@ struct wolfIP_icmp_packet;
 #define TCP_PREACCEPT_TIMEOUT_MS 5000U
 #endif
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
+#ifndef WOLFIP_POLL_BUDGET
 #define WOLFIP_POLL_BUDGET 128
+#endif
 
 /* Macros */
 #define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
