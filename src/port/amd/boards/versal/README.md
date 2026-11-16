@@ -29,6 +29,7 @@ The reused 90% (`gem_core.c`, `phy_dp83867.c`, `mmu_aarch64.c`, `entropy.c`, `ap
 cd src/port/amd/boards/versal
 make CROSS_COMPILE=aarch64-none-elf-                 # OCM layout (default)
 make CROSS_COMPILE=aarch64-none-elf- LAYOUT=ddr      # DDR layout for wolfBoot
+make CROSS_COMPILE=aarch64-none-elf- LAYOUT=ddr EL=2 # entered at EL2 by wolfBoot
 ```
 
 Output: `app.elf`. Size info is printed at the end of the build.
@@ -69,6 +70,55 @@ A72 #0 (`-skip-activate-subsystem`, which lands at EL3) and loads
   in the **PS-GEM** RJ45, not the System Controller jack.
 - `SCR_EL3` IRQ/FIQ/EA routing is carried over from the ZCU102 fix and is
   harmless on the A72.
+
+## Firmware update under wolfBoot (QSPI, HTTPS)
+
+`OTA=1` builds the application as a wolfBoot payload that can update itself over the network. wolfBoot (EL2, after PLM, PSM and BL31) keeps two fixed image slots in the QSPI flash, loads the higher version into DDR and passes the slot it chose in the device tree (`/chosen/wolfboot,boot-part`).
+
+```
+make LAYOUT=ddr EL=2 OTA=1 OTA_VERSION=2 \
+     WOLFBOOT=/path/to/wolfBoot WOLFSSL=/path/to/wolfssl \
+     OTA_CERTS=host/certs OTA_SERVER_IP=192.168.2.1 \
+     STATIC_IP=192.168.2.2 STATIC_GW=192.168.2.1
+```
+
+- `WOLFBOOT` is a wolfBoot tree already built for the matching Versal QSPI configuration (see below); it must provide `wolfBoot_success_part()`, `wolfBoot_update_trigger_part()` and `DUALBOOT_ROLLBACK_UNCONFIRMED`. Its flash driver and slot-state code are compiled into the application and take the partition layout from its generated `include/target.h`.
+- `WOLFSSL` is a wolfSSL source tree; the files needed for a TLS 1.3 client are compiled in with `user_settings.h` from this directory.
+- `OTA_CERTS` is a directory holding `ota_certs.h` with `ca_cert_der`, `device_cert_der` and `device_key_der`. `host/gen_certs.sh` writes a demonstration set.
+- `STATIC_IP` / `STATIC_GW` replace DHCP with a fixed address. Leave them out to use DHCP.
+- `OTA_TRANSPORT=tftp` selects a plain TFTP transfer instead (no wolfSSL needed); the image is still verified by wolfBoot.
+
+How an update runs:
+
+1. A UDP datagram starting with `UPDATE` on port 7 asks the board to check for an update. The datagram carries no authority: the server address is the one built in.
+2. The board opens TLS 1.3 to `OTA_SERVER_IP:4443` with the `SECP384R1MLKEM1024` hybrid key exchange, verifies the server certificate and its name (`ota-server.local`), and presents its own certificate.
+3. `GET /version` returns the offered version as decimal text. If it is higher than `OTA_VERSION`, `GET /firmware.bin` is downloaded to RAM, written to the inactive slot, read back, and marked for wolfBoot. The board resets.
+4. wolfBoot verifies the new image and boots it on probation. The new image confirms itself only after it has fetched `/version` from the server again; if it cannot within 30 seconds it resets and wolfBoot returns to the previous image.
+
+The image on the server is the signed (and, if wolfBoot is built for it, encrypted) file produced by the wolfBoot `sign` tool. Because its header may be encrypted, the version on offer comes from the authenticated server, not from the image.
+
+wolfBoot is built from its `versal_vmk180` configuration with ML-DSA-87 signatures, AES-256 encrypted images and two 4 MB slots:
+
+```
+cp config/examples/versal_vmk180.config .config
+make SIGN=ML_DSA ML_DSA_LEVEL=5 IMAGE_SIGNATURE_SIZE=4627 IMAGE_HEADER_SIZE=12288 \
+     ENCRYPT=1 ENCRYPT_WITH_AES256=1 CUSTOM_ENCRYPT_KEY=1 ENCRYPT_CACHE=0x08200000 \
+     DUALBOOT_ROLLBACK_UNCONFIRMED=1 WOLFBOOT_PARTITION_SIZE=0x400000 \
+     WOLFBOOT_PARTITION_UPDATE_ADDRESS=0xC00000 WOLFBOOT_PARTITION_SWAP_ADDRESS=0x1000000 \
+     OBJS_EXTRA=/path/to/wolfip/src/port/amd/boards/versal/wolfboot_enckey.o
+```
+
+`wolfboot_enckey.c` gives wolfBoot the image key. Its key and IV are fixed, public demonstration values that match the key file passed to the `sign` tool; a product reads the key from eFuse, BBRAM or a PUF-wrapped store instead. The application is then converted to a binary, signed and encrypted (`enc_key.bin` holds the 32-byte key followed by the 16-byte IV):
+
+```
+aarch64-none-elf-objcopy -O binary app.elf app.bin
+ML_DSA_LEVEL=5 IMAGE_HEADER_SIZE=12288 tools/keytools/sign --ml_dsa --sha384 --aes256 \
+     --encrypt enc_key.bin app.bin wolfboot_signing_private_key.der 2
+```
+
+`host/https_server.c` is a small matching server (TLS 1.3, hybrid groups, client certificate required). Build it against a wolfSSL configured with `--enable-tls13 --enable-mlkem --enable-ecc CFLAGS=-DWOLFSSL_PQC_HYBRIDS` and run it as `https_server -p 4443 -d <docroot> -c host/certs`, with `version` and `firmware.bin` in the document root.
+
+The certificates and keys written by `gen_certs.sh` are for demonstration only. With no real-time clock, certificate dates are checked against the build time plus uptime.
 
 ## Files
 

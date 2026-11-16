@@ -137,6 +137,12 @@ void gic_init(void)
 {
     uint32_t i;
 
+#ifdef WOLFIP_EL2
+    /* Non-secure EL2 under BL31: the distributor is owned by EL3 and
+     * ICC_SRE_EL3 is not accessible. RX is polled, so leave the GIC alone. */
+    return;
+#endif
+
     GICD_CTLR = GICD_CTLR_ARE_S | GICD_CTLR_ENG1S;
 
     for (i = 1; i < (GIC_NR_LINES / 32u); i++) {
