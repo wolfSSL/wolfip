@@ -79,7 +79,7 @@
 #define TX_TIMEOUT_US           5000U   /* a maximum frame at 10 Mbit/s */
 
 #define ENET_ALIGN16            __attribute__((aligned(16)))
-/* Frame buffers. The RM asks for 16-byte alignment, but then enet dma gets
+/* Frame buffers. The RM asks for 16-byte alignment, but the enet dma gets
  * stuck with receive FIFO overflow (UDP flood at line rate).
  * 32 seems to work, but using 64 like other nxp enets */
 #define ENET_BUF_ALIGN          __attribute__((aligned(64)))
