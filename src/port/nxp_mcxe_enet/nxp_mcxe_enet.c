@@ -473,9 +473,10 @@ static void rx_release(uint16_t control)
 
 static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
 {
-    struct enet_bd *bd = &g_rx_bd[g_rx_idx];
+    struct enet_bd *bd;
     uint16_t control;
     uint32_t flen;
+    uint32_t n;
     int ret = 0;
     (void)dev;
 
@@ -488,31 +489,39 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
         g_bus_errors++;
     }
 #endif
-    control = bd->control;
-#if NXP_MCXE_ENET_IRQ
-    if ((control & ENET_RXBD_EMPTY) != 0U) {
-        /* Ring drained: wait for the next receive interrupt. Look again
-         * after clearing, in case a frame landed in between. */
-        g_rx_pending = 0U;
-        __asm__ volatile ("dmb" ::: "memory");
+    /* Skip errored frames (FIFO overruns, CRC errors) and look at the next
+     * descriptor. wolfIP takes 0 as "ring empty", so returning 0 for a bad
+     * frame would leave the rest of a full ring for the next poll; under a
+     * flood the MAC then fills each freed descriptor with another overrun
+     * fragment and the ring never drains. */
+    for (n = 0; n < ENET_RX_BD_NUM && ret == 0; n++) {
+        bd = &g_rx_bd[g_rx_idx];
         control = bd->control;
-        if ((control & ENET_RXBD_EMPTY) == 0U)
-            g_rx_pending = 1U;
-    }
+#if NXP_MCXE_ENET_IRQ
+        if ((control & ENET_RXBD_EMPTY) != 0U) {
+            /* Ring drained: wait for the next receive interrupt. Look
+             * again after clearing, in case a frame landed in between. */
+            g_rx_pending = 0U;
+            __asm__ volatile ("dmb" ::: "memory");
+            control = bd->control;
+            if ((control & ENET_RXBD_EMPTY) == 0U)
+                g_rx_pending = 1U;
+        }
 #endif
-    if ((control & ENET_RXBD_EMPTY) != 0U)
-        return 0;
+        if ((control & ENET_RXBD_EMPTY) != 0U)
+            break;
 
-    __asm__ volatile ("dmb" ::: "memory");
-    flen = bd->length;
-    if ((control & ENET_RXBD_LAST) != 0U &&
-            (control & ENET_RXBD_ERRORS) == 0U &&
-            flen > 0U && flen <= len && frame != NULL) {
-        frame_copy((uint8_t *)frame,
-                   (const uint8_t *)(uintptr_t)bd->buffer, flen);
-        ret = (int)flen;
+        __asm__ volatile ("dmb" ::: "memory");
+        flen = bd->length;
+        if ((control & ENET_RXBD_LAST) != 0U &&
+                (control & ENET_RXBD_ERRORS) == 0U &&
+                flen > 0U && flen <= len && frame != NULL) {
+            frame_copy((uint8_t *)frame,
+                       (const uint8_t *)(uintptr_t)bd->buffer, flen);
+            ret = (int)flen;
+        }
+        rx_release(control);
     }
-    rx_release(control);
     return ret;
 }
 
