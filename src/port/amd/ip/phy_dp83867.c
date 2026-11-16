@@ -95,6 +95,7 @@
 #define DP83867_PHYCR       0x10     /* PHY Control register */
 #define PHYCR_FIFO_DEPTH_MASK (3u << 14)
 #define PHYCR_FIFO_DEPTH_8B   (3u << 14)
+#define PHYCR_FORCE_LINK_GOOD (1u << 10)
 
 /* RGMIICTL bits */
 #define RGMIICTL_RX_DELAY_EN (1u << 0)
@@ -340,6 +341,10 @@ int dp83867_init(uint8_t phy_addr, int *speed_out, int *full_duplex_out)
         (void)gem_mdio_read(phy_addr, DP83867_PHYCR, &phycr_before);
         phycr_after = (phycr_before & ~PHYCR_FIFO_DEPTH_MASK)
                     | PHYCR_FIFO_DEPTH_8B;
+        /* A strap sampled wrongly at power-on can leave force-link-good
+         * set, and it survives the soft reset: the PHY then reports link
+         * without ever negotiating. */
+        phycr_after &= ~PHYCR_FORCE_LINK_GOOD;
         if (gem_mdio_write(phy_addr, DP83867_PHYCR, phycr_after) < 0)
             return -7;
 
