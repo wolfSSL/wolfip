@@ -25,7 +25,7 @@ Defaults target the FRDM-MCXE247: RMII to a LAN8741A-EN PHY at MDIO address 0, 5
 
 | Define | Default | Notes |
 |---|---|---|
-| `NXP_MCXE_ENET_IRQ` | `0` | `1`: the receive interrupt marks frames waiting, so `poll()` returns at once when there are none, and `send()` sleeps in `wfi` until the transmit interrupt when the transmit ring is full. Route ENET IRQs 73 (transmit), 74 (receive) and 75 (error) to `nxp_mcxe_enet_irq_handler()`. |
+| `NXP_MCXE_ENET_IRQ` | `0` | `1`: the receive interrupt marks frames waiting, so `poll()` returns at once when there are none. Route ENET IRQs 74 (receive) and 75 (error) to `nxp_mcxe_enet_irq_handler()`; the transmit interrupt (73) is not enabled. |
 | `NXP_MCXE_ENET_IRQ_PRIO` | `0x80` | NVIC priority of the ENET interrupts |
 | `NXP_MCXE_ENET_EDMA` | `1` | copy frames between the descriptor rings and the wolfIP buffers with an eDMA channel instead of `memcpy`. The CPU waits for each copy. |
 | `NXP_MCXE_ENET_EDMA_CH` | `0` | eDMA channel, reserved for the driver |
@@ -37,7 +37,7 @@ Defaults target the FRDM-MCXE247: RMII to a LAN8741A-EN PHY at MDIO address 0, 5
 wolfIP hands the driver its own buffers: `poll()` must fill the buffer it is given, and `send()` must be done with the buffer when it returns.
 
 - Receive: the MAC DMA writes each frame into one of 8 ring buffers (1536 bytes, one frame each). `poll()` copies it into the wolfIP buffer and returns the descriptor to the MAC.
-- Transmit: `send()` copies each frame into one of 4 ring buffers, pads it to 60 bytes when short, and returns while the MAC sends it in the background. When all 4 are in use, `send()` waits for the oldest to go out.
+- Transmit: `send()` copies each frame into one of 4 ring buffers, pads it to 60 bytes when short, and returns while the MAC sends it in the background. When all 4 are in use, `send()` polls until the oldest has gone out, for at most 5 ms.
 
 ## Memory
 

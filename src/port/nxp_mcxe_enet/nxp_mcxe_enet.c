@@ -110,6 +110,9 @@ static int g_phy_addr = -1;
 static volatile uint32_t g_rx_pending;
 #endif
 static volatile uint32_t g_bus_errors;
+#if NXP_MCXE_ENET_EDMA
+static int g_edma_dead;     /* a timed-out transfer could not be stopped */
+#endif
 #if NXP_MCXE_ENET_STATS
 static struct nxp_mcxe_enet_stats g_stats;
 #endif
@@ -204,10 +207,41 @@ static uint16_t edma_size(uintptr_t addr, uint32_t *bytes)
     return DMA_SIZE_8BIT;
 }
 
+/* Stop the channel after a timeout, before its buffers change hands. A
+ * channel that has not started yet is kept from starting by clearing START.
+ * A running one is cancelled with CR.CX, which retires it after its current
+ * read and write; only one channel runs at a time, so with ACTIVE set that is
+ * this one. Returns 0 once the channel is idle, or -1 if it is still busy
+ * after EDMA_TIMEOUT_US. */
+static int edma_stop(uint32_t ch)
+{
+    uint32_t start = DWT_CYCCNT;
+    uint32_t ticks = us_to_cycles(EDMA_TIMEOUT_US);
+    uint16_t csr;
+    int ret = -1;
+
+    while ((DWT_CYCCNT - start) < ticks) {
+        csr = DMA_TCD_CSR(ch);
+        if ((csr & (DMA_CSR_START | DMA_CSR_ACTIVE)) == 0U) {
+            ret = 0;
+            break;
+        }
+        if ((csr & DMA_CSR_ACTIVE) != 0U) {
+            if ((DMA_CR & DMA_CR_CX) == 0U)
+                DMA_CR |= DMA_CR_CX;
+        }
+        else {
+            DMA_TCD_CSR(ch) = 0U;
+        }
+    }
+    return ret;
+}
+
 /* Copy with the eDMA channel and wait for it. Each side uses the widest
  * access its alignment allows. Copies the bytes past the last whole word with
  * the CPU. Returns 0, or -1 on a transfer error or timeout (nothing is then
- * known about the destination). */
+ * known about the destination). On a timeout the channel is stopped first;
+ * if it cannot be, the eDMA is not used again. */
 static int edma_copy(uint8_t *dst, const uint8_t *src, uint32_t len)
 {
     const uint32_t ch = NXP_MCXE_ENET_EDMA_CH;
@@ -245,6 +279,8 @@ static int edma_copy(uint8_t *dst, const uint8_t *src, uint32_t len)
                 break;
             }
         }
+        if (ret != 0 && edma_stop(ch) != 0)
+            g_edma_dead = 1;
         if ((DMA_ERR & (1UL << ch)) != 0U) {
             DMA_CERR = (uint8_t)ch;
             ret = -1;
@@ -266,7 +302,8 @@ static void frame_copy(uint8_t *dst, const uint8_t *src, uint32_t len)
 #endif
 
 #if NXP_MCXE_ENET_EDMA
-    if (len >= NXP_MCXE_ENET_EDMA_MIN && edma_copy(dst, src, len) == 0)
+    if (len >= NXP_MCXE_ENET_EDMA_MIN && !g_edma_dead &&
+            edma_copy(dst, src, len) == 0)
         done = 1;
 #endif
     if (!done)
@@ -317,13 +354,13 @@ static void enet_irq_disable(void)
 #if NXP_MCXE_ENET_IRQ
 static void enet_irq_enable(void)
 {
-    const uint32_t irqs[3] = { ENET_TX_IRQN, ENET_RX_IRQN, ENET_ERR_IRQN };
+    const uint32_t irqs[2] = { ENET_RX_IRQN, ENET_ERR_IRQN };
     uint32_t i;
 
     g_rx_pending = 1U;  /* look at the ring once, frames may be waiting */
     ENET_EIR = ENET_EIR_ALL;
-    ENET_EIMR = ENET_EIR_RXF | ENET_EIR_TXF | ENET_EIR_EBERR;
-    for (i = 0; i < 3U; i++) {
+    ENET_EIMR = ENET_EIR_RXF | ENET_EIR_EBERR;
+    for (i = 0; i < sizeof(irqs) / sizeof(irqs[0]); i++) {
         NVIC_IPR(irqs[i]) = (uint8_t)NXP_MCXE_ENET_IRQ_PRIO;
         NVIC_ICPR(irqs[i] / 32U) = (1UL << (irqs[i] % 32U));
         NVIC_ISER(irqs[i] / 32U) = (1UL << (irqs[i] % 32U));
@@ -335,8 +372,6 @@ void nxp_mcxe_enet_irq_handler(void)
     uint32_t eir = ENET_EIR & ENET_EIMR;
 
     ENET_EIR = eir;
-    /* TXF needs no action: it only wakes tx_wait() from wfi when the
-     * transmit ring is full */
     if ((eir & ENET_EIR_RXF) != 0U)
         g_rx_pending = 1U;
     if ((eir & ENET_EIR_EBERR) != 0U)
@@ -525,28 +560,17 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     return ret;
 }
 
-/* Wait until the MAC has sent the frame in descriptor bd. */
+/* Wait until the MAC has sent the frame in descriptor bd. This polls rather
+ * than sleeping in wfi: the core cycle counter stops while the core sleeps,
+ * so a transmitter that never raises its interrupt would never time out. */
 static int tx_wait(const struct enet_bd *bd)
 {
     uint32_t start = DWT_CYCCNT;
     uint32_t ticks = us_to_cycles(TX_TIMEOUT_US);
-#if NXP_MCXE_ENET_IRQ
-    uint32_t primask;
-#endif
 
     while ((bd->control & ENET_TXBD_READY) != 0U) {
         if ((DWT_CYCCNT - start) >= ticks)
             return -1;
-#if NXP_MCXE_ENET_IRQ
-        /* Sleep until the transmit-complete interrupt. Interrupts are
-         * masked around the check so one that fires just before wfi still
-         * wakes it (a pending interrupt ends wfi even while masked). */
-        __asm__ volatile ("mrs %0, primask" : "=r"(primask));
-        __asm__ volatile ("cpsid i" ::: "memory");
-        if ((bd->control & ENET_TXBD_READY) != 0U)
-            __asm__ volatile ("wfi");
-        __asm__ volatile ("msr primask, %0" :: "r"(primask) : "memory");
-#endif
     }
     return 0;
 }

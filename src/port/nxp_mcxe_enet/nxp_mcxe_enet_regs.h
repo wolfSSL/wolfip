@@ -159,6 +159,8 @@
 
 /* eDMA */
 #define DMA_BASE                0x40008000UL
+#define DMA_CR                  MCXE_REG32(DMA_BASE + 0x000UL)
+#define DMA_CR_CX               (1UL << 17)     /* cancel the running channel */
 #define DMA_ES                  MCXE_REG32(DMA_BASE + 0x004UL)
 #define DMA_CDNE                MCXE_REG8(DMA_BASE + 0x01CUL)
 #define DMA_CERR                MCXE_REG8(DMA_BASE + 0x01EUL)
