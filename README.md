@@ -1,5 +1,7 @@
 # wolfIP
 
+[![MemBrowse](https://membrowse.com/badge.svg)](https://membrowse.com/public/wolfSSL/wolfip)
+
 ## Description and project goals
 
 wolfIP is a TCP/IP stack with no dynamic memory allocations, designed to be
