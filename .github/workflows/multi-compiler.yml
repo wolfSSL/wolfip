@@ -22,9 +22,9 @@ jobs:
           - cc: gcc-11
           - cc: gcc-12
           - cc: gcc-13
-          - cc: clang-14
-          - cc: clang-15
           - cc: clang-17
+          - cc: clang-19
+          - cc: clang-21
 
     steps:
       - name: Install compiler

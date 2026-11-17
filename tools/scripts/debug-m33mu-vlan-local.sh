@@ -183,12 +183,14 @@ if ! command -v tshark >/dev/null 2>&1; then
 else
   # Tab-separated columns: frame eth.src eth.dst vlan eth.type ip.src ip.dst
   # tcp.sport tcp.dport info
-  tshark_out="$(tshark -r /tmp/m33mu-vlan.pcap -n \
+  # Read the capture on stdin: a host AppArmor profile for tshark can deny
+  # opening a file owned by the tcpdump user, even for root in a container.
+  tshark_out="$(tshark -r - -n \
       -Y "vlan.id==${vid}" \
       -T fields \
         -e frame.number -e eth.src -e eth.dst -e vlan.id -e eth.type \
         -e ip.src -e ip.dst -e tcp.srcport -e tcp.dstport -e _ws.col.Info \
-      2>/dev/null || true)"
+      < /tmp/m33mu-vlan.pcap 2>/tmp/m33mu-vlan-tshark.err || true)"
   printf '%s\n' "${tshark_out}" > /tmp/m33mu-vlan-tshark.txt
 
   if [ -n "${fw_mac}" ] && [ -n "${tshark_out}" ]; then
@@ -210,6 +212,7 @@ echo "--- m33mu log tail ---"
 tail -n 60 /tmp/m33mu-vlan.log || true
 echo "--- tshark (vlan.id==${vid}) ---"
 head -n 20 /tmp/m33mu-vlan-tshark.txt 2>/dev/null || true
+cat /tmp/m33mu-vlan-tshark.err 2>/dev/null || true
 echo "--- pcap summary ---"
 ls -l /tmp/m33mu-vlan.pcap || true
 
