@@ -155,8 +155,7 @@ jobs:
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-arm qemu-system-aarch64
+          sudo apt-get install -y --no-install-recommends qemu-system-arm
 
       - name: Build ${{ matrix.board }} (OCM, default)
         run: |
