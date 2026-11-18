@@ -142,7 +142,7 @@
   {
     "target_name": "linux-x64-libwolfip",
     "setup_cmd": "sudo apt-get update && sudo apt-get install -y build-essential autoconf automake libtool pkg-config && git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl && cd /tmp/wolfssl && ./autogen.sh && ./configure --enable-all --enable-md5 && make -j$(nproc) && sudo make install && sudo ldconfig",
-    "build_cmd": "mkdir -p build && make libwolfip.so EXTRA_CFLAGS=\"-Wl,-Map=build/libwolfip.map\"",
+    "build_cmd": "make clean && mkdir -p build && make libwolfip.so EXTRA_CFLAGS=\"-Wl,-Map=build/libwolfip.map\"",
     "elf": "libwolfip.so",
     "ld": "",
     "map_file": "build/libwolfip.map",
