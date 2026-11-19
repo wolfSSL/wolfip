@@ -1,0 +1,152 @@
+[
+  {
+    "target_name": "stm32h563-echo",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=0 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=0 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/target.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32h563-https",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi && ([ -d ../wolfssl ] || git clone --depth 1 https://github.com/wolfSSL/wolfssl.git ../wolfssl)",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=0 ENABLE_HTTPS=1 WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=0 ENABLE_HTTPS=1 WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/target.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32h563-full",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi && ([ -d ../wolfssl ] || git clone --depth 1 https://github.com/wolfSSL/wolfssl.git ../wolfssl) && ([ -d ../wolfssh ] || git clone --depth 1 https://github.com/wolfSSL/wolfssh.git ../wolfssh) && ([ -d ../wolfmqtt ] || git clone --depth 1 https://github.com/wolfSSL/wolfmqtt.git ../wolfmqtt)",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=0 WOLFSSL_ROOT=../../../../wolfssl ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_MQTT_BROKER_PERSIST=1 ENABLE_SSH=1 WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=0 WOLFSSL_ROOT=../../../../wolfssl ENABLE_HTTPS=1 ENABLE_MQTT_BROKER=1 ENABLE_MQTT_BROKER_PERSIST=1 ENABLE_SSH=1 WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/target.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32h563-freertos-echo",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi && ([ -d ../FreeRTOS_Kernel ] || git clone --depth 1 https://github.com/FreeRTOS/FreeRTOS-Kernel.git ../FreeRTOS_Kernel)",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=0 FREERTOS=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=0 FREERTOS=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/target.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32h563-freertos-https",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi && ([ -d ../wolfssl ] || git clone --depth 1 https://github.com/wolfSSL/wolfssl.git ../wolfssl) && ([ -d ../FreeRTOS_Kernel ] || git clone --depth 1 https://github.com/FreeRTOS/FreeRTOS-Kernel.git ../FreeRTOS_Kernel)",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=0 FREERTOS=1 ENABLE_HTTPS=1 WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=0 FREERTOS=1 ENABLE_HTTPS=1 WOLFSSL_SP_NO_ASM=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/target.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32h563-tzen-ssh",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi && ([ -d ../wolfssl ] || git clone --depth 1 https://github.com/wolfSSL/wolfssl.git ../wolfssl) && ([ -d ../wolfssh ] || git clone --depth 1 https://github.com/wolfSSL/wolfssh.git ../wolfssh)",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=1 ENABLE_SSH=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=1 ENABLE_SSH=1 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/target_tzen.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32h563-wolfhal-nucleo",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi",
+    "build_cmd": "make -C src/port/stm32h563 clean TZEN=0 ENABLE_WOLFHAL=1 BOARD=stm32h563zi_nucleo CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy && make -j$(nproc) -C src/port/stm32h563 TZEN=0 ENABLE_WOLFHAL=1 BOARD=stm32h563zi_nucleo CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32h563/app.elf",
+    "ld": "src/port/stm32h563/boards/stm32h563zi_nucleo/linker.ld",
+    "map_file": "src/port/stm32h563/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "stm32n6",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi",
+    "build_cmd": "make -C src/port/stm32n6 clean && make -j$(nproc) -C src/port/stm32n6 CC=arm-none-eabi-gcc OBJCOPY=arm-none-eabi-objcopy EXTRA_CFLAGS=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/stm32n6/app.elf",
+    "ld": "src/port/stm32n6/target.ld",
+    "map_file": "src/port/stm32n6/app.map",
+    "linker_vars": "",
+    "skip_sections": "._user_heap_stack"
+  },
+  {
+    "target_name": "lpc54s018",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi",
+    "build_cmd": "make -C src/port/lpc54s018 clean && make -j$(nproc) -C src/port/lpc54s018 LDFLAGS=\"-nostdlib -T target.ld -Wl,-gc-sections -Wl,-Map=app.map\"",
+    "elf": "src/port/lpc54s018/app.elf",
+    "ld": "src/port/lpc54s018/target.ld",
+    "map_file": "src/port/lpc54s018/app.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  },
+  {
+    "target_name": "amd-zcu102-ocm",
+    "setup_cmd": "mkdir -p $HOME/toolchains && ([ -d $HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf ] || (curl -fSL --retry 3 --retry-delay 5 -o /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz && tar -xf /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz -C $HOME/toolchains)) && echo \"$HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf/bin\" >> \"$GITHUB_PATH\"",
+    "build_cmd": "make -C src/port/amd/boards/zcu102 clean && make -j$(nproc) -C src/port/amd/boards/zcu102 CROSS_COMPILE=aarch64-none-elf- LAYOUT=ocm CFLAGS_EXTRA=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/amd/boards/zcu102/app.elf",
+    "ld": "src/port/amd/boards/zcu102/target.ld",
+    "map_file": "src/port/amd/boards/zcu102/app.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  },
+  {
+    "target_name": "amd-zcu102-ddr",
+    "setup_cmd": "mkdir -p $HOME/toolchains && ([ -d $HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf ] || (curl -fSL --retry 3 --retry-delay 5 -o /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz && tar -xf /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz -C $HOME/toolchains)) && echo \"$HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf/bin\" >> \"$GITHUB_PATH\"",
+    "build_cmd": "make -C src/port/amd/boards/zcu102 clean && make -j$(nproc) -C src/port/amd/boards/zcu102 CROSS_COMPILE=aarch64-none-elf- LAYOUT=ddr CFLAGS_EXTRA=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/amd/boards/zcu102/app.elf",
+    "ld": "src/port/amd/boards/zcu102/target_ddr.ld",
+    "map_file": "src/port/amd/boards/zcu102/app.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  },
+  {
+    "target_name": "amd-versal-ocm",
+    "setup_cmd": "mkdir -p $HOME/toolchains && ([ -d $HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf ] || (curl -fSL --retry 3 --retry-delay 5 -o /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz && tar -xf /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz -C $HOME/toolchains)) && echo \"$HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf/bin\" >> \"$GITHUB_PATH\"",
+    "build_cmd": "make -C src/port/amd/boards/versal clean && make -j$(nproc) -C src/port/amd/boards/versal CROSS_COMPILE=aarch64-none-elf- LAYOUT=ocm CFLAGS_EXTRA=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/amd/boards/versal/app.elf",
+    "ld": "src/port/amd/boards/versal/target.ld",
+    "map_file": "src/port/amd/boards/versal/app.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  },
+  {
+    "target_name": "amd-versal-ddr",
+    "setup_cmd": "mkdir -p $HOME/toolchains && ([ -d $HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf ] || (curl -fSL --retry 3 --retry-delay 5 -o /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz && tar -xf /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz -C $HOME/toolchains)) && echo \"$HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf/bin\" >> \"$GITHUB_PATH\"",
+    "build_cmd": "make -C src/port/amd/boards/versal clean && make -j$(nproc) -C src/port/amd/boards/versal CROSS_COMPILE=aarch64-none-elf- LAYOUT=ddr CFLAGS_EXTRA=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/amd/boards/versal/app.elf",
+    "ld": "src/port/amd/boards/versal/target_ddr.ld",
+    "map_file": "src/port/amd/boards/versal/app.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  },
+  {
+    "target_name": "amd-zynq7000",
+    "setup_cmd": "mkdir -p $HOME/toolchains && ([ -d $HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi ] || (curl -fSL --retry 3 --retry-delay 5 -o /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz && tar -xf /tmp/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz -C $HOME/toolchains)) && echo \"$HOME/toolchains/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin\" >> \"$GITHUB_PATH\"",
+    "build_cmd": "make -C src/port/amd/boards/zynq7000 clean && make -j$(nproc) -C src/port/amd/boards/zynq7000 CROSS_COMPILE=arm-none-eabi- CFLAGS_EXTRA=\"-Wl,-Map=app.map\"",
+    "elf": "src/port/amd/boards/zynq7000/app.elf",
+    "ld": "src/port/amd/boards/zynq7000/target.ld",
+    "map_file": "src/port/amd/boards/zynq7000/app.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  },
+  {
+    "target_name": "linux-x64-libwolfip",
+    "setup_cmd": "sudo apt-get update && sudo apt-get install -y build-essential autoconf automake libtool pkg-config && git clone --depth=1 https://github.com/wolfssl/wolfssl --branch nightly-snapshot /tmp/wolfssl && cd /tmp/wolfssl && ./autogen.sh && ./configure --enable-all --enable-md5 && make -j$(nproc) && sudo make install && sudo ldconfig",
+    "build_cmd": "make clean && mkdir -p build && make libwolfip.so EXTRA_CFLAGS=\"-Wl,-Map=build/libwolfip.map\"",
+    "elf": "libwolfip.so",
+    "ld": "",
+    "map_file": "build/libwolfip.map",
+    "linker_vars": "",
+    "skip_sections": ""
+  }
+]
