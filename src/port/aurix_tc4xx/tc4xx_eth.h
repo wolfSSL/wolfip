@@ -46,11 +46,11 @@ int tc4xx_eth_link_update(void);
 int tc4xx_eth_mdio_read(uint8_t phy_addr, uint8_t reg, uint16_t *value);
 int tc4xx_eth_mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t value);
 
-/* PHY address in use, or -1 before tc4xx_eth_init() found one. */
+/* PHY address in use, or -1 until tc4xx_eth_init() has brought up the MAC. */
 int tc4xx_eth_phy_addr(void);
 
-/* Cumulative since init; rx_dropped counts errored and oversize frames.
- * Any pointer may be NULL. */
+/* Cumulative since init; tx counts frames handed to the DMA, rx_dropped
+ * frames the driver discarded. Any pointer may be NULL. */
 void tc4xx_eth_get_stats(uint32_t *rx, uint32_t *tx, uint32_t *rx_dropped);
 
 #if defined(TC4XX_ETH_RX_IRQ) && TC4XX_ETH_RX_IRQ
