@@ -52,9 +52,31 @@
 #define NXP_MCXE31B_EMAC_IRQ_PRIO 0x80U
 #endif
 
+/* Receive and transmit descriptors */
+#ifndef NXP_MCXE31B_EMAC_RX_DESC
+#define NXP_MCXE31B_EMAC_RX_DESC 4U
+#endif
+#ifndef NXP_MCXE31B_EMAC_TX_DESC
+#define NXP_MCXE31B_EMAC_TX_DESC 8U
+#endif
+
 /* DMA burst length in beats, 1, 2, 4, 8, 16 or 32. */
 #ifndef NXP_MCXE31B_EMAC_PBL
 #define NXP_MCXE31B_EMAC_PBL    8U
+#endif
+
+/* DMA_SysBus_Mode value: EMAC_DMA_SYSBUS_FB, _AAL and _MB of
+ * nxp_mcxe31b_emac_regs.h, or 0 for the reset value (undefined length
+ * bursts). The default, fixed address-aligned bursts (FB | AAL), measured
+ * 2-4% faster than the reset value on transmit and bidirectional traffic. */
+#ifndef NXP_MCXE31B_EMAC_SYSBUS
+#define NXP_MCXE31B_EMAC_SYSBUS 0x1001U
+#endif
+
+/* 1: the transmit DMA fetches the next frame before the status of the
+ * previous one is written back (DMA_CH0_TX_Control[OSF]). */
+#ifndef NXP_MCXE31B_EMAC_TX_OSF
+#define NXP_MCXE31B_EMAC_TX_OSF 1
 #endif
 
 /* 1: count frames and the core cycles (DWT) spent in the driver, for

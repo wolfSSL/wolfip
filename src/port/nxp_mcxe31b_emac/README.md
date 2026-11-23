@@ -38,19 +38,23 @@ The EMAC receive and transmit clocks (MC_CGM muxes 7 and 8) and the timestamp cl
 |---|---|---|
 | `NXP_MCXE31B_EMAC_IRQ` | `0` | `1`: the receive interrupt marks frames waiting, so `poll()` returns at once when there are none. Route EMAC IRQ 105 (the common line, which carries the DMA channel events) to `nxp_mcxe31b_emac_irq_handler()`. The transmit interrupt is not used. |
 | `NXP_MCXE31B_EMAC_IRQ_PRIO` | `0x80` | NVIC priority of the EMAC interrupt |
-| `NXP_MCXE31B_EMAC_PBL` | `8` | DMA burst length in beats |
+| `NXP_MCXE31B_EMAC_RX_DESC` | `4` | receive descriptors, one 1536-byte buffer each. |
+| `NXP_MCXE31B_EMAC_TX_DESC` | `8` | transmit descriptors, one 1536-byte buffer each. |
+| `NXP_MCXE31B_EMAC_PBL` | `8` | DMA burst length in beats. |
+| `NXP_MCXE31B_EMAC_SYSBUS` | `0x1001` | `DMA_SysBus_Mode`: fixed, address-aligned bursts (FB, AAL), slightly faster on transmit than the reset value 0 |
+| `NXP_MCXE31B_EMAC_TX_OSF` | `1` | transmit DMA operates on the second frame. |
 | `NXP_MCXE31B_EMAC_STATS` | `0` | `1`: count frames and the core cycles (DWT) spent receiving, sending, polling an empty ring, copying and waiting for a free transmit descriptor; read with `nxp_mcxe31b_emac_stats_get()`. The wolfBoot test-app throughput test uses it for its CPU breakdown. |
 
 ## Data path
 
 wolfIP hands the driver its own buffers: `poll()` must fill the buffer it is given, and `send()` must be done with the buffer when it returns.
 
-- Receive: the DMA writes each frame into one of 8 ring buffers (1536 bytes, one frame each, FCS stripped). `poll()` copies it into the wolfIP buffer and hands the descriptor back to the DMA. Frames with an error status are dropped in the same call, so that `poll()` returns 0 only when the ring is empty.
-- Transmit: `send()` copies each frame into one of 4 ring buffers and returns while the MAC sends it in the background; the MAC pads short frames and appends the FCS. When all 4 are in use, `send()` polls until the oldest has gone out, for at most 5 ms.
+- Receive: the DMA writes each frame into one of the receive ring buffers (4 by default, 1536 bytes, one frame each, FCS stripped). `poll()` copies it into the wolfIP buffer and hands the descriptor back to the DMA. Frames with an error status are dropped in the same call, so that `poll()` returns 0 only when the ring is empty.
+- Transmit: `send()` copies each frame into one of the transmit ring buffers (8 by default) and returns while the MAC sends it in the background; the MAC pads short frames and appends the FCS. When all are in use, `send()` polls until the oldest has gone out, for at most 5 ms.
 
 ## Memory
 
-The descriptor rings and frame buffers (19 KB, the driver's `.bss`) must be in the CM7_0 DTCM. The core does not cache the DTCM, and the EMAC DMA reaches it through its backdoor port (`0x21000000`), so the driver does no cache maintenance. `nxp_mcxe31b_emac_init()` returns -5 when the D-cache is on and the buffers are elsewhere. The wolfIP buffers need no special placement: only the core reads and writes them.
+The descriptor rings and frame buffers (19 KB by default, the driver's `.bss`) must be in the CM7_0 DTCM. The core does not cache the DTCM, and the EMAC DMA reaches it through its backdoor port (`0x21000000`), so the driver does no cache maintenance. `nxp_mcxe31b_emac_init()` returns -5 when the D-cache is on and the buffers are elsewhere. The wolfIP buffers need no special placement: only the core reads and writes them.
 
 `config.h` defaults `RXBUF_SIZE` and `TXBUF_SIZE` to one `LINK_MTU`, which allows one TCP segment in flight. The wolfBoot test-app sets both to 9216 (6 segments) and places the wolfIP state in SRAM.
 

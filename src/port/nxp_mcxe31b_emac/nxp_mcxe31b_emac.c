@@ -38,8 +38,8 @@
 #include "nxp_mcxe31b_emac.h"
 #include "nxp_mcxe31b_emac_regs.h"
 
-#define EMAC_RX_DESC_NUM        8U
-#define EMAC_TX_DESC_NUM        4U
+#define EMAC_RX_DESC_NUM        NXP_MCXE31B_EMAC_RX_DESC
+#define EMAC_TX_DESC_NUM        NXP_MCXE31B_EMAC_TX_DESC
 /* Frame buffer size: holds a maximum frame (1522 bytes with a VLAN tag;
  * the FCS is stripped), so every frame fits in one descriptor */
 #define EMAC_BUF_SIZE           1536U
@@ -539,7 +539,12 @@ static void emac_start(const uint8_t *mac, uint16_t scsr)
     EMAC_DMA_CH0_RXDESC_LIST = dma_addr(&g_rx_desc[0]);
     EMAC_DMA_CH0_TXDESC_TAIL = dma_addr(&g_tx_desc[0]);
     EMAC_DMA_CH0_RXDESC_TAIL = dma_addr(&g_rx_desc[EMAC_RX_DESC_NUM]);
-    EMAC_DMA_CH0_TX_CTRL = EMAC_DMA_TX_CTRL_TXPBL(NXP_MCXE31B_EMAC_PBL);
+    EMAC_DMA_SYSBUS_MODE = NXP_MCXE31B_EMAC_SYSBUS;
+    EMAC_DMA_CH0_TX_CTRL = EMAC_DMA_TX_CTRL_TXPBL(NXP_MCXE31B_EMAC_PBL)
+#if NXP_MCXE31B_EMAC_TX_OSF
+                           | EMAC_DMA_TX_CTRL_OSF
+#endif
+                           ;
     EMAC_DMA_CH0_RX_CTRL = EMAC_DMA_RX_CTRL_RXPBL(NXP_MCXE31B_EMAC_PBL) |
                            EMAC_DMA_RX_CTRL_RBSZ(EMAC_BUF_SIZE);
 

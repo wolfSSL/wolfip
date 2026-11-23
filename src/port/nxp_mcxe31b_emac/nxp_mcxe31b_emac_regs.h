@@ -92,6 +92,7 @@
 
 /* EMAC: DMA and DMA channel 0 */
 #define EMAC_DMA_MODE           E31_REG32(EMAC_BASE + 0x1000UL)
+#define EMAC_DMA_SYSBUS_MODE    E31_REG32(EMAC_BASE + 0x1004UL)
 #define EMAC_DMA_CH0_CTRL       E31_REG32(EMAC_BASE + 0x1100UL)
 #define EMAC_DMA_CH0_TX_CTRL    E31_REG32(EMAC_BASE + 0x1104UL)
 #define EMAC_DMA_CH0_RX_CTRL    E31_REG32(EMAC_BASE + 0x1108UL)
@@ -107,7 +108,13 @@
 
 #define EMAC_DMA_MODE_SWR       (1UL << 0)
 
+/* DMA_SysBus_Mode (AHB master) */
+#define EMAC_DMA_SYSBUS_FB      (1UL << 0)      /* fixed bursts */
+#define EMAC_DMA_SYSBUS_AAL     (1UL << 12)     /* address-aligned beats */
+#define EMAC_DMA_SYSBUS_MB      (1UL << 14)     /* mixed bursts */
+
 #define EMAC_DMA_TX_CTRL_ST     (1UL << 0)
+#define EMAC_DMA_TX_CTRL_OSF    (1UL << 4)      /* operate on second frame */
 #define EMAC_DMA_TX_CTRL_TXPBL(x) (((uint32_t)(x) & 0x3FUL) << 16)
 #define EMAC_DMA_RX_CTRL_SR     (1UL << 0)
 /* Receive buffer size, in bytes, bits 13:2 of it in bits 14:3 */
