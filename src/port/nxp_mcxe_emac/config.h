@@ -1,6 +1,6 @@
 /* config.h
  *
- * wolfIP configuration for the NXP MCX E31B port.
+ * wolfIP configuration for the NXP MCX E EMAC port.
  *
  * Copyright (C) 2026 wolfSSL Inc.
  *

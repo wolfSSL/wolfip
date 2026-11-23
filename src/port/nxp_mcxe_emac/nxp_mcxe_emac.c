@@ -1,16 +1,16 @@
-/* nxp_mcxe31b_emac.c
+/* nxp_mcxe_emac.c
  *
- * NXP MCX E31B ethernet driver for wolfIP. Standalone: it programs the EMAC
- * (Synopsys Ethernet QoS), its clocks and pins and the LAN8741 PHY directly
- * and needs no vendor SDK.
+ * wolfIP ethernet driver for the EMAC (Synopsys Ethernet QoS) of NXP MCX E
+ * parts, written and tested on the MCX E31B. Standalone: it programs the
+ * EMAC, its clocks and pins and the LAN8741 PHY directly and needs no vendor
+ * SDK.
  *
- * Build options (see nxp_mcxe31b_emac.h):
- *   NXP_MCXE31B_EMAC_IRQ       0: polled. 1: receive interrupt. The
+ * Build options (see nxp_mcxe_emac.h):
+ *   NXP_MCXE_EMAC_IRQ          0: polled. 1: receive interrupt. The
  *                              application routes EMAC IRQ 105 to
- *                              nxp_mcxe31b_emac_irq_handler().
- *   NXP_MCXE31B_EMAC_STATS     count frames and core cycles spent in the
- *                              driver, read with
- *                              nxp_mcxe31b_emac_stats_get().
+ *                              nxp_mcxe_emac_irq_handler().
+ *   NXP_MCXE_EMAC_STATS        count frames and core cycles spent in the
+ *                              driver, read with nxp_mcxe_emac_stats_get().
  *
  * Copyright (C) 2026 wolfSSL Inc.
  *
@@ -35,11 +35,11 @@
 
 #include "config.h"
 #include "wolfip.h"
-#include "nxp_mcxe31b_emac.h"
-#include "nxp_mcxe31b_emac_regs.h"
+#include "nxp_mcxe_emac.h"
+#include "nxp_mcxe_emac_regs.h"
 
-#define EMAC_RX_DESC_NUM        NXP_MCXE31B_EMAC_RX_DESC
-#define EMAC_TX_DESC_NUM        NXP_MCXE31B_EMAC_TX_DESC
+#define EMAC_RX_DESC_NUM        NXP_MCXE_EMAC_RX_DESC
+#define EMAC_TX_DESC_NUM        NXP_MCXE_EMAC_TX_DESC
 /* Frame buffer size: holds a maximum frame (1522 bytes with a VLAN tag;
  * the FCS is stripped), so every frame fits in one descriptor */
 #define EMAC_BUF_SIZE           1536U
@@ -64,7 +64,7 @@
 #define PAD_PTD11               107U    /* RMII reference clock in */
 #define PAD_PTD12               108U    /* TX_EN */
 
-/* Input muxes (Reference Manual numbering) */
+/* Input muxes (SIUL_IMCR803..808 of the MCX E31B IOMUX attachment) */
 #define IMCR_EMAC_MDIO          291U
 #define IMCR_EMAC_RX_DV         292U
 #define IMCR_EMAC_RXD0          294U
@@ -128,12 +128,12 @@ static uint32_t g_core_hz;
 static int g_running;
 static int g_phy_addr = -1;
 
-#if NXP_MCXE31B_EMAC_IRQ
+#if NXP_MCXE_EMAC_IRQ
 static volatile uint32_t g_rx_pending;
 #endif
 static volatile uint32_t g_bus_errors;
-#if NXP_MCXE31B_EMAC_STATS
-static struct nxp_mcxe31b_emac_stats g_stats;
+#if NXP_MCXE_EMAC_STATS
+static struct nxp_mcxe_emac_stats g_stats;
 #endif
 
 /* MC_CGM mux 0 source: FIRC or PLL_PHI0 */
@@ -153,7 +153,7 @@ static uint32_t mux0_src_hz(void)
         rdiv = 1U;
     if (odiv2 == 0U)
         odiv2 = 1U;
-    vco = (NXP_MCXE31B_EMAC_FXOSC_HZ / rdiv) * PLL_PLLDV_MFI(dv);
+    vco = (NXP_MCXE_EMAC_FXOSC_HZ / rdiv) * PLL_PLLDV_MFI(dv);
     return vco / odiv2 / (PLL_PLLODIV_DIV(PLL_PLLODIV(0)) + 1U);
 }
 
@@ -198,8 +198,8 @@ static uint32_t dma_addr(const volatile void *p)
 {
     uint32_t addr = (uint32_t)(uintptr_t)p;
 
-    if (addr >= E31_DTCM_BASE && addr < E31_DTCM_BASE + E31_DTCM_SIZE)
-        addr += E31_DTCM_BACKDOOR_OFFSET;
+    if (addr >= EMAC_DTCM_BASE && addr < EMAC_DTCM_BASE + EMAC_DTCM_SIZE)
+        addr += EMAC_DTCM_BACKDOOR_OFFSET;
     return addr;
 }
 
@@ -207,8 +207,8 @@ static int in_dtcm(const volatile void *p, uint32_t len)
 {
     uint32_t addr = (uint32_t)(uintptr_t)p;
 
-    return (addr >= E31_DTCM_BASE &&
-            addr + len <= E31_DTCM_BASE + E31_DTCM_SIZE);
+    return (addr >= EMAC_DTCM_BASE &&
+            addr + len <= EMAC_DTCM_BASE + EMAC_DTCM_SIZE);
 }
 
 static int mdio_wait(void)
@@ -268,12 +268,12 @@ static uint32_t mdio_cr(uint32_t csr_hz)
 
 static void frame_copy(uint8_t *dst, const uint8_t *src, uint32_t len)
 {
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
     uint32_t start = DWT_CYCCNT;
 #endif
 
     memcpy(dst, src, len);
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
     g_stats.copy_cycles += DWT_CYCCNT - start;
 #endif
 }
@@ -393,7 +393,7 @@ static void emac_irq_disable(void)
     NVIC_ICER(EMAC_IRQN / 32U) = (1UL << (EMAC_IRQN % 32U));
 }
 
-#if NXP_MCXE31B_EMAC_IRQ
+#if NXP_MCXE_EMAC_IRQ
 static void emac_irq_enable(void)
 {
     g_rx_pending = 1U;  /* look at the ring once, frames may be waiting */
@@ -401,12 +401,12 @@ static void emac_irq_enable(void)
                         EMAC_DMA_INT_NI | EMAC_DMA_INT_AI;
     EMAC_DMA_CH0_INT_EN = EMAC_DMA_INT_RI | EMAC_DMA_INT_NI |
                           EMAC_DMA_INT_FBE | EMAC_DMA_INT_AI;
-    NVIC_IPR(EMAC_IRQN) = (uint8_t)NXP_MCXE31B_EMAC_IRQ_PRIO;
+    NVIC_IPR(EMAC_IRQN) = (uint8_t)NXP_MCXE_EMAC_IRQ_PRIO;
     NVIC_ICPR(EMAC_IRQN / 32U) = (1UL << (EMAC_IRQN % 32U));
     NVIC_ISER(EMAC_IRQN / 32U) = (1UL << (EMAC_IRQN % 32U));
 }
 
-void nxp_mcxe31b_emac_irq_handler(void)
+void nxp_mcxe_emac_irq_handler(void)
 {
     uint32_t stat = EMAC_DMA_CH0_STAT & (EMAC_DMA_INT_RI | EMAC_DMA_INT_FBE |
                                          EMAC_DMA_INT_NI | EMAC_DMA_INT_AI);
@@ -494,7 +494,7 @@ static void rx_desc_arm(uint32_t idx)
     d->des2 = 0U;
     __asm__ volatile ("dmb" ::: "memory");
     d->des3 = EMAC_DES3_OWN | EMAC_RDES3_BUF1V
-#if NXP_MCXE31B_EMAC_IRQ
+#if NXP_MCXE_EMAC_IRQ
               | EMAC_RDES3_IOC
 #endif
               ;
@@ -539,13 +539,13 @@ static void emac_start(const uint8_t *mac, uint16_t scsr)
     EMAC_DMA_CH0_RXDESC_LIST = dma_addr(&g_rx_desc[0]);
     EMAC_DMA_CH0_TXDESC_TAIL = dma_addr(&g_tx_desc[0]);
     EMAC_DMA_CH0_RXDESC_TAIL = dma_addr(&g_rx_desc[EMAC_RX_DESC_NUM]);
-    EMAC_DMA_SYSBUS_MODE = NXP_MCXE31B_EMAC_SYSBUS;
-    EMAC_DMA_CH0_TX_CTRL = EMAC_DMA_TX_CTRL_TXPBL(NXP_MCXE31B_EMAC_PBL)
-#if NXP_MCXE31B_EMAC_TX_OSF
+    EMAC_DMA_SYSBUS_MODE = NXP_MCXE_EMAC_SYSBUS;
+    EMAC_DMA_CH0_TX_CTRL = EMAC_DMA_TX_CTRL_TXPBL(NXP_MCXE_EMAC_PBL)
+#if NXP_MCXE_EMAC_TX_OSF
                            | EMAC_DMA_TX_CTRL_OSF
 #endif
                            ;
-    EMAC_DMA_CH0_RX_CTRL = EMAC_DMA_RX_CTRL_RXPBL(NXP_MCXE31B_EMAC_PBL) |
+    EMAC_DMA_CH0_RX_CTRL = EMAC_DMA_RX_CTRL_RXPBL(NXP_MCXE_EMAC_PBL) |
                            EMAC_DMA_RX_CTRL_RBSZ(EMAC_BUF_SIZE);
 
     /* MTL: queue 0 gets the whole FIFOs, store and forward */
@@ -569,7 +569,7 @@ static void emac_start(const uint8_t *mac, uint16_t scsr)
     EMAC_MAC_CONFIG = cfg;
 
     EMAC_DMA_CH0_STAT = 0xFFFFFFFFUL;
-#if NXP_MCXE31B_EMAC_IRQ
+#if NXP_MCXE_EMAC_IRQ
     emac_irq_enable();
 #endif
     /* Start the DMA before the MAC receiver, so that frames do not fill
@@ -598,7 +598,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     int ret = 0;
     (void)dev;
 
-#if NXP_MCXE31B_EMAC_IRQ
+#if NXP_MCXE_EMAC_IRQ
     if (g_rx_pending == 0U)
         return 0;
 #else
@@ -613,7 +613,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     for (n = 0; n < EMAC_RX_DESC_NUM && ret == 0; n++) {
         d = &g_rx_desc[g_rx_idx];
         des3 = d->des3;
-#if NXP_MCXE31B_EMAC_IRQ
+#if NXP_MCXE_EMAC_IRQ
         if ((des3 & EMAC_DES3_OWN) != 0U) {
             /* Ring drained: wait for the next receive interrupt. Look
              * again after clearing, in case a frame landed in between. */
@@ -636,7 +636,7 @@ static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
             frame_copy((uint8_t *)frame, g_rx_buf[g_rx_idx], flen);
             ret = (int)flen;
         }
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
         else {
             g_stats.rx_errors++;
         }
@@ -667,7 +667,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     uint32_t next = (idx + 1U) % EMAC_TX_DESC_NUM;
     struct emac_desc *d = &g_tx_desc[idx];
     int rc;
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
     uint32_t start;
 #endif
     (void)dev;
@@ -677,7 +677,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     /* Ring full: wait for the oldest frame rather than fail, since wolfIP
      * does not retry a dropped ACK */
     if ((d->des3 & EMAC_DES3_OWN) != 0U) {
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
         start = DWT_CYCCNT;
         rc = tx_wait(d);
         g_stats.tx_wait_cycles += DWT_CYCCNT - start;
@@ -708,7 +708,7 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     return (int)len;
 }
 
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
 static int eth_poll_stats(struct wolfIP_ll_dev *dev, void *frame,
                           uint32_t len)
 {
@@ -741,7 +741,7 @@ static int eth_send_stats(struct wolfIP_ll_dev *dev, void *frame,
     return ret;
 }
 
-void nxp_mcxe31b_emac_stats_get(struct nxp_mcxe31b_emac_stats *st)
+void nxp_mcxe_emac_stats_get(struct nxp_mcxe_emac_stats *st)
 {
     if (st != NULL) {
         memcpy(st, &g_stats, sizeof(*st));
@@ -749,16 +749,16 @@ void nxp_mcxe31b_emac_stats_get(struct nxp_mcxe31b_emac_stats *st)
     }
 }
 
-void nxp_mcxe31b_emac_stats_reset(void)
+void nxp_mcxe_emac_stats_reset(void)
 {
     memset(&g_stats, 0, sizeof(g_stats));
 }
 #endif
 
-int nxp_mcxe31b_emac_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
+int nxp_mcxe_emac_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
 {
-    static const uint8_t default_mac[6] = NXP_MCXE31B_EMAC_MAC;
-    const uint8_t phy = (uint8_t)NXP_MCXE31B_EMAC_PHY_ADDR;
+    static const uint8_t default_mac[6] = NXP_MCXE_EMAC_MAC;
+    const uint8_t phy = (uint8_t)NXP_MCXE_EMAC_PHY_ADDR;
     uint16_t scsr = 0;
     int ret = 0;
 
@@ -793,7 +793,8 @@ int nxp_mcxe31b_emac_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     if (emac_clocks_init() != 0 || emac_clock_enable() != 0)
         return -4;
     /* RMII, sampled by the EMAC reset below */
-    DCM_GPR_DCMRWF1 |= DCM_GPR_DCMRWF1_RMII_MII_SEL;
+    DCM_GPR_DCMRWF1 = (DCM_GPR_DCMRWF1 & ~DCM_GPR_DCMRWF1_MAC_CONF_SEL_MASK) |
+                      DCM_GPR_DCMRWF1_MAC_CONF_SEL_RMII;
 
     /* Reset the MAC and DMA. Like the vendor driver, select the 10/100 port
      * while the reset runs: it completes only with the port clocks running */
@@ -825,7 +826,7 @@ int nxp_mcxe31b_emac_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     memset(ll->ifname, 0, sizeof(ll->ifname));
     memcpy(ll->ifname, "eth0", 4);
     ll->mtu = LINK_MTU;
-#if NXP_MCXE31B_EMAC_STATS
+#if NXP_MCXE_EMAC_STATS
     ll->poll = eth_poll_stats;
     ll->send = eth_send_stats;
 #else
@@ -835,12 +836,12 @@ int nxp_mcxe31b_emac_init(struct wolfIP_ll_dev *ll, const uint8_t *mac)
     return 0;
 }
 
-int nxp_mcxe31b_emac_phy_addr(void)
+int nxp_mcxe_emac_phy_addr(void)
 {
     return g_phy_addr;
 }
 
-uint16_t nxp_mcxe31b_emac_phy_read(uint8_t reg)
+uint16_t nxp_mcxe_emac_phy_read(uint8_t reg)
 {
     uint16_t value = 0xFFFFU;
 
@@ -849,7 +850,7 @@ uint16_t nxp_mcxe31b_emac_phy_read(uint8_t reg)
     return value;
 }
 
-uint32_t nxp_mcxe31b_emac_link_up(void)
+uint32_t nxp_mcxe_emac_link_up(void)
 {
     uint16_t bsr = 0;
 
@@ -863,7 +864,7 @@ uint32_t nxp_mcxe31b_emac_link_up(void)
     return ((bsr & PHY_BSR_LINK) != 0U) ? 1U : 0U;
 }
 
-uint32_t nxp_mcxe31b_emac_bus_errors(void)
+uint32_t nxp_mcxe_emac_bus_errors(void)
 {
     return g_bus_errors;
 }

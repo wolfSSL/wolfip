@@ -1,10 +1,12 @@
-/* nxp_mcxe31b_emac_regs.h
+/* nxp_mcxe_emac_regs.h
  *
- * Register definitions used by the NXP MCX E31B ethernet driver: the EMAC
+ * Register definitions used by the NXP MCX E EMAC ethernet driver: the EMAC
  * (Synopsys Ethernet QoS) MAC, MTL and DMA, clock gating (MC_ME), the EMAC
  * clock muxes (MC_CGM), the RMII select (DCM_GPR), pin muxing (SIUL2) and
- * the Cortex-M7 NVIC, SCB and DWT. Offsets and bits are from the MCX E31x
- * Reference Manual (MCXE31XRM, Rev. 3).
+ * the Cortex-M7 NVIC, SCB and DWT. Offsets and bits are from the MCX E3
+ * Reference Manual (MCXEP172M160FB0RM, Rev. 5), which covers the MCX E31B,
+ * E327 and E32B that have the EMAC; the pin and input mux numbers are those
+ * of the MCX E31B (its IOMUX attachment).
  *
  * Copyright (C) 2026 wolfSSL Inc.
  *
@@ -24,25 +26,25 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
-#ifndef WOLFIP_NXP_MCXE31B_EMAC_REGS_H
-#define WOLFIP_NXP_MCXE31B_EMAC_REGS_H
+#ifndef WOLFIP_NXP_MCXE_EMAC_REGS_H
+#define WOLFIP_NXP_MCXE_EMAC_REGS_H
 
 #include <stdint.h>
 
-#define E31_REG32(addr)         (*(volatile uint32_t *)(addr))
-#define E31_REG8(addr)          (*(volatile uint8_t *)(addr))
+#define EMAC_REG32(addr)        (*(volatile uint32_t *)(addr))
+#define EMAC_REG8(addr)         (*(volatile uint8_t *)(addr))
 
 /* EMAC: MAC */
 #define EMAC_BASE               0x40480000UL
-#define EMAC_MAC_CONFIG         E31_REG32(EMAC_BASE + 0x0000UL)
-#define EMAC_MAC_PKT_FILTER     E31_REG32(EMAC_BASE + 0x0008UL)
-#define EMAC_MAC_RXQ_CTRL0      E31_REG32(EMAC_BASE + 0x00A0UL)
-#define EMAC_MAC_INT_ENABLE     E31_REG32(EMAC_BASE + 0x00B4UL)
-#define EMAC_MAC_HW_FEATURE1    E31_REG32(EMAC_BASE + 0x0120UL)
-#define EMAC_MAC_MDIO_ADDR      E31_REG32(EMAC_BASE + 0x0200UL)
-#define EMAC_MAC_MDIO_DATA      E31_REG32(EMAC_BASE + 0x0204UL)
-#define EMAC_MAC_ADDR0_HIGH     E31_REG32(EMAC_BASE + 0x0300UL)
-#define EMAC_MAC_ADDR0_LOW      E31_REG32(EMAC_BASE + 0x0304UL)
+#define EMAC_MAC_CONFIG         EMAC_REG32(EMAC_BASE + 0x0000UL)
+#define EMAC_MAC_PKT_FILTER     EMAC_REG32(EMAC_BASE + 0x0008UL)
+#define EMAC_MAC_RXQ_CTRL0      EMAC_REG32(EMAC_BASE + 0x00A0UL)
+#define EMAC_MAC_INT_ENABLE     EMAC_REG32(EMAC_BASE + 0x00B4UL)
+#define EMAC_MAC_HW_FEATURE1    EMAC_REG32(EMAC_BASE + 0x0120UL)
+#define EMAC_MAC_MDIO_ADDR      EMAC_REG32(EMAC_BASE + 0x0200UL)
+#define EMAC_MAC_MDIO_DATA      EMAC_REG32(EMAC_BASE + 0x0204UL)
+#define EMAC_MAC_ADDR0_HIGH     EMAC_REG32(EMAC_BASE + 0x0300UL)
+#define EMAC_MAC_ADDR0_LOW      EMAC_REG32(EMAC_BASE + 0x0304UL)
 
 #define EMAC_MAC_CONFIG_RE      (1UL << 0)
 #define EMAC_MAC_CONFIG_TE      (1UL << 1)
@@ -72,16 +74,16 @@
 #define EMAC_MAC_ADDR_HIGH_AE   (1UL << 31)
 
 /* EMAC: MMC counters */
-#define EMAC_MMC_RX_INT_MASK    E31_REG32(EMAC_BASE + 0x070CUL)
-#define EMAC_MMC_TX_INT_MASK    E31_REG32(EMAC_BASE + 0x0710UL)
-#define EMAC_MMC_FPE_TX_INT_MASK E31_REG32(EMAC_BASE + 0x08A4UL)
-#define EMAC_MMC_FPE_RX_INT_MASK E31_REG32(EMAC_BASE + 0x08C4UL)
-#define EMAC_RX_CRC_ERRORS      E31_REG32(EMAC_BASE + 0x0794UL)
-#define EMAC_RX_FIFO_OVERFLOWS  E31_REG32(EMAC_BASE + 0x07D4UL)
+#define EMAC_MMC_RX_INT_MASK    EMAC_REG32(EMAC_BASE + 0x070CUL)
+#define EMAC_MMC_TX_INT_MASK    EMAC_REG32(EMAC_BASE + 0x0710UL)
+#define EMAC_MMC_FPE_TX_INT_MASK EMAC_REG32(EMAC_BASE + 0x08A4UL)
+#define EMAC_MMC_FPE_RX_INT_MASK EMAC_REG32(EMAC_BASE + 0x08C4UL)
+#define EMAC_RX_CRC_ERRORS      EMAC_REG32(EMAC_BASE + 0x0794UL)
+#define EMAC_RX_FIFO_OVERFLOWS  EMAC_REG32(EMAC_BASE + 0x07D4UL)
 
 /* EMAC: MTL queue 0 */
-#define EMAC_MTL_TXQ0_OP_MODE   E31_REG32(EMAC_BASE + 0x0D00UL)
-#define EMAC_MTL_RXQ0_OP_MODE   E31_REG32(EMAC_BASE + 0x0D30UL)
+#define EMAC_MTL_TXQ0_OP_MODE   EMAC_REG32(EMAC_BASE + 0x0D00UL)
+#define EMAC_MTL_RXQ0_OP_MODE   EMAC_REG32(EMAC_BASE + 0x0D30UL)
 
 #define EMAC_MTL_TXQ_OP_FTQ     (1UL << 0)      /* flush */
 #define EMAC_MTL_TXQ_OP_TSF     (1UL << 1)      /* store and forward */
@@ -91,20 +93,20 @@
 #define EMAC_MTL_RXQ_OP_RQS(x)  (((uint32_t)(x) & 0x1FUL) << 20)
 
 /* EMAC: DMA and DMA channel 0 */
-#define EMAC_DMA_MODE           E31_REG32(EMAC_BASE + 0x1000UL)
-#define EMAC_DMA_SYSBUS_MODE    E31_REG32(EMAC_BASE + 0x1004UL)
-#define EMAC_DMA_CH0_CTRL       E31_REG32(EMAC_BASE + 0x1100UL)
-#define EMAC_DMA_CH0_TX_CTRL    E31_REG32(EMAC_BASE + 0x1104UL)
-#define EMAC_DMA_CH0_RX_CTRL    E31_REG32(EMAC_BASE + 0x1108UL)
-#define EMAC_DMA_CH0_TXDESC_LIST E31_REG32(EMAC_BASE + 0x1114UL)
-#define EMAC_DMA_CH0_RXDESC_LIST E31_REG32(EMAC_BASE + 0x111CUL)
-#define EMAC_DMA_CH0_TXDESC_TAIL E31_REG32(EMAC_BASE + 0x1120UL)
-#define EMAC_DMA_CH0_RXDESC_TAIL E31_REG32(EMAC_BASE + 0x1128UL)
-#define EMAC_DMA_CH0_TXDESC_RLEN E31_REG32(EMAC_BASE + 0x112CUL)
-#define EMAC_DMA_CH0_RXDESC_RLEN E31_REG32(EMAC_BASE + 0x1130UL)
-#define EMAC_DMA_CH0_INT_EN     E31_REG32(EMAC_BASE + 0x1134UL)
-#define EMAC_DMA_CH0_STAT       E31_REG32(EMAC_BASE + 0x1160UL)
-#define EMAC_DMA_CH0_MISS_FRAMES E31_REG32(EMAC_BASE + 0x1164UL)
+#define EMAC_DMA_MODE           EMAC_REG32(EMAC_BASE + 0x1000UL)
+#define EMAC_DMA_SYSBUS_MODE    EMAC_REG32(EMAC_BASE + 0x1004UL)
+#define EMAC_DMA_CH0_CTRL       EMAC_REG32(EMAC_BASE + 0x1100UL)
+#define EMAC_DMA_CH0_TX_CTRL    EMAC_REG32(EMAC_BASE + 0x1104UL)
+#define EMAC_DMA_CH0_RX_CTRL    EMAC_REG32(EMAC_BASE + 0x1108UL)
+#define EMAC_DMA_CH0_TXDESC_LIST EMAC_REG32(EMAC_BASE + 0x1114UL)
+#define EMAC_DMA_CH0_RXDESC_LIST EMAC_REG32(EMAC_BASE + 0x111CUL)
+#define EMAC_DMA_CH0_TXDESC_TAIL EMAC_REG32(EMAC_BASE + 0x1120UL)
+#define EMAC_DMA_CH0_RXDESC_TAIL EMAC_REG32(EMAC_BASE + 0x1128UL)
+#define EMAC_DMA_CH0_TXDESC_RLEN EMAC_REG32(EMAC_BASE + 0x112CUL)
+#define EMAC_DMA_CH0_RXDESC_RLEN EMAC_REG32(EMAC_BASE + 0x1130UL)
+#define EMAC_DMA_CH0_INT_EN     EMAC_REG32(EMAC_BASE + 0x1134UL)
+#define EMAC_DMA_CH0_STAT       EMAC_REG32(EMAC_BASE + 0x1160UL)
+#define EMAC_DMA_CH0_MISS_FRAMES EMAC_REG32(EMAC_BASE + 0x1164UL)
 
 #define EMAC_DMA_MODE_SWR       (1UL << 0)
 
@@ -150,17 +152,17 @@
 #define EMAC_IRQN               105U
 
 /* The EMAC reaches the CM7_0 DTCM through its backdoor port */
-#define E31_DTCM_BASE           0x20000000UL
-#define E31_DTCM_SIZE           0x00010000UL
-#define E31_DTCM_BACKDOOR_OFFSET 0x01000000UL
+#define EMAC_DTCM_BASE          0x20000000UL
+#define EMAC_DTCM_SIZE          0x00010000UL
+#define EMAC_DTCM_BACKDOOR_OFFSET 0x01000000UL
 
 /* MC_ME: EMAC clock is partition 2, COFB set 1, request 32 (bit 0) */
 #define MC_ME_BASE              0x402DC000UL
-#define MC_ME_CTL_KEY           E31_REG32(MC_ME_BASE + 0x000UL)
-#define MC_ME_PRTN2_PCONF       E31_REG32(MC_ME_BASE + 0x500UL)
-#define MC_ME_PRTN2_PUPD        E31_REG32(MC_ME_BASE + 0x504UL)
-#define MC_ME_PRTN2_COFB1_STAT  E31_REG32(MC_ME_BASE + 0x514UL)
-#define MC_ME_PRTN2_COFB1_CLKEN E31_REG32(MC_ME_BASE + 0x534UL)
+#define MC_ME_CTL_KEY           EMAC_REG32(MC_ME_BASE + 0x000UL)
+#define MC_ME_PRTN2_PCONF       EMAC_REG32(MC_ME_BASE + 0x500UL)
+#define MC_ME_PRTN2_PUPD        EMAC_REG32(MC_ME_BASE + 0x504UL)
+#define MC_ME_PRTN2_COFB1_STAT  EMAC_REG32(MC_ME_BASE + 0x514UL)
+#define MC_ME_PRTN2_COFB1_CLKEN EMAC_REG32(MC_ME_BASE + 0x534UL)
 #define MC_ME_KEY               0x5AF0UL
 #define MC_ME_INVKEY            0xA50FUL
 #define MC_ME_PCONF_PCE         (1UL << 0)
@@ -170,11 +172,11 @@
 /* MC_CGM: system clock mux 0 and the EMAC clock muxes 7 (RX), 8 (TX) and
  * 9 (timestamp). Mux n registers are 0x40 apart. */
 #define MC_CGM_BASE             0x402D8000UL
-#define MC_CGM_MUX_CSC(n)       E31_REG32(MC_CGM_BASE + 0x300UL + 0x40UL * (n))
-#define MC_CGM_MUX_CSS(n)       E31_REG32(MC_CGM_BASE + 0x304UL + 0x40UL * (n))
-#define MC_CGM_MUX_DC(n, d)     E31_REG32(MC_CGM_BASE + 0x308UL + \
+#define MC_CGM_MUX_CSC(n)       EMAC_REG32(MC_CGM_BASE + 0x300UL + 0x40UL * (n))
+#define MC_CGM_MUX_CSS(n)       EMAC_REG32(MC_CGM_BASE + 0x304UL + 0x40UL * (n))
+#define MC_CGM_MUX_DC(n, d)     EMAC_REG32(MC_CGM_BASE + 0x308UL + \
                                           0x40UL * (n) + 4UL * (d))
-#define MC_CGM_MUX_DIV_UPD_STAT(n) E31_REG32(MC_CGM_BASE + 0x33CUL + \
+#define MC_CGM_MUX_DIV_UPD_STAT(n) EMAC_REG32(MC_CGM_BASE + 0x33CUL + \
                                              0x40UL * (n))
 #define MC_CGM_MUX_EMAC_RX      7U
 #define MC_CGM_MUX_EMAC_TX      8U
@@ -197,8 +199,8 @@
 
 /* PLLDIG, to work out PLL_PHI0 */
 #define PLL_BASE                0x402E0000UL
-#define PLL_PLLDV               E31_REG32(PLL_BASE + 0x08UL)
-#define PLL_PLLODIV(n)          E31_REG32(PLL_BASE + 0x80UL + 4UL * (n))
+#define PLL_PLLDV               EMAC_REG32(PLL_BASE + 0x08UL)
+#define PLL_PLLODIV(n)          EMAC_REG32(PLL_BASE + 0x80UL + 4UL * (n))
 #define PLL_PLLDV_MFI(r)        ((r) & 0xFFUL)
 #define PLL_PLLDV_RDIV(r)       (((r) >> 12) & 0x7UL)
 #define PLL_PLLDV_ODIV2(r)      (((r) >> 25) & 0x3FUL)
@@ -206,16 +208,17 @@
 
 /* DCM_GPR: EMAC MII/RMII select, sampled when the EMAC is reset */
 #define DCM_GPR_BASE            0x402AC000UL
-#define DCM_GPR_DCMRWF1         E31_REG32(DCM_GPR_BASE + 0x600UL)
-#define DCM_GPR_DCMRWF1_RMII_MII_SEL (1UL << 7)
+#define DCM_GPR_DCMRWF1         EMAC_REG32(DCM_GPR_BASE + 0x600UL)
+#define DCM_GPR_DCMRWF1_MAC_CONF_SEL_MASK (3UL << 6)
+#define DCM_GPR_DCMRWF1_MAC_CONF_SEL_RMII (2UL << 6)  /* 00 MII, 01 RGMII */
 
 /* SIUL2. MSCR and GPDO are indexed by the pad number (32 * port + pin);
- * IMCR by the input mux number of the Reference Manual (IOMUX file number
- * less 512). GPDO bytes are big-endian within each word. */
+ * IMCR by the input mux number (the SIUL_IMCR number of the IOMUX
+ * attachment less 512). GPDO bytes are big-endian within each word. */
 #define SIUL2_BASE              0x40290000UL
-#define SIUL2_MSCR(n)           E31_REG32(SIUL2_BASE + 0x240UL + 4UL * (n))
-#define SIUL2_IMCR(n)           E31_REG32(SIUL2_BASE + 0xA40UL + 4UL * (n))
-#define SIUL2_GPDO(n)           E31_REG8(SIUL2_BASE + 0x1300UL + \
+#define SIUL2_MSCR(n)           EMAC_REG32(SIUL2_BASE + 0x240UL + 4UL * (n))
+#define SIUL2_IMCR(n)           EMAC_REG32(SIUL2_BASE + 0xA40UL + 4UL * (n))
+#define SIUL2_GPDO(n)           EMAC_REG8(SIUL2_BASE + 0x1300UL + \
                                          (((n) & ~3UL) | (3UL - ((n) & 3UL))))
 #define SIUL2_MSCR_OBE          (1UL << 21)
 #define SIUL2_MSCR_IBE          (1UL << 19)
@@ -223,18 +226,18 @@
 #define SIUL2_MSCR_SSS(x)       ((uint32_t)(x) & 0xFUL)
 
 /* Cortex-M7 NVIC, SCB and DWT */
-#define NVIC_ISER(n)            E31_REG32(0xE000E100UL + 4UL * (uint32_t)(n))
-#define NVIC_ICER(n)            E31_REG32(0xE000E180UL + 4UL * (uint32_t)(n))
-#define NVIC_ICPR(n)            E31_REG32(0xE000E280UL + 4UL * (uint32_t)(n))
-#define NVIC_IPR(irq)           E31_REG8(0xE000E400UL + (uint32_t)(irq))
-#define SCB_CCR                 E31_REG32(0xE000ED14UL)
+#define NVIC_ISER(n)            EMAC_REG32(0xE000E100UL + 4UL * (uint32_t)(n))
+#define NVIC_ICER(n)            EMAC_REG32(0xE000E180UL + 4UL * (uint32_t)(n))
+#define NVIC_ICPR(n)            EMAC_REG32(0xE000E280UL + 4UL * (uint32_t)(n))
+#define NVIC_IPR(irq)           EMAC_REG8(0xE000E400UL + (uint32_t)(irq))
+#define SCB_CCR                 EMAC_REG32(0xE000ED14UL)
 #define SCB_CCR_DC              (1UL << 16)
-#define DEMCR                   E31_REG32(0xE000EDFCUL)
+#define DEMCR                   EMAC_REG32(0xE000EDFCUL)
 #define DEMCR_TRCENA            (1UL << 24)
-#define DWT_CTRL                E31_REG32(0xE0001000UL)
+#define DWT_CTRL                EMAC_REG32(0xE0001000UL)
 #define DWT_CTRL_CYCCNTENA      (1UL << 0)
-#define DWT_CYCCNT              E31_REG32(0xE0001004UL)
-#define DWT_LAR                 E31_REG32(0xE0001FB0UL)
+#define DWT_CYCCNT              EMAC_REG32(0xE0001004UL)
+#define DWT_LAR                 EMAC_REG32(0xE0001FB0UL)
 #define DWT_LAR_KEY             0xC5ACCE55UL
 
-#endif /* WOLFIP_NXP_MCXE31B_EMAC_REGS_H */
+#endif /* WOLFIP_NXP_MCXE_EMAC_REGS_H */
