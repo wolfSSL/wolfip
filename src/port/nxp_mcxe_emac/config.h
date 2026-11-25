@@ -28,19 +28,21 @@
 #endif
 
 #define ETHERNET
-#define LINK_MTU                1536
+/* Largest frame the driver sends (EMAC_MAX_FRAME_LEN, FCS not included), so
+ * wolfIP rejects a longer one before it queues it */
+#define LINK_MTU                1518
 
 #define MAX_TCPSOCKETS          2
 #define MAX_UDPSOCKETS          2
 #define MAX_ICMPSOCKETS         1
 /* Every socket has one receive and one transmit buffer, so each extra
- * LINK_MTU on both costs 5 * 2 * LINK_MTU (15 KB). One MTU each keeps TCP to
+ * 1536 bytes on both costs 5 * 2 * 1536 (15 KB). One frame each keeps TCP to
  * one segment in flight; the application may raise them when it has RAM. */
 #ifndef RXBUF_SIZE
-#define RXBUF_SIZE              LINK_MTU
+#define RXBUF_SIZE              1536
 #endif
 #ifndef TXBUF_SIZE
-#define TXBUF_SIZE              LINK_MTU
+#define TXBUF_SIZE              1536
 #endif
 
 #define MAX_NEIGHBORS           4

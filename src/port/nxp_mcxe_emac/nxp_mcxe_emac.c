@@ -104,6 +104,9 @@
 #define EMAC_ALIGN              __attribute__((aligned(64)))
 /* Keeps every buffer of the arrays below aligned */
 typedef char emac_buf_size_check[((EMAC_BUF_SIZE % 64U) == 0U) ? 1 : -1];
+/* wolfIP must reject a frame that eth_send() would not take, before it queues
+ * it: a queued packet-socket frame is retried until it is sent */
+typedef char emac_link_mtu_check[(LINK_MTU <= EMAC_MAX_FRAME_LEN) ? 1 : -1];
 
 /* Normal descriptor, four words. The driver writes the read format; the
  * DMA overwrites it with the write-back format. */
@@ -209,6 +212,14 @@ static int in_dtcm(const volatile void *p, uint32_t len)
 
     return (addr >= EMAC_DTCM_BASE &&
             addr + len <= EMAC_DTCM_BASE + EMAC_DTCM_SIZE);
+}
+
+/* DMA address of ring[idx], idx up to the ring size (the end of the ring).
+ * Translated from the ring base: a ring that ends at the top of the DTCM
+ * has an end address outside it, which dma_addr() would leave as is. */
+static uint32_t dma_desc_addr(const struct emac_desc *ring, uint32_t idx)
+{
+    return dma_addr(ring) + idx * (uint32_t)sizeof(struct emac_desc);
 }
 
 static int mdio_wait(void)
@@ -538,7 +549,7 @@ static void emac_start(const uint8_t *mac, uint16_t scsr)
     EMAC_DMA_CH0_TXDESC_LIST = dma_addr(&g_tx_desc[0]);
     EMAC_DMA_CH0_RXDESC_LIST = dma_addr(&g_rx_desc[0]);
     EMAC_DMA_CH0_TXDESC_TAIL = dma_addr(&g_tx_desc[0]);
-    EMAC_DMA_CH0_RXDESC_TAIL = dma_addr(&g_rx_desc[EMAC_RX_DESC_NUM]);
+    EMAC_DMA_CH0_RXDESC_TAIL = dma_desc_addr(g_rx_desc, EMAC_RX_DESC_NUM);
     EMAC_DMA_SYSBUS_MODE = NXP_MCXE_EMAC_SYSBUS;
     EMAC_DMA_CH0_TX_CTRL = EMAC_DMA_TX_CTRL_TXPBL(NXP_MCXE_EMAC_PBL)
 #if NXP_MCXE_EMAC_TX_OSF
@@ -586,7 +597,7 @@ static void rx_release(void)
     rx_desc_arm(g_rx_idx);
     __asm__ volatile ("dsb" ::: "memory");
     g_rx_idx = (g_rx_idx + 1U) % EMAC_RX_DESC_NUM;
-    EMAC_DMA_CH0_RXDESC_TAIL = dma_addr(&g_rx_desc[EMAC_RX_DESC_NUM]);
+    EMAC_DMA_CH0_RXDESC_TAIL = dma_desc_addr(g_rx_desc, EMAC_RX_DESC_NUM);
 }
 
 static int eth_poll(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
@@ -703,8 +714,8 @@ static int eth_send(struct wolfIP_ll_dev *dev, void *frame, uint32_t len)
     g_tx_idx = next;
     /* The tail points past the last descriptor handed over: the end of
      * the ring after the last one */
-    EMAC_DMA_CH0_TXDESC_TAIL = dma_addr((next == 0U) ?
-        &g_tx_desc[EMAC_TX_DESC_NUM] : &g_tx_desc[next]);
+    EMAC_DMA_CH0_TXDESC_TAIL = dma_desc_addr(g_tx_desc,
+        (next == 0U) ? EMAC_TX_DESC_NUM : next);
     return (int)len;
 }
 

@@ -56,6 +56,6 @@ wolfIP hands the driver its own buffers: `poll()` must fill the buffer it is giv
 
 The descriptor rings and frame buffers (19 KB by default, the driver's `.bss`) must be in the CM7_0 DTCM. The core does not cache the DTCM, and the EMAC DMA reaches it through its backdoor port (`0x21000000`), so the driver does no cache maintenance. `nxp_mcxe_emac_init()` returns -5 when the D-cache is on and the buffers are elsewhere. The wolfIP buffers need no special placement: only the core reads and writes them.
 
-`config.h` defaults `RXBUF_SIZE` and `TXBUF_SIZE` to one `LINK_MTU`, which allows one TCP segment in flight. The wolfBoot test-app sets both to 9216 (6 segments) and places the wolfIP state in SRAM.
+`config.h` sets `LINK_MTU` to 1518, the largest frame the driver sends, so wolfIP rejects longer frames before it queues them. It defaults `RXBUF_SIZE` and `TXBUF_SIZE` to 1536 bytes, which allows one TCP segment in flight. The wolfBoot test-app sets both to 9216 (6 segments) and places the wolfIP state in SRAM.
 
 An application that uses the EMAC interrupt must place its vector table at a 1 KB aligned address.
