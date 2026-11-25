@@ -85,6 +85,9 @@
 #define ENET_BUF_ALIGN          __attribute__((aligned(64)))
 /* Keeps every buffer of the arrays below aligned */
 typedef char enet_buf_size_check[((ENET_BUF_SIZE % 64U) == 0U) ? 1 : -1];
+/* wolfIP must reject a frame that eth_send() would not take before it queues
+ * it: a queued packet-socket frame is retried until it is sent */
+typedef char enet_link_mtu_check[(LINK_MTU <= ENET_MAX_FRAME_LEN) ? 1 : -1];
 
 /* Legacy buffer descriptor, little-endian with ECR[DBSWP] set */
 struct enet_bd {

@@ -41,7 +41,7 @@ wolfIP hands the driver its own buffers: `poll()` must fill the buffer it is giv
 
 ## Memory
 
-`config.h` defaults `RXBUF_SIZE` and `TXBUF_SIZE` to one `LINK_MTU`, which allows one TCP segment in flight. Each socket carries one buffer of each, so with the 5 sockets of this configuration every extra `LINK_MTU` on both costs 15 KB. The wolfBoot test-app sets both to 9216 (6 segments) and places the wolfIP state, 124.5 KB, in SRAM_L.
+`config.h` sets `LINK_MTU` to 1518, the largest frame the driver sends, so wolfIP rejects longer frames before it queues them. It defaults `RXBUF_SIZE` and `TXBUF_SIZE` to 1536 bytes, which allows one TCP segment in flight. Each socket carries one buffer of each, so with the 5 sockets of this configuration every extra 1536 bytes on both costs 15 KB. The wolfBoot test-app sets both to 9216 (6 segments) and places the wolfIP state, 124.5 KB, in SRAM_L.
 
 The receive buffers must be 32-byte aligned, although the RM asks for 16: with a buffer at 16 mod 32, a UDP flood at line rate stops the receive DMA until the MAC is reset. The driver aligns the frame buffers to 64 bytes, like most other nxp enet drivers use.
 
