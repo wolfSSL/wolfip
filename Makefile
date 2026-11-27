@@ -157,6 +157,7 @@ CPPCHECK_FLAGS=--enable=warning,performance,portability,missingInclude \
 			   --suppress=comparePointers:src/port/rp2350_cyw43439/syscalls.c \
 			   --suppress=unknownMacro:src/port/stm32h563/dot1x_client.c \
 			   --suppress=unknownMacro:src/port/stm32c5a3/startup.c \
+			   --suppress=syntaxError:src/port/amd/boards/versal/ota_store.c \
 			   --suppress=preprocessorErrorDirective:src/supplicant/supplicant_features.h \
 			   --suppress=comparePointers:src/port/stm32h563/boards/stm32h563zi_nucleo/startup.c \
 			   --suppress=comparePointers:src/port/stm32h563/boards/stm32h563zi_nucleo/syscalls.c \
@@ -187,7 +188,7 @@ ESP_OBJ=build/esp/wolfip.o \
 HAVE_WOLFSSL:=$(shell printf "#include <wolfssl/options.h>\nint main(void){return 0;}\n" | $(CC) $(CFLAGS) $(if $(WOLFSSL_PREFIX),-I$(WOLFSSL_PREFIX)/include) -x c - -c -o /dev/null 2>/dev/null && echo 1)
 
 # Require wolfSSL unless the requested goals are wolfSSL-independent (unit/cppcheck/clean).
-REQ_WOLFSSL_GOALS:=$(filter-out unit cppcheck clean,$(MAKECMDGOALS))
+REQ_WOLFSSL_GOALS:=$(filter-out unit cppcheck clean build/test-httpc,$(MAKECMDGOALS))
 ifeq ($(strip $(MAKECMDGOALS)),)
   ifeq ($(HAVE_WOLFSSL),)
     $(warning wolfSSL headers not found. Skipping wolfSSL-dependent targets)
@@ -525,6 +526,13 @@ build/port/rp2350_cyw43439/%.o: src/port/rp2350_cyw43439/%.c
 
 build/test-cyw43-sdpcm: build/port/rp2350_cyw43439/cyw43_sdpcm.o \
                         build/port/rp2350_cyw43439/test_cyw43_sdpcm.o
+	@echo "[LD] $@"
+	@$(CC) $(CFLAGS) -o $@ $(^)
+
+# HTTP GET client unit test - pure logic, host-compiled, no wolfSSL and no
+# stack (httpc.c includes only stdint/string).
+build/test/test_httpc.o:CFLAGS+=-Isrc/http
+build/test-httpc: build/http/httpc.o build/test/test_httpc.o
 	@echo "[LD] $@"
 	@$(CC) $(CFLAGS) -o $@ $(^)
 

@@ -127,9 +127,14 @@ _start:
 
     /* Make sure we are on A53-0. If FSBL released us as A53-1/2/3 by
      * accident, park them. */
-    mrs     x0, mpidr_el1
-    and     x0, x0, #0xff       /* Aff0 */
-    cbnz    x0, _park_secondary
+    mrs     x3, mpidr_el1
+    and     x3, x3, #0xff       /* Aff0 */
+    cbnz    x3, _park_secondary
+
+    /* Keep the loader's x0 (wolfBoot passes the device tree address). */
+    adrp    x1, boot_arg0
+    add     x1, x1, :lo12:boot_arg0
+    str     x0, [x1]
 
     /* Disable MMU + caches in case the loader left them on. */
     mrs     x0, SCTLR_ELx
@@ -316,3 +321,9 @@ el3_serror_trampoline:
     mov     x4, #1              /* indicate SError to C */
     bl      exception_report_serror
     b       _hang
+
+    .data
+    .balign 8
+    .global boot_arg0
+boot_arg0:
+    .quad 0

@@ -80,6 +80,7 @@ jobs:
           - { board: versal,   cross: aarch64-none-elf-, layout: ocm, speed: "-DSPEED_TEST" }
           - { board: versal,   cross: aarch64-none-elf-, layout: ddr, speed: ""            }
           - { board: versal,   cross: aarch64-none-elf-, layout: ddr, speed: "-DSPEED_TEST" }
+          - { board: versal,   cross: aarch64-none-elf-, layout: ddr, speed: "",            el: "2" }
           - { board: zynq7000, cross: arm-none-eabi-,    layout: ocm, speed: ""            }
           - { board: zynq7000, cross: arm-none-eabi-,    layout: ocm, speed: "-DSPEED_TEST" }
     steps:
@@ -109,13 +110,16 @@ jobs:
           if [ -n "${{ matrix.speed }}" ]; then
             args="$args CFLAGS_EXTRA=${{ matrix.speed }}"
           fi
+          if [ -n "${{ matrix.el }}" ]; then
+            args="$args EL=${{ matrix.el }}"
+          fi
           make -C "src/port/amd/boards/${{ matrix.board }}" $args
           ${{ matrix.cross }}size "src/port/amd/boards/${{ matrix.board }}/app.elf"
 
       - name: Upload app.elf
         uses: actions/upload-artifact@v4
         with:
-          name: amd-${{ matrix.board }}-${{ matrix.layout }}-${{ matrix.speed != '' && 'speed' || 'default' }}
+          name: amd-${{ matrix.board }}-${{ matrix.layout }}-${{ matrix.speed != '' && 'speed' || 'default' }}${{ matrix.el && format('-el{0}', matrix.el) || '' }}
           path: src/port/amd/boards/${{ matrix.board }}/app.elf
           if-no-files-found: error
 

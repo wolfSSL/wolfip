@@ -57,7 +57,9 @@
 #define RXBUF_SIZE              (LINK_MTU * 6)
 #define TXBUF_SIZE              (LINK_MTU * 6)
 #else
+#ifndef MAX_TCPSOCKETS
 #define MAX_TCPSOCKETS          2
+#endif
 #define MAX_UDPSOCKETS          3
 #define MAX_ICMPSOCKETS         1
 #define RXBUF_SIZE              (LINK_MTU * 4)
@@ -83,9 +85,15 @@
 #endif
 
 /* Static IP fallback (used if DHCP is disabled or times out). */
+#ifndef WOLFIP_IP
 #define WOLFIP_IP               "192.168.1.100"
+#endif
+#ifndef WOLFIP_NETMASK
 #define WOLFIP_NETMASK          "255.255.255.0"
+#endif
+#ifndef WOLFIP_GW
 #define WOLFIP_GW               "192.168.1.1"
+#endif
 #define WOLFIP_STATIC_DNS_IP    "8.8.8.8"
 
 #if WOLFIP_ENABLE_DHCP

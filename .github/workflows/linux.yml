@@ -154,6 +154,11 @@ jobs:
           set -euo pipefail
           timeout --preserve-status 5m build/test/unit
 
+      - name: HTTP client unit test
+        run: |
+          make build/test-httpc
+          ./build/test-httpc
+
       - name: Build TFTP interop test
         run: |
           make build/test-tftp-interop
