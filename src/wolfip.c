@@ -246,7 +246,9 @@ struct wolfIP_icmp_packet;
 #define TCP_PREACCEPT_TIMEOUT_MS 5000U
 #endif
 /* Arbitrary upper limit to avoid monopolizing the CPU during poll loops. */
+#ifndef WOLFIP_POLL_BUDGET
 #define WOLFIP_POLL_BUDGET 128
+#endif
 
 /* Macros */
 #define IS_IP_BCAST(ip) ((ip) == 0xFFFFFFFFU)
@@ -2288,22 +2290,63 @@ static uint32_t get_be32(const uint8_t *p)
     return ee32(be);
 }
 
+/* Add len bytes at p to a running one's complement sum (RFC 1071). The data
+ * is summed as 32-bit words in host byte order: the folded sum is the same
+ * as one of 16-bit network order words, byte swapped (RFC 1071 2(B)), and
+ * csum_fold() swaps it back. p need not be aligned. Only the last block
+ * added to a sum may have an odd length; its last byte is padded with zero. */
+static uint64_t csum_add(uint64_t sum, const uint8_t *p, uint32_t len)
+{
+    uint32_t w0, w1, w2, w3;
+    uint16_t h;
+    uint8_t tail[2];
+
+    while (len >= 16U) {
+        memcpy(&w0, p, sizeof(w0));
+        memcpy(&w1, p + 4, sizeof(w1));
+        memcpy(&w2, p + 8, sizeof(w2));
+        memcpy(&w3, p + 12, sizeof(w3));
+        sum += (uint64_t)w0 + w1 + w2 + w3;
+        p += 16;
+        len -= 16U;
+    }
+    while (len >= 4U) {
+        memcpy(&w0, p, sizeof(w0));
+        sum += w0;
+        p += 4;
+        len -= 4U;
+    }
+    if (len >= 2U) {
+        memcpy(&h, p, sizeof(h));
+        sum += h;
+        p += 2;
+        len -= 2U;
+    }
+    if (len != 0U) {
+        tail[0] = p[0];
+        tail[1] = 0U;
+        memcpy(&h, tail, sizeof(h));
+        sum += h;
+    }
+    return sum;
+}
+
+/* Fold a csum_add() sum to 16 bits and return its one's complement in host
+ * byte order, as the checksum field takes it through ee16(). */
+static uint16_t csum_fold(uint64_t sum)
+{
+    sum = (sum & 0xffffffffULL) + (sum >> 32);
+    sum = (sum & 0xffffffffULL) + (sum >> 32);
+    sum = (sum & 0xffffU) + (sum >> 16);
+    sum = (sum & 0xffffU) + (sum >> 16);
+    sum = (sum & 0xffffU) + (sum >> 16);
+    return ee16((uint16_t)~sum);
+}
+
 #ifdef IP_MULTICAST
 static uint16_t ip_checksum_buf(const void *buf, uint16_t len)
 {
-    const uint8_t *p = (const uint8_t *)buf;
-    uint32_t sum = 0;
-
-    while (len > 1) {
-        sum += ((uint16_t)p[0] << 8) | p[1];
-        p += 2;
-        len -= 2;
-    }
-    if (len)
-        sum += (uint16_t)p[0] << 8;
-    while (sum >> 16)
-        sum = (sum & 0xffffU) + (sum >> 16);
-    return (uint16_t)~sum;
+    return csum_fold(csum_add(0, (const uint8_t *)buf, len));
 }
 
 static void put_be16(uint8_t *p, uint16_t v)
@@ -5671,29 +5714,11 @@ static void tcp_recv_len(struct tsocket *t, struct wolfIP_tcp_seg *seg,
 
 static uint16_t transport_checksum(union transport_pseudo_header *ph, void *_data)
 {
-    uint32_t sum = 0;
-    uint32_t i = 0;
-    const uint8_t *ptr = (const uint8_t *)ph->buf;
-    const uint8_t *data = (const uint8_t *)_data;
-    uint16_t len = ee16(ph->ph.len);
-    uint16_t word;
-    for (i = 0; i < 12; i += 2) {
-        memcpy(&word, ptr + i, sizeof(word));
-        sum += ee16(word);
-    }
-    for (i = 0; i < (len & ~1u); i += 2) {
-        memcpy(&word, data + i, sizeof(word));
-        sum += ee16(word);
-    }
-    if (len & 0x01) {
-        uint16_t spare = 0;
-        spare |= (uint16_t)((uint16_t)data[len - 1] << 8);
-        sum += spare;
-    }
-    while (sum >> 16) {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    return (uint16_t)~sum;
+    uint64_t sum;
+
+    sum = csum_add(0, (const uint8_t *)ph->buf, sizeof(ph->buf));
+    sum = csum_add(sum, (const uint8_t *)_data, ee16(ph->ph.len));
+    return csum_fold(sum);
 }
 
 static int transport_verify_checksum(union transport_pseudo_header *ph, void *data)
@@ -5703,29 +5728,11 @@ static int transport_verify_checksum(union transport_pseudo_header *ph, void *da
 
 static uint16_t icmp_checksum(struct wolfIP_icmp_packet *icmp, uint16_t len)
 {
-    uint32_t sum = 0;
-    uint32_t i = 0;
-    const uint8_t *ptr = (const uint8_t *)(&icmp->type);
-    uint16_t word;
-    for (i = 0; i < (len & ~1u); i += 2) {
-        memcpy(&word, ptr + i, sizeof(word));
-        sum += ee16(word);
-    }
-    if (len & 0x01) {
-        uint16_t spare = 0;
-        spare |= (uint16_t)((uint16_t)ptr[len - 1] << 8);
-        sum += spare;
-    }
-    while (sum >> 16) {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    return (uint16_t)(~sum & 0xFFFF);
+    return csum_fold(csum_add(0, (const uint8_t *)(&icmp->type), len));
 }
 
 static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
 {
-    uint32_t sum = 0;
-    uint32_t i = 0;
     uint32_t ip_hlen = (uint32_t)(ip->ver_ihl & 0x0fU) << 2;
     const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
 
@@ -5737,21 +5744,11 @@ static void iphdr_set_checksum(struct wolfIP_ip_packet *ip)
      * makes the setter idempotent (set/verify always holds) and removes the
      * implicit "caller must clear csum first" precondition. */
     ip->csum = 0;
-    for (i = 0; i < ip_hlen; i += 2) {
-        uint16_t word;
-        memcpy(&word, ptr + i, sizeof(word));
-        sum += ee16(word);
-    }
-    while (sum >> 16) {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    ip->csum = ee16((uint16_t)~sum);
+    ip->csum = ee16(csum_fold(csum_add(0, ptr, ip_hlen)));
 }
 
 static int iphdr_verify_checksum(struct wolfIP_ip_packet *ip)
 {
-    uint32_t sum = 0;
-    uint32_t i;
     uint32_t ip_hlen;
     const uint8_t *ptr = (const uint8_t *)(&ip->ver_ihl);
 
@@ -5761,14 +5758,7 @@ static int iphdr_verify_checksum(struct wolfIP_ip_packet *ip)
     if (ip_hlen < IP_HEADER_LEN)
         return -1;
 
-    for (i = 0; i < ip_hlen; i += 2) {
-        uint16_t word;
-        memcpy(&word, ptr + i, sizeof(word));
-        sum += ee16(word);
-    }
-    while (sum >> 16)
-        sum = (sum & 0xffff) + (sum >> 16);
-    return ((uint16_t)sum == 0xffffU) ? 0 : -1;
+    return (csum_fold(csum_add(0, ptr, ip_hlen)) == 0U) ? 0 : -1;
 }
 
 #ifdef ETHERNET
